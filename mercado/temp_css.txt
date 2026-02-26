@@ -1,0 +1,519 @@
+/* ═══════════════════════════════════════════════════════════════════════════════
+   🎨 ONE PREMIUM UI v5.0 - BRANCO/PRETO (ESTILO UBER/CHATGPT)
+   ═══════════════════════════════════════════════════════════════════════════════
+   
+   INSTRUÇÕES: Cole este CSS no FINAL do arquivo one.php, antes do </style> final
+   Ele vai sobrescrever o design verde pelo branco/preto premium
+   
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+/* === RESET CORES PARA BRANCO/PRETO === */
+html, body {
+    background: #ffffff !important;
+    color: #171717 !important;
+}
+
+/* === HEADER CLEAN === */
+.one-header {
+    background: #ffffff !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    border-bottom: 1px solid #e5e5e5 !important;
+    box-shadow: none !important;
+    padding: 16px 20px !important;
+    border-radius: 0 !important;
+}
+
+.one-avatar {
+    width: 44px !important;
+    height: 44px !important;
+    background: #000000 !important;
+    border-radius: 50% !important;
+    border: none !important;
+    box-shadow: none !important;
+}
+
+.one-avatar::before {
+    display: none !important;
+}
+
+.one-avatar svg {
+    filter: brightness(0) invert(1) !important;
+}
+
+.one-info h1 {
+    font-size: 18px !important;
+    font-weight: 700 !important;
+    color: #000000 !important;
+    letter-spacing: -0.3px !important;
+}
+
+.one-info p {
+    font-size: 13px !important;
+    color: #737373 !important;
+    font-weight: 500 !important;
+}
+
+.one-status {
+    background: #f5f5f5 !important;
+    border: 1px solid #e5e5e5 !important;
+    padding: 6px 14px !important;
+    border-radius: 100px !important;
+    color: #525252 !important;
+    font-weight: 500 !important;
+    font-size: 13px !important;
+    box-shadow: none !important;
+}
+
+.one-status-dot {
+    width: 8px !important;
+    height: 8px !important;
+    background: #22c55e !important;
+    border-radius: 50% !important;
+}
+
+/* === ÁREA DE CHAT === */
+.chat-container,
+#chatMessages,
+.chat-messages {
+    background: #fafafa !important;
+    padding: 20px 16px !important;
+}
+
+/* === MENSAGENS === */
+.message {
+    margin-bottom: 16px !important;
+    max-width: 85% !important;
+}
+
+.message-avatar {
+    width: 36px !important;
+    height: 36px !important;
+    border-radius: 50% !important;
+    box-shadow: none !important;
+}
+
+.message.one .message-avatar,
+.message:not(.user) .message-avatar {
+    background: #000000 !important;
+}
+
+.message.user .message-avatar {
+    background: #e5e5e5 !important;
+}
+
+/* === BOLHAS DE MENSAGEM === */
+.bubble {
+    padding: 14px 18px !important;
+    font-size: 15px !important;
+    line-height: 1.6 !important;
+    border-radius: 16px !important;
+}
+
+/* Mensagem do Bot - Branco */
+.message.one .bubble,
+.message:not(.user) .bubble {
+    background: #ffffff !important;
+    color: #171717 !important;
+    border: 1px solid #e5e5e5 !important;
+    border-top-left-radius: 4px !important;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04) !important;
+}
+
+.message.one .bubble *,
+.message:not(.user) .bubble * {
+    color: #171717 !important;
+}
+
+/* Mensagem do Usuário - Preto */
+.message.user .bubble {
+    background: #000000 !important;
+    color: #ffffff !important;
+    border: none !important;
+    border-top-right-radius: 4px !important;
+    box-shadow: none !important;
+}
+
+.message.user .bubble * {
+    color: #ffffff !important;
+}
+
+/* === TIMESTAMP === */
+.message-time {
+    font-size: 11px !important;
+    color: #a3a3a3 !important;
+    margin-top: 6px !important;
+    font-weight: 400 !important;
+}
+
+/* === INPUT AREA === */
+.input-area,
+.input-container,
+.one-input-area,
+.chat-input {
+    background: #ffffff !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    border-top: 1px solid #e5e5e5 !important;
+    padding: 16px 20px 24px !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+}
+
+/* === INPUT === */
+#oneInput,
+#messageInput,
+.message-input,
+input[type="text"],
+textarea {
+    background: #f5f5f5 !important;
+    color: #171717 !important;
+    border: 1px solid #e5e5e5 !important;
+    border-radius: 12px !important;
+    padding: 14px 18px !important;
+    font-size: 15px !important;
+    font-weight: 400 !important;
+    box-shadow: none !important;
+    transition: all 0.2s ease !important;
+}
+
+#oneInput:focus,
+#messageInput:focus,
+.message-input:focus {
+    background: #ffffff !important;
+    border-color: #000000 !important;
+    box-shadow: 0 0 0 1px #000000 !important;
+    outline: none !important;
+}
+
+#oneInput::placeholder,
+#messageInput::placeholder,
+.message-input::placeholder {
+    color: #a3a3a3 !important;
+    font-weight: 400 !important;
+}
+
+/* === BOTÃO ENVIAR === */
+.send-btn,
+#sendBtn {
+    width: 44px !important;
+    height: 44px !important;
+    min-width: 44px !important;
+    background: #000000 !important;
+    color: #ffffff !important;
+    border: none !important;
+    border-radius: 12px !important;
+    box-shadow: none !important;
+    transition: all 0.2s ease !important;
+}
+
+.send-btn:hover,
+#sendBtn:hover {
+    transform: scale(1.05) !important;
+    opacity: 0.9 !important;
+    box-shadow: none !important;
+}
+
+.send-btn svg,
+#sendBtn svg {
+    color: #ffffff !important;
+    stroke: #ffffff !important;
+    width: 20px !important;
+    height: 20px !important;
+}
+
+/* === BOTÃO MIC === */
+.voice-btn,
+.mic-btn,
+#voiceBtn,
+#micBtn {
+    width: 44px !important;
+    height: 44px !important;
+    min-width: 44px !important;
+    background: #ffffff !important;
+    border: 1px solid #e5e5e5 !important;
+    border-radius: 12px !important;
+    color: #525252 !important;
+    transition: all 0.2s ease !important;
+}
+
+.voice-btn:hover,
+.mic-btn:hover,
+#voiceBtn:hover,
+#micBtn:hover {
+    background: #f5f5f5 !important;
+    border-color: #d4d4d4 !important;
+}
+
+.voice-btn.recording,
+.mic-btn.recording,
+#voiceBtn.recording,
+#micBtn.recording {
+    background: #ef4444 !important;
+    border-color: #ef4444 !important;
+}
+
+.voice-btn svg,
+.mic-btn svg,
+#voiceBtn svg,
+#micBtn svg {
+    color: #525252 !important;
+    stroke: #525252 !important;
+}
+
+/* === BOTÃO FOTO === */
+.btn-foto {
+    width: 44px !important;
+    height: 44px !important;
+    min-width: 44px !important;
+    background: #ffffff !important;
+    border: 1px solid #e5e5e5 !important;
+    border-radius: 12px !important;
+    font-size: 18px !important;
+    transition: all 0.2s ease !important;
+}
+
+.btn-foto:hover {
+    background: #f5f5f5 !important;
+}
+
+/* === TYPING INDICATOR === */
+.typing-indicator .bubble {
+    background: #ffffff !important;
+    border: 1px solid #e5e5e5 !important;
+    border-radius: 16px !important;
+}
+
+/* === VOICE STATUS === */
+.voice-status,
+#voiceStatusBar {
+    background: #f5f5f5 !important;
+    color: #525252 !important;
+    border-radius: 12px !important;
+    padding: 10px 16px !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+    box-shadow: none !important;
+    border: 1px solid #e5e5e5 !important;
+}
+
+/* === WELCOME MESSAGE === */
+#welcomeMessage,
+.welcome-message {
+    background: #ffffff !important;
+    border: 1px solid #e5e5e5 !important;
+    border-radius: 16px !important;
+    padding: 24px !important;
+    box-shadow: none !important;
+    color: #171717 !important;
+}
+
+/* === QUICK ACTIONS === */
+.quick-actions button,
+.action-btn,
+.suggestion-btn {
+    background: #ffffff !important;
+    color: #525252 !important;
+    border: 1px solid #e5e5e5 !important;
+    border-radius: 100px !important;
+    padding: 10px 16px !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+    box-shadow: none !important;
+    transition: all 0.2s ease !important;
+}
+
+.quick-actions button:hover,
+.action-btn:hover {
+    background: #f5f5f5 !important;
+    border-color: #d4d4d4 !important;
+    color: #171717 !important;
+    transform: none !important;
+    box-shadow: none !important;
+}
+
+/* === CARRINHO MODAL === */
+.cart-modal-content,
+.cart-section,
+.carrinho,
+.cart-container {
+    background: #ffffff !important;
+    border: 1px solid #e5e5e5 !important;
+    border-radius: 16px !important;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.1) !important;
+}
+
+.cart-header {
+    border-bottom: 1px solid #e5e5e5 !important;
+    background: #fafafa !important;
+}
+
+.cart-header h3 {
+    color: #171717 !important;
+}
+
+.cart-item {
+    border-bottom: 1px solid #f5f5f5 !important;
+}
+
+.cart-item-name {
+    color: #171717 !important;
+}
+
+.cart-item-price {
+    color: #525252 !important;
+}
+
+.cart-footer {
+    background: #fafafa !important;
+    border-top: 1px solid #e5e5e5 !important;
+}
+
+.cart-total {
+    color: #171717 !important;
+}
+
+/* Botão finalizar */
+.btn-finalizar,
+.cart-checkout-btn {
+    background: #000000 !important;
+    color: #ffffff !important;
+    border: none !important;
+    border-radius: 12px !important;
+}
+
+.btn-finalizar:hover,
+.cart-checkout-btn:hover {
+    opacity: 0.9 !important;
+}
+
+/* === MODAL === */
+.modal-content {
+    background: #ffffff !important;
+    border-radius: 16px !important;
+    box-shadow: 0 25px 50px rgba(0,0,0,0.15) !important;
+}
+
+/* === SCROLLBAR MINIMALISTA === */
+::-webkit-scrollbar {
+    width: 6px !important;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent !important;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #d4d4d4 !important;
+    border-radius: 3px !important;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #a3a3a3 !important;
+}
+
+/* === LINKS === */
+a {
+    color: #000000 !important;
+    font-weight: 500 !important;
+}
+
+a:hover {
+    opacity: 0.7 !important;
+}
+
+/* === TYPING SLOGAN === */
+.typing-slogan {
+    font-weight: 600 !important;
+    color: #171717 !important;
+}
+
+.typing-cursor {
+    color: #000000 !important;
+}
+
+/* === PULSE RING === */
+.pulse-ring {
+    display: none !important;
+}
+
+/* === HEADER PREMIUM === */
+.header, .site-header, [class*="header-main"] {
+    background: #ffffff !important;
+    backdrop-filter: none !important;
+    border-bottom: 1px solid #e5e5e5 !important;
+    box-shadow: none !important;
+}
+
+.location-btn, .endereco, [class*="location"], [class*="endereco"] {
+    background: #f5f5f5 !important;
+    border: 1px solid #e5e5e5 !important;
+    border-radius: 12px !important;
+}
+
+.location-btn:hover {
+    background: #ebebeb !important;
+    border-color: #d4d4d4 !important;
+    box-shadow: none !important;
+}
+
+/* Ícone de localização */
+.location-btn svg, .location-btn i, [class*="location"] svg {
+    color: #525252 !important;
+}
+
+.location-label, .entregar-em {
+    color: #737373 !important;
+}
+
+.location-address, .endereco-rua {
+    color: #171717 !important;
+}
+
+/* === DARK MODE PREVENTION === */
+@media (prefers-color-scheme: dark) {
+    html, body {
+        background: #ffffff !important;
+        color: #171717 !important;
+    }
+}
+
+/* === MOBILE === */
+@media (max-width: 768px) {
+    .one-header {
+        padding: 12px 16px !important;
+    }
+    
+    .one-avatar {
+        width: 40px !important;
+        height: 40px !important;
+    }
+    
+    .input-area {
+        padding: 12px 16px 20px !important;
+    }
+    
+    #oneInput,
+    #messageInput {
+        padding: 12px 16px !important;
+        font-size: 16px !important;
+    }
+    
+    .send-btn,
+    #sendBtn,
+    .voice-btn,
+    #voiceBtn,
+    .btn-foto {
+        width: 42px !important;
+        height: 42px !important;
+        min-width: 42px !important;
+    }
+    
+    .bubble {
+        padding: 12px 16px !important;
+    }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   FIM ONE PREMIUM UI v5.0 - BRANCO/PRETO
+   ═══════════════════════════════════════════════════════════════════════════════ */

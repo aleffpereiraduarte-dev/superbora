@@ -1,0 +1,88 @@
+{
+  "name": "SuperBora Market",
+  "short_name": "SuperBora",
+  "description": "Seu supermercado online com entrega rapida",
+  "start_url": "/mercado/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#10b981",
+  "orientation": "portrait-primary",
+  "scope": "/mercado/",
+  "lang": "pt-BR",
+  "icons": [
+    {
+      "src": "/mercado/assets/img/icon-72.png",
+      "sizes": "72x72",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/mercado/assets/img/icon-96.png",
+      "sizes": "96x96",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/mercado/assets/img/icon-128.png",
+      "sizes": "128x128",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/mercado/assets/img/icon-144.png",
+      "sizes": "144x144",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/mercado/assets/img/icon-152.png",
+      "sizes": "152x152",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/mercado/assets/img/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/mercado/assets/img/icon-384.png",
+      "sizes": "384x384",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/mercado/assets/img/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["shopping", "food"],
+  "shortcuts": [
+    {
+      "name": "Carrinho",
+      "short_name": "Carrinho",
+      "description": "Ver meu carrinho",
+      "url": "/mercado/carrinho.php",
+      "icons": [{"src": "/mercado/assets/img/icon-cart.png", "sizes": "96x96"}]
+    },
+    {
+      "name": "Pedidos",
+      "short_name": "Pedidos",
+      "description": "Ver meus pedidos",
+      "url": "/mercado/conta.php#pedidos",
+      "icons": [{"src": "/mercado/assets/img/icon-orders.png", "sizes": "96x96"}]
+    },
+    {
+      "name": "Ofertas",
+      "short_name": "Ofertas",
+      "description": "Ver ofertas do dia",
+      "url": "/mercado/#ofertas",
+      "icons": [{"src": "/mercado/assets/img/icon-deals.png", "sizes": "96x96"}]
+    }
+  ],
+  "related_applications": [],
+  "prefer_related_applications": false
+}

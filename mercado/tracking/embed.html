@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Rastreamento</title>
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+
+    <!-- Pusher JS -->
+    <script src="https://js.pusher.com/8.2.0/pusher.min.js"></script>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { width: 100%; height: 100%; overflow: hidden; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+
+        #map { width: 100%; height: 100%; }
+
+        /* Minimal driver marker */
+        .driver-dot {
+            width: 32px;
+            height: 32px;
+            background: #4CAF50;
+            border-radius: 50%;
+            border: 3px solid white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .driver-dot svg {
+            width: 18px;
+            height: 18px;
+            fill: white;
+        }
+
+        .dest-dot {
+            width: 28px;
+            height: 28px;
+            background: #F44336;
+            border-radius: 50% 50% 50% 0;
+            border: 2px solid white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            transform: rotate(-45deg);
+        }
+
+        /* ETA overlay */
+        .eta-overlay {
+            position: fixed;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.15);
+            font-size: 14px;
+            font-weight: 600;
+            z-index: 1000;
+        }
+        .eta-overlay .eta-time {
+            color: #4CAF50;
+        }
+
+        /* Arriving badge */
+        .arriving-badge {
+            position: fixed;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #4CAF50;
+            color: white;
+            padding: 8px 20px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 13px;
+            box-shadow: 0 2px 10px rgba(76,175,80,0.4);
+            z-index: 1000;
+            animation: pulse 1.5s infinite;
+        }
+        .arriving-badge.hidden { display: none; }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: translateX(-50%) scale(1); }
+            50% { opacity: 0.8; transform: translateX(-50%) scale(1.05); }
+        }
+
+        /* Loading */
+        .loading {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+        }
+        .loading.hidden { display: none; }
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid #e0e0e0;
+            border-top-color: #4CAF50;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .leaflet-control-attribution { font-size: 9px !important; }
+    </style>
+</head>
+<body>
+    <div class="loading" id="loading"><div class="spinner"></div></div>
+    <div class="arriving-badge hidden" id="arriving">Entregador chegando!</div>
+    <div id="map"></div>
+    <div class="eta-overlay" id="eta" style="display:none">
+        <span class="eta-time" id="etaTime">--</span> min restantes
+    </div>
+
+    <script>
+        const API_BASE = '/api/mercado/vitrine';
+        const PUSHER_KEY = '1cd7a205ab19e56edcfe';
+        const PUSHER_CLUSTER = 'sa1';
+
+        const params = new URLSearchParams(window.location.search);
+        const ORDER_ID = params.get('order_id');
+        const AUTH_TOKEN = params.get('token');
+        const TRACKING_TOKEN = params.get('tracking_token');
+
+        let map, driverMarker, destMarker, routeLine, pusher, channel;
+
+        document.addEventListener('DOMContentLoaded', () => {
+            if (!ORDER_ID) return;
+            map = L.map('map', { zoomControl: false }).setView([-23.55, -46.63], 14);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; OSM'
+            }).addTo(map);
+            loadData();
+        });
+
+        async function loadData() {
+            try {
+                let url = `${API_BASE}/order-tracking.php?order_id=${ORDER_ID}`;
+                if (TRACKING_TOKEN) url += `&tracking_token=${TRACKING_TOKEN}`;
+                const headers = AUTH_TOKEN ? { Authorization: `Bearer ${AUTH_TOKEN}` } : {};
+
+                const res = await fetch(url, { headers });
+                const json = await res.json();
+                if (!json.success) throw new Error(json.message);
+
+                render(json.data);
+                initPusher(json.data.pusher);
+                document.getElementById('loading').classList.add('hidden');
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        function render(data) {
+            // Destination
+            if (data.destination?.lat) {
+                const destIcon = L.divIcon({
+                    className: '',
+                    html: '<div class="dest-dot"></div>',
+                    iconSize: [28, 28],
+                    iconAnchor: [14, 28]
+                });
+                destMarker = L.marker([data.destination.lat, data.destination.lng], { icon: destIcon }).addTo(map);
+            }
+
+            // Driver
+            if (data.tracking || data.driver?.current_location) {
+                const loc = data.tracking || data.driver.current_location;
+                updateDriver(loc.lat, loc.lng, loc.heading);
+                if (data.tracking?.eta_minutes) {
+                    document.getElementById('eta').style.display = 'block';
+                    document.getElementById('etaTime').textContent = data.tracking.eta_minutes;
+                }
+                if (data.tracking?.status === 'chegando') {
+                    document.getElementById('arriving').classList.remove('hidden');
+                }
+            }
+
+            fitBounds();
+            drawRoute();
+        }
+
+        function updateDriver(lat, lng, heading) {
+            const icon = L.divIcon({
+                className: '',
+                html: `<div class="driver-dot" style="transform:rotate(${heading||0}deg)">
+                    <svg viewBox="0 0 24 24"><path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z"/></svg>
+                </div>`,
+                iconSize: [32, 32],
+                iconAnchor: [16, 16]
+            });
+
+            if (driverMarker) {
+                animateMarker(driverMarker, [lat, lng]);
+                driverMarker.setIcon(icon);
+            } else {
+                driverMarker = L.marker([lat, lng], { icon }).addTo(map);
+            }
+        }
+
+        function animateMarker(marker, to) {
+            const from = marker.getLatLng();
+            const start = performance.now();
+            const dur = 800;
+            function step(t) {
+                const p = Math.min((t - start) / dur, 1);
+                const e = 1 - Math.pow(1 - p, 3);
+                marker.setLatLng([
+                    from.lat + (to[0] - from.lat) * e,
+                    from.lng + (to[1] - from.lng) * e
+                ]);
+                if (p < 1) requestAnimationFrame(step);
+                else drawRoute();
+            }
+            requestAnimationFrame(step);
+        }
+
+        function drawRoute() {
+            if (!driverMarker || !destMarker) return;
+            const pts = [driverMarker.getLatLng(), destMarker.getLatLng()];
+            if (routeLine) routeLine.setLatLngs(pts);
+            else routeLine = L.polyline(pts, { color: '#4CAF50', weight: 3, opacity: 0.6, dashArray: '8,8' }).addTo(map);
+        }
+
+        function fitBounds() {
+            const b = [];
+            if (driverMarker) b.push(driverMarker.getLatLng());
+            if (destMarker) b.push(destMarker.getLatLng());
+            if (b.length > 1) map.fitBounds(b, { padding: [40, 40] });
+            else if (b.length === 1) map.setView(b[0], 15);
+        }
+
+        function initPusher(cfg) {
+            if (!cfg) return;
+            pusher = new Pusher(cfg.app_key || PUSHER_KEY, { cluster: cfg.cluster || PUSHER_CLUSTER, forceTLS: true });
+            channel = pusher.subscribe(cfg.channel);
+
+            channel.bind('location-update', d => {
+                if (d.driver) updateDriver(d.driver.lat, d.driver.lng, d.driver.heading);
+                if (d.eta_minutes != null) {
+                    document.getElementById('eta').style.display = 'block';
+                    document.getElementById('etaTime').textContent = d.eta_minutes;
+                }
+                if (d.status === 'chegando') document.getElementById('arriving').classList.remove('hidden');
+            });
+
+            channel.bind('driver-arriving', () => {
+                document.getElementById('arriving').classList.remove('hidden');
+                if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+            });
+        }
+
+        // Post messages to parent (for React Native WebView)
+        function postToParent(type, data) {
+            if (window.ReactNativeWebView) {
+                window.ReactNativeWebView.postMessage(JSON.stringify({ type, ...data }));
+            } else if (window.parent !== window) {
+                window.parent.postMessage({ type, ...data }, '*');
+            }
+        }
+
+        // Listen for messages from parent
+        window.addEventListener('message', e => {
+            if (e.data?.type === 'center-driver' && driverMarker) {
+                map.setView(driverMarker.getLatLng(), 16);
+            }
+        });
+    </script>
+</body>
+</html>

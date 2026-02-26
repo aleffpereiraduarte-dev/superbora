@@ -1,0 +1,137 @@
+/**
+ * SuperBora - Fix Blur Global v3.0
+ * Remove o backdrop-filter blur de modais e overlays
+ * que causam tela borrada ao clicar no carrinho
+ * PRIORIDADE MAXIMA - !important em tudo
+ * CARREGADO POR ULTIMO para sobrescrever tudo
+ */
+
+/* ============================================================
+   REGRA NUCLEAR - REMOVE BLUR DE TUDO
+   ============================================================ */
+
+/* Remove backdrop-filter de QUALQUER elemento na pagina */
+*,
+*::before,
+*::after {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
+
+/* ============================================================
+   OVERLAYS ESPECIFICOS - GARANTIR QUE NAO TEM BLUR
+   ============================================================ */
+
+/* Overlay do carrinho lateral */
+.cart-overlay,
+#cartOverlay,
+.cart-overlay.open,
+#cartOverlay.open {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    background: rgba(0, 0, 0, 0.5) !important;
+}
+
+/* Classe do design system */
+.sb-modal-glass__backdrop,
+.sb-modal-glass__backdrop.active,
+.sb-modal-glass__backdrop.open {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    background: rgba(0, 0, 0, 0.6) !important;
+}
+
+/* Modal overlay */
+.modal-overlay,
+.modal-overlay.show {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    background: rgba(0, 0, 0, 0.6) !important;
+}
+
+/* Outros overlays */
+.om-bg,
+.om-modal-bg,
+.om-overlay,
+.carrinho-overlay,
+.sidebar-overlay,
+.drawer-overlay,
+#cart-overlay,
+#carrinho-overlay {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
+
+/* Remove blur de modais gerais */
+.modal-backdrop,
+.modal-overlay,
+.popup-overlay,
+.lightbox-overlay {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
+
+/* Voice modal */
+.one-voice-overlay,
+[class*="voice-overlay"] {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
+
+/* Header blur - manter apenas para header */
+.om-header,
+.mkt-header,
+.site-header {
+    /* Header pode ter blur suave */
+}
+
+/* Mas remover quando tiver modal aberto */
+body.modal-open .om-header,
+body.modal-open .mkt-header,
+body.has-modal .om-header,
+body.has-modal .mkt-header {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
+
+/* ============================================================
+   ESTILOS PARA MODAL SEM BLUR
+   ============================================================ */
+
+/* Background escuro sem blur */
+.om-bg {
+    background: rgba(0, 0, 0, 0.85) !important;
+}
+
+/* Animacao suave de entrada */
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.om-bg {
+    animation: fadeIn 0.2s ease !important;
+}
+
+/* Modal interno com sombra em vez de blur */
+.om-modal {
+    box-shadow: 0 25px 80px rgba(0, 0, 0, 0.5) !important;
+}
+
+/* ============================================================
+   PREVENIR BLUR EM ELEMENTOS DINAMICOS
+   ============================================================ */
+
+/* Injecao via JavaScript com backdrop-filter inline */
+*[style*="backdrop-filter: blur"],
+*[style*="backdrop-filter:blur"] {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
+
+/* Elementos fixos que cobrem a tela */
+div[style*="position: fixed"][style*="width: 100%"][style*="height: 100%"],
+div[style*="position:fixed"][style*="width:100%"][style*="height:100%"] {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}

@@ -1,0 +1,104 @@
+{
+    "name": "OneMundo E-commerce",
+    "short_name": "OneMundo",
+    "description": "Sua loja online completa com entrega rápida",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#ffffff",
+    "theme_color": "#FF6B00",
+    "orientation": "portrait-primary",
+    "scope": "/",
+    "lang": "pt-BR",
+    "categories": ["shopping", "lifestyle"],
+    "icons": [
+        {
+            "src": "/image/catalog/onemundo-icon-72.png",
+            "sizes": "72x72",
+            "type": "image/png",
+            "purpose": "any maskable"
+        },
+        {
+            "src": "/image/catalog/onemundo-icon-96.png",
+            "sizes": "96x96",
+            "type": "image/png",
+            "purpose": "any maskable"
+        },
+        {
+            "src": "/image/catalog/onemundo-icon-128.png",
+            "sizes": "128x128",
+            "type": "image/png",
+            "purpose": "any maskable"
+        },
+        {
+            "src": "/image/catalog/onemundo-icon-144.png",
+            "sizes": "144x144",
+            "type": "image/png",
+            "purpose": "any maskable"
+        },
+        {
+            "src": "/image/catalog/onemundo-icon-152.png",
+            "sizes": "152x152",
+            "type": "image/png",
+            "purpose": "any maskable"
+        },
+        {
+            "src": "/image/catalog/onemundo-icon-192.png",
+            "sizes": "192x192",
+            "type": "image/png",
+            "purpose": "any maskable"
+        },
+        {
+            "src": "/image/catalog/onemundo-icon-384.png",
+            "sizes": "384x384",
+            "type": "image/png",
+            "purpose": "any maskable"
+        },
+        {
+            "src": "/image/catalog/onemundo-icon-512.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "any maskable"
+        }
+    ],
+    "shortcuts": [
+        {
+            "name": "Ofertas",
+            "short_name": "Ofertas",
+            "description": "Ver ofertas especiais",
+            "url": "/ofertas",
+            "icons": [{"src": "/image/catalog/icon-ofertas.png", "sizes": "96x96"}]
+        },
+        {
+            "name": "Carrinho",
+            "short_name": "Carrinho",
+            "description": "Ver carrinho de compras",
+            "url": "/cart",
+            "icons": [{"src": "/image/catalog/icon-cart.png", "sizes": "96x96"}]
+        },
+        {
+            "name": "Minha Conta",
+            "short_name": "Conta",
+            "description": "Acessar minha conta",
+            "url": "/account",
+            "icons": [{"src": "/image/catalog/icon-account.png", "sizes": "96x96"}]
+        }
+    ],
+    "screenshots": [
+        {
+            "src": "/image/catalog/screenshot-home.png",
+            "sizes": "1280x720",
+            "type": "image/png",
+            "form_factor": "wide",
+            "label": "Página inicial"
+        },
+        {
+            "src": "/image/catalog/screenshot-mobile.png",
+            "sizes": "750x1334",
+            "type": "image/png",
+            "form_factor": "narrow",
+            "label": "Versão mobile"
+        }
+    ],
+    "related_applications": [],
+    "prefer_related_applications": false
+}

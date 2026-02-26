@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" fill="none">
+  <circle cx="100" cy="100" r="90" fill="#1e3a5f"/>
+  <circle cx="100" cy="100" r="70" fill="#2d5a87"/>
+  <text x="100" y="115" text-anchor="middle" font-family="Arial, sans-serif" font-size="48" font-weight="bold" fill="#fff">OM</text>
+  <text x="100" y="145" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" fill="#fff">CRÉDITO</text>
+</svg>

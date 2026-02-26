@@ -1,0 +1,243 @@
+<!-- 🎨 ONEMUNDO HEADER UPGRADE v2.0 - Cole antes do </head> ou </body> -->
+<style id="om-header-upgrade">
+/* ═══════════════════════════════════════════════════════════════════════════
+   TOPBAR VERDE - Melhorias sutis
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Topbar com gradiente mais rico */
+.om-topbar, [class*="topbar"] {
+    background: linear-gradient(135deg, #059669 0%, #10b981 50%, #34d399 100%) !important;
+    box-shadow: 0 4px 20px rgba(16, 185, 129, 0.3) !important;
+}
+
+/* Ícone de localização */
+.om-topbar-icon, [class*="topbar-icon"] {
+    background: rgba(255, 255, 255, 0.15) !important;
+    border-radius: 12px !important;
+    padding: 10px !important;
+    transition: all 0.3s ease !important;
+}
+
+.om-topbar:hover .om-topbar-icon,
+[class*="topbar"]:hover [class*="topbar-icon"] {
+    background: rgba(255, 255, 255, 0.25) !important;
+    transform: scale(1.05) !important;
+}
+
+/* Label "Entregar em" */
+.om-topbar-label, [class*="topbar-label"] {
+    font-size: 11px !important;
+    font-weight: 500 !important;
+    opacity: 0.85 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.5px !important;
+}
+
+/* Endereço */
+.om-topbar-address, [class*="topbar-address"] {
+    font-weight: 600 !important;
+    font-size: 14px !important;
+}
+
+/* Badge de tempo */
+.om-topbar-time, [class*="topbar-time"] {
+    background: rgba(0, 0, 0, 0.2) !important;
+    backdrop-filter: blur(10px) !important;
+    border-radius: 50px !important;
+    padding: 8px 16px !important;
+    font-weight: 700 !important;
+    font-size: 13px !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    transition: all 0.3s ease !important;
+}
+
+.om-topbar-time:hover, [class*="topbar-time"]:hover {
+    background: rgba(0, 0, 0, 0.3) !important;
+    transform: scale(1.02) !important;
+}
+
+/* Seta */
+.om-topbar-arrow svg, [class*="topbar-arrow"] svg {
+    transition: transform 0.3s ease !important;
+}
+
+.om-topbar:hover .om-topbar-arrow svg,
+[class*="topbar"]:hover [class*="topbar-arrow"] svg {
+    transform: translateX(3px) !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   HEADER PRINCIPAL - Glassmorphism sutil
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Header com glassmorphism melhorado */
+.mkt-header, .header, [class*="header-main"] {
+    background: rgba(255, 255, 255, 0.85) !important;
+    backdrop-filter: blur(20px) saturate(180%) !important;
+    -webkit-backdrop-filter: blur(20px) saturate(180%) !important;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.05) !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05) !important;
+    transition: all 0.3s ease !important;
+}
+
+.mkt-header.scrolled, .header.scrolled {
+    background: rgba(255, 255, 255, 0.95) !important;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08) !important;
+}
+
+/* Logo box */
+.mkt-logo-box, [class*="logo-box"], [class*="logo-icon"] {
+    background: linear-gradient(135deg, #10b981, #059669) !important;
+    box-shadow: 0 4px 15px rgba(16, 185, 129, 0.35) !important;
+    border-radius: 14px !important;
+    transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) !important;
+}
+
+.mkt-logo:hover .mkt-logo-box,
+[class*="logo"]:hover [class*="logo-box"],
+[class*="logo"]:hover [class*="logo-icon"] {
+    transform: scale(1.05) rotate(-3deg) !important;
+    box-shadow: 0 6px 20px rgba(16, 185, 129, 0.4) !important;
+}
+
+/* User avatar */
+.mkt-user-avatar, [class*="user-avatar"] {
+    background: linear-gradient(135deg, #10b981, #059669) !important;
+    box-shadow: 0 2px 10px rgba(16, 185, 129, 0.3) !important;
+    transition: all 0.3s ease !important;
+}
+
+.mkt-user-avatar:hover, [class*="user-avatar"]:hover {
+    transform: scale(1.08) !important;
+    box-shadow: 0 4px 15px rgba(16, 185, 129, 0.4) !important;
+}
+
+/* Cart button */
+.mkt-cart, [class*="btn-cart"], [class*="cart-btn"] {
+    background: linear-gradient(135deg, #1e293b, #0f172a) !important;
+    border-radius: 14px !important;
+    box-shadow: 0 4px 15px rgba(15, 23, 42, 0.3) !important;
+    transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) !important;
+}
+
+.mkt-cart:hover, [class*="btn-cart"]:hover, [class*="cart-btn"]:hover {
+    transform: translateY(-2px) scale(1.02) !important;
+    box-shadow: 0 6px 20px rgba(15, 23, 42, 0.35) !important;
+}
+
+/* Cart badge */
+.mkt-cart-count, [class*="cart-count"], [class*="cart-badge"] {
+    background: linear-gradient(135deg, #10b981, #059669) !important;
+    box-shadow: 0 2px 8px rgba(16, 185, 129, 0.4) !important;
+    border: 2px solid white !important;
+    font-weight: 800 !important;
+    animation: badge-pulse 2s ease-in-out infinite !important;
+}
+
+@keyframes badge-pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.1); }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SEARCH BAR - Estilo premium
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.mkt-search, [class*="search-box"], [class*="search-container"] {
+    background: #f1f5f9 !important;
+    border: 2px solid transparent !important;
+    border-radius: 14px !important;
+    transition: all 0.3s ease !important;
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.03) !important;
+}
+
+.mkt-search:focus-within, 
+[class*="search-box"]:focus-within,
+[class*="search-container"]:focus-within {
+    background: white !important;
+    border-color: #10b981 !important;
+    box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.1), inset 0 2px 4px rgba(0, 0, 0, 0.02) !important;
+}
+
+.mkt-search svg, [class*="search"] svg {
+    color: #94a3b8 !important;
+    transition: color 0.3s ease !important;
+}
+
+.mkt-search:focus-within svg,
+[class*="search"]:focus-within svg {
+    color: #10b981 !important;
+}
+
+.mkt-search input, [class*="search"] input {
+    background: transparent !important;
+    border: none !important;
+    outline: none !important;
+    font-size: 15px !important;
+    font-weight: 500 !important;
+}
+
+.mkt-search input::placeholder {
+    color: #94a3b8 !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   LOGO TEXT "Mercado" - Se existir
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.logo-text, [class*="logo-text"], .mkt-logo-text {
+    background: linear-gradient(135deg, #10b981, #059669) !important;
+    -webkit-background-clip: text !important;
+    -webkit-text-fill-color: transparent !important;
+    background-clip: text !important;
+    font-weight: 800 !important;
+    letter-spacing: -0.02em !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ANIMAÇÕES
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@keyframes slideDown {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.mkt-header, .header, .om-topbar, [class*="topbar"] {
+    animation: slideDown 0.5s ease forwards !important;
+}
+
+/* Scrollbar bonita */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #f1f5f9; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+/* Selection */
+::selection { background: rgba(16, 185, 129, 0.2); color: #059669; }
+
+/* Focus visible */
+*:focus-visible { outline: 2px solid #10b981; outline-offset: 2px; }
+
+/* Botões */
+button, .btn, [class*="btn-"] { transition: all 0.2s ease !important; }
+button:active, .btn:active, [class*="btn-"]:active { transform: scale(0.97) !important; }
+</style>
+
+<script>
+// Header scroll effect
+(function() {
+    const headers = document.querySelectorAll('.mkt-header, .header, [class*="header-main"]');
+    window.addEventListener('scroll', function() {
+        headers.forEach(header => {
+            if (window.pageYOffset > 50) {
+                header.classList.add('scrolled');
+            } else {
+                header.classList.remove('scrolled');
+            }
+        });
+    }, { passive: true });
+})();
+</script>

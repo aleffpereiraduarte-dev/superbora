@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Cadastro de Parceiro - SuperBora</title>
+<meta name="description" content="Cadastre sua loja no SuperBora e alcance milhares de clientes. Sem mensalidade, painel completo, delivery integrado.">
+<meta name="theme-color" content="#1e3a5f">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --green:#16a34a;--green-hover:#15803d;--green-light:#dcfce7;--green-glow:rgba(22,163,74,.15);
+  --blue:#1e3a5f;--blue-dark:#0f2847;
+  --bg:#f8fafc;--card:#fff;--border:#e2e8f0;--border-light:#f1f5f9;
+  --text:#1e293b;--text-sec:#64748b;--text-muted:#94a3b8;
+  --error:#dc2626;--error-bg:#fef2f2;--error-border:#fecaca;
+  --success-bg:#f0fdf4;--success-border:#bbf7d0;
+  --radius:12px;--radius-sm:8px;
+  --shadow:0 1px 3px rgba(0,0,0,.08),0 1px 2px rgba(0,0,0,.06);
+  --shadow-lg:0 10px 25px -3px rgba(0,0,0,.1);
+  --transition:200ms ease;
+}
+@media(prefers-color-scheme:dark){
+  :root{
+    --bg:#0f172a;--card:#1e293b;--border:#334155;--border-light:#1e293b;
+    --text:#f1f5f9;--text-sec:#94a3b8;--text-muted:#64748b;
+    --error-bg:#450a0a;--error-border:#7f1d1d;
+    --success-bg:#052e16;--success-border:#166534;
+    --shadow:0 1px 3px rgba(0,0,0,.3);--shadow-lg:0 10px 25px rgba(0,0,0,.4);
+  }
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100dvh;display:flex;flex-direction:column;align-items:center;padding:24px 16px}
+a{color:var(--green);text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* Logo */
+.logo{text-align:center;margin-bottom:8px}
+.logo-text{font-size:32px;font-weight:800;background:linear-gradient(135deg,var(--green),#059669);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;letter-spacing:-.03em}
+.logo-sub{font-size:14px;color:var(--text-muted);margin-top:4px}
+
+/* Card */
+.card{width:100%;max-width:520px;background:var(--card);border-radius:16px;box-shadow:var(--shadow-lg);padding:32px 24px;border:1px solid var(--border-light);animation:fadeIn .35s ease-out}
+@keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+
+/* Progress */
+.progress{display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:24px}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--border);transition:all .3s cubic-bezier(.34,1.56,.64,1)}
+.dot.active{background:var(--green);transform:scale(1.3);box-shadow:0 0 0 4px var(--green-glow)}
+.dot.done{background:var(--green);opacity:.5}
+.line{width:32px;height:2.5px;background:var(--border);border-radius:2px;transition:background .3s}
+.line.done{background:var(--green)}
+.step-label{font-size:13px;color:var(--text-muted);text-align:center;margin-bottom:20px;font-weight:500}
+
+/* Form */
+.step{display:none;flex-direction:column;gap:16px;animation:slideIn .3s ease-out}
+.step.active{display:flex}
+@keyframes slideIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
+label{display:flex;flex-direction:column;gap:5px;font-size:13.5px;font-weight:600;color:var(--text);letter-spacing:-.01em}
+input,select,textarea{padding:12px 14px;border:1.5px solid var(--border);border-radius:var(--radius-sm);font-size:15px;outline:none;transition:border-color var(--transition),box-shadow var(--transition);background:var(--card);color:var(--text);width:100%}
+input:focus-visible,select:focus-visible,textarea:focus-visible{border-color:var(--green);box-shadow:0 0 0 3px var(--green-glow)}
+input::placeholder{color:var(--text-muted)}
+select{cursor:pointer;-webkit-appearance:none;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;padding-right:36px}
+
+/* Toggle */
+.toggle-wrap{display:flex;gap:4px;background:var(--border-light);border-radius:24px;padding:3px;margin-top:4px}
+.toggle-btn{flex:1;padding:10px 0;border:none;border-radius:22px;font-size:13.5px;font-weight:600;cursor:pointer;transition:all var(--transition);background:transparent;color:var(--text-muted)}
+.toggle-btn.active{background:var(--card);color:var(--green);box-shadow:0 1px 4px rgba(0,0,0,.08)}
+
+/* Row */
+.row{display:flex;gap:12px}
+.row>label{flex:1}
+
+/* Buttons */
+.btn{padding:14px;border:none;border-radius:var(--radius-sm);font-size:15px;font-weight:700;cursor:pointer;transition:transform .15s,box-shadow .15s,background var(--transition);letter-spacing:-.01em;width:100%}
+.btn:disabled{opacity:.6;cursor:not-allowed;transform:none!important}
+.btn-primary{background:linear-gradient(135deg,var(--green),#059669);color:#fff;box-shadow:0 2px 8px rgba(22,163,74,.25)}
+.btn-primary:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 4px 16px rgba(22,163,74,.35)}
+.btn-outline{background:transparent;color:var(--green);border:2px solid var(--green)}
+.btn-outline:hover:not(:disabled){background:var(--green);color:#fff}
+.btn-ghost{background:transparent;color:var(--text-sec);border:none;font-weight:600;padding:10px}
+.btn-ghost:hover{color:var(--green)}
+.btn-row{display:flex;gap:10px;margin-top:4px}
+.btn-row .btn{flex:1}
+
+/* Back */
+.back-btn{display:inline-flex;align-items:center;gap:4px;background:none;border:none;color:var(--text-sec);font-size:14px;cursor:pointer;padding:4px 8px;margin-left:-8px;margin-bottom:8px;border-radius:6px;transition:color .15s,background .15s}
+.back-btn:hover{color:var(--green);background:var(--green-light)}
+
+/* Error/Info */
+.error-box{padding:12px 14px;background:var(--error-bg);border:1px solid var(--error-border);border-radius:var(--radius-sm);color:var(--error);font-size:14px;font-weight:500;animation:fadeIn .2s}
+.info-box{padding:12px 14px;background:var(--green-light);border:1px solid var(--success-border);border-radius:var(--radius-sm);color:#166534;font-size:14px}
+.hint{font-size:12px;color:var(--text-muted);font-weight:400;margin-top:2px}
+
+/* CNPJ result badge */
+.cnpj-result{display:flex;flex-direction:column;gap:6px;padding:12px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--border-light);font-size:13px;animation:fadeIn .2s}
+.cnpj-result .name{font-weight:700;font-size:14px;color:var(--text)}
+.cnpj-badge{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+.cnpj-badge.ok{background:#dcfce7;color:#166534}
+.cnpj-badge.err{background:#fef2f2;color:#991b1b}
+
+/* PIX type selector */
+.pix-options{display:flex;flex-wrap:wrap;gap:8px;margin-top:4px}
+.pix-opt{padding:8px 14px;border:1.5px solid var(--border);border-radius:20px;font-size:13px;font-weight:600;cursor:pointer;background:transparent;color:var(--text-sec);transition:all var(--transition)}
+.pix-opt.active{border-color:var(--green);background:var(--green-light);color:var(--green)}
+
+/* Review card */
+.review-section{border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;margin-bottom:8px}
+.review-section h4{font-size:13px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center}
+.review-section h4 button{font-size:12px;color:var(--green);background:none;border:none;cursor:pointer;font-weight:600}
+.review-section h4 button:hover{text-decoration:underline}
+.review-row{font-size:14px;color:var(--text);line-height:1.6}
+.review-row strong{font-weight:600}
+
+/* Checkbox */
+.check-label{flex-direction:row!important;align-items:flex-start;gap:10px;cursor:pointer;font-weight:500;font-size:14px;color:var(--text-sec);line-height:1.5}
+.check-label input[type=checkbox]{width:20px;height:20px;flex-shrink:0;margin-top:2px;accent-color:var(--green);cursor:pointer}
+
+/* Success screen */
+.success{display:none;flex-direction:column;align-items:center;text-align:center;gap:16px;padding:20px 0;animation:fadeIn .4s}
+.success.active{display:flex}
+.success-icon{width:80px;height:80px;border-radius:50%;background:var(--green-light);display:flex;align-items:center;justify-content:center}
+.success-icon svg{color:var(--green)}
+.success h2{font-size:22px;font-weight:800;color:var(--text)}
+.success p{font-size:15px;color:var(--text-sec);line-height:1.6}
+
+/* Loading spinner */
+.spinner{display:inline-block;width:18px;height:18px;border:2.5px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spinner-dark{border-color:rgba(0,0,0,.1);border-top-color:var(--green)}
+
+/* GPS button */
+.gps-btn{display:flex;align-items:center;justify-content:center;gap:8px;padding:12px;border:1.5px dashed var(--border);border-radius:var(--radius-sm);background:transparent;color:var(--text-sec);font-size:14px;font-weight:600;cursor:pointer;transition:all var(--transition);width:100%}
+.gps-btn:hover{border-color:var(--green);color:var(--green);background:var(--green-light)}
+
+/* Responsive */
+@media(max-width:480px){
+  body{padding:16px 12px}
+  .card{padding:24px 18px;border-radius:14px}
+  .logo-text{font-size:28px}
+  input,select{padding:14px 12px;font-size:16px}
+  .row{flex-direction:column;gap:14px}
+  .btn{padding:16px;font-size:16px}
+  .toggle-btn{font-size:13px;padding:10px 0}
+}
+@media(max-width:360px){
+  body{padding:12px 8px}
+  .card{padding:20px 14px}
+  .logo-text{font-size:24px}
+  .dot{width:8px;height:8px}
+  .line{width:20px}
+}
+</style>
+</head>
+<body>
+
+<div class="logo">
+  <div class="logo-text">SuperBora</div>
+  <div class="logo-sub">Cadastro de Parceiro</div>
+</div>
+
+<div class="card">
+  <!-- Progress -->
+  <div class="progress" id="progress"></div>
+  <div class="step-label" id="stepLabel"></div>
+
+  <!-- Error box -->
+  <div class="error-box" id="errorBox" style="display:none"></div>
+
+  <!-- Step 1: Dados da Conta -->
+  <div class="step active" id="step1">
+    <label>Email *
+      <input type="email" id="email" placeholder="parceiro@email.com" autocomplete="email">
+    </label>
+    <label>Senha *
+      <input type="password" id="senha" placeholder="Minimo 6 caracteres" autocomplete="new-password">
+      <span class="hint">Minimo 6 caracteres</span>
+    </label>
+    <label>Confirmar Senha *
+      <input type="password" id="senhaConfirm" placeholder="Repita a senha" autocomplete="new-password">
+    </label>
+    <label>Tipo de documento
+      <div class="toggle-wrap">
+        <button type="button" class="toggle-btn active" onclick="setDocType('cnpj')">Tenho CNPJ</button>
+        <button type="button" class="toggle-btn" onclick="setDocType('cpf')">Pessoa Fisica (CPF)</button>
+      </div>
+    </label>
+    <button type="button" class="btn btn-primary" onclick="nextStep(1)">Continuar</button>
+  </div>
+
+  <!-- Step 2: Dados do Negocio -->
+  <div class="step" id="step2">
+    <button type="button" class="back-btn" onclick="prevStep(2)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+      Voltar
+    </button>
+
+    <!-- CNPJ fields -->
+    <div id="cnpjFields">
+      <label>CNPJ *
+        <div style="display:flex;gap:8px">
+          <input type="text" id="cnpj" placeholder="00.000.000/0000-00" style="flex:1" maxlength="18">
+          <button type="button" class="btn btn-outline" style="width:auto;padding:12px 20px;flex-shrink:0" onclick="lookupCnpj()" id="cnpjBtn">Consultar</button>
+        </div>
+      </label>
+      <div id="cnpjResult" style="display:none"></div>
+    </div>
+
+    <!-- CPF fields -->
+    <div id="cpfFields" style="display:none">
+      <label>CPF *
+        <input type="text" id="cpf" placeholder="000.000.000-00" maxlength="14">
+      </label>
+      <label>Nome do Responsavel *
+        <input type="text" id="ownerName" placeholder="Nome completo">
+      </label>
+    </div>
+
+    <label>Nome da Loja *
+      <input type="text" id="storeName" placeholder="Ex: Mercado Bom Preco">
+    </label>
+
+    <label>Categoria *
+      <select id="categoria">
+        <option value="">Selecione...</option>
+        <option value="mercado">Mercado / Supermercado</option>
+        <option value="restaurante">Restaurante</option>
+        <option value="farmacia">Farmacia</option>
+        <option value="padaria">Padaria</option>
+        <option value="acougue">Acougue</option>
+        <option value="hortifruti">Hortifruti</option>
+        <option value="petshop">Pet Shop</option>
+        <option value="conveniencia">Conveniencia</option>
+        <option value="bebidas">Bebidas</option>
+        <option value="outros">Outros</option>
+      </select>
+    </label>
+
+    <label>Especialidade
+      <input type="text" id="specialty" placeholder="Ex: Organicos, Sushi, Sorvetes...">
+      <span class="hint">Opcional - ajuda clientes a encontrar sua loja</span>
+    </label>
+
+    <label>Telefone *
+      <input type="tel" id="telefone" placeholder="(11) 99999-9999" maxlength="15">
+    </label>
+
+    <button type="button" class="btn btn-primary" onclick="nextStep(2)">Continuar</button>
+  </div>
+
+  <!-- Step 3: Endereco -->
+  <div class="step" id="step3">
+    <button type="button" class="back-btn" onclick="prevStep(3)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+      Voltar
+    </button>
+
+    <button type="button" class="gps-btn" onclick="useGPS()" id="gpsBtn">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg>
+      Usar minha localizacao
+    </button>
+
+    <label>CEP
+      <input type="text" id="cep" placeholder="00000-000" maxlength="9">
+      <span class="hint">Digite o CEP para preencher automaticamente</span>
+    </label>
+
+    <label>Rua / Logradouro *
+      <input type="text" id="rua" placeholder="Nome da rua">
+    </label>
+
+    <div class="row">
+      <label>Numero *
+        <input type="text" id="numero" placeholder="123">
+      </label>
+      <label>Complemento
+        <input type="text" id="complemento" placeholder="Sala, Loja...">
+      </label>
+    </div>
+
+    <label>Bairro
+      <input type="text" id="bairro" placeholder="Bairro">
+    </label>
+
+    <div class="row">
+      <label>Cidade *
+        <input type="text" id="cidade" placeholder="Cidade">
+      </label>
+      <label style="max-width:100px">Estado *
+        <input type="text" id="estado" placeholder="UF" maxlength="2" style="text-transform:uppercase">
+      </label>
+    </div>
+
+    <button type="button" class="btn btn-primary" onclick="nextStep(3)">Continuar</button>
+  </div>
+
+  <!-- Step 4: Dados Bancarios -->
+  <div class="step" id="step4">
+    <button type="button" class="back-btn" onclick="prevStep(4)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+      Voltar
+    </button>
+
+    <div class="info-box">Estes dados sao opcionais. Voce pode completar depois no painel do parceiro.</div>
+
+    <label>Tipo de Chave PIX
+      <div class="pix-options">
+        <button type="button" class="pix-opt" data-pix="cpf" onclick="setPixType('cpf')">CPF</button>
+        <button type="button" class="pix-opt" data-pix="cnpj" onclick="setPixType('cnpj')">CNPJ</button>
+        <button type="button" class="pix-opt" data-pix="email" onclick="setPixType('email')">Email</button>
+        <button type="button" class="pix-opt" data-pix="phone" onclick="setPixType('phone')">Telefone</button>
+        <button type="button" class="pix-opt" data-pix="random" onclick="setPixType('random')">Aleatoria</button>
+      </div>
+    </label>
+
+    <label id="pixKeyLabel" style="display:none">Chave PIX
+      <input type="text" id="pixKey" placeholder="Sua chave PIX">
+    </label>
+
+    <label>Banco
+      <input type="text" id="bankName" placeholder="Nome do banco (opcional)">
+    </label>
+
+    <div class="row">
+      <label>Agencia
+        <input type="text" id="bankAgency" placeholder="0000">
+      </label>
+      <label>Conta
+        <input type="text" id="bankAccount" placeholder="00000-0">
+      </label>
+    </div>
+
+    <div class="btn-row">
+      <button type="button" class="btn btn-ghost" onclick="nextStep(4)">Pular</button>
+      <button type="button" class="btn btn-primary" onclick="nextStep(4)">Continuar</button>
+    </div>
+  </div>
+
+  <!-- Step 5: Revisao -->
+  <div class="step" id="step5">
+    <button type="button" class="back-btn" onclick="prevStep(5)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+      Voltar
+    </button>
+
+    <div id="reviewContent"></div>
+
+    <label class="check-label">
+      <input type="checkbox" id="termsCheck">
+      <span>Li e aceito os <a href="/mercado/vitrine/termos" target="_blank">Termos de Uso</a> e a <a href="/mercado/vitrine/privacidade" target="_blank">Politica de Privacidade</a> do SuperBora.</span>
+    </label>
+
+    <button type="button" class="btn btn-primary" onclick="submitForm()" id="submitBtn">
+      Cadastrar Minha Loja
+    </button>
+  </div>
+
+  <!-- Success -->
+  <div class="success" id="successScreen">
+    <div class="success-icon">
+      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+    </div>
+    <h2>Cadastro Realizado!</h2>
+    <p>Sua loja esta em analise. Voce recebera um email de confirmacao em ate <strong>48 horas</strong>.</p>
+    <div class="info-box" style="width:100%">Guarde suas credenciais de acesso. Quando aprovado, voce podera acessar o painel do parceiro.</div>
+    <a href="/mercado/vitrine/" class="btn btn-primary" style="text-align:center;text-decoration:none;display:block;color:#fff">Voltar para o SuperBora</a>
+  </div>
+</div>
+
+<div style="text-align:center;margin-top:16px;font-size:12px;color:var(--text-muted)">
+  Ja tem conta? <a href="/mercado/vitrine/login">Fazer login</a>
+</div>
+
+<script>
+const API_BASE = '/api/mercado';
+const STEPS = ['Dados da Conta','Dados do Negocio','Endereco','Dados Bancarios','Revisao'];
+let currentStep = 1;
+let docType = 'cnpj';
+let pixType = '';
+let cnpjData = null;
+let gpsCoords = null;
+
+// ---- Progress Bar ----
+function renderProgress() {
+  const p = document.getElementById('progress');
+  let html = '';
+  for (let i = 1; i <= 5; i++) {
+    const cls = i === currentStep ? 'active' : (i < currentStep ? 'done' : '');
+    html += '<div class="dot ' + cls + '"></div>';
+    if (i < 5) html += '<div class="line ' + (i < currentStep ? 'done' : '') + '"></div>';
+  }
+  p.innerHTML = html;
+  document.getElementById('stepLabel').textContent = 'Passo ' + currentStep + ' de 5 - ' + STEPS[currentStep - 1];
+}
+
+// ---- Navigation ----
+function showStep(n) {
+  for (let i = 1; i <= 5; i++) {
+    const el = document.getElementById('step' + i);
+    if (el) el.classList.toggle('active', i === n);
+  }
+  currentStep = n;
+  renderProgress();
+  hideError();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function nextStep(from) {
+  const err = validateStep(from);
+  if (err) { showError(err); return; }
+  showStep(from + 1);
+  if (from + 1 === 5) buildReview();
+}
+
+function prevStep(to) { showStep(to - 1); }
+
+// ---- Doc Type Toggle ----
+function setDocType(type) {
+  docType = type;
+  document.querySelectorAll('.toggle-btn').forEach((b, i) => {
+    b.classList.toggle('active', (i === 0 && type === 'cnpj') || (i === 1 && type === 'cpf'));
+  });
+  document.getElementById('cnpjFields').style.display = type === 'cnpj' ? '' : 'none';
+  document.getElementById('cpfFields').style.display = type === 'cpf' ? '' : 'none';
+}
+
+// ---- PIX Type ----
+function setPixType(type) {
+  pixType = type;
+  document.querySelectorAll('.pix-opt').forEach(b => b.classList.toggle('active', b.dataset.pix === type));
+  const label = document.getElementById('pixKeyLabel');
+  label.style.display = type ? '' : 'none';
+  const placeholders = { cpf: '000.000.000-00', cnpj: '00.000.000/0000-00', email: 'email@exemplo.com', phone: '(11) 99999-9999', random: 'Chave aleatoria' };
+  document.getElementById('pixKey').placeholder = placeholders[type] || '';
+}
+
+// ---- Masking ----
+function maskCNPJ(v) { return v.replace(/\D/g, '').replace(/^(\d{2})(\d)/, '$1.$2').replace(/^(\d{2})\.(\d{3})(\d)/, '$1.$2.$3').replace(/\.(\d{3})(\d)/, '.$1/$2').replace(/(\d{4})(\d)/, '$1-$2').slice(0, 18); }
+function maskCPF(v) { return v.replace(/\D/g, '').replace(/(\d{3})(\d)/, '$1.$2').replace(/(\d{3})\.(\d{3})(\d)/, '$1.$2.$3').replace(/(\d{3})(\d{1,2})$/, '$1-$2').slice(0, 14); }
+function maskPhone(v) { const d = v.replace(/\D/g, ''); if (d.length <= 10) return d.replace(/(\d{2})(\d)/, '($1) $2').replace(/(\d{4})(\d)/, '$1-$2'); return d.replace(/(\d{2})(\d)/, '($1) $2').replace(/(\d{5})(\d)/, '$1-$2').slice(0, 15); }
+function maskCEP(v) { return v.replace(/\D/g, '').replace(/(\d{5})(\d)/, '$1-$2').slice(0, 9); }
+
+document.getElementById('cnpj').addEventListener('input', function() { this.value = maskCNPJ(this.value); });
+document.getElementById('cpf').addEventListener('input', function() { this.value = maskCPF(this.value); });
+document.getElementById('telefone').addEventListener('input', function() { this.value = maskPhone(this.value); });
+document.getElementById('cep').addEventListener('input', function() {
+  this.value = maskCEP(this.value);
+  const digits = this.value.replace(/\D/g, '');
+  if (digits.length === 8) lookupCEP(digits);
+});
+
+// ---- CNPJ Lookup ----
+async function lookupCnpj() {
+  const raw = document.getElementById('cnpj').value.replace(/\D/g, '');
+  if (raw.length !== 14) { showError('CNPJ deve ter 14 digitos'); return; }
+  const btn = document.getElementById('cnpjBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>';
+  hideError();
+
+  try {
+    const r = await fetch(API_BASE + '/parceiro/consultar-cnpj.php?cnpj=' + raw);
+    const json = await r.json();
+    if (json.success && json.data) {
+      cnpjData = json.data;
+      const d = json.data;
+      let html = '<div class="cnpj-result"><div class="name">' + esc(d.razao_social || '') + '</div>';
+      if (d.nome_fantasia) html += '<div style="font-size:13px;color:var(--text-sec)">' + esc(d.nome_fantasia) + '</div>';
+      html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">';
+      html += '<span class="cnpj-badge ' + (d.situacao_ativa ? 'ok' : 'err') + '">' + esc(d.situacao || 'INATIVO') + '</span>';
+      if (d.cnae_valido) html += '<span class="cnpj-badge ok">CNAE Valido</span>';
+      else html += '<span class="cnpj-badge err">CNAE nao permitido</span>';
+      html += '</div>';
+      if (d.cnae_descricao) html += '<div style="font-size:12px;color:var(--text-muted);margin-top:4px">' + esc(d.cnae_descricao) + '</div>';
+      html += '</div>';
+      document.getElementById('cnpjResult').innerHTML = html;
+      document.getElementById('cnpjResult').style.display = '';
+
+      // Auto-fill store name
+      if (d.nome_fantasia && !document.getElementById('storeName').value) {
+        document.getElementById('storeName').value = d.nome_fantasia;
+      }
+      // Auto-fill address
+      if (d.endereco) {
+        const e = d.endereco;
+        if (e.logradouro) document.getElementById('rua').value = e.logradouro;
+        if (e.numero) document.getElementById('numero').value = e.numero;
+        if (e.bairro) document.getElementById('bairro').value = e.bairro;
+        if (e.cidade) document.getElementById('cidade').value = e.cidade;
+        if (e.estado) document.getElementById('estado').value = e.estado;
+        if (e.cep) document.getElementById('cep').value = maskCEP(e.cep);
+      }
+
+      if (!d.situacao_ativa) showError('CNPJ com situacao cadastral inativa. Verifique na Receita Federal.');
+      else if (!d.cnae_valido) showError('O CNAE principal deste CNPJ nao e permitido para cadastro. Entre em contato se acredita ser um erro.');
+    } else {
+      showError(json.message || 'CNPJ nao encontrado');
+      document.getElementById('cnpjResult').style.display = 'none';
+      cnpjData = null;
+    }
+  } catch (e) {
+    showError('Erro ao consultar CNPJ. Tente novamente.');
+    cnpjData = null;
+  }
+  btn.disabled = false;
+  btn.textContent = 'Consultar';
+}
+
+// ---- CEP Lookup ----
+async function lookupCEP(cep) {
+  try {
+    const r = await fetch('https://viacep.com.br/ws/' + cep + '/json/');
+    const d = await r.json();
+    if (!d.erro) {
+      if (d.logradouro) document.getElementById('rua').value = d.logradouro;
+      if (d.bairro) document.getElementById('bairro').value = d.bairro;
+      if (d.localidade) document.getElementById('cidade').value = d.localidade;
+      if (d.uf) document.getElementById('estado').value = d.uf;
+    }
+  } catch { /* silent */ }
+}
+
+// ---- GPS ----
+async function useGPS() {
+  const btn = document.getElementById('gpsBtn');
+  btn.innerHTML = '<span class="spinner-dark" style="width:16px;height:16px"></span> Obtendo localizacao...';
+  btn.disabled = true;
+
+  try {
+    const pos = await new Promise((resolve, reject) => {
+      navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 10000 });
+    });
+    const lat = pos.coords.latitude;
+    const lng = pos.coords.longitude;
+    gpsCoords = { lat, lng };
+
+    // Reverse geocoding via Nominatim
+    const r = await fetch('https://nominatim.openstreetmap.org/reverse?format=json&lat=' + lat + '&lon=' + lng + '&addressdetails=1&accept-language=pt-BR');
+    const d = await r.json();
+    if (d.address) {
+      const a = d.address;
+      document.getElementById('rua').value = a.road || a.pedestrian || '';
+      document.getElementById('numero').value = a.house_number || '';
+      document.getElementById('bairro').value = a.suburb || a.neighbourhood || '';
+      document.getElementById('cidade').value = a.city || a.town || a.village || '';
+      document.getElementById('estado').value = (a.state || '').slice(0, 2).toUpperCase();
+      if (a.postcode) document.getElementById('cep').value = maskCEP(a.postcode);
+    }
+    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg> Localizacao obtida!';
+    setTimeout(() => {
+      btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg> Usar minha localizacao';
+      btn.disabled = false;
+    }, 2000);
+  } catch (e) {
+    btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg> Usar minha localizacao';
+    btn.disabled = false;
+    showError('Nao foi possivel obter sua localizacao. Verifique as permissoes do navegador.');
+  }
+}
+
+// ---- Validation ----
+function validateStep(step) {
+  if (step === 1) {
+    const email = val('email');
+    const senha = val('senha');
+    const confirm = val('senhaConfirm');
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return 'Email invalido';
+    if (senha.length < 6) return 'Senha deve ter no minimo 6 caracteres';
+    if (senha !== confirm) return 'Senhas nao conferem';
+  }
+  if (step === 2) {
+    if (docType === 'cnpj') {
+      const raw = val('cnpj').replace(/\D/g, '');
+      if (raw.length !== 14) return 'CNPJ deve ter 14 digitos';
+      if (!cnpjData) return 'Consulte o CNPJ antes de continuar';
+      if (!cnpjData.situacao_ativa) return 'CNPJ com situacao inativa';
+    } else {
+      const raw = val('cpf').replace(/\D/g, '');
+      if (raw.length !== 11) return 'CPF deve ter 11 digitos';
+      if (!validarCPF(raw)) return 'CPF invalido';
+      if (!val('ownerName').trim()) return 'Nome do responsavel obrigatorio';
+    }
+    if (!val('storeName').trim()) return 'Nome da loja obrigatorio';
+    if (!val('categoria')) return 'Selecione uma categoria';
+    const phone = val('telefone').replace(/\D/g, '');
+    if (phone.length < 10) return 'Telefone invalido';
+  }
+  if (step === 3) {
+    if (!val('rua').trim()) return 'Rua obrigatoria';
+    if (!val('numero').trim()) return 'Numero obrigatorio';
+    if (!val('cidade').trim()) return 'Cidade obrigatoria';
+    if (!val('estado').trim() || val('estado').trim().length !== 2) return 'Estado (UF) obrigatorio - 2 letras';
+  }
+  // Step 4 - all optional
+  return null;
+}
+
+function validarCPF(cpf) {
+  if (/^(\d)\1{10}$/.test(cpf)) return false;
+  let sum = 0;
+  for (let i = 0; i < 9; i++) sum += parseInt(cpf[i]) * (10 - i);
+  let r = sum % 11;
+  let d1 = r < 2 ? 0 : 11 - r;
+  if (parseInt(cpf[9]) !== d1) return false;
+  sum = 0;
+  for (let i = 0; i < 10; i++) sum += parseInt(cpf[i]) * (11 - i);
+  r = sum % 11;
+  let d2 = r < 2 ? 0 : 11 - r;
+  return parseInt(cpf[10]) === d2;
+}
+
+// ---- Review ----
+function buildReview() {
+  const catLabels = { mercado:'Mercado/Supermercado', restaurante:'Restaurante', farmacia:'Farmacia', padaria:'Padaria', acougue:'Acougue', hortifruti:'Hortifruti', petshop:'Pet Shop', conveniencia:'Conveniencia', bebidas:'Bebidas', outros:'Outros' };
+  const pixLabels = { cpf:'CPF', cnpj:'CNPJ', email:'Email', phone:'Telefone', random:'Chave Aleatoria' };
+
+  let html = '';
+
+  // Account
+  html += '<div class="review-section"><h4>Conta <button type="button" onclick="showStep(1)">Editar</button></h4>';
+  html += '<div class="review-row"><strong>Email:</strong> ' + esc(val('email')) + '</div>';
+  html += '<div class="review-row"><strong>Documento:</strong> ' + (docType === 'cnpj' ? 'CNPJ' : 'CPF') + '</div>';
+  html += '</div>';
+
+  // Business
+  html += '<div class="review-section"><h4>Negocio <button type="button" onclick="showStep(2)">Editar</button></h4>';
+  if (docType === 'cnpj') {
+    html += '<div class="review-row"><strong>CNPJ:</strong> ' + esc(val('cnpj')) + '</div>';
+    if (cnpjData?.razao_social) html += '<div class="review-row"><strong>Razao Social:</strong> ' + esc(cnpjData.razao_social) + '</div>';
+  } else {
+    html += '<div class="review-row"><strong>CPF:</strong> ' + esc(val('cpf')) + '</div>';
+    html += '<div class="review-row"><strong>Responsavel:</strong> ' + esc(val('ownerName')) + '</div>';
+  }
+  html += '<div class="review-row"><strong>Loja:</strong> ' + esc(val('storeName')) + '</div>';
+  html += '<div class="review-row"><strong>Categoria:</strong> ' + (catLabels[val('categoria')] || val('categoria')) + '</div>';
+  html += '<div class="review-row"><strong>Telefone:</strong> ' + esc(val('telefone')) + '</div>';
+  if (val('specialty')) html += '<div class="review-row"><strong>Especialidade:</strong> ' + esc(val('specialty')) + '</div>';
+  html += '</div>';
+
+  // Address
+  html += '<div class="review-section"><h4>Endereco <button type="button" onclick="showStep(3)">Editar</button></h4>';
+  let addr = val('rua') + ', ' + val('numero');
+  if (val('complemento')) addr += ' - ' + val('complemento');
+  if (val('bairro')) addr += ', ' + val('bairro');
+  addr += ', ' + val('cidade') + '/' + val('estado').toUpperCase();
+  if (val('cep')) addr += ' - CEP ' + val('cep');
+  html += '<div class="review-row">' + esc(addr) + '</div>';
+  html += '</div>';
+
+  // Banking
+  if (pixType || val('bankName') || val('pixKey')) {
+    html += '<div class="review-section"><h4>Dados Bancarios <button type="button" onclick="showStep(4)">Editar</button></h4>';
+    if (pixType && val('pixKey')) html += '<div class="review-row"><strong>PIX (' + (pixLabels[pixType] || pixType) + '):</strong> ' + esc(val('pixKey')) + '</div>';
+    if (val('bankName')) html += '<div class="review-row"><strong>Banco:</strong> ' + esc(val('bankName'));
+    if (val('bankAgency')) html += ' Ag: ' + esc(val('bankAgency'));
+    if (val('bankAccount')) html += ' Cc: ' + esc(val('bankAccount'));
+    html += '</div>';
+    html += '</div>';
+  }
+
+  document.getElementById('reviewContent').innerHTML = html;
+}
+
+// ---- Submit ----
+async function submitForm() {
+  if (!document.getElementById('termsCheck').checked) {
+    showError('Voce precisa aceitar os termos de uso');
+    return;
+  }
+  hideError();
+
+  const btn = document.getElementById('submitBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Cadastrando...';
+
+  const body = {
+    email: val('email'),
+    senha: val('senha'),
+    telefone: val('telefone').replace(/\D/g, ''),
+    name: val('storeName'),
+    display_name: val('storeName'),
+    specialty: val('specialty'),
+    categoria: val('categoria'),
+    document_type: docType,
+    endereco: val('rua'),
+    address_number: val('numero'),
+    address_complement: val('complemento'),
+    bairro: val('bairro'),
+    cidade: val('cidade'),
+    estado: val('estado').toUpperCase(),
+    cep: val('cep').replace(/\D/g, ''),
+    terms_accepted: true,
+    plan: 'basico',
+  };
+
+  if (docType === 'cnpj') {
+    body.cnpj = val('cnpj').replace(/\D/g, '');
+    if (cnpjData) {
+      body.razao_social = cnpjData.razao_social || '';
+      body.nome_fantasia = cnpjData.nome_fantasia || '';
+    }
+  } else {
+    body.cpf = val('cpf').replace(/\D/g, '');
+    body.owner_name = val('ownerName');
+    body.owner_cpf = val('cpf').replace(/\D/g, '');
+  }
+
+  // Banking
+  if (pixType) body.pix_type = pixType;
+  if (val('pixKey')) body.pix_key = val('pixKey');
+  if (val('bankName')) body.bank_name = val('bankName');
+  if (val('bankAgency')) body.bank_agency = val('bankAgency');
+  if (val('bankAccount')) body.bank_account = val('bankAccount');
+
+  // GPS coords
+  if (gpsCoords) {
+    body.lat = gpsCoords.lat;
+    body.lng = gpsCoords.lng;
+  }
+
+  try {
+    const r = await fetch(API_BASE + '/parceiro/cadastro.php', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const json = await r.json();
+    if (json.success) {
+      // Hide form, show success
+      document.getElementById('progress').style.display = 'none';
+      document.getElementById('stepLabel').style.display = 'none';
+      document.getElementById('step5').classList.remove('active');
+      document.getElementById('successScreen').classList.add('active');
+
+      // Save token
+      if (json.data?.token) {
+        try { localStorage.setItem('partner_token', json.data.token); } catch {}
+      }
+    } else {
+      showError(json.message || 'Erro ao cadastrar. Tente novamente.');
+      btn.disabled = false;
+      btn.textContent = 'Cadastrar Minha Loja';
+    }
+  } catch (e) {
+    showError('Erro de conexao. Verifique sua internet e tente novamente.');
+    btn.disabled = false;
+    btn.textContent = 'Cadastrar Minha Loja';
+  }
+}
+
+// ---- Helpers ----
+function val(id) { return document.getElementById(id).value.trim(); }
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function showError(msg) { const b = document.getElementById('errorBox'); b.textContent = msg; b.style.display = ''; }
+function hideError() { document.getElementById('errorBox').style.display = 'none'; }
+
+// Init
+renderProgress();
+</script>
+</body>
+</html>

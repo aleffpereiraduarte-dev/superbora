@@ -1,0 +1,153 @@
+<?php
+require_once dirname(__DIR__) . '/config/database.php';
+/**
+ * API DE OTIMIZAÇÃO DE ROTA
+ * Calcula melhor rota para entregas em batch
+ */
+
+header("Content-Type: application/json; charset=utf-8");
+header("Access-Control-Allow-Origin: *");
+
+if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") { http_response_code(200); exit; }
+
+try {
+    $pdo = getPDO();
+} catch (PDOException $e) {
+    die(json_encode(["error" => "DB error"]));
+}
+
+$input = json_decode(file_get_contents("php://input"), true);
+$action = $input["action"] ?? $_GET["action"] ?? "";
+
+function calcDistance($lat1, $lon1, $lat2, $lon2) {
+    if (!$lat1 || !$lon1 || !$lat2 || !$lon2) return 9999;
+    $R = 6371;
+    $dLat = deg2rad($lat2 - $lat1);
+    $dLon = deg2rad($lon2 - $lon1);
+    $a = sin($dLat/2) * sin($dLat/2) + cos(deg2rad($lat1)) * cos(deg2rad($lat2)) * sin($dLon/2) * sin($dLon/2);
+    return $R * 2 * atan2(sqrt($a), sqrt(1-$a));
+}
+
+function optimizeRoute($start, $destinations) {
+    if (empty($destinations)) return ["route" => [], "total_km" => 0];
+    
+    $route = [];
+    $remaining = $destinations;
+    $current = $start;
+    $totalKm = 0;
+    
+    while (!empty($remaining)) {
+        $nearest = null;
+        $nearestDist = PHP_FLOAT_MAX;
+        $nearestKey = null;
+        
+        foreach ($remaining as $key => $dest) {
+            $dist = calcDistance($current["lat"], $current["lng"], $dest["lat"], $dest["lng"]);
+            if ($dist < $nearestDist) {
+                $nearestDist = $dist;
+                $nearest = $dest;
+                $nearestKey = $key;
+            }
+        }
+        
+        if ($nearest) {
+            $route[] = $nearest;
+            $totalKm += $nearestDist;
+            $current = ["lat" => $nearest["lat"], "lng" => $nearest["lng"]];
+            unset($remaining[$nearestKey]);
+        }
+    }
+    
+    return [
+        "route" => $route,
+        "total_km" => round($totalKm, 2),
+        "estimated_time_min" => round($totalKm * 3, 0)
+    ];
+}
+
+function isOnTheWay($currentRoute, $newDest, $tolerance = 2) {
+    if (empty($currentRoute)) return true;
+    $first = $currentRoute[0];
+    $last = end($currentRoute);
+    $directDist = calcDistance($first["lat"], $first["lng"], $last["lat"], $last["lng"]);
+    $viaNewDist = calcDistance($first["lat"], $first["lng"], $newDest["lat"], $newDest["lng"])
+                + calcDistance($newDest["lat"], $newDest["lng"], $last["lat"], $last["lng"]);
+    return ($viaNewDist - $directDist) <= $tolerance;
+}
+
+switch ($action) {
+    case "optimize_route":
+        $start = $input["start"] ?? null;
+        $destinations = $input["destinations"] ?? [];
+        if (!$start || empty($destinations)) {
+            die(json_encode(["error" => "start and destinations required"]));
+        }
+        $result = optimizeRoute($start, $destinations);
+        echo json_encode([
+            "success" => true,
+            "optimized_route" => $result["route"],
+            "total_distance_km" => $result["total_km"],
+            "estimated_time_min" => $result["estimated_time_min"]
+        ]);
+        break;
+        
+    case "check_on_way":
+        $current_route = $input["current_route"] ?? [];
+        $new_dest = $input["new_destination"] ?? null;
+        if (!$new_dest) die(json_encode(["error" => "new_destination required"]));
+        echo json_encode(["success" => true, "is_on_the_way" => isOnTheWay($current_route, $new_dest)]);
+        break;
+        
+    case "create_batch":
+        $driver_id = intval($input["driver_id"] ?? 0);
+        $order_ids = $input["order_ids"] ?? [];
+        if (!$driver_id || empty($order_ids)) {
+            die(json_encode(["error" => "driver_id and order_ids required"]));
+        }
+        $order_ids = array_slice($order_ids, 0, 5);
+        $placeholders = implode(",", array_fill(0, count($order_ids), "?"));
+        $stmt = $pdo->prepare("SELECT order_id, shipping_latitude as lat, shipping_longitude as lng, shipping_address as address FROM om_market_orders WHERE order_id IN ({$placeholders})");
+        $stmt->execute($order_ids);
+        $orders = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        if (empty($orders)) die(json_encode(["error" => "No orders found"]));
+        
+        $stmt = $pdo->prepare("SELECT p.latitude, p.longitude FROM om_market_orders o JOIN om_market_partners p ON o.partner_id = p.partner_id WHERE o.order_id = ?");
+        $stmt->execute([intval($order_ids[0])]);
+        $first = $stmt->fetch(PDO::FETCH_ASSOC);
+        $start = ["lat" => floatval($first["latitude"] ?? -23.5505), "lng" => floatval($first["longitude"] ?? -46.6333)];
+        
+        $destinations = array_map(function($o) {
+            return ["order_id" => $o["order_id"], "lat" => floatval($o["lat"]), "lng" => floatval($o["lng"]), "address" => $o["address"]];
+        }, $orders);
+        
+        $optimized = optimizeRoute($start, $destinations);
+        
+        $stmt = $pdo->prepare("INSERT INTO om_driver_batches (driver_id, orders_json, route_optimized, total_orders, total_distance_km, estimated_time_min, status, started_at) VALUES (?, ?, ?, ?, ?, ?, 'active', NOW())");
+        $stmt->execute([$driver_id, json_encode($order_ids), json_encode($optimized["route"]), count($order_ids), $optimized["total_km"], $optimized["estimated_time_min"]]);
+        $batch_id = $pdo->lastInsertId();
+        
+        // Sanitizar order_ids antes de usar
+        $safe_order_ids = array_map('intval', $order_ids);
+        $placeholders = implode(",", array_fill(0, count($safe_order_ids), "?"));
+        $stmt = $pdo->prepare("UPDATE om_market_orders SET batch_id = ? WHERE order_id IN ({$placeholders})");
+        $stmt->execute(array_merge([$batch_id], $safe_order_ids));
+
+        $stmt = $pdo->prepare("UPDATE om_market_deliveries SET current_batch_id = ? WHERE delivery_id = ?");
+        $stmt->execute([$batch_id, $driver_id]);
+        
+        echo json_encode(["success" => true, "batch_id" => $batch_id, "optimized_route" => $optimized["route"], "total_distance_km" => $optimized["total_km"]]);
+        break;
+        
+    case "get_batch":
+        $batch_id = intval($input["batch_id"] ?? $_GET["batch_id"] ?? 0);
+        if (!$batch_id) die(json_encode(["error" => "batch_id required"]));
+        $stmt = $pdo->prepare("SELECT * FROM om_driver_batches WHERE batch_id = ?");
+        $stmt->execute([$batch_id]);
+        $batch = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$batch) die(json_encode(["error" => "Batch not found"]));
+        echo json_encode(["success" => true, "batch" => $batch]);
+        break;
+        
+    default:
+        echo json_encode(["available_actions" => ["optimize_route", "check_on_way", "create_batch", "get_batch"]]);
+}

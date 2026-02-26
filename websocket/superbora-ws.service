@@ -1,0 +1,28 @@
+[Unit]
+Description=SuperBora WebSocket Server
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/html/websocket
+ExecStart=/usr/bin/php /var/www/html/websocket/server.php
+Restart=always
+RestartSec=5
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=superbora-ws
+
+# Environment
+Environment=WS_PORT=8080
+
+[Install]
+WantedBy=multi-user.target
+
+# Installation:
+# sudo cp superbora-ws.service /etc/systemd/system/
+# sudo systemctl daemon-reload
+# sudo systemctl enable superbora-ws
+# sudo systemctl start superbora-ws
+# sudo systemctl status superbora-ws

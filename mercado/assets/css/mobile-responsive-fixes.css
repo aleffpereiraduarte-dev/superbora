@@ -1,0 +1,1808 @@
+/**
+ * ============================================================================
+ * MERCADO - CORRECOES DE RESPONSIVIDADE MOBILE
+ * ============================================================================
+ * Arquivo de correcoes para garantir responsividade em todos os dispositivos:
+ * - 320px (iPhone SE, dispositivos pequenos)
+ * - 375px (iPhone 6/7/8/X)
+ * - 414px (iPhone Plus/Max)
+ * - 768px (Tablets)
+ * - 1024px (Desktop pequeno)
+ *
+ * Regras de acessibilidade:
+ * - Touch targets minimo 44x44px
+ * - Font sizes minimo 14px para textos importantes
+ * - Contraste adequado
+ * - Espacamento tocavel
+ * ============================================================================
+ */
+
+/* ============================================================================
+   BASE - Prevencao de Overflow Horizontal
+   ============================================================================ */
+
+html, body {
+    overflow-x: hidden;
+    max-width: 100vw;
+}
+
+* {
+    /* Previne overflow de elementos */
+    max-width: 100%;
+}
+
+img, video, iframe, embed, object {
+    max-width: 100%;
+    height: auto;
+}
+
+/* Container responsivo seguro */
+.container,
+.omContent,
+.header-v2__inner,
+.header__main-inner {
+    max-width: 100%;
+    overflow-x: hidden;
+}
+
+/* ============================================================================
+   TIPOGRAFIA RESPONSIVA - Legibilidade garantida
+   ============================================================================ */
+
+/* Tamanhos minimos de fonte para legibilidade */
+:root {
+    --font-size-min: 14px;
+    --font-size-min-small: 12px;
+    --touch-target-min: 44px;
+    --spacing-touch: 8px;
+}
+
+/* Ajusta textos muito pequenos em mobile */
+@media (max-width: 768px) {
+    /* Textos que estavam com 10px/11px agora tem minimo de 12px */
+    .header__location-label,
+    .header__logo-tagline,
+    .omActLabel,
+    .omTopLink,
+    .header-v2__location-label,
+    .mobile-nav__label,
+    .timer__unit,
+    .product-card__badge,
+    .ai-card__reason,
+    .flash-card__brand,
+    .header__nav-badge,
+    .header__user-greeting,
+    .header__status-dot,
+    .omBadge,
+    .om-badge,
+    .badge {
+        font-size: 12px !important;
+        line-height: 1.4;
+    }
+
+    /* Textos importantes - minimo 14px */
+    body,
+    .product-card__name,
+    .flash-card__name,
+    .ai-card__name,
+    .omProdName,
+    .cart-item__name,
+    .header__search-input,
+    .header-v2__search-input,
+    .omSearchInput,
+    p,
+    .text-sm {
+        font-size: 14px !important;
+    }
+
+    /* Precos - destaque maior */
+    .product-card__price,
+    .flash-card__price,
+    .ai-card__price,
+    .omProdPrice,
+    .cart-item__price {
+        font-size: 16px !important;
+        font-weight: 700;
+    }
+
+    /* Titulos de secao */
+    .section__title,
+    .omSectionTitle,
+    .ai-section__title h2 {
+        font-size: 18px !important;
+    }
+
+    /* Titulos principais */
+    h1, .hero__title {
+        font-size: 24px !important;
+        line-height: 1.2;
+    }
+
+    h2 {
+        font-size: 20px !important;
+    }
+
+    h3 {
+        font-size: 18px !important;
+    }
+}
+
+/* ============================================================================
+   TOUCH TARGETS - Minimo 44x44px para todos os elementos clicaveis
+   ============================================================================ */
+
+@media (max-width: 1024px) {
+    /* Botoes de acao genericos */
+    button,
+    .btn,
+    .om-btn,
+    .omBtnAdd,
+    .product-card__add-btn,
+    .product-card__quick-btn,
+    .flash-card button,
+    .ai-card__add,
+    .header__cart,
+    .header-v2__cart,
+    .header__login,
+    .header-v2__login,
+    .header__user,
+    .header-v2__user,
+    .omAct,
+    .omMenu,
+    .mobile-nav__item {
+        min-width: 44px;
+        min-height: 44px;
+        padding: 12px;
+    }
+
+    /* Controles de quantidade */
+    .product-card__qty-btn,
+    .cart-item__qty-btn,
+    .om-qty-btn,
+    .omQtyBtn,
+    .ic-qty-btn {
+        min-width: 44px !important;
+        min-height: 44px !important;
+        font-size: 18px;
+    }
+
+    /* Links de navegacao */
+    .header__nav-item,
+    .header-v2__nav-item,
+    .omNavLink {
+        min-height: 44px;
+        padding: 10px 16px;
+        display: flex;
+        align-items: center;
+    }
+
+    /* Botao de fechar (modais, sidebar) */
+    .cart-sidebar__close,
+    .ic-modal-close,
+    .modal-close,
+    .close-btn,
+    [class*="close"] {
+        min-width: 44px !important;
+        min-height: 44px !important;
+    }
+
+    /* Cards clicaveis - area de toque maior */
+    .product-card,
+    .flash-card,
+    .ai-card,
+    .category-card,
+    .omProdCard,
+    .omCatCard {
+        /* Adiciona padding para facilitar toque */
+        cursor: pointer;
+    }
+
+    /* Input fields */
+    input,
+    select,
+    textarea,
+    .form-control,
+    .om-input,
+    .header__search-input,
+    .header-v2__search-input,
+    .omSearchInput {
+        min-height: 48px;
+        padding: 12px 16px;
+        font-size: 16px !important; /* Previne zoom no iOS */
+    }
+
+    /* Checkbox e Radio - area de toque maior */
+    input[type="checkbox"],
+    input[type="radio"] {
+        min-width: 24px;
+        min-height: 24px;
+        margin: 10px;
+    }
+
+    /* Links em listas */
+    .omFooterCol a,
+    .footer-link,
+    nav a {
+        display: block;
+        padding: 12px 0;
+        min-height: 44px;
+    }
+}
+
+/* ============================================================================
+   HEADER RESPONSIVO
+   ============================================================================ */
+
+/* Desktop pequeno (1024px) */
+@media (max-width: 1024px) {
+    .header-v2__inner,
+    .header__main-inner {
+        gap: 12px;
+        padding: 10px 16px;
+    }
+
+    .header__delivery,
+    .header-v2__delivery,
+    .header__status,
+    .header__help {
+        display: none;
+    }
+
+    .header__search,
+    .header-v2__search {
+        max-width: 400px;
+    }
+}
+
+/* Tablets (768px) */
+@media (max-width: 768px) {
+    /* Header mais compacto */
+    .header-v2,
+    .header {
+        position: sticky;
+        top: 0;
+        z-index: 1000;
+    }
+
+    .header-v2__inner,
+    .header__main-inner {
+        flex-wrap: wrap;
+        gap: 10px;
+        padding: 10px 12px;
+    }
+
+    /* Logo simplificado */
+    .header__logo-text,
+    .header-v2__logo-text,
+    .omLogoTxt {
+        display: none;
+    }
+
+    .header__logo-icon,
+    .header-v2__logo-icon {
+        width: 40px;
+        height: 40px;
+    }
+
+    /* Localizacao simplificada */
+    .header-v2__location,
+    .header__location {
+        flex: 1;
+        min-width: 120px;
+        max-width: none;
+        padding: 8px 12px;
+    }
+
+    .header-v2__location-address,
+    .header__location-address {
+        max-width: 120px;
+        font-size: 13px;
+    }
+
+    .header__location-info,
+    .header-v2__location-label {
+        display: none;
+    }
+
+    /* Busca em linha separada */
+    .header-v2__search,
+    .header__search {
+        order: 10;
+        flex: 0 0 100%;
+        max-width: 100%;
+        margin-top: 8px;
+    }
+
+    .header-v2__search-input,
+    .header__search-input {
+        padding: 14px 16px 14px 44px;
+    }
+
+    /* Acoes compactas */
+    .header-v2__actions,
+    .header__actions {
+        gap: 8px;
+    }
+
+    .header-v2__user-info,
+    .header__user-info {
+        display: none;
+    }
+
+    .header-v2__cart-info,
+    .header__cart-text {
+        display: none;
+    }
+
+    .header-v2__cart,
+    .header__cart {
+        padding: 10px;
+        border-radius: 12px;
+        min-width: 44px;
+    }
+
+    .header-v2__login span,
+    .header__login span {
+        display: none;
+    }
+
+    .header-v2__login,
+    .header__login {
+        padding: 10px;
+        border-radius: 50%;
+    }
+
+    /* Navegacao de categorias */
+    .header-v2__nav,
+    .header__nav {
+        padding: 8px 0;
+    }
+
+    .header-v2__nav-scroll,
+    .header__nav-scroll {
+        padding: 4px 12px;
+        gap: 6px;
+    }
+
+    .header-v2__nav-item,
+    .header__nav-item {
+        padding: 8px 14px;
+        font-size: 13px;
+    }
+
+    /* Promo bar */
+    .header-v2__promo,
+    .header__promo {
+        padding: 6px 0;
+        font-size: 12px;
+    }
+
+    .header-v2__promo-content {
+        gap: 8px;
+    }
+
+    /* Top bar verde */
+    .header__top,
+    .omTopBar {
+        display: none;
+    }
+}
+
+/* iPhones e dispositivos pequenos (414px e menor) */
+@media (max-width: 414px) {
+    .header-v2__inner,
+    .header__main-inner {
+        padding: 8px 10px;
+        gap: 8px;
+    }
+
+    .header-v2__location,
+    .header__location {
+        padding: 6px 10px;
+    }
+
+    .header-v2__location-address {
+        max-width: 100px;
+        font-size: 12px;
+    }
+
+    .header-v2__search-input,
+    .header__search-input {
+        padding: 12px 14px 12px 40px;
+        font-size: 15px;
+    }
+
+    .header-v2__nav-item,
+    .header__nav-item {
+        padding: 6px 10px;
+        font-size: 12px;
+    }
+
+    .header-v2__nav-icon,
+    .header__nav-icon {
+        font-size: 14px;
+    }
+}
+
+/* iPhone SE e muito pequenos (320px) */
+@media (max-width: 375px) {
+    .header-v2__inner,
+    .header__main-inner {
+        padding: 6px 8px;
+    }
+
+    .header-v2__location-icon,
+    .header__location-pin {
+        width: 28px;
+        height: 28px;
+    }
+
+    .header-v2__location-icon svg {
+        width: 14px;
+        height: 14px;
+    }
+
+    .header-v2__location-address {
+        max-width: 80px;
+        font-size: 11px;
+    }
+
+    .header-v2__cart,
+    .header-v2__login,
+    .header__cart,
+    .header__login {
+        padding: 8px;
+    }
+
+    .header-v2__nav-scroll,
+    .header__nav-scroll {
+        padding: 2px 8px;
+    }
+
+    .header-v2__nav-item,
+    .header__nav-item {
+        padding: 6px 8px;
+        font-size: 11px;
+    }
+}
+
+/* ============================================================================
+   GRID DE PRODUTOS RESPONSIVO
+   ============================================================================ */
+
+/* Desktop grande */
+.products-grid,
+.omProducts {
+    display: grid;
+    gap: 16px;
+    grid-template-columns: repeat(6, 1fr);
+}
+
+@media (max-width: 1280px) {
+    .products-grid,
+    .omProducts {
+        grid-template-columns: repeat(5, 1fr);
+    }
+}
+
+@media (max-width: 1024px) {
+    .products-grid,
+    .omProducts {
+        grid-template-columns: repeat(4, 1fr);
+        gap: 14px;
+    }
+}
+
+@media (max-width: 768px) {
+    .products-grid,
+    .omProducts {
+        grid-template-columns: repeat(3, 1fr);
+        gap: 12px;
+    }
+}
+
+@media (max-width: 640px) {
+    .products-grid,
+    .omProducts {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+    }
+}
+
+@media (max-width: 375px) {
+    .products-grid,
+    .omProducts {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 8px;
+    }
+}
+
+@media (max-width: 320px) {
+    .products-grid,
+    .omProducts {
+        grid-template-columns: 1fr;
+        gap: 10px;
+    }
+}
+
+/* ============================================================================
+   CARDS DE PRODUTO RESPONSIVOS
+   ============================================================================ */
+
+@media (max-width: 768px) {
+    .product-card,
+    .omProdCard {
+        border-radius: 12px;
+    }
+
+    .product-card__image,
+    .omProdImage {
+        height: 140px;
+        padding: 12px;
+    }
+
+    .product-card__info,
+    .omProdInfo {
+        padding: 10px;
+    }
+
+    .product-card__name,
+    .omProdName {
+        font-size: 13px;
+        min-height: 36px;
+        line-height: 1.3;
+        -webkit-line-clamp: 2;
+    }
+
+    .product-card__brand,
+    .omProdBrand {
+        font-size: 11px;
+        margin-bottom: 4px;
+    }
+
+    .product-card__unit,
+    .omProdWeight {
+        font-size: 11px;
+    }
+
+    .product-card__footer {
+        gap: 6px;
+    }
+
+    .product-card__add-btn,
+    .omBtnAdd {
+        width: 44px;
+        height: 44px;
+        min-width: 44px;
+        border-radius: 10px;
+    }
+
+    .product-card__add-btn svg {
+        width: 20px;
+        height: 20px;
+    }
+}
+
+@media (max-width: 414px) {
+    .product-card__image,
+    .omProdImage {
+        height: 120px;
+        padding: 10px;
+    }
+
+    .product-card__info,
+    .omProdInfo {
+        padding: 8px;
+    }
+
+    .product-card__name,
+    .omProdName {
+        font-size: 12px;
+        min-height: 32px;
+    }
+
+    .product-card__price,
+    .omProdPrice {
+        font-size: 15px;
+    }
+
+    .product-card__price-old,
+    .omProdPriceOld {
+        font-size: 10px;
+    }
+}
+
+@media (max-width: 375px) {
+    .product-card__image,
+    .omProdImage {
+        height: 110px;
+    }
+
+    .product-card__info,
+    .omProdInfo {
+        padding: 6px;
+    }
+
+    .product-card__name,
+    .omProdName {
+        font-size: 11px;
+        min-height: 28px;
+    }
+
+    .product-card__price,
+    .omProdPrice {
+        font-size: 14px;
+    }
+
+    .product-card__add-btn,
+    .omBtnAdd {
+        width: 40px;
+        height: 40px;
+    }
+}
+
+/* ============================================================================
+   CATEGORIAS RESPONSIVAS
+   ============================================================================ */
+
+.categories-grid {
+    display: grid;
+    gap: 12px;
+}
+
+@media (max-width: 1024px) {
+    .categories-grid {
+        grid-template-columns: repeat(6, 1fr);
+    }
+}
+
+@media (max-width: 768px) {
+    .categories-grid {
+        grid-template-columns: repeat(4, 1fr);
+        gap: 10px;
+    }
+
+    .category-card {
+        aspect-ratio: 1;
+        border-radius: 12px;
+    }
+
+    .category-card__content {
+        padding: 10px;
+    }
+
+    .category-card__icon {
+        font-size: 24px;
+        margin-bottom: 4px;
+    }
+
+    .category-card__name {
+        font-size: 12px;
+    }
+
+    .category-card__count {
+        font-size: 10px;
+    }
+}
+
+@media (max-width: 480px) {
+    .categories-grid {
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+    }
+
+    .category-card__icon {
+        font-size: 22px;
+    }
+
+    .category-card__name {
+        font-size: 11px;
+    }
+}
+
+@media (max-width: 375px) {
+    .categories-grid {
+        grid-template-columns: repeat(3, 1fr);
+    }
+
+    .category-card__content {
+        padding: 8px;
+    }
+
+    .category-card__icon {
+        font-size: 20px;
+    }
+
+    .category-card__name {
+        font-size: 10px;
+    }
+}
+
+/* Scroll horizontal de categorias (alternativa) */
+.omCategories,
+.categories-scroll {
+    display: flex;
+    gap: 12px;
+    overflow-x: auto;
+    padding: 8px 4px 12px;
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
+}
+
+.omCategories::-webkit-scrollbar,
+.categories-scroll::-webkit-scrollbar {
+    display: none;
+}
+
+@media (max-width: 768px) {
+    .omCatCard {
+        flex-shrink: 0;
+        scroll-snap-align: start;
+    }
+
+    .omCatIcon {
+        width: 64px;
+        height: 64px;
+        font-size: 28px;
+    }
+
+    .omCatName {
+        font-size: 11px;
+        max-width: 64px;
+    }
+}
+
+@media (max-width: 414px) {
+    .omCatIcon {
+        width: 56px;
+        height: 56px;
+        font-size: 24px;
+    }
+
+    .omCatName {
+        font-size: 10px;
+        max-width: 56px;
+    }
+}
+
+/* ============================================================================
+   CARRINHO SIDEBAR RESPONSIVO
+   ============================================================================ */
+
+@media (max-width: 768px) {
+    .cart-sidebar,
+    .ic-cart-sidebar {
+        width: 100%;
+        max-width: 100%;
+        border-radius: 0;
+    }
+
+    .cart-sidebar__header,
+    .ic-cart-header {
+        padding: 16px;
+        position: sticky;
+        top: 0;
+        background: white;
+        z-index: 10;
+    }
+
+    .cart-sidebar__title {
+        font-size: 18px;
+    }
+
+    .cart-sidebar__body,
+    .ic-cart-items {
+        padding: 12px;
+    }
+
+    .cart-item,
+    .ic-cart-item {
+        padding: 12px;
+        gap: 10px;
+    }
+
+    .cart-item__image,
+    .ic-cart-item-img {
+        width: 60px;
+        height: 60px;
+    }
+
+    .cart-item__name,
+    .ic-cart-item-name {
+        font-size: 14px;
+    }
+
+    .cart-item__price,
+    .ic-cart-item-price {
+        font-size: 16px;
+    }
+
+    .cart-item__qty-btn,
+    .cart-sidebar__footer {
+        padding: 16px;
+        padding-bottom: calc(16px + env(safe-area-inset-bottom));
+    }
+
+    .cart-sidebar__checkout,
+    .ic-checkout-btn {
+        padding: 16px;
+        font-size: 16px;
+        border-radius: 14px;
+        min-height: 52px;
+    }
+}
+
+@media (max-width: 414px) {
+    .cart-sidebar__header,
+    .ic-cart-header {
+        padding: 14px 12px;
+    }
+
+    .cart-sidebar__body,
+    .ic-cart-items {
+        padding: 10px;
+    }
+
+    .cart-item,
+    .ic-cart-item {
+        padding: 10px;
+    }
+
+    .cart-item__image,
+    .ic-cart-item-img {
+        width: 56px;
+        height: 56px;
+    }
+
+    .cart-item__qty-btn {
+        width: 36px;
+        height: 36px;
+    }
+}
+
+/* ============================================================================
+   MODAL DE PRODUTO RESPONSIVO
+   ============================================================================ */
+
+@media (max-width: 900px) {
+    .ic-product-modal,
+    .product-modal {
+        width: 100%;
+        max-width: 100%;
+        height: 100%;
+        max-height: 100%;
+        border-radius: 0;
+        top: 0;
+        left: 0;
+        transform: none;
+    }
+
+    .ic-product-modal.open,
+    .product-modal.open {
+        transform: none;
+    }
+
+    .ic-modal-content {
+        grid-template-columns: 1fr;
+    }
+
+    .ic-modal-right {
+        border-left: none;
+        border-top: 1px solid #e8e9eb;
+    }
+}
+
+@media (max-width: 480px) {
+    .ic-modal-header,
+    .product-modal__header {
+        padding: 12px 16px;
+    }
+
+    .ic-modal-close {
+        width: 44px;
+        height: 44px;
+    }
+
+    .ic-modal-left,
+    .ic-modal-right {
+        padding: 16px;
+    }
+
+    .ic-product-image {
+        max-height: 200px;
+    }
+
+    .ic-product-name {
+        font-size: 18px;
+    }
+
+    .ic-product-price {
+        font-size: 24px;
+    }
+
+    .ic-add-btn {
+        padding: 16px;
+        font-size: 15px;
+        min-height: 52px;
+    }
+
+    .ic-qty-controls {
+        padding: 6px;
+    }
+
+    .ic-qty-btn {
+        width: 48px;
+        height: 48px;
+        font-size: 22px;
+    }
+
+    .ic-related-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+    }
+}
+
+/* ============================================================================
+   BANNER E HERO RESPONSIVOS
+   ============================================================================ */
+
+@media (max-width: 1024px) {
+    .hero {
+        grid-template-columns: 1fr;
+    }
+
+    .hero__cards {
+        display: none;
+    }
+}
+
+@media (max-width: 768px) {
+    .hero__main,
+    .omBanner {
+        padding: 24px 20px;
+        min-height: 200px;
+        border-radius: 16px;
+    }
+
+    .hero__title,
+    .omBannerTitle {
+        font-size: 22px;
+        margin-bottom: 8px;
+    }
+
+    .hero__subtitle,
+    .omBannerText {
+        font-size: 14px;
+    }
+
+    .hero__badge,
+    .omBannerBadge {
+        font-size: 12px;
+        padding: 6px 12px;
+    }
+
+    .hero__cta {
+        padding: 14px 24px;
+        font-size: 14px;
+    }
+}
+
+@media (max-width: 480px) {
+    .hero__main,
+    .omBanner {
+        padding: 20px 16px;
+        min-height: 180px;
+        border-radius: 14px;
+    }
+
+    .hero__title,
+    .omBannerTitle {
+        font-size: 20px;
+    }
+
+    .hero__subtitle,
+    .omBannerText {
+        font-size: 13px;
+    }
+}
+
+@media (max-width: 375px) {
+    .hero__main,
+    .omBanner {
+        padding: 16px 14px;
+        border-radius: 12px;
+    }
+
+    .hero__title,
+    .omBannerTitle {
+        font-size: 18px;
+    }
+}
+
+/* ============================================================================
+   SECAO DE OFERTAS RELAMPAGO RESPONSIVA
+   ============================================================================ */
+
+@media (max-width: 768px) {
+    .flash-section {
+        padding: 20px 16px;
+        border-radius: 16px;
+        margin: 0 -4px;
+    }
+
+    .flash-header {
+        flex-direction: column;
+        text-align: center;
+        gap: 16px;
+        margin-bottom: 20px;
+    }
+
+    .flash-title {
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .flash-icon {
+        font-size: 40px;
+    }
+
+    .flash-text h2 {
+        font-size: 20px;
+    }
+
+    .flash-text p {
+        font-size: 13px;
+    }
+
+    /* Timer */
+    .timer {
+        padding: 10px 14px;
+    }
+
+    .timer__label {
+        display: none;
+    }
+
+    .timer__block {
+        min-width: 40px;
+        padding: 6px 8px;
+    }
+
+    .timer__value {
+        font-size: 18px;
+    }
+
+    .timer__unit {
+        font-size: 8px;
+    }
+
+    /* Cards de oferta */
+    .flash-scroll {
+        gap: 12px;
+        padding: 8px 0;
+    }
+
+    .flash-card {
+        width: 150px;
+        border-radius: 14px;
+    }
+
+    .flash-card__image {
+        height: 120px;
+        padding: 12px;
+    }
+
+    .flash-card__info {
+        padding: 10px;
+    }
+
+    .flash-card__name {
+        font-size: 13px;
+        min-height: 34px;
+    }
+
+    .flash-card__price {
+        font-size: 16px;
+    }
+}
+
+@media (max-width: 414px) {
+    .flash-section {
+        padding: 16px 12px;
+        border-radius: 14px;
+    }
+
+    .flash-icon {
+        font-size: 36px;
+    }
+
+    .flash-text h2 {
+        font-size: 18px;
+    }
+
+    .flash-card {
+        width: 140px;
+    }
+
+    .flash-card__image {
+        height: 100px;
+    }
+}
+
+@media (max-width: 375px) {
+    .flash-card {
+        width: 130px;
+    }
+
+    .flash-card__image {
+        height: 90px;
+    }
+
+    .flash-card__name {
+        font-size: 12px;
+    }
+
+    .flash-card__price {
+        font-size: 15px;
+    }
+}
+
+/* ============================================================================
+   RECOMENDACOES AI RESPONSIVAS
+   ============================================================================ */
+
+@media (max-width: 768px) {
+    .ai-section {
+        padding: 20px 0;
+    }
+
+    .ai-section__header {
+        padding: 0 16px;
+        margin-bottom: 14px;
+    }
+
+    .ai-section__icon {
+        font-size: 24px;
+    }
+
+    .ai-section__title h2 {
+        font-size: 16px;
+    }
+
+    .ai-section__title p {
+        font-size: 12px;
+    }
+
+    .ai-scroll {
+        padding: 0 16px;
+        gap: 10px;
+    }
+
+    .ai-card {
+        flex: 0 0 140px;
+    }
+
+    .ai-card__image {
+        height: 100px;
+    }
+
+    .ai-card__info {
+        padding: 10px;
+    }
+
+    .ai-card__name {
+        font-size: 12px;
+        height: 30px;
+    }
+
+    .ai-card__price {
+        font-size: 14px;
+    }
+
+    .ai-card__add {
+        padding: 10px;
+        min-height: 44px;
+        font-size: 12px;
+    }
+}
+
+@media (max-width: 414px) {
+    .ai-section__header {
+        padding: 0 12px;
+    }
+
+    .ai-scroll {
+        padding: 0 12px;
+        gap: 8px;
+    }
+
+    .ai-card {
+        flex: 0 0 130px;
+    }
+
+    .ai-card__image {
+        height: 90px;
+    }
+}
+
+@media (max-width: 375px) {
+    .ai-card {
+        flex: 0 0 120px;
+    }
+
+    .ai-card__image {
+        height: 80px;
+    }
+
+    .ai-card__info {
+        padding: 8px;
+    }
+
+    .ai-card__name {
+        font-size: 11px;
+        height: 28px;
+    }
+}
+
+/* ============================================================================
+   NAVEGACAO MOBILE (BOTTOM BAR)
+   ============================================================================ */
+
+@media (max-width: 767px) {
+    .mobile-nav {
+        display: flex;
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background: white;
+        border-top: 1px solid #e5e7eb;
+        padding: 8px 16px;
+        padding-bottom: calc(8px + env(safe-area-inset-bottom));
+        z-index: 1000;
+        box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.06);
+    }
+
+    .mobile-nav__inner {
+        display: flex;
+        justify-content: space-around;
+        width: 100%;
+    }
+
+    .mobile-nav__item {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+        padding: 8px 12px;
+        min-width: 60px;
+        min-height: 44px;
+        color: #6b7280;
+        text-decoration: none;
+        position: relative;
+        border-radius: 8px;
+        transition: all 0.2s;
+    }
+
+    .mobile-nav__item.active {
+        color: #10b981;
+    }
+
+    .mobile-nav__item:active {
+        background: #f3f4f6;
+    }
+
+    .mobile-nav__item svg {
+        width: 24px;
+        height: 24px;
+    }
+
+    .mobile-nav__label {
+        font-size: 10px;
+        font-weight: 600;
+    }
+
+    .mobile-nav__badge {
+        position: absolute;
+        top: 2px;
+        right: 50%;
+        transform: translateX(14px);
+        min-width: 18px;
+        height: 18px;
+        background: #10b981;
+        color: white;
+        font-size: 10px;
+        font-weight: 700;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    /* Espacamento para conteudo nao ficar atras da nav */
+    .main,
+    .omContent,
+    main,
+    [role="main"] {
+        padding-bottom: calc(80px + env(safe-area-inset-bottom)) !important;
+    }
+}
+
+/* ============================================================================
+   FOOTER RESPONSIVO
+   ============================================================================ */
+
+@media (max-width: 768px) {
+    .omFooter,
+    .footer {
+        padding: 32px 16px 24px;
+    }
+
+    .omFooterGrid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 24px;
+    }
+
+    .omFooterLogo {
+        font-size: 20px;
+    }
+
+    .omFooterDesc {
+        font-size: 13px;
+    }
+
+    .omFooterCol h4 {
+        font-size: 13px;
+        margin-bottom: 16px;
+    }
+
+    .omFooterCol a {
+        font-size: 13px;
+        padding: 8px 0;
+        display: block;
+        min-height: 44px;
+        display: flex;
+        align-items: center;
+    }
+
+    .omFooterBottom {
+        flex-direction: column;
+        gap: 16px;
+        text-align: center;
+        padding-top: 20px;
+    }
+
+    .omFooterPayments {
+        flex-wrap: wrap;
+        justify-content: center;
+    }
+
+    .omFooterPayments span {
+        padding: 6px 10px;
+        font-size: 11px;
+    }
+}
+
+@media (max-width: 480px) {
+    .omFooterGrid {
+        grid-template-columns: 1fr;
+        gap: 20px;
+    }
+
+    .omFooterBrand {
+        text-align: center;
+    }
+
+    .omFooterSocial {
+        justify-content: center;
+    }
+}
+
+/* ============================================================================
+   CART FLOAT (BOTAO FLUTUANTE DO CARRINHO)
+   ============================================================================ */
+
+@media (max-width: 768px) {
+    .omCartFloat,
+    .cart-float {
+        bottom: calc(80px + env(safe-area-inset-bottom));
+        left: 12px;
+        right: 12px;
+        padding: 14px 18px;
+        border-radius: 18px;
+    }
+
+    .omCartFloatCount {
+        width: 36px;
+        height: 36px;
+        font-size: 14px;
+    }
+
+    .omCartFloatLabel {
+        font-size: 13px;
+    }
+
+    .omCartFloatTotal {
+        font-size: 20px;
+    }
+
+    /* Botao flutuante estilo Instacart */
+    .ic-float-btn {
+        bottom: calc(80px + env(safe-area-inset-bottom));
+    }
+}
+
+@media (max-width: 414px) {
+    .omCartFloat,
+    .cart-float {
+        left: 10px;
+        right: 10px;
+        padding: 12px 16px;
+    }
+
+    .omCartFloatTotal {
+        font-size: 18px;
+    }
+}
+
+/* ============================================================================
+   TOAST RESPONSIVO
+   ============================================================================ */
+
+@media (max-width: 768px) {
+    .toast,
+    .omToast {
+        bottom: calc(90px + env(safe-area-inset-bottom));
+        left: 16px;
+        right: 16px;
+        transform: translateX(0);
+        max-width: none;
+        width: auto;
+        padding: 14px 20px;
+        font-size: 14px;
+        border-radius: 14px;
+    }
+
+    .toast.show,
+    .omToast.show {
+        transform: translateX(0) translateY(0);
+    }
+}
+
+/* ============================================================================
+   ESPACAMENTOS E MARGENS RESPONSIVAS
+   ============================================================================ */
+
+@media (max-width: 768px) {
+    .container {
+        padding: 0 16px;
+    }
+
+    .section,
+    .omSection {
+        margin-bottom: 24px;
+    }
+
+    .section__header,
+    .omSectionHeader {
+        margin-bottom: 14px;
+    }
+
+    .main,
+    .omContent {
+        padding-top: 16px;
+    }
+}
+
+@media (max-width: 480px) {
+    .container {
+        padding: 0 12px;
+    }
+
+    .section,
+    .omSection {
+        margin-bottom: 20px;
+    }
+
+    .section__header,
+    .omSectionHeader {
+        margin-bottom: 12px;
+    }
+}
+
+@media (max-width: 375px) {
+    .container {
+        padding: 0 10px;
+    }
+}
+
+/* ============================================================================
+   FORMULARIOS RESPONSIVOS
+   ============================================================================ */
+
+@media (max-width: 768px) {
+    .form-group,
+    .om-form-group {
+        margin-bottom: 16px;
+    }
+
+    .form-label,
+    .om-label {
+        font-size: 14px;
+        margin-bottom: 8px;
+    }
+
+    .form-control,
+    .om-input,
+    input[type="text"],
+    input[type="email"],
+    input[type="password"],
+    input[type="tel"],
+    input[type="number"],
+    select,
+    textarea {
+        padding: 14px 16px;
+        font-size: 16px !important; /* Previne zoom no iOS */
+        border-radius: 12px;
+        min-height: 52px;
+    }
+
+    textarea {
+        min-height: 100px;
+    }
+
+    .btn,
+    .om-btn {
+        padding: 14px 24px;
+        font-size: 15px;
+        min-height: 48px;
+        border-radius: 12px;
+    }
+
+    .btn-block,
+    .om-btn-full {
+        width: 100%;
+    }
+}
+
+/* ============================================================================
+   TABELAS RESPONSIVAS
+   ============================================================================ */
+
+@media (max-width: 768px) {
+    .table-responsive {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .table {
+        min-width: 600px;
+    }
+
+    .table th,
+    .table td {
+        padding: 10px 12px;
+        font-size: 13px;
+    }
+}
+
+/* ============================================================================
+   BREADCRUMB RESPONSIVO
+   ============================================================================ */
+
+@media (max-width: 768px) {
+    .omBreadcrumb,
+    .breadcrumb {
+        padding: 10px 16px;
+        font-size: 12px;
+        overflow-x: auto;
+        white-space: nowrap;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .omBreadcrumb::-webkit-scrollbar,
+    .breadcrumb::-webkit-scrollbar {
+        display: none;
+    }
+
+    .omBreadcrumb .sep {
+        margin: 0 6px;
+    }
+}
+
+/* ============================================================================
+   PAGINACAO RESPONSIVA
+   ============================================================================ */
+
+@media (max-width: 768px) {
+    .pagination {
+        flex-wrap: wrap;
+        gap: 8px;
+        justify-content: center;
+    }
+
+    .pagination a,
+    .pagination span,
+    .pagination button {
+        min-width: 44px;
+        min-height: 44px;
+        padding: 10px 14px;
+        font-size: 14px;
+    }
+}
+
+/* ============================================================================
+   EMPTY STATE RESPONSIVO
+   ============================================================================ */
+
+@media (max-width: 768px) {
+    .empty-state,
+    .omEmpty,
+    .cart-sidebar__empty {
+        padding: 40px 20px;
+    }
+
+    .empty-state svg,
+    .omEmpty .icon,
+    .cart-sidebar__empty-icon {
+        font-size: 56px;
+        margin-bottom: 16px;
+    }
+
+    .empty-state h3,
+    .omEmpty h3,
+    .cart-sidebar__empty h3 {
+        font-size: 18px;
+        margin-bottom: 8px;
+    }
+
+    .empty-state p,
+    .omEmpty p {
+        font-size: 14px;
+        margin-bottom: 20px;
+    }
+}
+
+/* ============================================================================
+   ANIMACOES OTIMIZADAS PARA MOBILE
+   ============================================================================ */
+
+@media (max-width: 768px) {
+    /* Reduz animacoes para melhor performance */
+    .product-card:hover,
+    .flash-card:hover,
+    .ai-card:hover,
+    .category-card:hover,
+    .hero__card:hover {
+        transform: translateY(-4px);
+    }
+
+    /* Desativa algumas animacoes em dispositivos lentos */
+    @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+            animation-duration: 0.01ms !important;
+            animation-iteration-count: 1 !important;
+            transition-duration: 0.01ms !important;
+        }
+    }
+}
+
+/* ============================================================================
+   UTILITARIOS RESPONSIVOS
+   ============================================================================ */
+
+/* Esconde em mobile */
+@media (max-width: 767px) {
+    .hide-mobile,
+    .desktop-only {
+        display: none !important;
+    }
+}
+
+/* Esconde em tablet */
+@media (min-width: 768px) and (max-width: 1023px) {
+    .hide-tablet {
+        display: none !important;
+    }
+}
+
+/* Esconde em desktop */
+@media (min-width: 1024px) {
+    .hide-desktop,
+    .mobile-only {
+        display: none !important;
+    }
+}
+
+/* Texto truncado */
+.text-truncate {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Line clamp */
+.line-clamp-1 {
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.line-clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.line-clamp-3 {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+/* Safe area padding (notch do iPhone) */
+.safe-area-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+}
+
+.safe-area-top {
+    padding-top: env(safe-area-inset-top);
+}
+
+/* ============================================================================
+   FIXES ESPECIFICOS PARA DISPOSITIVOS
+   ============================================================================ */
+
+/* iPhone SE (320px) */
+@media (max-width: 320px) {
+    body {
+        font-size: 14px;
+    }
+
+    .container {
+        padding: 0 8px;
+    }
+
+    h1 { font-size: 20px !important; }
+    h2 { font-size: 18px !important; }
+    h3 { font-size: 16px !important; }
+
+    .btn,
+    .om-btn {
+        padding: 12px 16px;
+        font-size: 14px;
+    }
+}
+
+/* Landscape mode em mobile */
+@media (max-height: 500px) and (orientation: landscape) {
+    .header-v2,
+    .header {
+        position: relative;
+    }
+
+    .mobile-nav {
+        position: relative;
+    }
+
+    .omCartFloat,
+    .cart-float {
+        display: none;
+    }
+}
+
+/* Retina/High DPI displays */
+@media (-webkit-min-device-pixel-ratio: 2),
+       (min-resolution: 192dpi) {
+    /* Bordas mais finas em displays retina */
+    .product-card,
+    .card,
+    .om-card {
+        border-width: 0.5px;
+    }
+}

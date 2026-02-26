@@ -1,0 +1,56 @@
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Backup files
+*.bkp
+*.bkp_*
+*bkp*
+*.bak
+*.bak.*
+
+# Legacy mercado files with hardcoded keys
+mercado/one_*
+mercado/ONE_*
+mercado/one.php.*
+mercado/config/config.php
+mercado/buscador_ean*.py
+mercado/enriquecedor*.py
+mercado/cron_central_ia.php
+mercado/mercado_detalhes.php
+
+# Storage & uploads
+storage/uploads/
+storage/logs/
+logs/
+cache/
+
+# Dependencies
+vendor/
+node_modules/
+/.pnp
+.pnp.js
+
+# Production
+/dist
+/build
+
+# Testing
+/coverage
+
+# Misc
+.DS_Store
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude
+.claude/

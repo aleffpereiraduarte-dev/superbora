@@ -1,0 +1,80 @@
+{{ header }}
+
+{# CSS customizado da página #}
+{{ custom_css }}
+
+<div id="page-builder-content" class="pb-page">
+    {{ content }}
+</div>
+
+{# Scripts do Page Builder #}
+<script>
+// Newsletter Subscription
+function subscribeNewsletter(form) {
+    const email = form.querySelector('input[name="email"]').value;
+    
+    fetch('/index.php?route=mercado/page/subscribe', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email: email })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert('Inscrição realizada com sucesso!');
+            form.reset();
+        } else {
+            alert(data.error || 'Erro ao realizar inscrição');
+        }
+    })
+    .catch(error => {
+        alert('Erro ao realizar inscrição');
+    });
+    
+    return false;
+}
+
+// Intersection Observer para animações
+document.addEventListener('DOMContentLoaded', function() {
+    const observerOptions = {
+        threshold: 0.1,
+        rootMargin: '0px 0px -50px 0px'
+    };
+    
+    const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                entry.target.classList.add('pb-animate-slide-up');
+                observer.unobserve(entry.target);
+            }
+        });
+    }, observerOptions);
+    
+    document.querySelectorAll('.pb-section').forEach(section => {
+        observer.observe(section);
+    });
+});
+
+// Lazy loading de imagens
+document.addEventListener('DOMContentLoaded', function() {
+    const lazyImages = document.querySelectorAll('img[loading="lazy"]');
+    
+    if ('IntersectionObserver' in window) {
+        const imageObserver = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    const img = entry.target;
+                    img.src = img.dataset.src || img.src;
+                    imageObserver.unobserve(img);
+                }
+            });
+        });
+        
+        lazyImages.forEach(img => imageObserver.observe(img));
+    }
+});
+</script>
+
+{{ footer }}

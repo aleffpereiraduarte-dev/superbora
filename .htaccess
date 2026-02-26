@@ -1,0 +1,118 @@
+# ═══════════════════════════════════════════════════════════════
+# ONEMUNDO SECURITY HEADERS
+# ═══════════════════════════════════════════════════════════════
+
+# Esconder Deprecated warnings
+php_value error_reporting 22527
+php_flag display_errors off
+
+# Security Headers
+<IfModule mod_headers.c>
+    # Previne XSS
+    Header set X-XSS-Protection "1; mode=block"
+
+    # Previne Clickjacking
+    Header always set X-Frame-Options "SAMEORIGIN"
+
+    # Previne MIME Type Sniffing
+    Header set X-Content-Type-Options "nosniff"
+
+    # Referrer Policy
+    Header set Referrer-Policy "strict-origin-when-cross-origin"
+
+    # Permissions Policy
+    Header set Permissions-Policy "camera=(), microphone=(self), geolocation=(self)"
+
+    # Remove server signature
+    Header unset Server
+    Header unset X-Powered-By
+
+    # Strict Transport Security (HTTPS)
+    Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+
+    # Content Security Policy
+    Header set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://www.google.com https://www.gstatic.com https://www.googletagmanager.com https://connect.facebook.net https://www.facebook.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https: blob:; connect-src 'self' https://api.groq.com https://api.openai.com https://api.elevenlabs.io https://viacep.com.br https://*.google-analytics.com; frame-src 'self' https://www.google.com https://www.youtube.com https://www.facebook.com;"
+</IfModule>
+
+# Esconder arquivos sensiveis
+<FilesMatch "^(config\.php|admin/config\.php|\.env|composer\.json|composer\.lock|package\.json)$">
+    Require all denied
+</FilesMatch>
+
+# Bloquear acesso a diretorios sensiveis
+<DirectoryMatch "/(system|storage|vendor|\.git|\.svn|_manutencao)/">
+    Require all denied
+</DirectoryMatch>
+
+# Bloquear arquivos de backup e debug
+<FilesMatch "\.(bak|backup|old|tmp|swp|sql|zip|tar|gz)$">
+    Require all denied
+</FilesMatch>
+
+# Bloquear acesso a arquivos ocultos
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
+
+Options +FollowSymlinks
+Options -Indexes
+
+<FilesMatch "(?i)((\.tpl|\.twig|\.ini|\.log|(?<!robots)\.txt))">
+ Require all denied
+</FilesMatch>
+
+RewriteEngine On
+RewriteBase /
+
+# ═══════════════════════════════════════════════════════════════
+# BLOQUEAR DIRETÓRIOS SENSÍVEIS
+# ═══════════════════════════════════════════════════════════════
+RewriteRule ^system/(.*)$ - [F,L]
+RewriteRule ^storage/(.*)$ - [F,L]
+RewriteRule ^vendor/(.*)$ - [F,L]
+RewriteRule ^\.git/(.*)$ - [F,L]
+
+# IMPORTANTE: Força a raiz ir pro index.php
+RewriteRule ^$ index.php [L]
+
+# SEO URLs do OpenCart
+RewriteRule ^sitemap.xml$ index.php?route=extension/feed/google_sitemap [L]
+RewriteRule ^googlebase.xml$ index.php?route=extension/feed/google_base [L]
+RewriteRule ^system/storage/(.*) index.php?route=error/not_found [L]
+
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteCond %{REQUEST_URI} !.*\.(ico|gif|jpg|jpeg|png|webp|js|css|svg)
+RewriteRule ^([^?]*) index.php?_route_=$1 [L,QSA]
+# CLOUDFLARE CACHE
+<IfModule mod_headers.c>
+    <FilesMatch "\.(jpg|jpeg|png|gif|webp|ico|css|js|woff2|svg)$">
+        Header set Cache-Control "public, max-age=31536000"
+    </FilesMatch>
+</IfModule>
+
+# ═══════════════════════════════════════════════════════════════
+# PROTEGER ARQUIVOS SENSÍVEIS (Apache 2.4+)
+# ═══════════════════════════════════════════════════════════════
+
+# Bloquear config.php em qualquer diretório
+<Files "config.php">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</Files>
+
+# Bloquear composer.json e outros
+<FilesMatch "^(composer\.(json|lock)|package(-lock)?\.json|\.env.*|error_log.*|\.htaccess|\.htpasswd)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>

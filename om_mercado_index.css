@@ -1,0 +1,255 @@
+/**
+ * OneMundo - Mercado no Index
+ * Estilos para a seção de produtos do mercado integrada no index
+ */
+
+.om-mercado-section {
+    padding: 24px 16px;
+    background: linear-gradient(135deg, #fff8f5 0%, #ffffff 100%);
+    border-top: 1px solid #fee5d9;
+    border-bottom: 1px solid #fee5d9;
+    margin: 24px 0;
+}
+
+.om-mercado-container {
+    max-width: 1400px;
+    margin: 0 auto;
+}
+
+.om-mercado-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.om-mercado-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 20px;
+    font-weight: 700;
+    color: #131921;
+}
+
+.om-mercado-title svg {
+    width: 24px;
+    height: 24px;
+    color: #FF6A00;
+}
+
+.om-mercado-badge {
+    background: #FF6A00;
+    color: white;
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.om-mercado-products {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 16px;
+}
+
+.om-mercado-product {
+    background: white;
+    border-radius: 12px;
+    overflow: hidden;
+    text-decoration: none;
+    color: inherit;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    transition: all 0.2s ease;
+    display: flex;
+    flex-direction: column;
+}
+
+.om-mercado-product:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+}
+
+.om-mercado-product-img {
+    position: relative;
+    aspect-ratio: 1;
+    background: #f8f8f8;
+    overflow: hidden;
+}
+
+.om-mercado-product-img img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    padding: 12px;
+    transition: transform 0.3s ease;
+}
+
+.om-mercado-product:hover .om-mercado-product-img img {
+    transform: scale(1.05);
+}
+
+.om-mercado-discount {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    background: #e53935;
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.om-mercado-product-info {
+    padding: 12px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+
+.om-mercado-product-info h4 {
+    font-size: 13px;
+    font-weight: 500;
+    color: #333;
+    margin: 0 0 8px;
+    line-height: 1.3;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    min-height: 34px;
+}
+
+.om-mercado-product-price {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-bottom: 8px;
+}
+
+.om-mercado-old-price {
+    font-size: 11px;
+    color: #999;
+    text-decoration: line-through;
+}
+
+.om-mercado-current-price {
+    font-size: 16px;
+    font-weight: 700;
+    color: #067D3E;
+}
+
+.om-mercado-seller {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 11px;
+    color: #666;
+    padding-top: 8px;
+    border-top: 1px solid #eee;
+    margin-top: auto;
+}
+
+.om-mercado-seller span:first-child {
+    font-weight: 500;
+    max-width: 60%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.om-mercado-delivery {
+    color: #FF6A00;
+    font-weight: 600;
+}
+
+/* Mobile */
+@media (max-width: 767px) {
+    .om-mercado-section {
+        padding: 16px 12px;
+        margin: 16px 0;
+    }
+
+    .om-mercado-title {
+        font-size: 16px;
+    }
+
+    .om-mercado-title svg {
+        width: 20px;
+        height: 20px;
+    }
+
+    .om-mercado-badge {
+        font-size: 11px;
+        padding: 4px 10px;
+    }
+
+    .om-mercado-products {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 12px;
+    }
+
+    .om-mercado-product-info {
+        padding: 10px;
+    }
+
+    .om-mercado-product-info h4 {
+        font-size: 12px;
+        min-height: 32px;
+    }
+
+    .om-mercado-current-price {
+        font-size: 14px;
+    }
+}
+
+/* Tablet */
+@media (min-width: 768px) and (max-width: 1024px) {
+    .om-mercado-products {
+        grid-template-columns: repeat(4, 1fr);
+    }
+}
+
+/* Desktop grande */
+@media (min-width: 1200px) {
+    .om-mercado-products {
+        grid-template-columns: repeat(6, 1fr);
+    }
+}
+
+/* Animacao de entrada */
+@keyframes omMercadoFadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.om-mercado-section {
+    animation: omMercadoFadeIn 0.5s ease;
+}
+
+.om-mercado-product {
+    animation: omMercadoFadeIn 0.4s ease;
+    animation-fill-mode: both;
+}
+
+.om-mercado-product:nth-child(1) { animation-delay: 0.05s; }
+.om-mercado-product:nth-child(2) { animation-delay: 0.1s; }
+.om-mercado-product:nth-child(3) { animation-delay: 0.15s; }
+.om-mercado-product:nth-child(4) { animation-delay: 0.2s; }
+.om-mercado-product:nth-child(5) { animation-delay: 0.25s; }
+.om-mercado-product:nth-child(6) { animation-delay: 0.3s; }
+.om-mercado-product:nth-child(7) { animation-delay: 0.35s; }
+.om-mercado-product:nth-child(8) { animation-delay: 0.4s; }
+.om-mercado-product:nth-child(9) { animation-delay: 0.45s; }
+.om-mercado-product:nth-child(10) { animation-delay: 0.5s; }
+.om-mercado-product:nth-child(11) { animation-delay: 0.55s; }
+.om-mercado-product:nth-child(12) { animation-delay: 0.6s; }

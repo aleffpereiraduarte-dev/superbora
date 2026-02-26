@@ -1,0 +1,19 @@
+{
+    "name": "superbora/websocket-server",
+    "description": "WebSocket server for SuperBora partner notifications",
+    "type": "project",
+    "require": {
+        "php": ">=7.4",
+        "cboden/ratchet": "^0.4.4",
+        "react/event-loop": "^1.3",
+        "react/socket": "^1.12"
+    },
+    "autoload": {
+        "psr-4": {
+            "SuperBora\\WebSocket\\": "src/"
+        }
+    },
+    "scripts": {
+        "start": "php server.php"
+    }
+}

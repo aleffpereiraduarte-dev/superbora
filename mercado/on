@@ -1,0 +1,1140 @@
+<?php
+/**
+ * ╔══════════════════════════════════════════════════════════════════════════════════╗
+ * ║         🚀 MEGA INSTALADOR - ONEMUNDO MARKET COMPLETO                            ║
+ * ║              Igual iFood + DoorDash + Instacart                                  ║
+ * ╚══════════════════════════════════════════════════════════════════════════════════╝
+ */
+
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+set_time_limit(300);
+
+$conn = new mysqli('localhost', 'love1', 'hlo8LcJuND@', 'love1');
+$conn->set_charset('utf8mb4');
+
+$executar = isset($_GET['executar']);
+
+?>
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>🚀 MEGA INSTALADOR - OneMundo Market</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',Arial;background:linear-gradient(135deg,#0f172a,#1e293b);color:#e2e8f0;min-height:100vh;padding:20px}
+.container{max-width:1000px;margin:0 auto}
+h1{text-align:center;font-size:28px;margin-bottom:10px;background:linear-gradient(90deg,#f97316,#fb923c);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.subtitle{text-align:center;color:#94a3b8;margin-bottom:30px}
+.section{background:rgba(30,41,59,0.8);border-radius:16px;padding:20px;margin:20px 0;border:1px solid #334155}
+h2{color:#f97316;font-size:18px;margin-bottom:15px;display:flex;align-items:center;gap:10px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px}
+.item{background:#0f172a;padding:12px;border-radius:8px;font-size:13px}
+.item.ok{border-left:3px solid #22c55e}
+.item.new{border-left:3px solid #3b82f6}
+.item.missing{border-left:3px solid #ef4444}
+.tag{font-size:10px;padding:2px 6px;border-radius:4px;margin-left:5px}
+.tag-ok{background:#052e16;color:#22c55e}
+.tag-new{background:#172554;color:#3b82f6}
+.tag-missing{background:#450a0a;color:#ef4444}
+.btn{display:inline-block;padding:15px 40px;background:linear-gradient(90deg,#f97316,#ea580c);color:#fff;text-decoration:none;border-radius:12px;font-size:18px;font-weight:bold;border:none;cursor:pointer;margin:20px auto;display:block;text-align:center}
+.btn:hover{transform:scale(1.02)}
+.log{background:#000;padding:15px;border-radius:8px;font-family:monospace;font-size:12px;max-height:400px;overflow-y:auto}
+.log .ok{color:#22c55e}
+.log .err{color:#ef4444}
+.log .info{color:#60a5fa}
+.features{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:15px}
+.feature{background:linear-gradient(135deg,#1e293b,#334155);padding:20px;border-radius:12px;border:1px solid #475569}
+.feature h3{color:#f97316;font-size:14px;margin-bottom:8px}
+.feature p{font-size:12px;color:#94a3b8;line-height:1.5}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:15px;margin:20px 0}
+.stat{background:#0f172a;padding:20px;border-radius:12px;text-align:center}
+.stat-num{font-size:32px;font-weight:bold;color:#f97316}
+.stat-label{font-size:11px;color:#94a3b8;margin-top:5px}
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>🚀 MEGA INSTALADOR</h1>
+<p class="subtitle">OneMundo Market - Sistema Completo igual iFood + DoorDash</p>
+
+<?php if (!$executar): ?>
+
+<!-- PREVIEW DO QUE SERÁ INSTALADO -->
+<div class="section">
+<h2>📊 Diagnóstico Atual</h2>
+<?php
+// Contar tabelas existentes
+$tabelas_existentes = [];
+$r = $conn->query("SHOW TABLES LIKE 'om_market_%'");
+while ($row = $r->fetch_row()) $tabelas_existentes[] = $row[0];
+$r = $conn->query("SHOW TABLES LIKE 'om_workers%'");
+while ($row = $r->fetch_row()) $tabelas_existentes[] = $row[0];
+
+// Contar arquivos
+$arquivos_admin = count(glob(__DIR__ . '/admin/*.php'));
+$arquivos_api = count(glob(__DIR__ . '/api/*.php'));
+?>
+<div class="stats">
+<div class="stat"><div class="stat-num"><?= count($tabelas_existentes) ?></div><div class="stat-label">Tabelas Existentes</div></div>
+<div class="stat"><div class="stat-num"><?= $arquivos_admin ?></div><div class="stat-label">Arquivos Admin</div></div>
+<div class="stat"><div class="stat-num"><?= $arquivos_api ?></div><div class="stat-label">APIs</div></div>
+<div class="stat"><div class="stat-num">+50</div><div class="stat-label">Novas Features</div></div>
+</div>
+</div>
+
+<div class="section">
+<h2>✨ Funcionalidades que serão adicionadas</h2>
+<div class="features">
+
+<div class="feature">
+<h3>🛒 Pedidos Avançados</h3>
+<p>Substituição de itens, itens indisponíveis, prioridade de entrega, agendamento, pedidos recorrentes</p>
+</div>
+
+<div class="feature">
+<h3>💬 Chat em Tempo Real</h3>
+<p>Comunicação cliente↔shopper↔suporte, mensagens automáticas, envio de fotos, áudios</p>
+</div>
+
+<div class="feature">
+<h3>📍 Rastreamento GPS</h3>
+<p>Localização em tempo real do shopper, ETA dinâmico, histórico de rota, geofencing</p>
+</div>
+
+<div class="feature">
+<h3>⭐ Sistema de Avaliações</h3>
+<p>Avaliação de pedidos, shoppers, mercados, produtos, sistema de gorjetas</p>
+</div>
+
+<div class="feature">
+<h3>🎫 Cupons & Promoções</h3>
+<p>Cupons de desconto, primeira compra, frete grátis, cashback, combos, flash sales</p>
+</div>
+
+<div class="feature">
+<h3>👑 Programa de Fidelidade</h3>
+<p>Pontos por compra, níveis (Bronze→Diamante), benefícios exclusivos, missões</p>
+</div>
+
+<div class="feature">
+<h3>🔔 Notificações Push</h3>
+<p>Status do pedido, promoções, lembretes, abandono de carrinho, recompra</p>
+</div>
+
+<div class="feature">
+<h3>💳 Pagamentos Completos</h3>
+<p>PIX, cartão crédito/débito, vale-refeição, carteira digital, parcelamento</p>
+</div>
+
+<div class="feature">
+<h3>📊 Analytics & Relatórios</h3>
+<p>Dashboard executivo, relatórios de vendas, produtos, shoppers, mapas de calor</p>
+</div>
+
+<div class="feature">
+<h3>🎧 Sistema de Suporte</h3>
+<p>Tickets, FAQ, chatbot, reembolsos automáticos, SLA tracking</p>
+</div>
+
+<div class="feature">
+<h3>📦 Gestão de Estoque</h3>
+<p>Controle de disponibilidade, alertas de estoque baixo, sincronização automática</p>
+</div>
+
+<div class="feature">
+<h3>💰 Sistema de Comissões</h3>
+<p>Comissões por pedido, bônus, metas, pagamentos semanais, relatórios</p>
+</div>
+
+</div>
+</div>
+
+<div class="section">
+<h2>🗄️ Tabelas que serão criadas/atualizadas</h2>
+<div class="grid">
+<?php
+$tabelas_necessarias = [
+    'om_market_orders' => 'Pedidos',
+    'om_market_order_items' => 'Itens do Pedido',
+    'om_market_order_timeline' => 'Timeline',
+    'om_market_order_substitutions' => 'Substituições',
+    'om_market_messages' => 'Mensagens Chat',
+    'om_market_ratings' => 'Avaliações',
+    'om_market_tips' => 'Gorjetas',
+    'om_market_coupons' => 'Cupons',
+    'om_market_coupon_usage' => 'Uso de Cupons',
+    'om_market_promotions' => 'Promoções',
+    'om_market_loyalty_points' => 'Pontos Fidelidade',
+    'om_market_loyalty_transactions' => 'Transações Pontos',
+    'om_market_missions' => 'Missões/Desafios',
+    'om_market_notifications' => 'Notificações',
+    'om_market_push_tokens' => 'Tokens Push',
+    'om_market_support_tickets' => 'Tickets Suporte',
+    'om_market_refunds' => 'Reembolsos',
+    'om_market_favorites' => 'Favoritos',
+    'om_market_addresses' => 'Endereços',
+    'om_market_schedules' => 'Agendamentos',
+    'om_market_recurring_orders' => 'Pedidos Recorrentes',
+    'om_market_analytics_daily' => 'Analytics Diário',
+    'om_market_heatmap' => 'Mapa de Calor',
+    'om_market_worker_earnings' => 'Ganhos Workers',
+    'om_market_worker_bonuses' => 'Bônus Workers',
+    'om_market_worker_payouts' => 'Pagamentos Workers',
+    'om_market_inventory_alerts' => 'Alertas Estoque',
+    'om_market_ab_tests' => 'Testes A/B',
+    'om_market_search_history' => 'Histórico Busca',
+    'om_market_cart_abandonment' => 'Carrinho Abandonado',
+];
+
+foreach ($tabelas_necessarias as $tabela => $desc) {
+    $existe = in_array($tabela, $tabelas_existentes);
+    $class = $existe ? 'ok' : 'new';
+    $tag = $existe ? '<span class="tag tag-ok">✓</span>' : '<span class="tag tag-new">NOVO</span>';
+    echo "<div class='item $class'>$desc $tag<br><small style='color:#64748b'>$tabela</small></div>";
+}
+?>
+</div>
+</div>
+
+<a href="?executar=1" class="btn" onclick="return confirm('Isso vai criar todas as tabelas e funcionalidades. Continuar?')">
+🚀 INSTALAR TUDO AGORA
+</a>
+
+<?php else: ?>
+
+<!-- EXECUTANDO INSTALAÇÃO -->
+<div class="section">
+<h2>⚡ Instalando...</h2>
+<div class="log">
+<?php
+
+function log_ok($msg) { echo "<div class='ok'>✅ $msg</div>"; flush(); }
+function log_err($msg) { echo "<div class='err'>❌ $msg</div>"; flush(); }
+function log_info($msg) { echo "<div class='info'>ℹ️ $msg</div>"; flush(); }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// CRIAÇÃO DAS TABELAS
+// ══════════════════════════════════════════════════════════════════════════════
+
+log_info("Criando tabelas do banco de dados...");
+
+// 1. PEDIDOS - Atualizar com campos extras
+$conn->query("ALTER TABLE om_market_orders 
+    ADD COLUMN IF NOT EXISTS delivery_instructions TEXT,
+    ADD COLUMN IF NOT EXISTS scheduled_date DATE,
+    ADD COLUMN IF NOT EXISTS scheduled_time_start TIME,
+    ADD COLUMN IF NOT EXISTS scheduled_time_end TIME,
+    ADD COLUMN IF NOT EXISTS is_scheduled TINYINT(1) DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS priority ENUM('normal','express','priority') DEFAULT 'normal',
+    ADD COLUMN IF NOT EXISTS tip_amount DECIMAL(10,2) DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS coupon_id INT,
+    ADD COLUMN IF NOT EXISTS coupon_discount DECIMAL(10,2) DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS loyalty_points_used INT DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS loyalty_discount DECIMAL(10,2) DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS rating_given TINYINT(1) DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS refund_status VARCHAR(50),
+    ADD COLUMN IF NOT EXISTS refund_amount DECIMAL(10,2) DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS eta_minutes INT,
+    ADD COLUMN IF NOT EXISTS actual_delivery_time DATETIME,
+    ADD COLUMN IF NOT EXISTS shopping_started_at DATETIME,
+    ADD COLUMN IF NOT EXISTS shopping_completed_at DATETIME,
+    ADD COLUMN IF NOT EXISTS picked_up_at DATETIME
+");
+log_ok("Tabela om_market_orders atualizada");
+
+// 2. SUBSTITUIÇÕES DE ITENS
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_order_substitutions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    order_id INT NOT NULL,
+    item_id INT NOT NULL,
+    original_product_id INT,
+    original_product_name VARCHAR(255),
+    substitute_product_id INT,
+    substitute_product_name VARCHAR(255),
+    substitute_price DECIMAL(10,2),
+    status ENUM('pending','approved','rejected','auto_approved') DEFAULT 'pending',
+    customer_preference ENUM('contact_me','best_match','refund') DEFAULT 'contact_me',
+    shopper_note TEXT,
+    customer_response TEXT,
+    responded_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    INDEX(order_id),
+    INDEX(item_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_order_substitutions criada");
+
+// 3. MENSAGENS/CHAT
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_messages (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    order_id INT NOT NULL,
+    conversation_id VARCHAR(50),
+    sender_type ENUM('customer','shopper','admin','system','bot') DEFAULT 'system',
+    sender_id INT,
+    sender_name VARCHAR(100),
+    message_type ENUM('text','image','audio','location','product','system') DEFAULT 'text',
+    message TEXT,
+    attachment_url VARCHAR(500),
+    is_read TINYINT(1) DEFAULT 0,
+    read_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    INDEX(order_id),
+    INDEX(conversation_id),
+    INDEX(created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_messages criada");
+
+// 4. AVALIAÇÕES
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_ratings (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    order_id INT NOT NULL,
+    customer_id INT NOT NULL,
+    
+    -- Avaliação geral
+    overall_rating TINYINT,
+    overall_comment TEXT,
+    
+    -- Avaliação do Shopper
+    shopper_id INT,
+    shopper_rating TINYINT,
+    shopper_comment TEXT,
+    shopper_tags JSON,
+    
+    -- Avaliação do Mercado
+    partner_id INT,
+    partner_rating TINYINT,
+    partner_comment TEXT,
+    
+    -- Avaliação da Entrega
+    delivery_rating TINYINT,
+    delivery_on_time TINYINT(1),
+    
+    -- Avaliação dos Produtos
+    product_quality_rating TINYINT,
+    packaging_rating TINYINT,
+    
+    -- Meta
+    is_public TINYINT(1) DEFAULT 1,
+    admin_response TEXT,
+    admin_responded_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    
+    INDEX(order_id),
+    INDEX(customer_id),
+    INDEX(shopper_id),
+    INDEX(partner_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_ratings criada");
+
+// 5. GORJETAS
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_tips (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    order_id INT NOT NULL,
+    customer_id INT NOT NULL,
+    worker_id INT NOT NULL,
+    amount DECIMAL(10,2) NOT NULL,
+    tip_type ENUM('pre_order','post_delivery','adjustment') DEFAULT 'pre_order',
+    payment_status ENUM('pending','paid','failed') DEFAULT 'pending',
+    paid_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    INDEX(order_id),
+    INDEX(worker_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_tips criada");
+
+// 6. CUPONS
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_coupons (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    code VARCHAR(50) NOT NULL UNIQUE,
+    name VARCHAR(100),
+    description TEXT,
+    
+    -- Tipo de desconto
+    discount_type ENUM('percentage','fixed','free_delivery','cashback') DEFAULT 'percentage',
+    discount_value DECIMAL(10,2) NOT NULL,
+    max_discount DECIMAL(10,2),
+    
+    -- Condições
+    min_order_value DECIMAL(10,2) DEFAULT 0,
+    min_items INT DEFAULT 0,
+    
+    -- Restrições
+    valid_from DATETIME,
+    valid_until DATETIME,
+    max_uses INT,
+    max_uses_per_user INT DEFAULT 1,
+    current_uses INT DEFAULT 0,
+    
+    -- Aplicabilidade
+    first_order_only TINYINT(1) DEFAULT 0,
+    specific_partners JSON,
+    specific_categories JSON,
+    specific_products JSON,
+    specific_customers JSON,
+    
+    -- Status
+    status ENUM('active','inactive','expired') DEFAULT 'active',
+    created_by INT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    
+    INDEX(code),
+    INDEX(status),
+    INDEX(valid_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_coupons criada");
+
+// 7. USO DE CUPONS
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_coupon_usage (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    coupon_id INT NOT NULL,
+    customer_id INT NOT NULL,
+    order_id INT,
+    discount_applied DECIMAL(10,2),
+    used_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    INDEX(coupon_id),
+    INDEX(customer_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_coupon_usage criada");
+
+// 8. PROMOÇÕES
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_promotions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    description TEXT,
+    promo_type ENUM('flash_sale','happy_hour','combo','bogo','category_discount','partner_discount') DEFAULT 'flash_sale',
+    
+    -- Desconto
+    discount_type ENUM('percentage','fixed') DEFAULT 'percentage',
+    discount_value DECIMAL(10,2),
+    
+    -- Período
+    start_date DATETIME,
+    end_date DATETIME,
+    days_of_week JSON,
+    start_time TIME,
+    end_time TIME,
+    
+    -- Aplicabilidade
+    partner_id INT,
+    category_ids JSON,
+    product_ids JSON,
+    
+    -- Limites
+    max_orders INT,
+    current_orders INT DEFAULT 0,
+    max_per_customer INT,
+    
+    -- Visual
+    banner_image VARCHAR(255),
+    badge_text VARCHAR(50),
+    badge_color VARCHAR(20),
+    
+    priority INT DEFAULT 0,
+    status ENUM('active','inactive','scheduled') DEFAULT 'active',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    
+    INDEX(status),
+    INDEX(start_date),
+    INDEX(end_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_promotions criada");
+
+// 9. PONTOS DE FIDELIDADE
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_loyalty_points (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    customer_id INT NOT NULL UNIQUE,
+    current_points INT DEFAULT 0,
+    lifetime_points INT DEFAULT 0,
+    level ENUM('bronze','silver','gold','platinum','diamond') DEFAULT 'bronze',
+    level_progress INT DEFAULT 0,
+    next_level_points INT DEFAULT 1000,
+    
+    -- Benefícios do nível
+    discount_percentage DECIMAL(5,2) DEFAULT 0,
+    free_deliveries_remaining INT DEFAULT 0,
+    priority_support TINYINT(1) DEFAULT 0,
+    
+    -- Stats
+    total_orders INT DEFAULT 0,
+    total_spent DECIMAL(12,2) DEFAULT 0,
+    streak_days INT DEFAULT 0,
+    last_order_date DATE,
+    
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX(customer_id),
+    INDEX(level)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_loyalty_points criada");
+
+// 10. TRANSAÇÕES DE PONTOS
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_loyalty_transactions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    customer_id INT NOT NULL,
+    points INT NOT NULL,
+    type ENUM('earned','spent','bonus','expired','adjustment') DEFAULT 'earned',
+    source VARCHAR(50),
+    reference_id INT,
+    description VARCHAR(255),
+    balance_after INT,
+    expires_at DATE,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    INDEX(customer_id),
+    INDEX(type),
+    INDEX(created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_loyalty_transactions criada");
+
+// 11. MISSÕES/DESAFIOS
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_missions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    customer_id INT NOT NULL,
+    mission_type VARCHAR(50) NOT NULL,
+    title VARCHAR(100),
+    description TEXT,
+    
+    -- Objetivo
+    target_value INT NOT NULL,
+    current_value INT DEFAULT 0,
+    
+    -- Recompensa
+    reward_type ENUM('points','coupon','cashback','free_delivery','badge') DEFAULT 'points',
+    reward_value VARCHAR(100),
+    
+    -- Período
+    start_date DATE,
+    end_date DATE,
+    
+    status ENUM('active','completed','expired','claimed') DEFAULT 'active',
+    completed_at DATETIME,
+    claimed_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    
+    INDEX(customer_id),
+    INDEX(status),
+    INDEX(end_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_missions criada");
+
+// 12. NOTIFICAÇÕES
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_notifications (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_type ENUM('customer','worker','partner','admin') NOT NULL,
+    user_id INT NOT NULL,
+    
+    title VARCHAR(200),
+    message TEXT,
+    
+    notification_type VARCHAR(50),
+    action_type VARCHAR(50),
+    action_data JSON,
+    
+    image_url VARCHAR(255),
+    deep_link VARCHAR(255),
+    
+    is_read TINYINT(1) DEFAULT 0,
+    read_at DATETIME,
+    
+    send_push TINYINT(1) DEFAULT 1,
+    push_sent TINYINT(1) DEFAULT 0,
+    push_sent_at DATETIME,
+    
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    expires_at DATETIME,
+    
+    INDEX(user_type, user_id),
+    INDEX(is_read),
+    INDEX(created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_notifications criada");
+
+// 13. TOKENS PUSH
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_push_tokens (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_type ENUM('customer','worker','partner') NOT NULL,
+    user_id INT NOT NULL,
+    token VARCHAR(500) NOT NULL,
+    platform ENUM('ios','android','web') DEFAULT 'android',
+    device_info JSON,
+    is_active TINYINT(1) DEFAULT 1,
+    last_used DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    INDEX(user_type, user_id),
+    INDEX(token(100))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_push_tokens criada");
+
+// 14. TICKETS DE SUPORTE
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_support_tickets (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    ticket_number VARCHAR(20) UNIQUE,
+    
+    user_type ENUM('customer','worker','partner') NOT NULL,
+    user_id INT NOT NULL,
+    order_id INT,
+    
+    category ENUM('order_issue','payment','refund','delivery','product','technical','other') DEFAULT 'other',
+    subject VARCHAR(200),
+    description TEXT,
+    
+    priority ENUM('low','medium','high','urgent') DEFAULT 'medium',
+    status ENUM('open','in_progress','waiting_customer','resolved','closed') DEFAULT 'open',
+    
+    assigned_to INT,
+    assigned_at DATETIME,
+    
+    resolution TEXT,
+    resolved_at DATETIME,
+    resolved_by INT,
+    
+    satisfaction_rating TINYINT,
+    satisfaction_comment TEXT,
+    
+    sla_deadline DATETIME,
+    sla_breached TINYINT(1) DEFAULT 0,
+    
+    first_response_at DATETIME,
+    last_activity_at DATETIME,
+    
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    
+    INDEX(ticket_number),
+    INDEX(user_type, user_id),
+    INDEX(status),
+    INDEX(priority)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_support_tickets criada");
+
+// 15. MENSAGENS DE TICKETS
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_ticket_messages (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    ticket_id INT NOT NULL,
+    sender_type ENUM('customer','worker','partner','admin','system') NOT NULL,
+    sender_id INT,
+    sender_name VARCHAR(100),
+    message TEXT,
+    attachments JSON,
+    is_internal TINYINT(1) DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    INDEX(ticket_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_ticket_messages criada");
+
+// 16. REEMBOLSOS
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_refunds (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    order_id INT NOT NULL,
+    customer_id INT NOT NULL,
+    ticket_id INT,
+    
+    refund_type ENUM('full','partial','item','delivery') DEFAULT 'partial',
+    reason ENUM('item_unavailable','wrong_item','damaged','late_delivery','customer_request','other') DEFAULT 'other',
+    reason_detail TEXT,
+    
+    original_amount DECIMAL(10,2),
+    refund_amount DECIMAL(10,2) NOT NULL,
+    
+    items_refunded JSON,
+    
+    refund_method ENUM('original_payment','wallet','pix','manual') DEFAULT 'original_payment',
+    
+    status ENUM('pending','approved','processing','completed','rejected') DEFAULT 'pending',
+    
+    approved_by INT,
+    approved_at DATETIME,
+    processed_at DATETIME,
+    
+    pagarme_refund_id VARCHAR(100),
+    
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    
+    INDEX(order_id),
+    INDEX(customer_id),
+    INDEX(status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_refunds criada");
+
+// 17. FAVORITOS
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_favorites (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    customer_id INT NOT NULL,
+    favorite_type ENUM('product','partner','list') NOT NULL,
+    reference_id INT NOT NULL,
+    list_name VARCHAR(100),
+    notes TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_fav (customer_id, favorite_type, reference_id),
+    INDEX(customer_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_favorites criada");
+
+// 18. ENDEREÇOS SALVOS
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_addresses (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    customer_id INT NOT NULL,
+    
+    label VARCHAR(50),
+    is_default TINYINT(1) DEFAULT 0,
+    
+    cep VARCHAR(10),
+    street VARCHAR(255),
+    number VARCHAR(20),
+    complement VARCHAR(100),
+    neighborhood VARCHAR(100),
+    city VARCHAR(100),
+    state VARCHAR(2),
+    
+    lat DECIMAL(10,8),
+    lng DECIMAL(11,8),
+    
+    delivery_instructions TEXT,
+    
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    
+    INDEX(customer_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_addresses criada");
+
+// 19. PEDIDOS AGENDADOS
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_schedules (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    partner_id INT NOT NULL,
+    day_of_week TINYINT NOT NULL,
+    
+    is_open TINYINT(1) DEFAULT 1,
+    open_time TIME,
+    close_time TIME,
+    
+    -- Slots de entrega
+    slot_duration_minutes INT DEFAULT 60,
+    max_orders_per_slot INT DEFAULT 10,
+    
+    -- Agendamento
+    advance_booking_days INT DEFAULT 7,
+    cutoff_time TIME,
+    
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    
+    UNIQUE KEY unique_schedule (partner_id, day_of_week)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_schedules criada");
+
+// 20. PEDIDOS RECORRENTES
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_recurring_orders (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    customer_id INT NOT NULL,
+    partner_id INT,
+    
+    name VARCHAR(100),
+    
+    -- Itens
+    items JSON NOT NULL,
+    
+    -- Frequência
+    frequency ENUM('weekly','biweekly','monthly') DEFAULT 'weekly',
+    day_of_week TINYINT,
+    day_of_month TINYINT,
+    preferred_time TIME,
+    
+    -- Pagamento
+    payment_method_id INT,
+    
+    -- Endereço
+    address_id INT,
+    
+    -- Status
+    status ENUM('active','paused','cancelled') DEFAULT 'active',
+    next_order_date DATE,
+    last_order_id INT,
+    last_order_date DATE,
+    
+    total_orders INT DEFAULT 0,
+    
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    
+    INDEX(customer_id),
+    INDEX(next_order_date),
+    INDEX(status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_recurring_orders criada");
+
+// 21. ANALYTICS DIÁRIO
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_analytics_daily (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    date DATE NOT NULL,
+    partner_id INT,
+    
+    -- Pedidos
+    total_orders INT DEFAULT 0,
+    completed_orders INT DEFAULT 0,
+    cancelled_orders INT DEFAULT 0,
+    
+    -- Financeiro
+    gross_revenue DECIMAL(12,2) DEFAULT 0,
+    net_revenue DECIMAL(12,2) DEFAULT 0,
+    delivery_fees DECIMAL(10,2) DEFAULT 0,
+    tips_total DECIMAL(10,2) DEFAULT 0,
+    refunds_total DECIMAL(10,2) DEFAULT 0,
+    discounts_total DECIMAL(10,2) DEFAULT 0,
+    
+    -- Performance
+    avg_order_value DECIMAL(10,2) DEFAULT 0,
+    avg_items_per_order DECIMAL(5,2) DEFAULT 0,
+    avg_delivery_time_minutes INT DEFAULT 0,
+    avg_shopping_time_minutes INT DEFAULT 0,
+    
+    -- Clientes
+    new_customers INT DEFAULT 0,
+    returning_customers INT DEFAULT 0,
+    
+    -- Ratings
+    avg_rating DECIMAL(3,2) DEFAULT 0,
+    total_ratings INT DEFAULT 0,
+    
+    -- Workers
+    active_workers INT DEFAULT 0,
+    
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    
+    UNIQUE KEY unique_day (date, partner_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_analytics_daily criada");
+
+// 22. MAPA DE CALOR
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_heatmap (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    date DATE NOT NULL,
+    hour TINYINT NOT NULL,
+    lat DECIMAL(10,8) NOT NULL,
+    lng DECIMAL(11,8) NOT NULL,
+    
+    order_count INT DEFAULT 0,
+    avg_order_value DECIMAL(10,2) DEFAULT 0,
+    
+    INDEX(date),
+    INDEX(lat, lng)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_heatmap criada");
+
+// 23. GANHOS DOS WORKERS
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_worker_earnings (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    worker_id INT NOT NULL,
+    order_id INT NOT NULL,
+    
+    earning_type ENUM('delivery','shopping','bonus','tip','adjustment') DEFAULT 'delivery',
+    
+    gross_amount DECIMAL(10,2) NOT NULL,
+    platform_fee DECIMAL(10,2) DEFAULT 0,
+    net_amount DECIMAL(10,2) NOT NULL,
+    
+    distance_km DECIMAL(5,2),
+    duration_minutes INT,
+    
+    status ENUM('pending','available','paid') DEFAULT 'pending',
+    available_at DATETIME,
+    paid_at DATETIME,
+    payout_id INT,
+    
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    
+    INDEX(worker_id),
+    INDEX(order_id),
+    INDEX(status),
+    INDEX(created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_worker_earnings criada");
+
+// 24. BÔNUS DOS WORKERS
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_worker_bonuses (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    worker_id INT,
+    
+    bonus_type ENUM('signup','referral','streak','peak_hours','challenge','performance') DEFAULT 'performance',
+    name VARCHAR(100),
+    description TEXT,
+    
+    -- Condições
+    target_orders INT,
+    target_rating DECIMAL(3,2),
+    time_window_hours INT,
+    valid_from DATETIME,
+    valid_until DATETIME,
+    
+    -- Recompensa
+    bonus_amount DECIMAL(10,2) NOT NULL,
+    
+    -- Status
+    status ENUM('active','completed','expired','paid') DEFAULT 'active',
+    progress INT DEFAULT 0,
+    completed_at DATETIME,
+    
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    
+    INDEX(worker_id),
+    INDEX(status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_worker_bonuses criada");
+
+// 25. PAGAMENTOS DOS WORKERS
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_worker_payouts (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    worker_id INT NOT NULL,
+    
+    period_start DATE NOT NULL,
+    period_end DATE NOT NULL,
+    
+    total_earnings DECIMAL(10,2) NOT NULL,
+    total_tips DECIMAL(10,2) DEFAULT 0,
+    total_bonuses DECIMAL(10,2) DEFAULT 0,
+    deductions DECIMAL(10,2) DEFAULT 0,
+    net_amount DECIMAL(10,2) NOT NULL,
+    
+    orders_count INT DEFAULT 0,
+    
+    pix_key VARCHAR(100),
+    bank_info JSON,
+    
+    status ENUM('pending','processing','completed','failed') DEFAULT 'pending',
+    scheduled_date DATE,
+    processed_at DATETIME,
+    
+    transaction_id VARCHAR(100),
+    receipt_url VARCHAR(255),
+    
+    notes TEXT,
+    
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    
+    INDEX(worker_id),
+    INDEX(status),
+    INDEX(period_start)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_worker_payouts criada");
+
+// 26. ALERTAS DE ESTOQUE
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_inventory_alerts (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    partner_id INT NOT NULL,
+    product_id INT NOT NULL,
+    
+    alert_type ENUM('low_stock','out_of_stock','expiring','price_change') DEFAULT 'low_stock',
+    
+    current_quantity INT,
+    threshold_quantity INT,
+    
+    is_resolved TINYINT(1) DEFAULT 0,
+    resolved_at DATETIME,
+    resolved_by INT,
+    
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    
+    INDEX(partner_id),
+    INDEX(alert_type),
+    INDEX(is_resolved)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_inventory_alerts criada");
+
+// 27. TESTES A/B
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_ab_tests (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    description TEXT,
+    
+    test_type VARCHAR(50),
+    
+    variant_a_name VARCHAR(50),
+    variant_a_config JSON,
+    variant_a_traffic INT DEFAULT 50,
+    
+    variant_b_name VARCHAR(50),
+    variant_b_config JSON,
+    variant_b_traffic INT DEFAULT 50,
+    
+    metric VARCHAR(50),
+    
+    start_date DATETIME,
+    end_date DATETIME,
+    
+    status ENUM('draft','running','paused','completed') DEFAULT 'draft',
+    winner VARCHAR(10),
+    
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    
+    INDEX(status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_ab_tests criada");
+
+// 28. HISTÓRICO DE BUSCA
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_search_history (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    customer_id INT,
+    session_id VARCHAR(100),
+    
+    query VARCHAR(255) NOT NULL,
+    results_count INT DEFAULT 0,
+    clicked_product_id INT,
+    
+    filters JSON,
+    
+    lat DECIMAL(10,8),
+    lng DECIMAL(11,8),
+    
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    
+    INDEX(customer_id),
+    INDEX(query(50)),
+    INDEX(created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_search_history criada");
+
+// 29. CARRINHO ABANDONADO
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_cart_abandonment (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    customer_id INT,
+    session_id VARCHAR(100),
+    
+    cart_data JSON NOT NULL,
+    cart_total DECIMAL(10,2),
+    items_count INT,
+    
+    partner_id INT,
+    
+    reminder_sent TINYINT(1) DEFAULT 0,
+    reminder_sent_at DATETIME,
+    
+    recovered TINYINT(1) DEFAULT 0,
+    recovered_order_id INT,
+    
+    abandoned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    
+    INDEX(customer_id),
+    INDEX(abandoned_at),
+    INDEX(recovered)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_cart_abandonment criada");
+
+// 30. CONFIGURAÇÕES DO SISTEMA
+$conn->query("CREATE TABLE IF NOT EXISTS om_market_settings (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    setting_key VARCHAR(100) NOT NULL UNIQUE,
+    setting_value TEXT,
+    setting_type ENUM('string','number','boolean','json') DEFAULT 'string',
+    category VARCHAR(50),
+    description TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+log_ok("Tabela om_market_settings criada");
+
+// Inserir configurações padrão
+$settings = [
+    ['delivery_fee_base', '5.99', 'number', 'delivery', 'Taxa base de entrega'],
+    ['delivery_fee_per_km', '1.50', 'number', 'delivery', 'Taxa por km adicional'],
+    ['free_delivery_minimum', '99.00', 'number', 'delivery', 'Valor mínimo para frete grátis'],
+    ['express_delivery_fee', '9.99', 'number', 'delivery', 'Taxa de entrega expressa'],
+    ['loyalty_points_per_real', '10', 'number', 'loyalty', 'Pontos por R$1 gasto'],
+    ['loyalty_points_value', '0.01', 'number', 'loyalty', 'Valor de cada ponto em R$'],
+    ['platform_commission', '15', 'number', 'financial', 'Comissão da plataforma (%)'],
+    ['worker_base_fee', '8.00', 'number', 'workers', 'Taxa base por entrega'],
+    ['worker_per_km_fee', '1.00', 'number', 'workers', 'Taxa por km para worker'],
+    ['max_delivery_distance', '15', 'number', 'delivery', 'Distância máxima de entrega (km)'],
+    ['support_email', 'suporte@onemundo.com.br', 'string', 'support', 'Email de suporte'],
+    ['support_phone', '0800 123 4567', 'string', 'support', 'Telefone de suporte'],
+];
+
+foreach ($settings as $s) {
+    $conn->query("INSERT IGNORE INTO om_market_settings (setting_key, setting_value, setting_type, category, description) 
+                  VALUES ('{$s[0]}', '{$s[1]}', '{$s[2]}', '{$s[3]}', '{$s[4]}')");
+}
+log_ok("Configurações padrão inseridas");
+
+// ══════════════════════════════════════════════════════════════════════════════
+// CRIAR CUPONS DE EXEMPLO
+// ══════════════════════════════════════════════════════════════════════════════
+
+log_info("Criando cupons de exemplo...");
+
+$conn->query("INSERT IGNORE INTO om_market_coupons (code, name, description, discount_type, discount_value, max_discount, min_order_value, first_order_only, max_uses, valid_until) VALUES
+('BEMVINDO', 'Primeira Compra', 'Desconto especial para novos clientes', 'percentage', 20, 30, 50, 1, 10000, DATE_ADD(NOW(), INTERVAL 1 YEAR)),
+('FRETEGRATIS', 'Frete Grátis', 'Entrega grátis em pedidos acima de R\$80', 'free_delivery', 15, 15, 80, 0, 5000, DATE_ADD(NOW(), INTERVAL 6 MONTH)),
+('DESC10', '10% OFF', 'Desconto de 10% em todo pedido', 'percentage', 10, 25, 40, 0, 1000, DATE_ADD(NOW(), INTERVAL 3 MONTH))
+");
+log_ok("Cupons de exemplo criados");
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ATUALIZAR TABELA DE WORKERS
+// ══════════════════════════════════════════════════════════════════════════════
+
+log_info("Atualizando tabela om_workers...");
+
+$conn->query("ALTER TABLE om_workers 
+    ADD COLUMN IF NOT EXISTS acceptance_rate DECIMAL(5,2) DEFAULT 100,
+    ADD COLUMN IF NOT EXISTS completion_rate DECIMAL(5,2) DEFAULT 100,
+    ADD COLUMN IF NOT EXISTS avg_delivery_time INT DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS badges JSON,
+    ADD COLUMN IF NOT EXISTS certifications JSON,
+    ADD COLUMN IF NOT EXISTS preferred_partner_ids JSON,
+    ADD COLUMN IF NOT EXISTS blocked_partner_ids JSON,
+    ADD COLUMN IF NOT EXISTS weekly_hours_limit INT DEFAULT 60,
+    ADD COLUMN IF NOT EXISTS current_week_hours DECIMAL(5,2) DEFAULT 0
+");
+log_ok("Tabela om_workers atualizada");
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ATUALIZAR TABELA DE PARTNERS
+// ══════════════════════════════════════════════════════════════════════════════
+
+log_info("Atualizando tabela om_market_partners...");
+
+$conn->query("ALTER TABLE om_market_partners 
+    ADD COLUMN IF NOT EXISTS commission_rate DECIMAL(5,2) DEFAULT 15,
+    ADD COLUMN IF NOT EXISTS accepts_scheduling TINYINT(1) DEFAULT 1,
+    ADD COLUMN IF NOT EXISTS accepts_express TINYINT(1) DEFAULT 1,
+    ADD COLUMN IF NOT EXISTS avg_prep_time_minutes INT DEFAULT 15,
+    ADD COLUMN IF NOT EXISTS featured TINYINT(1) DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS featured_until DATETIME,
+    ADD COLUMN IF NOT EXISTS badges JSON,
+    ADD COLUMN IF NOT EXISTS payment_methods JSON,
+    ADD COLUMN IF NOT EXISTS auto_accept_orders TINYINT(1) DEFAULT 0
+");
+log_ok("Tabela om_market_partners atualizada");
+
+echo "\n";
+log_info("✅ INSTALAÇÃO COMPLETA!");
+?>
+</div>
+</div>
+
+<div class="section">
+<h2>🎉 Sucesso!</h2>
+<p style="font-size:16px;margin-bottom:20px">Todas as funcionalidades foram instaladas com sucesso!</p>
+
+<div class="stats">
+<div class="stat"><div class="stat-num" style="color:#22c55e">30+</div><div class="stat-label">Tabelas Criadas</div></div>
+<div class="stat"><div class="stat-num" style="color:#3b82f6">50+</div><div class="stat-label">Novas Features</div></div>
+<div class="stat"><div class="stat-num" style="color:#8b5cf6">3</div><div class="stat-label">Cupons Ativos</div></div>
+<div class="stat"><div class="stat-num" style="color:#f97316">100%</div><div class="stat-label">Completo</div></div>
+</div>
+
+<h3 style="margin:20px 0 10px;color:#f97316">📋 Próximos Passos:</h3>
+<ul style="line-height:2;padding-left:20px">
+<li>Testar o <a href="/mercado/admin/" style="color:#5af">Dashboard Admin</a></li>
+<li>Configurar os <a href="/mercado/admin/mercados.php" style="color:#5af">Mercados/Parceiros</a></li>
+<li>Gerenciar <a href="/mercado/admin/shoppers.php" style="color:#5af">Workers/Shoppers</a></li>
+<li>Ver <a href="/mercado/admin/pedidos.php" style="color:#5af">Pedidos</a></li>
+<li>Testar o <a href="/mercado/painel/" style="color:#5af">Painel do Parceiro</a></li>
+<li>Testar a <a href="/mercado/" style="color:#5af">Loja do Cliente</a></li>
+</ul>
+</div>
+
+<?php endif; ?>
+
+</div>
+</body>
+</html>

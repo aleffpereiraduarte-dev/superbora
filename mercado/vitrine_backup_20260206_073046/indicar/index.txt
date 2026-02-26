@@ -1,0 +1,43 @@
+2:I[9107,[],"ClientPageRoot"]
+3:I[6135,["7648","static/chunks/7648-b253ccabb6a4f91d.js","9617","static/chunks/9617-a41118c60ec598b7.js","6132","static/chunks/app/indicar/page-b08b4ea6da4507a8.js"],"default",1]
+4:I[4707,[],""]
+5:I[6423,[],""]
+6:I[9275,["7648","static/chunks/7648-b253ccabb6a4f91d.js","7687","static/chunks/7687-c7ed927de0c7ff50.js","9938","static/chunks/9938-114796e0760751ef.js","2357","static/chunks/2357-b8e75200b6b1d13b.js","3185","static/chunks/app/layout-4c48b41680ee938c.js"],"ErrorBoundary"]
+7:I[1579,["7648","static/chunks/7648-b253ccabb6a4f91d.js","7687","static/chunks/7687-c7ed927de0c7ff50.js","9938","static/chunks/9938-114796e0760751ef.js","2357","static/chunks/2357-b8e75200b6b1d13b.js","3185","static/chunks/app/layout-4c48b41680ee938c.js"],"Providers"]
+8:I[8003,["7648","static/chunks/7648-b253ccabb6a4f91d.js","7687","static/chunks/7687-c7ed927de0c7ff50.js","9938","static/chunks/9938-114796e0760751ef.js","2357","static/chunks/2357-b8e75200b6b1d13b.js","3185","static/chunks/app/layout-4c48b41680ee938c.js"],""]
+9:T584,
+          if ('serviceWorker' in navigator) {
+            window.addEventListener('load', function() {
+              // Register main PWA service worker
+              navigator.serviceWorker.register('/mercado/vitrine/sw.js', {
+                scope: '/mercado/vitrine/'
+              }).then(function(registration) {
+                // Check for updates periodically (every 60 minutes)
+                setInterval(function() {
+                  registration.update();
+                }, 60 * 60 * 1000);
+
+                // Listen for new service worker activation
+                registration.addEventListener('updatefound', function() {
+                  var newWorker = registration.installing;
+                  if (newWorker) {
+                    newWorker.addEventListener('statechange', function() {
+                      if (newWorker.state === 'activated' && navigator.serviceWorker.controller) {
+                      }
+                    });
+                  }
+                });
+              }).catch(function(error) {
+              });
+
+              // Register Firebase messaging service worker (for push notifications)
+              navigator.serviceWorker.register('/mercado/vitrine/firebase-messaging-sw.js', {
+                scope: '/mercado/vitrine/'
+              }).then(function(reg) {
+              }).catch(function(error) {
+              });
+            });
+          }
+        0:["7_TiKhxRafhHglXNaylG1",[[["",{"children":["indicar",{"children":["__PAGE__",{}]}]},"$undefined","$undefined",true],["",{"children":["indicar",{"children":["__PAGE__",{},[["$L1",["$","$L2",null,{"props":{"params":{},"searchParams":{}},"Component":"$3"}],[["$","link","0",{"rel":"stylesheet","href":"/mercado/vitrine/_next/static/css/e1880ca823865922.css","precedence":"next","crossOrigin":"$undefined"}],["$","link","1",{"rel":"stylesheet","href":"/mercado/vitrine/_next/static/css/333d616f92e8cafb.css","precedence":"next","crossOrigin":"$undefined"}]]],null],null]},[null,["$","$L4",null,{"parallelRouterKey":"children","segmentPath":["children","indicar","children"],"error":"$undefined","errorStyles":"$undefined","errorScripts":"$undefined","template":["$","$L5",null,{}],"templateStyles":"$undefined","templateScripts":"$undefined","notFound":"$undefined","notFoundStyles":"$undefined"}]],null]},[[[["$","link","0",{"rel":"stylesheet","href":"/mercado/vitrine/_next/static/css/af8b7d8d8627ec62.css","precedence":"next","crossOrigin":"$undefined"}],["$","link","1",{"rel":"stylesheet","href":"/mercado/vitrine/_next/static/css/59be6109ff12eddf.css","precedence":"next","crossOrigin":"$undefined"}]],["$","html",null,{"lang":"pt-BR","suppressHydrationWarning":true,"children":[["$","head",null,{"children":[["$","script",null,{"dangerouslySetInnerHTML":{"__html":"\n(function(){\n  try {\n    var t = localStorage.getItem('superbora_theme');\n    if (t !== 'dark' && t !== 'light') {\n      t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';\n    }\n    document.documentElement.setAttribute('data-theme', t);\n    var m = document.querySelector('meta[name=\"theme-color\"]');\n    if (m) m.setAttribute('content', t === 'dark' ? '#1a1a2e' : '#ffffff');\n  } catch(e) { console.warn('[Layout] Theme setup failed:', e.message); }\n})();\n"}}],["$","link",null,{"rel":"preconnect","href":"https://fonts.googleapis.com"}],["$","link",null,{"rel":"preconnect","href":"https://fonts.gstatic.com","crossOrigin":"anonymous"}],["$","link",null,{"rel":"preconnect","href":"https://superbora.com.br"}],["$","link",null,{"rel":"dns-prefetch","href":"https://superbora.com.br"}],["$","link",null,{"rel":"preconnect","href":"https://viacep.com.br"}],["$","link",null,{"rel":"dns-prefetch","href":"https://viacep.com.br"}],["$","link",null,{"href":"https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap","rel":"stylesheet"}],["$","meta",null,{"name":"viewport","content":"width=device-width, initial-scale=1, maximum-scale=1"}],["$","meta",null,{"name":"theme-color","content":"#16a34a"}],["$","link",null,{"rel":"manifest","href":"/mercado/vitrine/manifest.json"}],["$","meta",null,{"name":"mobile-web-app-capable","content":"yes"}],["$","meta",null,{"name":"apple-mobile-web-app-status-bar-style","content":"default"}],["$","meta",null,{"name":"apple-mobile-web-app-title","content":"SuperBora"}],["$","link",null,{"rel":"apple-touch-icon","href":"/mercado/vitrine/icons/icon-192.png"}],["$","meta",null,{"name":"msapplication-TileColor","content":"#16a34a"}],["$","meta",null,{"name":"msapplication-TileImage","content":"/mercado/vitrine/icons/icon-192.png"}]]}],["$","body",null,{"children":[["$","a",null,{"href":"#main-content","className":"skip-link","children":"Pular para conteudo principal"}],["$","$L6",null,{"children":["$","$L7",null,{"children":["$","$L4",null,{"parallelRouterKey":"children","segmentPath":["children"],"error":"$undefined","errorStyles":"$undefined","errorScripts":"$undefined","template":["$","$L5",null,{}],"templateStyles":"$undefined","templateScripts":"$undefined","notFound":[["$","title",null,{"children":"404: This page could not be found."}],["$","div",null,{"style":{"fontFamily":"system-ui,\"Segoe UI\",Roboto,Helvetica,Arial,sans-serif,\"Apple Color Emoji\",\"Segoe UI Emoji\"","height":"100vh","textAlign":"center","display":"flex","flexDirection":"column","alignItems":"center","justifyContent":"center"},"children":["$","div",null,{"children":[["$","style",null,{"dangerouslySetInnerHTML":{"__html":"body{color:#000;background:#fff;margin:0}.next-error-h1{border-right:1px solid rgba(0,0,0,.3)}@media (prefers-color-scheme:dark){body{color:#fff;background:#000}.next-error-h1{border-right:1px solid rgba(255,255,255,.3)}}"}}],["$","h1",null,{"className":"next-error-h1","style":{"display":"inline-block","margin":"0 20px 0 0","padding":"0 23px 0 0","fontSize":24,"fontWeight":500,"verticalAlign":"top","lineHeight":"49px"},"children":"404"}],["$","div",null,{"style":{"display":"inline-block"},"children":["$","h2",null,{"style":{"fontSize":14,"fontWeight":400,"lineHeight":"49px","margin":0},"children":"This page could not be found."}]}]]}]}]],"notFoundStyles":[]}]}]}],["$","$L8",null,{"id":"sw-register","strategy":"afterInteractive","children":"$9"}]]}]]}]],null],null],["$La",null]]]]
+a:[["$","meta","0",{"name":"viewport","content":"width=device-width, initial-scale=1"}],["$","meta","1",{"charSet":"utf-8"}],["$","title","2",{"children":"SuperBora - Delivery"}],["$","meta","3",{"name":"description","content":"Mercados, restaurantes e muito mais com entrega rapida"}],["$","meta","4",{"name":"author","content":"SuperBora"}],["$","meta","5",{"name":"keywords","content":"delivery, mercado, restaurante, supermercado, entrega rapida, pedidos online"}],["$","meta","6",{"name":"robots","content":"index, follow"}],["$","meta","7",{"property":"og:title","content":"SuperBora - Delivery"}],["$","meta","8",{"property":"og:description","content":"Mercados, restaurantes e muito mais com entrega rapida"}],["$","meta","9",{"property":"og:locale","content":"pt_BR"}],["$","meta","10",{"property":"og:type","content":"website"}],["$","meta","11",{"name":"twitter:card","content":"summary"}],["$","meta","12",{"name":"twitter:title","content":"SuperBora - Delivery"}],["$","meta","13",{"name":"twitter:description","content":"Mercados, restaurantes e muito mais com entrega rapida"}],["$","link","14",{"rel":"icon","href":"/mercado/vitrine/favicon.ico","type":"image/x-icon","sizes":"16x16"}]]
+1:null

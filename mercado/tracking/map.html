@@ -1,0 +1,964 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Rastreamento em Tempo Real</title>
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+          integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+
+    <!-- Pusher JS -->
+    <script src="https://js.pusher.com/8.2.0/pusher.min.js"></script>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+        }
+
+        #map {
+            width: 100%;
+            height: 100vh;
+            z-index: 1;
+        }
+
+        /* Card do entregador */
+        .driver-card {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            right: 20px;
+            background: white;
+            border-radius: 16px;
+            padding: 16px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            z-index: 1000;
+            max-width: 400px;
+            margin: 0 auto;
+        }
+
+        .driver-card.hidden {
+            display: none;
+        }
+
+        .driver-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .driver-photo {
+            width: 56px;
+            height: 56px;
+            border-radius: 50%;
+            object-fit: cover;
+            border: 3px solid #4CAF50;
+        }
+
+        .driver-photo.no-photo {
+            background: linear-gradient(135deg, #4CAF50, #2E7D32);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 24px;
+            font-weight: bold;
+        }
+
+        .driver-info h3 {
+            font-size: 16px;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 4px;
+        }
+
+        .driver-rating {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 14px;
+            color: #666;
+        }
+
+        .driver-rating .star {
+            color: #FFC107;
+        }
+
+        .driver-vehicle {
+            font-size: 13px;
+            color: #888;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .eta-section {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 0;
+            border-top: 1px solid #eee;
+            margin-top: 12px;
+        }
+
+        .eta-label {
+            font-size: 13px;
+            color: #666;
+        }
+
+        .eta-value {
+            font-size: 24px;
+            font-weight: 700;
+            color: #4CAF50;
+        }
+
+        .eta-unit {
+            font-size: 14px;
+            color: #666;
+            margin-left: 4px;
+        }
+
+        .distance-info {
+            text-align: right;
+        }
+
+        .distance-value {
+            font-size: 16px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        .distance-label {
+            font-size: 12px;
+            color: #888;
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 500;
+            margin-top: 12px;
+        }
+
+        .status-badge.coletando {
+            background: #FFF3E0;
+            color: #E65100;
+        }
+
+        .status-badge.em_entrega {
+            background: #E3F2FD;
+            color: #1565C0;
+        }
+
+        .status-badge.chegando {
+            background: #E8F5E9;
+            color: #2E7D32;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+
+        /* Header com info do pedido */
+        .order-header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: white;
+            padding: 12px 16px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            z-index: 1000;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .order-number {
+            font-size: 14px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        .order-status {
+            font-size: 13px;
+            color: #4CAF50;
+            font-weight: 500;
+        }
+
+        /* Marcadores customizados */
+        .custom-marker {
+            position: relative;
+        }
+
+        .driver-marker {
+            width: 40px;
+            height: 40px;
+            background: #4CAF50;
+            border-radius: 50%;
+            border: 3px solid white;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: transform 0.3s ease;
+        }
+
+        .driver-marker svg {
+            width: 24px;
+            height: 24px;
+            fill: white;
+        }
+
+        .destination-marker {
+            width: 36px;
+            height: 36px;
+            background: #F44336;
+            border-radius: 50% 50% 50% 0;
+            border: 3px solid white;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            transform: rotate(-45deg);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .destination-marker-inner {
+            width: 12px;
+            height: 12px;
+            background: white;
+            border-radius: 50%;
+        }
+
+        .partner-marker {
+            width: 36px;
+            height: 36px;
+            background: #FF9800;
+            border-radius: 8px;
+            border: 3px solid white;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .partner-marker svg {
+            width: 20px;
+            height: 20px;
+            fill: white;
+        }
+
+        /* Loading state */
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(255,255,255,0.95);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+        }
+
+        .loading-overlay.hidden {
+            display: none;
+        }
+
+        .loading-spinner {
+            width: 48px;
+            height: 48px;
+            border: 4px solid #e0e0e0;
+            border-top-color: #4CAF50;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .loading-text {
+            margin-top: 16px;
+            font-size: 16px;
+            color: #666;
+        }
+
+        /* Error state */
+        .error-message {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 24px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            text-align: center;
+            z-index: 2000;
+            max-width: 300px;
+        }
+
+        .error-message.hidden {
+            display: none;
+        }
+
+        .error-icon {
+            font-size: 48px;
+            margin-bottom: 12px;
+        }
+
+        .error-text {
+            color: #666;
+            margin-bottom: 16px;
+        }
+
+        .retry-btn {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 24px;
+            border-radius: 8px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        /* Arriving notification */
+        .arriving-notification {
+            position: fixed;
+            top: 60px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #4CAF50;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 24px;
+            font-weight: 600;
+            box-shadow: 0 4px 20px rgba(76, 175, 80, 0.4);
+            z-index: 1001;
+            animation: slideDown 0.3s ease;
+        }
+
+        .arriving-notification.hidden {
+            display: none;
+        }
+
+        @keyframes slideDown {
+            from {
+                opacity: 0;
+                transform: translateX(-50%) translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(-50%) translateY(0);
+            }
+        }
+
+        /* Connection status */
+        .connection-status {
+            position: fixed;
+            top: 60px;
+            right: 16px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: #666;
+            background: white;
+            padding: 6px 12px;
+            border-radius: 16px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            z-index: 1000;
+        }
+
+        .connection-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #ccc;
+        }
+
+        .connection-dot.connected {
+            background: #4CAF50;
+        }
+
+        .connection-dot.connecting {
+            background: #FFC107;
+            animation: blink 1s infinite;
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        /* Leaflet overrides */
+        .leaflet-control-attribution {
+            font-size: 10px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Loading -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-spinner"></div>
+        <div class="loading-text">Carregando rastreamento...</div>
+    </div>
+
+    <!-- Error -->
+    <div class="error-message hidden" id="errorMessage">
+        <div class="error-icon">:(</div>
+        <div class="error-text">Nao foi possivel carregar o rastreamento</div>
+        <button class="retry-btn" onclick="loadTracking()">Tentar novamente</button>
+    </div>
+
+    <!-- Header -->
+    <div class="order-header">
+        <div class="order-number" id="orderNumber">Pedido #---</div>
+        <div class="order-status" id="orderStatus">Carregando...</div>
+    </div>
+
+    <!-- Connection Status -->
+    <div class="connection-status">
+        <div class="connection-dot" id="connectionDot"></div>
+        <span id="connectionText">Conectando...</span>
+    </div>
+
+    <!-- Arriving Notification -->
+    <div class="arriving-notification hidden" id="arrivingNotification">
+        O entregador esta chegando!
+    </div>
+
+    <!-- Map Container -->
+    <div id="map"></div>
+
+    <!-- Driver Card -->
+    <div class="driver-card hidden" id="driverCard">
+        <div class="driver-header">
+            <div class="driver-photo no-photo" id="driverPhoto">?</div>
+            <div class="driver-info">
+                <h3 id="driverName">Aguardando entregador...</h3>
+                <div class="driver-rating">
+                    <span class="star">&#9733;</span>
+                    <span id="driverRating">-</span>
+                </div>
+                <div class="driver-vehicle" id="driverVehicle">
+                    <span>&#128690;</span>
+                    <span id="vehicleInfo">-</span>
+                </div>
+            </div>
+        </div>
+
+        <span class="status-badge em_entrega" id="statusBadge">
+            <span class="status-dot"></span>
+            <span id="statusText">A caminho</span>
+        </span>
+
+        <div class="eta-section">
+            <div>
+                <div class="eta-label">Tempo estimado</div>
+                <div>
+                    <span class="eta-value" id="etaValue">--</span>
+                    <span class="eta-unit">min</span>
+                </div>
+            </div>
+            <div class="distance-info">
+                <div class="distance-value" id="distanceValue">-- km</div>
+                <div class="distance-label">restantes</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ═══════════════════════════════════════════════════════════════════
+        // CONFIGURACAO
+        // ═══════════════════════════════════════════════════════════════════
+        const API_BASE = '/api/mercado/vitrine';
+        const PUSHER_KEY = '1cd7a205ab19e56edcfe';
+        const PUSHER_CLUSTER = 'sa1';
+
+        // Obter order_id da URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const ORDER_ID = urlParams.get('order_id');
+        const AUTH_TOKEN = urlParams.get('token') || localStorage.getItem('auth_token');
+        const TRACKING_TOKEN = urlParams.get('tracking_token');
+
+        // Estado global
+        let map = null;
+        let driverMarker = null;
+        let destinationMarker = null;
+        let partnerMarker = null;
+        let routeLine = null;
+        let pusher = null;
+        let channel = null;
+        let trackingData = null;
+        let animationFrame = null;
+
+        // ═══════════════════════════════════════════════════════════════════
+        // INICIALIZACAO
+        // ═══════════════════════════════════════════════════════════════════
+        document.addEventListener('DOMContentLoaded', function() {
+            if (!ORDER_ID) {
+                showError('ID do pedido nao informado');
+                return;
+            }
+
+            initMap();
+            loadTracking();
+        });
+
+        function initMap() {
+            // Centro padrao (Sao Paulo)
+            map = L.map('map', {
+                zoomControl: false,
+                attributionControl: true
+            }).setView([-23.5505, -46.6333], 14);
+
+            // Tile layer (OpenStreetMap)
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; OpenStreetMap'
+            }).addTo(map);
+
+            // Controle de zoom no canto inferior direito
+            L.control.zoom({ position: 'bottomright' }).addTo(map);
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // CARREGAR DADOS DE TRACKING
+        // ═══════════════════════════════════════════════════════════════════
+        async function loadTracking() {
+            showLoading(true);
+            hideError();
+
+            try {
+                let url = `${API_BASE}/order-tracking.php?order_id=${ORDER_ID}`;
+                if (TRACKING_TOKEN) {
+                    url += `&tracking_token=${TRACKING_TOKEN}`;
+                }
+
+                const headers = {};
+                if (AUTH_TOKEN) {
+                    headers['Authorization'] = `Bearer ${AUTH_TOKEN}`;
+                }
+
+                const response = await fetch(url, { headers });
+                const result = await response.json();
+
+                if (!result.success) {
+                    throw new Error(result.message || 'Erro ao carregar dados');
+                }
+
+                trackingData = result.data;
+                updateUI();
+                initPusher();
+                showLoading(false);
+
+            } catch (error) {
+                console.error('Erro ao carregar tracking:', error);
+                showLoading(false);
+                showError(error.message);
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // ATUALIZAR UI
+        // ═══════════════════════════════════════════════════════════════════
+        function updateUI() {
+            if (!trackingData) return;
+
+            // Header
+            document.getElementById('orderNumber').textContent = `Pedido #${trackingData.order.number || trackingData.order.id}`;
+            document.getElementById('orderStatus').textContent = trackingData.order.status_label || trackingData.order.status;
+
+            // Destino
+            if (trackingData.destination.lat && trackingData.destination.lng) {
+                updateDestinationMarker(trackingData.destination.lat, trackingData.destination.lng);
+            }
+
+            // Parceiro/Loja
+            if (trackingData.partner.lat && trackingData.partner.lng) {
+                updatePartnerMarker(trackingData.partner);
+            }
+
+            // Driver
+            if (trackingData.driver) {
+                updateDriverCard(trackingData.driver);
+
+                if (trackingData.tracking) {
+                    updateDriverMarker(
+                        trackingData.tracking.lat,
+                        trackingData.tracking.lng,
+                        trackingData.tracking.heading
+                    );
+                    updateETA(trackingData.tracking.eta_minutes, trackingData.tracking.distance_km);
+                    updateStatus(trackingData.tracking.status);
+                } else if (trackingData.driver.current_location) {
+                    updateDriverMarker(
+                        trackingData.driver.current_location.lat,
+                        trackingData.driver.current_location.lng,
+                        trackingData.driver.current_location.heading
+                    );
+                }
+
+                document.getElementById('driverCard').classList.remove('hidden');
+            }
+
+            // Ajustar mapa para mostrar todos os pontos
+            fitMapBounds();
+
+            // Desenhar rota
+            if (trackingData.route) {
+                drawRoute();
+            }
+        }
+
+        function updateDriverCard(driver) {
+            const photoEl = document.getElementById('driverPhoto');
+            if (driver.photo) {
+                photoEl.innerHTML = `<img src="${driver.photo}" alt="${driver.name}" class="driver-photo">`;
+                photoEl.classList.remove('no-photo');
+            } else {
+                photoEl.textContent = driver.name ? driver.name.charAt(0).toUpperCase() : '?';
+                photoEl.classList.add('no-photo');
+            }
+
+            document.getElementById('driverName').textContent = driver.name || 'Entregador';
+            document.getElementById('driverRating').textContent = driver.rating ? driver.rating.toFixed(1) : '5.0';
+
+            // Veiculo
+            const vehicleType = driver.vehicle?.type || 'moto';
+            const vehicleColor = driver.vehicle?.color || '';
+            const vehiclePlate = driver.vehicle?.plate || '';
+            let vehicleText = getVehicleIcon(vehicleType);
+            if (vehicleColor) vehicleText += ` ${vehicleColor}`;
+            if (vehiclePlate) vehicleText += ` - ${vehiclePlate}`;
+            document.getElementById('vehicleInfo').textContent = vehicleText || 'Moto';
+        }
+
+        function getVehicleIcon(type) {
+            const icons = {
+                'moto': 'Moto',
+                'carro': 'Carro',
+                'bicicleta': 'Bicicleta',
+                'a_pe': 'A pe'
+            };
+            return icons[type] || 'Moto';
+        }
+
+        function updateETA(minutes, distanceKm) {
+            document.getElementById('etaValue').textContent = minutes || '--';
+            document.getElementById('distanceValue').textContent = distanceKm ? `${distanceKm.toFixed(1)} km` : '-- km';
+        }
+
+        function updateStatus(status) {
+            const badge = document.getElementById('statusBadge');
+            const statusText = document.getElementById('statusText');
+
+            const labels = {
+                'coletando': 'Coletando pedido',
+                'em_entrega': 'A caminho',
+                'chegando': 'Chegando!'
+            };
+
+            badge.className = `status-badge ${status}`;
+            statusText.textContent = labels[status] || 'A caminho';
+
+            // Notificacao especial quando chegando
+            if (status === 'chegando') {
+                document.getElementById('arrivingNotification').classList.remove('hidden');
+                setTimeout(() => {
+                    document.getElementById('arrivingNotification').classList.add('hidden');
+                }, 5000);
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // MARCADORES DO MAPA
+        // ═══════════════════════════════════════════════════════════════════
+        function updateDriverMarker(lat, lng, heading) {
+            const driverIcon = L.divIcon({
+                className: 'custom-marker',
+                html: `
+                    <div class="driver-marker" style="transform: rotate(${heading || 0}deg)">
+                        <svg viewBox="0 0 24 24">
+                            <path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z"/>
+                        </svg>
+                    </div>
+                `,
+                iconSize: [40, 40],
+                iconAnchor: [20, 20]
+            });
+
+            if (driverMarker) {
+                // Animar movimento suave
+                animateMarker(driverMarker, [lat, lng]);
+            } else {
+                driverMarker = L.marker([lat, lng], { icon: driverIcon }).addTo(map);
+            }
+
+            // Atualizar icone com heading
+            driverMarker.setIcon(driverIcon);
+        }
+
+        function animateMarker(marker, newLatLng) {
+            const startLatLng = marker.getLatLng();
+            const duration = 1000; // 1 segundo
+            const startTime = performance.now();
+
+            if (animationFrame) {
+                cancelAnimationFrame(animationFrame);
+            }
+
+            function animate(currentTime) {
+                const elapsed = currentTime - startTime;
+                const progress = Math.min(elapsed / duration, 1);
+
+                // Easing function
+                const eased = 1 - Math.pow(1 - progress, 3);
+
+                const lat = startLatLng.lat + (newLatLng[0] - startLatLng.lat) * eased;
+                const lng = startLatLng.lng + (newLatLng[1] - startLatLng.lng) * eased;
+
+                marker.setLatLng([lat, lng]);
+
+                if (progress < 1) {
+                    animationFrame = requestAnimationFrame(animate);
+                } else {
+                    // Atualizar rota apos movimento
+                    if (routeLine) {
+                        drawRoute();
+                    }
+                }
+            }
+
+            animationFrame = requestAnimationFrame(animate);
+        }
+
+        function updateDestinationMarker(lat, lng) {
+            const destIcon = L.divIcon({
+                className: 'custom-marker',
+                html: `
+                    <div class="destination-marker">
+                        <div class="destination-marker-inner"></div>
+                    </div>
+                `,
+                iconSize: [36, 36],
+                iconAnchor: [18, 36]
+            });
+
+            if (destinationMarker) {
+                destinationMarker.setLatLng([lat, lng]);
+            } else {
+                destinationMarker = L.marker([lat, lng], { icon: destIcon })
+                    .bindPopup(`<b>Destino</b><br>${trackingData.destination.address || 'Seu endereco'}`)
+                    .addTo(map);
+            }
+        }
+
+        function updatePartnerMarker(partner) {
+            const partnerIcon = L.divIcon({
+                className: 'custom-marker',
+                html: `
+                    <div class="partner-marker">
+                        <svg viewBox="0 0 24 24">
+                            <path d="M18.36 9l.6 3H5.04l.6-3h12.72M20 4H4v2h16V4m0 3H4l-1 5v2h1v6h10v-6h4v6h2v-6h1v-2l-1-5zM6 18v-4h6v4H6z"/>
+                        </svg>
+                    </div>
+                `,
+                iconSize: [36, 36],
+                iconAnchor: [18, 18]
+            });
+
+            if (partnerMarker) {
+                partnerMarker.setLatLng([partner.lat, partner.lng]);
+            } else {
+                partnerMarker = L.marker([partner.lat, partner.lng], { icon: partnerIcon })
+                    .bindPopup(`<b>${partner.name}</b><br>${partner.address || ''}`)
+                    .addTo(map);
+            }
+        }
+
+        function drawRoute() {
+            if (!driverMarker || !destinationMarker) return;
+
+            const driverPos = driverMarker.getLatLng();
+            const destPos = destinationMarker.getLatLng();
+
+            const points = [
+                [driverPos.lat, driverPos.lng],
+                [destPos.lat, destPos.lng]
+            ];
+
+            if (routeLine) {
+                routeLine.setLatLngs(points);
+            } else {
+                routeLine = L.polyline(points, {
+                    color: '#4CAF50',
+                    weight: 4,
+                    opacity: 0.7,
+                    dashArray: '10, 10'
+                }).addTo(map);
+            }
+        }
+
+        function fitMapBounds() {
+            const bounds = [];
+
+            if (driverMarker) bounds.push(driverMarker.getLatLng());
+            if (destinationMarker) bounds.push(destinationMarker.getLatLng());
+            if (partnerMarker) bounds.push(partnerMarker.getLatLng());
+
+            if (bounds.length > 1) {
+                map.fitBounds(bounds, { padding: [50, 50] });
+            } else if (bounds.length === 1) {
+                map.setView(bounds[0], 15);
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // PUSHER - TEMPO REAL
+        // ═══════════════════════════════════════════════════════════════════
+        function initPusher() {
+            if (!trackingData?.pusher) return;
+
+            const config = trackingData.pusher;
+
+            // Inicializar Pusher
+            pusher = new Pusher(config.app_key || PUSHER_KEY, {
+                cluster: config.cluster || PUSHER_CLUSTER,
+                forceTLS: true
+            });
+
+            // Status de conexao
+            pusher.connection.bind('connected', () => {
+                updateConnectionStatus('connected', 'Conectado');
+            });
+
+            pusher.connection.bind('connecting', () => {
+                updateConnectionStatus('connecting', 'Conectando...');
+            });
+
+            pusher.connection.bind('disconnected', () => {
+                updateConnectionStatus('disconnected', 'Desconectado');
+            });
+
+            pusher.connection.bind('error', (err) => {
+                console.error('Pusher error:', err);
+                updateConnectionStatus('disconnected', 'Erro');
+            });
+
+            // Inscrever no canal do pedido
+            channel = pusher.subscribe(config.channel);
+
+            // Evento principal: atualizacao de localizacao
+            channel.bind('location-update', (data) => {
+                console.log('Location update:', data);
+
+                if (data.driver) {
+                    updateDriverMarker(data.driver.lat, data.driver.lng, data.driver.heading);
+                }
+
+                if (data.eta_minutes !== undefined) {
+                    updateETA(data.eta_minutes, data.distance_km);
+                }
+
+                if (data.status) {
+                    updateStatus(data.status);
+                }
+
+                // Atualizar rota
+                drawRoute();
+            });
+
+            // Entregador chegando
+            channel.bind('driver-arriving', (data) => {
+                console.log('Driver arriving:', data);
+                updateStatus('chegando');
+                document.getElementById('arrivingNotification').classList.remove('hidden');
+
+                // Vibrar se suportado
+                if (navigator.vibrate) {
+                    navigator.vibrate([200, 100, 200]);
+                }
+            });
+
+            // Entregador chegou
+            channel.bind('driver-arrived', (data) => {
+                console.log('Driver arrived:', data);
+                document.getElementById('statusBadge').innerHTML = `
+                    <span class="status-dot"></span>
+                    <span>Entregador chegou!</span>
+                `;
+                document.getElementById('statusBadge').className = 'status-badge chegando';
+            });
+
+            // Atualizacao de status do pedido
+            channel.bind('status-update', (data) => {
+                console.log('Status update:', data);
+                if (data.status) {
+                    document.getElementById('orderStatus').textContent = data.status_label || data.status;
+                }
+            });
+        }
+
+        function updateConnectionStatus(state, text) {
+            const dot = document.getElementById('connectionDot');
+            const textEl = document.getElementById('connectionText');
+
+            dot.className = `connection-dot ${state === 'connected' ? 'connected' : state === 'connecting' ? 'connecting' : ''}`;
+            textEl.textContent = text;
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // UI HELPERS
+        // ═══════════════════════════════════════════════════════════════════
+        function showLoading(show) {
+            document.getElementById('loadingOverlay').classList.toggle('hidden', !show);
+        }
+
+        function showError(message) {
+            document.querySelector('.error-text').textContent = message || 'Erro desconhecido';
+            document.getElementById('errorMessage').classList.remove('hidden');
+        }
+
+        function hideError() {
+            document.getElementById('errorMessage').classList.add('hidden');
+        }
+
+        // Cleanup
+        window.addEventListener('beforeunload', () => {
+            if (pusher) {
+                pusher.disconnect();
+            }
+        });
+    </script>
+</body>
+</html>

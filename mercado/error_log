@@ -1,0 +1,5 @@
+[05-Jan-2026 04:40:04 UTC] PHP Parse error:  syntax error, unexpected token "*" in /home/tt7vfgytpo9h/public_html/mercado/cron_online_status.php on line 10
+[05-Jan-2026 04:40:04 UTC] PHP Parse error:  syntax error, unexpected token "*" in /home/tt7vfgytpo9h/public_html/mercado/cron_limpeza.php on line 11
+[05-Jan-2026 04:40:04 UTC] PHP Parse error:  syntax error, unexpected identifier "✅", expecting ")" in /home/tt7vfgytpo9h/public_html/mercado/cron_timeout.php on line 39
+[05-Jan-2026 04:41:02 UTC] PHP Parse error:  syntax error, unexpected identifier "✅", expecting ")" in /home/tt7vfgytpo9h/public_html/mercado/cron_timeout.php on line 39
+[05-Jan-2026 04:42:02 UTC] PHP Parse error:  syntax error, unexpected identifier "✅", expecting ")" in /home/tt7vfgytpo9h/public_html/mercado/cron_timeout.php on line 39

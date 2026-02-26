@@ -1,0 +1,15 @@
+# Bloquear execucao de PHP e scripts
+<FilesMatch "\.(php|phtml|php3|php4|php5|php7|phps|phar|pl|py|cgi|sh|bash)$">
+    Require all denied
+</FilesMatch>
+
+# Permitir apenas imagens
+<FilesMatch "\.(jpg|jpeg|png|gif|webp|svg|ico)$">
+    Require all granted
+</FilesMatch>
+
+# Desativar listagem de diretorio
+Options -Indexes
+
+# Desativar execucao de PHP
+php_flag engine off

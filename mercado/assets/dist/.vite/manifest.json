@@ -1,0 +1,31 @@
+{
+  "_shipping.CRkdE5c0.js": {
+    "file": "shipping.CRkdE5c0.js",
+    "name": "shipping",
+    "css": [
+      "shipping.D-lUtBCN.css"
+    ]
+  },
+  "_shipping.D-lUtBCN.css": {
+    "file": "shipping.D-lUtBCN.css",
+    "src": "_shipping.D-lUtBCN.css"
+  },
+  "src/checkout.ts": {
+    "file": "checkout.BzzxUbmV.js",
+    "name": "checkout",
+    "src": "src/checkout.ts",
+    "isEntry": true,
+    "imports": [
+      "_shipping.CRkdE5c0.js"
+    ]
+  },
+  "src/main.ts": {
+    "file": "main.BEcG-E5s.js",
+    "name": "main",
+    "src": "src/main.ts",
+    "isEntry": true,
+    "imports": [
+      "_shipping.CRkdE5c0.js"
+    ]
+  }
+}

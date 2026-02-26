@@ -1,0 +1,354 @@
+console.log("voice-modal.js v35 - Estável");
+
+var voiceActive = false;
+var voiceBusy = false;
+var voiceAudioCtx = null;
+var voiceGlobalAudio = null;
+var mediaRecorder = null;
+var audioChunks = [];
+var audioStream = null;
+var analyser = null;
+// ═══ DETECTAR MIMETYPE SUPORTADO ═══
+var supportedMimeType = 'audio/webm';
+if (typeof MediaRecorder !== 'undefined') {
+    if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+        supportedMimeType = 'audio/webm;codecs=opus';
+    } else if (MediaRecorder.isTypeSupported('audio/webm')) {
+        supportedMimeType = 'audio/webm';
+    } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+        supportedMimeType = 'audio/mp4';
+    } else if (MediaRecorder.isTypeSupported('audio/aac')) {
+        supportedMimeType = 'audio/aac';
+    }
+}
+console.log('[Voice] MimeType:', supportedMimeType);
+var silenceStart = null;
+var isListening = false;
+var hasSpoken = false;
+
+// Configurações
+var SILENCE_THRESHOLD = 15;
+var SILENCE_DURATION = 1200;
+
+// ═══ CHAT ═══
+function addVoiceMessage(text, isUser) {
+    var container = document.getElementById('chatContainer');
+    if (!container) return;
+    
+    var msgDiv = document.createElement('div');
+    msgDiv.className = 'message ' + (isUser ? 'user' : 'one');
+    var time = new Date().toLocaleTimeString('pt-BR', {hour:'2-digit', minute:'2-digit'});
+    var oneIcon = '<svg width="16" height="16" viewBox="0 0 100 100"><circle cx="50" cy="50" r="40" fill="none" stroke="#fff" stroke-width="8"/><g transform="translate(50,50)"><rect x="-15" y="-12" width="6" height="24" rx="3" fill="#fff"/><rect x="-3" y="-18" width="6" height="36" rx="3" fill="#fff"/><rect x="9" y="-12" width="6" height="24" rx="3" fill="#fff"/></g></svg>';
+    
+    msgDiv.innerHTML = '<div class="message-avatar">' + (isUser ? '👤' : oneIcon) + '</div>' +
+        '<div class="message-content"><div class="bubble">' + text.replace(/\n/g, '<br>') + '</div>' +
+        '<div class="message-time">' + time + '</div></div>';
+    
+    container.appendChild(msgDiv);
+    container.scrollTop = container.scrollHeight;
+}
+
+// ═══ MODAL ═══
+function abrirVoiceModal() {
+    if (document.getElementById('voiceOrb')) return;
+    unlockAudio();
+    
+    var orb = document.createElement('div');
+    orb.id = 'voiceOrb';
+    orb.innerHTML = '<div class="vo-x" onclick="fecharVoiceModal()">✕</div>' +
+        '<div class="vo-orb" id="voOrb"></div>' +
+        '<div class="vo-text" id="voText">Iniciando...</div>' +
+        '<style>' +
+        '#voiceOrb{position:fixed;top:0;left:0;right:0;bottom:0;background:#000;z-index:999999;display:flex;flex-direction:column;align-items:center;justify-content:center}' +
+        '.vo-x{position:absolute;top:60px;right:24px;width:44px;height:44px;color:rgba(255,255,255,0.6);font-size:24px;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:10}' +
+        '.vo-orb{width:150px;height:150px;border-radius:50%;background:linear-gradient(135deg,#667eea,#764ba2);transition:all 0.2s}' +
+        '.vo-orb.listening{background:linear-gradient(135deg,#4facfe,#00f2fe);box-shadow:0 0 60px rgba(79,172,254,0.6);animation:pulse 1.5s infinite}' +
+        '.vo-orb.processing{background:linear-gradient(135deg,#f093fb,#f5576c);box-shadow:0 0 60px rgba(245,87,108,0.5);animation:pulse 0.4s infinite}' +
+        '.vo-orb.speaking{background:linear-gradient(135deg,#11998e,#38ef7d);box-shadow:0 0 60px rgba(56,239,125,0.5);animation:pulse 1s infinite}' +
+        '@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}' +
+        '.vo-text{margin-top:40px;color:#fff;font-size:17px;text-align:center;max-width:85%;min-height:60px;line-height:1.5}' +
+        '</style>';
+    
+    document.body.appendChild(orb);
+    document.body.style.overflow = 'hidden';
+    
+    voiceActive = true;
+    voiceBusy = false;
+    
+    initMicrophone();
+}
+
+function unlockAudio() {
+    if (!voiceAudioCtx) voiceAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (voiceAudioCtx.state === 'suspended') voiceAudioCtx.resume();
+    voiceGlobalAudio = new Audio();
+    voiceGlobalAudio.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+    voiceGlobalAudio.volume = 0.01;
+    voiceGlobalAudio.play().catch(function(){});
+}
+
+function fecharVoiceModal() {
+    voiceActive = false;
+    voiceBusy = false;
+    isListening = false;
+    
+    stopMicrophone();
+    if (voiceGlobalAudio) try { voiceGlobalAudio.pause(); } catch(e) {}
+    
+    var modal = document.getElementById('voiceOrb');
+    if (modal) {
+        modal.style.transition = 'opacity 0.2s';
+        modal.style.opacity = '0';
+        setTimeout(function() { modal.remove(); document.body.style.overflow = ''; }, 200);
+    }
+}
+
+// ═══ MICROFONE SIMPLES ═══
+function initMicrophone() {
+    navigator.mediaDevices.getUserMedia({ 
+        audio: { 
+            echoCancellation: true, 
+            noiseSuppression: true, 
+            autoGainControl: true 
+        } 
+    })
+    .then(function(stream) {
+        audioStream = stream;
+        
+        if (!voiceAudioCtx) voiceAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        var source = voiceAudioCtx.createMediaStreamSource(stream);
+        analyser = voiceAudioCtx.createAnalyser();
+        analyser.fftSize = 512;
+        source.connect(analyser);
+        
+        startListening();
+    })
+    .catch(function(err) {
+        console.error('Mic error:', err);
+        if (document.getElementById('voText')) {
+            document.getElementById('voText').textContent = 'Erro no microfone';
+        }
+    });
+}
+
+function stopMicrophone() {
+    isListening = false;
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        try { mediaRecorder.stop(); } catch(e) {}
+    }
+    if (audioStream) {
+        audioStream.getTracks().forEach(function(t) { t.stop(); });
+        audioStream = null;
+    }
+}
+
+// ═══ ESCUTA ═══
+function startListening() {
+    if (!voiceActive || !audioStream || isListening) return;
+    
+    isListening = true;
+    voiceBusy = false;
+    audioChunks = [];
+    hasSpoken = false;
+    silenceStart = null;
+    
+    mediaRecorder = new MediaRecorder(audioStream, { mimeType: supportedMimeType });
+    
+    mediaRecorder.ondataavailable = function(e) {
+        if (e.data.size > 0) audioChunks.push(e.data);
+    };
+    
+    mediaRecorder.onstop = function() {
+        if (hasSpoken && audioChunks.length > 0 && voiceActive) {
+            var blob = new Blob(audioChunks, { type: supportedMimeType });
+            if (blob.size > 1000) {
+                processAudio(blob);
+            } else {
+                restartListening();
+            }
+        } else {
+            restartListening();
+        }
+    };
+    
+    mediaRecorder.start(100);
+    
+    if (document.getElementById('voOrb')) {
+        document.getElementById('voOrb').className = 'vo-orb listening';
+        document.getElementById('voText').textContent = 'Ouvindo...';
+    }
+    
+    detectVoice();
+}
+
+function restartListening() {
+    isListening = false;
+    if (voiceActive && audioStream) {
+        setTimeout(startListening, 200);
+    }
+}
+
+// ═══ DETECÇÃO DE VOZ ═══
+function detectVoice() {
+    if (!voiceActive || !analyser || voiceBusy) return;
+    
+    var data = new Uint8Array(analyser.fftSize);
+    analyser.getByteTimeDomainData(data);
+    
+    var sum = 0;
+    for (var i = 0; i < data.length; i++) {
+        var val = (data[i] - 128) / 128;
+        sum += val * val;
+    }
+    var volume = Math.sqrt(sum / data.length) * 100;
+    
+    if (volume > SILENCE_THRESHOLD) {
+        hasSpoken = true;
+        silenceStart = null;
+    } else if (hasSpoken) {
+        if (!silenceStart) silenceStart = Date.now();
+        
+        if (Date.now() - silenceStart > SILENCE_DURATION) {
+            silenceStart = null;
+            isListening = false;
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+            }
+            return;
+        }
+    }
+    
+    if (voiceActive && isListening && !voiceBusy) {
+        requestAnimationFrame(detectVoice);
+    }
+}
+
+// ═══ PROCESSA ÁUDIO ═══
+function processAudio(blob) {
+    voiceBusy = true;
+    
+    if (document.getElementById('voOrb')) {
+        document.getElementById('voOrb').className = 'vo-orb processing';
+        document.getElementById('voText').textContent = 'Processando...';
+    }
+    
+    var reader = new FileReader();
+    reader.onloadend = function() {
+        fetch('/mercado/one_voice.php?action=transcribe', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ audio: reader.result })
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+            if (d.success && d.text && d.text.trim()) {
+                var text = d.text.trim();
+                document.getElementById('voText').textContent = text;
+                addVoiceMessage(text, true);
+                sendToChat(text);
+            } else {
+                document.getElementById('voText').textContent = 'Não entendi...';
+                setTimeout(function() { voiceBusy = false; restartListening(); }, 800);
+            }
+        })
+        .catch(function() {
+            document.getElementById('voText').textContent = 'Erro...';
+            setTimeout(function() { voiceBusy = false; restartListening(); }, 800);
+        });
+    };
+    reader.readAsDataURL(blob);
+}
+
+// ═══ CHAT ═══
+function sendToChat(text) {
+    fetch('/mercado/one_voice.php?action=chat', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ message: text })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+        if (d.success && d.response) {
+            addVoiceMessage(d.response, false);
+            document.getElementById('voText').textContent = d.response;
+            playTTS(d.response);
+        } else {
+            voiceBusy = false;
+            restartListening();
+        }
+    })
+    .catch(function() {
+        voiceBusy = false;
+        restartListening();
+    });
+}
+
+// ═══ TTS COM DEBUG ═══
+function playTTS(text) {
+    console.log('[TTS] 🔊 Iniciando TTS:', text.substring(0, 50));
+    
+    if (document.getElementById('voOrb')) {
+        document.getElementById('voOrb').className = 'vo-orb speaking';
+    }
+    
+    fetch('/mercado/one_voice.php?action=tts', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ text: text })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+        console.log('[TTS] 📥 Resposta:', d);
+        if (d.success && d.url) {
+            if (!voiceGlobalAudio) voiceGlobalAudio = new Audio();
+            voiceGlobalAudio.src = '/mercado/' + d.url + '?t=' + Date.now();
+            voiceGlobalAudio.volume = 1.0;
+            
+            voiceGlobalAudio.onended = function() { 
+                console.log('[TTS] ✅ Áudio terminou - voltando a ouvir');
+                voiceBusy = false; 
+                restartListening(); 
+            };
+            voiceGlobalAudio.onerror = function(e) { 
+                console.log('[TTS] ❌ Erro no áudio:', e);
+                voiceBusy = false; 
+                restartListening(); 
+            };
+            voiceGlobalAudio.oncanplay = function() {
+                console.log('[TTS] 🎵 Áudio pronto para tocar');
+            };
+            
+            // FALLBACK iOS - timeout baseado na duração
+            voiceGlobalAudio.onloadedmetadata = function() {
+                var dur = (voiceGlobalAudio.duration || 5) * 1000 + 1000;
+                console.log("[TTS] Fallback em " + dur + "ms");
+                setTimeout(function() {
+                    if (voiceBusy) {
+                        console.log("[TTS] Fallback ativado!");
+                        voiceBusy = false;
+                        restartListening();
+                    }
+                }, dur);
+            };
+            console.log('[TTS] ▶️ Tentando play...');
+            voiceGlobalAudio.play()
+                .then(function() {
+                    console.log('[TTS] ▶️ Play iniciado com sucesso');
+                })
+                .catch(function(e) { 
+                    console.log('[TTS] ❌ Play falhou:', e.message);
+                    voiceBusy = false; 
+                    restartListening(); 
+                });
+        } else {
+            console.log('[TTS] ⚠️ Sem URL, voltando a ouvir');
+            voiceBusy = false;
+            restartListening();
+        }
+    })
+    .catch(function(e) {
+        console.log('[TTS] ❌ Fetch falhou:', e);
+        voiceBusy = false;
+        restartListening();
+    });
+}

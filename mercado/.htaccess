@@ -1,0 +1,82 @@
+# ═══════════════════════════════════════════════════════════════
+# ONEMUNDO MERCADO - SECURITY RULES v2.0
+# ═══════════════════════════════════════════════════════════════
+
+# Desabilitar listagem de diretórios
+Options -Indexes -ExecCGI
+
+# Proteger arquivo .env e arquivos ocultos
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
+
+# Proteger arquivos de backup e sensíveis
+<FilesMatch "\.(bak|backup|old|sql|log|env|ini|sh|yml|yaml|lock|md|txt)$">
+    Require all denied
+</FilesMatch>
+
+# Bloquear arquivos de configuração
+<FilesMatch "^(config|db_config|credentials|settings)\.php$">
+    Require all denied
+</FilesMatch>
+
+# Bloquear scripts de instalação/diagnóstico/manutenção
+<FilesMatch "^(DIAG|FIX|ROBO|CRIAR|APROVAR|CORRIGIR|instalar|phase|DIAGNOSTICO|setup|install|test|debug|phpinfo).*\.php$">
+    Require all denied
+</FilesMatch>
+
+# Bloquear arquivos com prefixo de teste
+<FilesMatch "^(test_|debug_|tmp_|temp_|_).*\.php$">
+    Require all denied
+</FilesMatch>
+
+# Headers de segurança
+<IfModule mod_headers.c>
+    Header set X-Content-Type-Options "nosniff"
+    Header set X-Frame-Options "SAMEORIGIN"
+    Header set X-XSS-Protection "1; mode=block"
+    Header set Referrer-Policy "strict-origin-when-cross-origin"
+    Header unset X-Powered-By
+    Header unset Server
+</IfModule>
+
+# Limitar upload de arquivos
+<IfModule mod_php.c>
+    php_value upload_max_filesize 10M
+    php_value post_max_size 12M
+    php_value max_execution_time 60
+    php_value max_input_time 60
+</IfModule>
+
+# Rate limiting básico via mod_evasive (se disponível)
+<IfModule mod_evasive20.c>
+    DOSHashTableSize 3097
+    DOSPageCount 5
+    DOSSiteCount 100
+    DOSPageInterval 1
+    DOSSiteInterval 1
+    DOSBlockingPeriod 60
+</IfModule>
+
+# ===========================================
+# REWRITE RULES
+# ===========================================
+
+RewriteEngine On
+RewriteBase /mercado/
+
+# Se o arquivo ou pasta existir, não reescrever
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+
+# Página de produto: /mercado/produto/123 -> /mercado/produto/index.php?id=123
+RewriteRule ^produto/([0-9]+)/?$ produto/index.php?id=$1 [L,QSA]
+
+# Categoria: /mercado/categoria/5 -> index.php?cat=5
+RewriteRule ^categoria/([0-9]+)/?$ index.php?cat=$1 [L,QSA]
+
+# Busca: /mercado/busca/termo -> index.php?q=termo
+RewriteRule ^busca/(.+)/?$ index.php?q=$1 [L,QSA]
+
+# API Cart
+RewriteRule ^api/cart/?$ api/cart.php [L,QSA]

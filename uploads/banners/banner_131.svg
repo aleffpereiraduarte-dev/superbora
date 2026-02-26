@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="300" viewBox="0 0 800 300">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#E65100;stop-opacity:1"/>
+      <stop offset="100%" style="stop-color:#BF360C;stop-opacity:1"/>
+    </linearGradient>
+  </defs>
+  <rect width="800" height="300" fill="url(#bg)" rx="16"/>
+  <circle cx="680" cy="150" r="120" fill="rgba(255,255,255,0.08)"/>
+  <circle cx="720" cy="80" r="60" fill="rgba(255,255,255,0.05)"/>
+  <text x="60" y="140" font-family="system-ui,sans-serif" font-size="36" font-weight="700" fill="white">Acai da Terra</text>
+  <text x="60" y="180" font-family="system-ui,sans-serif" font-size="18" fill="rgba(255,255,255,0.85)">Restaurante</text>
+  <rect x="60" y="210" width="120" height="36" rx="18" fill="rgba(255,255,255,0.2)"/>
+  <text x="120" y="234" text-anchor="middle" font-family="system-ui,sans-serif" font-size="14" font-weight="600" fill="white">Ver loja</text>
+</svg>

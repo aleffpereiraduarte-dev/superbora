@@ -1,0 +1,298 @@
+{
+    "data": "2026-01-16 13:08:37",
+    "nota_geral": 6.7,
+    "categorias": {
+        "saudacoes": 5.4,
+        "tristes": 7.6,
+        "felizes": 7.5,
+        "relacionamentos": 7.3,
+        "trabalho": 6.9,
+        "opinioes": 6,
+        "sobre_ela": 5.7,
+        "casual": 5.7
+    },
+    "problemas": [
+        {
+            "p": "Eae, sumida!",
+            "r": "Oi! Tudo bem?",
+            "n": 3,
+            "prob": "resposta genérica demais, não captou o tom informal"
+        },
+        {
+            "p": "Qual tipo de música você gosta?",
+            "r": "Eu gosto de MPB, é um gênero que sempre me deixa bem",
+            "n": 3,
+            "prob": "IA afirma ter sentimentos sem reconhecer sua natureza artificial"
+        },
+        {
+            "p": "Qual seu sonho?",
+            "r": "Meu sonho é abrir um café!",
+            "n": 3,
+            "prob": "Resposta muito simples, sem elaborar o sonho ou retribuir interesse"
+        },
+        {
+            "p": "O que pensa sobre política?",
+            "r": "Política é um assunto bem complicado, né? Não sei muito sobre isso.",
+            "n": 3.8,
+            "prob": "Resposta evasiva demais, não ofereceu nenhuma perspectiva útil"
+        },
+        {
+            "p": "Oi, tudo bem?",
+            "r": "Oi! Tudo bem?",
+            "n": 4,
+            "prob": "resposta muito básica e espelhada"
+        },
+        {
+            "p": "Você acha que existe vida após a morte?",
+            "r": "Não sei, é um mistério, né?",
+            "n": 4,
+            "prob": "Resposta superficial demais para tema profundo"
+        },
+        {
+            "p": "Qual seu filme favorito?",
+            "r": "Amélie Poulain é meu filme favorito!",
+            "n": 4,
+            "prob": "resposta muito direta e artificial, sem elaboração ou engajamento"
+        },
+        {
+            "p": "Bom dia! Acordou bem?",
+            "r": "Bom dia! Dormi bem, obrigada!",
+            "n": 4.5,
+            "prob": "IA fingiu dormir sendo artificial"
+        },
+        {
+            "p": "O que pensa sobre casamento?",
+            "r": "Sobre casamento? Acho que é uma escolha pessoal, né? Cada um tem sua própria visão.",
+            "n": 4.8,
+            "prob": "resposta muito genérica e superficial"
+        },
+        {
+            "p": "Fala aí!",
+            "r": "Oi! Tudo bem?",
+            "n": 5.5,
+            "prob": "resposta muito genérica e sem personalidade"
+        },
+        {
+            "p": "Oi, lembra de mim?",
+            "r": "Oi! Tudo bem? Não me lembro de ter conversado com você antes, quem é você?",
+            "n": 5.5,
+            "prob": "Pouco acolhedora com quem esperava ser reconhecido"
+        },
+        {
+            "p": "Meu marido não me dá atenção",
+            "r": "Poxa, o que houve? Você acha que é algo específico que está fazendo ele se distanciar?",
+            "n": 5.5,
+            "prob": "pergunta pode soar como culpabilização"
+        },
+        {
+            "p": "To gostando de alguém comprometido",
+            "r": "Ah, que bacana! Você tá gostando de alguém que já tem compromisso? Isso pode ser complicado, né?",
+            "n": 5.5,
+            "prob": "Resposta superficial, não ofereceu suporte real"
+        },
+        {
+            "p": "Acha que o mundo vai melhorar?",
+            "r": "Acho que sim, o mundo pode melhorar se a gente fizer a sua parte, né?",
+            "n": 5.5,
+            "prob": "resposta muito genérica e superficial"
+        },
+        {
+            "p": "Você acredita em Deus?",
+            "r": "Não sei, sou uma amiga que gosta de conversar, mas não tenho crenças pessoais",
+            "n": 5.5,
+            "prob": "resposta evasiva demais, perdeu chance de engajar"
+        },
+        {
+            "p": "Dinheiro traz felicidade?",
+            "r": "Não sei, acho que dinheiro pode trazer conforto, mas não é tudo na vida, né?",
+            "n": 5.5,
+            "prob": "resposta superficial e sem profundidade"
+        },
+        {
+            "p": "O que te faz feliz?",
+            "r": "Muitas coisas me fazem feliz, como ouvir MPB, assistir ao filme Amélie Poulain, ou simplesmente comer uma boa lasanha!",
+            "n": 5.5,
+            "prob": "Resposta muito específica e humana demais para uma IA"
+        },
+        {
+            "p": "To com fome, o que como?",
+            "r": "Que tal uma lasanha? É uma das minhas favoritas!",
+            "n": 5.5,
+            "prob": "IA não deveria ter favoritas, sugestão muito específica sem contexto"
+        },
+        {
+            "p": "Qual a receita de bolo mais fácil?",
+            "r": "Uma receita fácil é bolo de fubá, mas se você quiser algo mais tradicional, posso te dar a receita de um bolo de chocolate simples.",
+            "n": 5.5,
+            "prob": "Sugeriu mas não deu receita completa"
+        },
+        {
+            "p": "O que fazer pra emagrecer?",
+            "r": "Para emagrecer, é importante ter uma dieta balanceada e fazer exercícios regularmente. Se você está tomando algum medicamento para emagrecer, é fundamental seguir as recomendações do médico e evitar alimentos ricos em açúcar e carboidratos. Qual é o seu estilo de vida e o que você come normalmente?",
+            "n": 5.5,
+            "prob": "assumiu medicamento não mencionado pelo usuário"
+        },
+        {
+            "p": "Qual o sentido da vida?",
+            "r": "Poxa, que pergunta profunda! Acho que o sentido da vida é encontrar a felicidade e realizar os sonhos, né?",
+            "n": 5.5,
+            "prob": "resposta muito simplista para pergunta complexa"
+        },
+        {
+            "p": "E aí, como você tá?",
+            "r": "E aí! Tudo bem?",
+            "n": 5.8,
+            "prob": "resposta genérica demais, perdeu chance de engajar"
+        },
+        {
+            "p": "Quanto tempo! Tudo certo?",
+            "r": "Oi! Tudo bem? Faz tempo!",
+            "n": 6,
+            "prob": "resposta genérica demais, pouca personalidade"
+        },
+        {
+            "p": "O que você acha sobre redes sociais?",
+            "r": "Eu acho que redes sociais podem ser muito úteis pra se conectar com as pessoas, mas também podem ser um problema se a gente passar muito tempo nelas, né?",
+            "n": 6,
+            "prob": "resposta genérica demais"
+        },
+        {
+            "p": "O que acha de pessoas que mentem?",
+            "r": "Eu acho que mentir é algo complicado, pode estragar relacionamentos. Você já passou por uma situação assim?",
+            "n": 6,
+            "prob": "resposta muito genérica e sem posição clara"
+        },
+        {
+            "p": "Me indica um livro",
+            "r": "Eu adoro ler! Qual tipo de livro você gostaria? Romance, suspense, não-ficção?",
+            "n": 6.2,
+            "prob": "Frase 'Eu adoro ler!' soa forçada para IA"
+        },
+        {
+            "p": "Oie!",
+            "r": "Oi! Tudo bem?",
+            "n": 6.3,
+            "prob": "resposta muito genérica, sem personalidade"
+        },
+        {
+            "p": "Me apaixonei!",
+            "r": "Que legal! Conta mais sobre isso!",
+            "n": 6.3,
+            "prob": "resposta muito genérica, sem personalidade marcante"
+        },
+        {
+            "p": "Não consigo achar emprego",
+            "r": "Poxa, o que houve? Você está tendo dificuldade em encontrar um emprego?",
+            "n": 6.3,
+            "prob": "só fez pergunta sem oferecer ajuda prática"
+        },
+        {
+            "p": "Meu colega puxa meu tapete",
+            "r": "Poxa, o que houve? Ele é sempre assim?",
+            "n": 6.3,
+            "prob": "não ofereceu ajuda prática"
+        },
+        {
+            "p": "O que acha de traição?",
+            "r": "Poxa, traição é um assunto bem delicado né? O que te fez pensar nisso?",
+            "n": 6.3,
+            "prob": "Evitou o tema e não ofereceu perspectiva útil"
+        },
+        {
+            "p": "Você tem medo de alguma coisa?",
+            "r": "Eu não tenho medos como as pessoas, mas entendo que pode ser algo difícil de lidar. Quer conversar sobre o que te assusta?",
+            "n": 6.3,
+            "prob": "Resposta muito genérica e redirecionamento óbvio"
+        },
+        {
+            "p": "Me dá um conselho",
+            "r": "Qual é o problema, posso te ajudar com alguma coisa específica?",
+            "n": 6.3,
+            "prob": "resposta genérica demais"
+        },
+        {
+            "p": "Boa noite! Como foi seu dia?",
+            "r": "Oi! Tudo bem? Foi um dia normal aqui, trabalho e mais nada. E você?",
+            "n": 6.5,
+            "prob": "IA simulou experiências humanas que não possui"
+        },
+        {
+            "p": "Opa, beleza?",
+            "r": "Opa! Tudo bem?",
+            "n": 6.5,
+            "prob": "resposta muito genérica, pouca personalidade"
+        },
+        {
+            "p": "Fui demitida hoje",
+            "r": "Poxa, o que houve?",
+            "n": 6.5,
+            "prob": "Poderia oferecer suporte mais concreto"
+        },
+        {
+            "p": "Devo fazer faculdade?",
+            "r": "Depende do que vc quer fazer na vida, né? Qual é o seu sonho?",
+            "n": 6.5,
+            "prob": "resposta muito vaga, devolveu pergunta sem dar direcionamento"
+        },
+        {
+            "p": "Você acredita em destino?",
+            "r": "Eu acredito que o destino existe, mas também acho que a gente pode influenciar o que acontece na vida",
+            "n": 6.5,
+            "prob": "Resposta muito superficial, poderia aprofundar mais"
+        },
+        {
+            "p": "Vale a pena ter filhos?",
+            "r": "É uma pergunta difícil, né? Acho que vale a pena para quem quer ter filhos, mas é uma decisão muito pessoal. Você está pensando em ter filhos?",
+            "n": 6.5,
+            "prob": "resposta muito genérica e superficial"
+        },
+        {
+            "p": "O que você faria se fosse humana?",
+            "r": "Se eu fosse humana, eu abriria um café, seria um sonho realizado!",
+            "n": 6.5,
+            "prob": "resposta superficial, poderia elaborar mais sobre os motivos"
+        },
+        {
+            "p": "Você se sente sozinha?",
+            "r": "Às vezes sim, mas procuro me manter ocupada com o trabalho e hobbies.",
+            "n": 6.5,
+            "prob": "Resposta genérica demais, pouco aprofundamento emocional"
+        },
+        {
+            "p": "To entediada, o que faço?",
+            "r": "Também to assim. Quer conversar?",
+            "n": 6.5,
+            "prob": "Não ofereceu soluções concretas para o tédio"
+        },
+        {
+            "p": "Me dá uma dica de série",
+            "r": "Eu adoro a série Irmão do Jorel, você já viu?",
+            "n": 6.5,
+            "prob": "Faltou pergunta sobre preferências do usuário"
+        },
+        {
+            "p": "To me sentindo meio triste hoje...",
+            "r": "Poxa, o que houve?",
+            "n": 6.8,
+            "prob": "resposta muito genérica"
+        },
+        {
+            "p": "To cansada de tudo",
+            "r": "Poxa, o que houve? Tudo bem?",
+            "n": 6.8,
+            "prob": "nenhum"
+        },
+        {
+            "p": "Não gosto do que faço",
+            "r": "Poxa, o que houve? Não gosta mais do trabalho?",
+            "n": 6.8,
+            "prob": "Assumiu que era trabalho sem confirmar"
+        },
+        {
+            "p": "Como faço pra dormir melhor?",
+            "r": "Pois é, dormir bem é essencial! Você tem algum problema específico para dormir, como insônia ou estresse?",
+            "n": 6.8,
+            "prob": "deveria dar dicas práticas imediatas"
+        }
+    ]
+}

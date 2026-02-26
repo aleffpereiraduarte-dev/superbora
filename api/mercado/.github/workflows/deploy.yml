@@ -1,0 +1,48 @@
+name: Deploy BoraUm
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: pdo, pdo_pgsql, redis
+
+      - name: PHP Lint
+        run: find . -name "*.php" -not -path "*/vendor/*" | xargs -P4 php -l
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to SP-Original
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SP_HOST }}
+          username: root
+          password: ${{ secrets.SSH_PASSWORD }}
+          script: |
+            cd /var/www/html/api/mercado
+            git pull origin main
+            /root/deploy.sh all
+
+      - name: Verify Deployment
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SP_HOST }}
+          username: root
+          password: ${{ secrets.SSH_PASSWORD }}
+          script: /root/deploy.sh health

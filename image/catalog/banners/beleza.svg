@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300">
+  <defs>
+    <linearGradient id="g6" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#ff758c"/>
+      <stop offset="100%" style="stop-color:#ff7eb3"/>
+    </linearGradient>
+  </defs>
+  <rect fill="url(#g6)" width="1200" height="300"/>
+  <circle cx="1050" cy="150" r="150" fill="#fff" opacity="0.1"/>
+  <text x="60" y="120" font-family="Arial Black" font-size="48" fill="#fff">BELEZA</text>
+  <text x="60" y="170" font-family="Arial" font-size="24" fill="#fff">Cuide-se com os melhores produtos</text>
+  <text x="60" y="220" font-family="Arial" font-size="18" fill="rgba(255,255,255,0.8)">Perfumes • Maquiagem • Skincare • Cabelos</text>
+</svg>

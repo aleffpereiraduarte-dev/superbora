@@ -1,0 +1,2661 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Editor Visual - Mercado OneMundo</title>
+    
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        :root {
+            --editor-primary: #2563eb;
+            --editor-primary-dark: #1d4ed8;
+            --editor-success: #10b981;
+            --editor-warning: #f59e0b;
+            --editor-danger: #ef4444;
+            --editor-dark: #1f2937;
+            --editor-gray: #6b7280;
+            --editor-light: #f3f4f6;
+            --editor-white: #ffffff;
+            --editor-border: #e5e7eb;
+            --editor-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            --editor-radius: 8px;
+        }
+        
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #f0f0f0;
+            min-height: 100vh;
+        }
+        
+        /* ==================== TOOLBAR PRINCIPAL ==================== */
+        .editor-toolbar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 56px;
+            background: var(--editor-dark);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 16px;
+            z-index: 10000;
+            box-shadow: var(--editor-shadow);
+        }
+        
+        .toolbar-left {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        
+        .toolbar-logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: white;
+            font-weight: 700;
+            font-size: 16px;
+        }
+        
+        .toolbar-logo-icon {
+            width: 32px;
+            height: 32px;
+            background: linear-gradient(135deg, var(--editor-primary), var(--editor-success));
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .toolbar-divider {
+            width: 1px;
+            height: 32px;
+            background: rgba(255,255,255,0.2);
+        }
+        
+        .toolbar-center {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .toolbar-btn {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 14px;
+            background: transparent;
+            border: none;
+            color: rgba(255,255,255,0.7);
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            border-radius: 6px;
+            transition: all 0.2s;
+        }
+        
+        .toolbar-btn:hover {
+            background: rgba(255,255,255,0.1);
+            color: white;
+        }
+        
+        .toolbar-btn.active {
+            background: var(--editor-primary);
+            color: white;
+        }
+        
+        .viewport-btns {
+            display: flex;
+            background: rgba(255,255,255,0.1);
+            border-radius: 6px;
+            padding: 2px;
+        }
+        
+        .viewport-btn {
+            width: 36px;
+            height: 32px;
+            border: none;
+            background: transparent;
+            color: rgba(255,255,255,0.5);
+            cursor: pointer;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+        
+        .viewport-btn:hover {
+            color: white;
+        }
+        
+        .viewport-btn.active {
+            background: var(--editor-primary);
+            color: white;
+        }
+        
+        .toolbar-right {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 16px;
+            font-size: 13px;
+            font-weight: 600;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: none;
+        }
+        
+        .btn-ghost {
+            background: transparent;
+            color: rgba(255,255,255,0.7);
+        }
+        
+        .btn-ghost:hover {
+            background: rgba(255,255,255,0.1);
+            color: white;
+        }
+        
+        .btn-secondary {
+            background: rgba(255,255,255,0.15);
+            color: white;
+        }
+        
+        .btn-secondary:hover {
+            background: rgba(255,255,255,0.25);
+        }
+        
+        .btn-primary {
+            background: var(--editor-primary);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: var(--editor-primary-dark);
+        }
+        
+        .btn-success {
+            background: var(--editor-success);
+            color: white;
+        }
+        
+        .btn-success:hover {
+            background: #059669;
+        }
+        
+        /* ==================== SIDEBAR ESQUERDA ==================== */
+        .editor-sidebar-left {
+            position: fixed;
+            top: 56px;
+            left: 0;
+            width: 280px;
+            height: calc(100vh - 56px);
+            background: white;
+            border-right: 1px solid var(--editor-border);
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            transform: translateX(0);
+            transition: transform 0.3s ease;
+        }
+        
+        .editor-sidebar-left.hidden {
+            transform: translateX(-100%);
+        }
+        
+        .sidebar-header {
+            padding: 16px;
+            border-bottom: 1px solid var(--editor-border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        .sidebar-title {
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--editor-dark);
+        }
+        
+        .sidebar-tabs {
+            display: flex;
+            border-bottom: 1px solid var(--editor-border);
+        }
+        
+        .sidebar-tab {
+            flex: 1;
+            padding: 12px;
+            background: none;
+            border: none;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--editor-gray);
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+        
+        .sidebar-tab:hover {
+            color: var(--editor-dark);
+            background: var(--editor-light);
+        }
+        
+        .sidebar-tab.active {
+            color: var(--editor-primary);
+            border-bottom: 2px solid var(--editor-primary);
+            margin-bottom: -1px;
+        }
+        
+        .sidebar-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+        }
+        
+        .component-section {
+            margin-bottom: 20px;
+        }
+        
+        .component-section-title {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--editor-gray);
+            margin-bottom: 10px;
+        }
+        
+        .component-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+        }
+        
+        .component-item {
+            background: var(--editor-light);
+            border: 1px solid var(--editor-border);
+            border-radius: var(--editor-radius);
+            padding: 12px 8px;
+            text-align: center;
+            cursor: grab;
+            transition: all 0.2s;
+        }
+        
+        .component-item:hover {
+            background: var(--editor-primary);
+            border-color: var(--editor-primary);
+            color: white;
+            transform: translateY(-2px);
+            box-shadow: var(--editor-shadow);
+        }
+        
+        .component-item:hover .component-icon {
+            color: white;
+        }
+        
+        .component-icon {
+            width: 24px;
+            height: 24px;
+            margin: 0 auto 6px;
+            color: var(--editor-gray);
+            transition: color 0.2s;
+        }
+        
+        .component-name {
+            font-size: 11px;
+            font-weight: 500;
+        }
+        
+        /* ==================== SIDEBAR DIREITA (PROPRIEDADES) ==================== */
+        .editor-sidebar-right {
+            position: fixed;
+            top: 56px;
+            right: 0;
+            width: 320px;
+            height: calc(100vh - 56px);
+            background: white;
+            border-left: 1px solid var(--editor-border);
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            transform: translateX(0);
+            transition: transform 0.3s ease;
+        }
+        
+        .editor-sidebar-right.hidden {
+            transform: translateX(100%);
+        }
+        
+        .properties-header {
+            padding: 16px;
+            border-bottom: 1px solid var(--editor-border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        .properties-title {
+            font-size: 14px;
+            font-weight: 700;
+        }
+        
+        .properties-element {
+            font-size: 12px;
+            color: var(--editor-gray);
+            background: var(--editor-light);
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+        
+        .properties-tabs {
+            display: flex;
+            padding: 8px 16px;
+            gap: 4px;
+            background: var(--editor-light);
+            margin: 0 16px;
+            border-radius: var(--editor-radius);
+            margin-top: 12px;
+        }
+        
+        .prop-tab {
+            flex: 1;
+            padding: 8px;
+            background: none;
+            border: none;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--editor-gray);
+            cursor: pointer;
+            border-radius: 6px;
+            transition: all 0.2s;
+        }
+        
+        .prop-tab:hover {
+            color: var(--editor-dark);
+        }
+        
+        .prop-tab.active {
+            background: white;
+            color: var(--editor-dark);
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        
+        .properties-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+        }
+        
+        .prop-section {
+            margin-bottom: 20px;
+        }
+        
+        .prop-section-title {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--editor-gray);
+            margin-bottom: 12px;
+        }
+        
+        .prop-group {
+            margin-bottom: 14px;
+        }
+        
+        .prop-label {
+            display: block;
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--editor-dark);
+            margin-bottom: 6px;
+        }
+        
+        .prop-input {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid var(--editor-border);
+            border-radius: 6px;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+        
+        .prop-input:focus {
+            outline: none;
+            border-color: var(--editor-primary);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }
+        
+        .prop-select {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid var(--editor-border);
+            border-radius: 6px;
+            font-size: 13px;
+            background: white;
+            cursor: pointer;
+        }
+        
+        .prop-textarea {
+            min-height: 80px;
+            resize: vertical;
+        }
+        
+        /* Color Picker */
+        .color-row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        
+        .color-preview {
+            width: 40px;
+            height: 40px;
+            border-radius: 6px;
+            border: 2px solid var(--editor-border);
+            overflow: hidden;
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+        
+        .color-preview input[type="color"] {
+            width: 56px;
+            height: 56px;
+            margin: -8px;
+            border: none;
+            cursor: pointer;
+        }
+        
+        .color-presets {
+            display: flex;
+            gap: 4px;
+            flex-wrap: wrap;
+            margin-top: 8px;
+        }
+        
+        .color-preset {
+            width: 24px;
+            height: 24px;
+            border-radius: 4px;
+            cursor: pointer;
+            border: 2px solid transparent;
+            transition: all 0.2s;
+        }
+        
+        .color-preset:hover {
+            transform: scale(1.15);
+        }
+        
+        /* Range Slider */
+        .range-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .range-slider {
+            flex: 1;
+            height: 6px;
+            -webkit-appearance: none;
+            background: var(--editor-border);
+            border-radius: 3px;
+            outline: none;
+        }
+        
+        .range-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            background: var(--editor-primary);
+            border-radius: 50%;
+            cursor: pointer;
+        }
+        
+        .range-value {
+            min-width: 50px;
+            text-align: center;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--editor-gray);
+        }
+        
+        /* Toggle */
+        .toggle-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        .toggle {
+            position: relative;
+            width: 44px;
+            height: 24px;
+        }
+        
+        .toggle input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: var(--editor-border);
+            border-radius: 24px;
+            transition: 0.3s;
+        }
+        
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background: white;
+            border-radius: 50%;
+            transition: 0.3s;
+        }
+        
+        .toggle input:checked + .toggle-slider {
+            background: var(--editor-primary);
+        }
+        
+        .toggle input:checked + .toggle-slider:before {
+            transform: translateX(20px);
+        }
+        
+        /* Alignment Buttons */
+        .align-buttons {
+            display: flex;
+            gap: 4px;
+        }
+        
+        .align-btn {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid var(--editor-border);
+            background: white;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+        
+        .align-btn:first-child {
+            border-radius: 6px 0 0 6px;
+        }
+        
+        .align-btn:last-child {
+            border-radius: 0 6px 6px 0;
+        }
+        
+        .align-btn:hover {
+            background: var(--editor-light);
+        }
+        
+        .align-btn.active {
+            background: var(--editor-primary);
+            border-color: var(--editor-primary);
+            color: white;
+        }
+        
+        /* Spacing Control */
+        .spacing-box {
+            display: grid;
+            grid-template-columns: 1fr 2fr 1fr;
+            grid-template-rows: auto auto auto;
+            gap: 4px;
+            background: var(--editor-light);
+            padding: 12px;
+            border-radius: var(--editor-radius);
+        }
+        
+        .spacing-input {
+            width: 100%;
+            padding: 6px;
+            border: 1px solid var(--editor-border);
+            border-radius: 4px;
+            text-align: center;
+            font-size: 12px;
+        }
+        
+        .spacing-center {
+            grid-column: 2;
+            grid-row: 2;
+            background: white;
+            border: 1px dashed var(--editor-border);
+            border-radius: 4px;
+            height: 50px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            color: var(--editor-gray);
+        }
+        
+        .spacing-top { grid-column: 2; grid-row: 1; }
+        .spacing-right { grid-column: 3; grid-row: 2; }
+        .spacing-bottom { grid-column: 2; grid-row: 3; }
+        .spacing-left { grid-column: 1; grid-row: 2; }
+        
+        /* Image Upload */
+        .image-upload-box {
+            border: 2px dashed var(--editor-border);
+            border-radius: var(--editor-radius);
+            padding: 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .image-upload-box:hover {
+            border-color: var(--editor-primary);
+            background: rgba(37, 99, 235, 0.05);
+        }
+        
+        .image-upload-icon {
+            width: 32px;
+            height: 32px;
+            color: var(--editor-gray);
+            margin: 0 auto 8px;
+        }
+        
+        .image-upload-text {
+            font-size: 12px;
+            color: var(--editor-gray);
+        }
+        
+        .image-upload-text span {
+            color: var(--editor-primary);
+            font-weight: 600;
+        }
+        
+        .image-preview-box {
+            position: relative;
+            border-radius: var(--editor-radius);
+            overflow: hidden;
+        }
+        
+        .image-preview-box img {
+            width: 100%;
+            height: 120px;
+            object-fit: cover;
+        }
+        
+        .image-preview-actions {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            display: flex;
+            gap: 4px;
+        }
+        
+        .image-action-btn {
+            width: 28px;
+            height: 28px;
+            background: rgba(0,0,0,0.6);
+            border: none;
+            border-radius: 4px;
+            color: white;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        /* ==================== CANVAS / IFRAME ==================== */
+        .editor-canvas-wrapper {
+            position: fixed;
+            top: 56px;
+            left: 280px;
+            right: 320px;
+            bottom: 0;
+            background: #e5e5e5;
+            overflow: auto;
+            display: flex;
+            justify-content: center;
+            padding: 20px;
+            transition: all 0.3s ease;
+        }
+        
+        .editor-canvas-wrapper.sidebar-left-hidden {
+            left: 0;
+        }
+        
+        .editor-canvas-wrapper.sidebar-right-hidden {
+            right: 0;
+        }
+        
+        .editor-canvas {
+            background: white;
+            box-shadow: var(--editor-shadow);
+            border-radius: var(--editor-radius);
+            overflow: hidden;
+            transition: all 0.3s ease;
+            width: 100%;
+            max-width: 100%;
+        }
+        
+        .editor-canvas.tablet {
+            max-width: 768px;
+        }
+        
+        .editor-canvas.mobile {
+            max-width: 375px;
+        }
+        
+        .editor-canvas iframe {
+            width: 100%;
+            height: calc(100vh - 96px);
+            border: none;
+        }
+        
+        /* ==================== ELEMENT HIGHLIGHT ==================== */
+        .element-highlight {
+            position: absolute;
+            pointer-events: none;
+            border: 2px solid var(--editor-primary);
+            background: rgba(37, 99, 235, 0.1);
+            z-index: 9998;
+            transition: all 0.15s ease;
+        }
+        
+        .element-highlight-label {
+            position: absolute;
+            top: -24px;
+            left: 0;
+            background: var(--editor-primary);
+            color: white;
+            font-size: 11px;
+            font-weight: 600;
+            padding: 4px 8px;
+            border-radius: 4px 4px 0 0;
+            white-space: nowrap;
+        }
+        
+        .element-highlight-actions {
+            position: absolute;
+            top: -24px;
+            right: 0;
+            display: flex;
+            gap: 2px;
+        }
+        
+        .element-action {
+            width: 24px;
+            height: 24px;
+            background: var(--editor-dark);
+            border: none;
+            color: white;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
+        }
+        
+        .element-action:hover {
+            background: var(--editor-primary);
+        }
+        
+        .element-action.delete:hover {
+            background: var(--editor-danger);
+        }
+        
+        /* ==================== LAYERS PANEL ==================== */
+        .layers-list {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        
+        .layer-item {
+            display: flex;
+            align-items: center;
+            padding: 10px 12px;
+            background: var(--editor-light);
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+            gap: 10px;
+        }
+        
+        .layer-item:hover {
+            background: var(--editor-border);
+        }
+        
+        .layer-item.selected {
+            background: var(--editor-primary);
+            color: white;
+        }
+        
+        .layer-item.selected .layer-icon,
+        .layer-item.selected .layer-actions button {
+            color: white;
+        }
+        
+        .layer-drag {
+            color: var(--editor-gray);
+            cursor: grab;
+        }
+        
+        .layer-icon {
+            color: var(--editor-gray);
+        }
+        
+        .layer-name {
+            flex: 1;
+            font-size: 13px;
+            font-weight: 500;
+        }
+        
+        .layer-actions {
+            display: flex;
+            gap: 4px;
+        }
+        
+        .layer-actions button {
+            width: 24px;
+            height: 24px;
+            background: none;
+            border: none;
+            color: var(--editor-gray);
+            cursor: pointer;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .layer-actions button:hover {
+            background: rgba(0,0,0,0.1);
+        }
+        
+        /* ==================== GLOBAL STYLES PANEL ==================== */
+        .styles-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+        }
+        
+        .style-card {
+            background: var(--editor-light);
+            border-radius: var(--editor-radius);
+            padding: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .style-card:hover {
+            background: var(--editor-border);
+        }
+        
+        .style-card-label {
+            font-size: 11px;
+            color: var(--editor-gray);
+            margin-bottom: 8px;
+        }
+        
+        .style-card-preview {
+            height: 32px;
+            border-radius: 4px;
+        }
+        
+        /* ==================== NO SELECTION STATE ==================== */
+        .no-selection {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            text-align: center;
+            padding: 40px;
+            color: var(--editor-gray);
+        }
+        
+        .no-selection-icon {
+            width: 48px;
+            height: 48px;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+        
+        .no-selection-title {
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: var(--editor-dark);
+        }
+        
+        .no-selection-text {
+            font-size: 13px;
+        }
+        
+        /* ==================== TOAST ==================== */
+        .toast-container {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            z-index: 99999;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        .toast {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 16px;
+            background: var(--editor-dark);
+            color: white;
+            border-radius: var(--editor-radius);
+            box-shadow: var(--editor-shadow);
+            animation: slideIn 0.3s ease;
+        }
+        
+        .toast.success { background: var(--editor-success); }
+        .toast.error { background: var(--editor-danger); }
+        .toast.warning { background: var(--editor-warning); }
+        
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateX(100px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+        
+        /* ==================== MODAL ==================== */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 100000;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s;
+        }
+        
+        .modal-overlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+        
+        .modal {
+            background: white;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 800px;
+            max-height: 80vh;
+            overflow: hidden;
+            transform: scale(0.9);
+            transition: transform 0.3s;
+        }
+        
+        .modal-overlay.active .modal {
+            transform: scale(1);
+        }
+        
+        .modal-header {
+            padding: 20px;
+            border-bottom: 1px solid var(--editor-border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        .modal-title {
+            font-size: 18px;
+            font-weight: 700;
+        }
+        
+        .modal-close {
+            width: 32px;
+            height: 32px;
+            border: none;
+            background: none;
+            cursor: pointer;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--editor-gray);
+        }
+        
+        .modal-close:hover {
+            background: var(--editor-light);
+        }
+        
+        .modal-body {
+            padding: 20px;
+            overflow-y: auto;
+            max-height: calc(80vh - 140px);
+        }
+        
+        .modal-footer {
+            padding: 16px 20px;
+            border-top: 1px solid var(--editor-border);
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+        }
+        
+        /* Media Library Grid */
+        .media-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+        }
+        
+        .media-item {
+            aspect-ratio: 1;
+            border-radius: var(--editor-radius);
+            overflow: hidden;
+            cursor: pointer;
+            border: 3px solid transparent;
+            transition: all 0.2s;
+        }
+        
+        .media-item:hover {
+            border-color: var(--editor-primary);
+        }
+        
+        .media-item.selected {
+            border-color: var(--editor-primary);
+            box-shadow: 0 0 0 2px var(--editor-primary);
+        }
+        
+        .media-item img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        
+        /* ==================== QUICK EDIT POPOVER ==================== */
+        .quick-edit-popover {
+            position: absolute;
+            background: white;
+            border-radius: var(--editor-radius);
+            box-shadow: var(--editor-shadow);
+            padding: 12px;
+            min-width: 200px;
+            z-index: 99999;
+            display: none;
+        }
+        
+        .quick-edit-popover.active {
+            display: block;
+        }
+        
+        .quick-edit-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+        
+        .quick-edit-row:last-child {
+            margin-bottom: 0;
+        }
+        
+        /* ==================== RESPONSIVE ==================== */
+        @media (max-width: 1200px) {
+            .editor-sidebar-left {
+                width: 240px;
+            }
+            .editor-sidebar-right {
+                width: 280px;
+            }
+            .editor-canvas-wrapper {
+                left: 240px;
+                right: 280px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- ==================== TOOLBAR ==================== -->
+    <header class="editor-toolbar">
+        <div class="toolbar-left">
+            <div class="toolbar-logo">
+                <div class="toolbar-logo-icon">
+                    <i data-lucide="edit-3" style="width:18px;height:18px;color:white"></i>
+                </div>
+                <span>Editor Visual</span>
+            </div>
+            <div class="toolbar-divider"></div>
+            <button class="toolbar-btn" id="btnToggleLeftSidebar">
+                <i data-lucide="panel-left" style="width:18px;height:18px"></i>
+            </button>
+        </div>
+        
+        <div class="toolbar-center">
+            <div class="viewport-btns">
+                <button class="viewport-btn active" data-viewport="desktop" title="Desktop">
+                    <i data-lucide="monitor" style="width:18px;height:18px"></i>
+                </button>
+                <button class="viewport-btn" data-viewport="tablet" title="Tablet">
+                    <i data-lucide="tablet" style="width:18px;height:18px"></i>
+                </button>
+                <button class="viewport-btn" data-viewport="mobile" title="Mobile">
+                    <i data-lucide="smartphone" style="width:18px;height:18px"></i>
+                </button>
+            </div>
+            
+            <div class="toolbar-divider"></div>
+            
+            <button class="toolbar-btn" onclick="undo()" title="Desfazer (Ctrl+Z)">
+                <i data-lucide="undo-2" style="width:18px;height:18px"></i>
+            </button>
+            <button class="toolbar-btn" onclick="redo()" title="Refazer (Ctrl+Shift+Z)">
+                <i data-lucide="redo-2" style="width:18px;height:18px"></i>
+            </button>
+        </div>
+        
+        <div class="toolbar-right">
+            <button class="toolbar-btn" id="btnToggleRightSidebar">
+                <i data-lucide="panel-right" style="width:18px;height:18px"></i>
+            </button>
+            <div class="toolbar-divider"></div>
+            <button class="btn btn-ghost" onclick="previewPage()">
+                <i data-lucide="eye" style="width:16px;height:16px"></i>
+                Preview
+            </button>
+            <button class="btn btn-secondary" onclick="savePage()">
+                <i data-lucide="save" style="width:16px;height:16px"></i>
+                Salvar
+            </button>
+            <button class="btn btn-success" onclick="publishPage()">
+                <i data-lucide="rocket" style="width:16px;height:16px"></i>
+                Publicar
+            </button>
+        </div>
+    </header>
+    
+    <!-- ==================== SIDEBAR ESQUERDA ==================== -->
+    <aside class="editor-sidebar-left" id="sidebarLeft">
+        <div class="sidebar-tabs">
+            <button class="sidebar-tab active" data-tab="components">
+                <i data-lucide="plus-square" style="width:14px;height:14px"></i>
+                Adicionar
+            </button>
+            <button class="sidebar-tab" data-tab="layers">
+                <i data-lucide="layers" style="width:14px;height:14px"></i>
+                Camadas
+            </button>
+            <button class="sidebar-tab" data-tab="global">
+                <i data-lucide="palette" style="width:14px;height:14px"></i>
+                Estilos
+            </button>
+        </div>
+        
+        <div class="sidebar-content">
+            <!-- Tab: Componentes -->
+            <div class="tab-panel active" id="panelComponents">
+                <div class="component-section">
+                    <div class="component-section-title">Layout</div>
+                    <div class="component-grid">
+                        <div class="component-item" draggable="true" data-component="section">
+                            <i data-lucide="square" class="component-icon"></i>
+                            <div class="component-name">Seção</div>
+                        </div>
+                        <div class="component-item" draggable="true" data-component="container">
+                            <i data-lucide="box" class="component-icon"></i>
+                            <div class="component-name">Container</div>
+                        </div>
+                        <div class="component-item" draggable="true" data-component="columns">
+                            <i data-lucide="columns" class="component-icon"></i>
+                            <div class="component-name">Colunas</div>
+                        </div>
+                        <div class="component-item" draggable="true" data-component="grid">
+                            <i data-lucide="grid-3x3" class="component-icon"></i>
+                            <div class="component-name">Grid</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="component-section">
+                    <div class="component-section-title">Básico</div>
+                    <div class="component-grid">
+                        <div class="component-item" draggable="true" data-component="heading">
+                            <i data-lucide="type" class="component-icon"></i>
+                            <div class="component-name">Título</div>
+                        </div>
+                        <div class="component-item" draggable="true" data-component="text">
+                            <i data-lucide="align-left" class="component-icon"></i>
+                            <div class="component-name">Texto</div>
+                        </div>
+                        <div class="component-item" draggable="true" data-component="button">
+                            <i data-lucide="mouse-pointer-click" class="component-icon"></i>
+                            <div class="component-name">Botão</div>
+                        </div>
+                        <div class="component-item" draggable="true" data-component="link">
+                            <i data-lucide="link" class="component-icon"></i>
+                            <div class="component-name">Link</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="component-section">
+                    <div class="component-section-title">Mídia</div>
+                    <div class="component-grid">
+                        <div class="component-item" draggable="true" data-component="image">
+                            <i data-lucide="image" class="component-icon"></i>
+                            <div class="component-name">Imagem</div>
+                        </div>
+                        <div class="component-item" draggable="true" data-component="banner">
+                            <i data-lucide="image-plus" class="component-icon"></i>
+                            <div class="component-name">Banner</div>
+                        </div>
+                        <div class="component-item" draggable="true" data-component="carousel">
+                            <i data-lucide="gallery-horizontal" class="component-icon"></i>
+                            <div class="component-name">Carrossel</div>
+                        </div>
+                        <div class="component-item" draggable="true" data-component="video">
+                            <i data-lucide="play-circle" class="component-icon"></i>
+                            <div class="component-name">Vídeo</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="component-section">
+                    <div class="component-section-title">E-commerce</div>
+                    <div class="component-grid">
+                        <div class="component-item" draggable="true" data-component="products">
+                            <i data-lucide="package" class="component-icon"></i>
+                            <div class="component-name">Produtos</div>
+                        </div>
+                        <div class="component-item" draggable="true" data-component="categories">
+                            <i data-lucide="folder" class="component-icon"></i>
+                            <div class="component-name">Categorias</div>
+                        </div>
+                        <div class="component-item" draggable="true" data-component="cart">
+                            <i data-lucide="shopping-cart" class="component-icon"></i>
+                            <div class="component-name">Carrinho</div>
+                        </div>
+                        <div class="component-item" draggable="true" data-component="search">
+                            <i data-lucide="search" class="component-icon"></i>
+                            <div class="component-name">Busca</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="component-section">
+                    <div class="component-section-title">Marketing</div>
+                    <div class="component-grid">
+                        <div class="component-item" draggable="true" data-component="countdown">
+                            <i data-lucide="timer" class="component-icon"></i>
+                            <div class="component-name">Countdown</div>
+                        </div>
+                        <div class="component-item" draggable="true" data-component="newsletter">
+                            <i data-lucide="mail" class="component-icon"></i>
+                            <div class="component-name">Newsletter</div>
+                        </div>
+                        <div class="component-item" draggable="true" data-component="testimonials">
+                            <i data-lucide="quote" class="component-icon"></i>
+                            <div class="component-name">Depoimentos</div>
+                        </div>
+                        <div class="component-item" draggable="true" data-component="cta">
+                            <i data-lucide="megaphone" class="component-icon"></i>
+                            <div class="component-name">CTA</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="component-section">
+                    <div class="component-section-title">Navegação</div>
+                    <div class="component-grid">
+                        <div class="component-item" draggable="true" data-component="header">
+                            <i data-lucide="panel-top" class="component-icon"></i>
+                            <div class="component-name">Header</div>
+                        </div>
+                        <div class="component-item" draggable="true" data-component="menu">
+                            <i data-lucide="menu" class="component-icon"></i>
+                            <div class="component-name">Menu</div>
+                        </div>
+                        <div class="component-item" draggable="true" data-component="footer">
+                            <i data-lucide="panel-bottom" class="component-icon"></i>
+                            <div class="component-name">Footer</div>
+                        </div>
+                        <div class="component-item" draggable="true" data-component="breadcrumb">
+                            <i data-lucide="chevrons-right" class="component-icon"></i>
+                            <div class="component-name">Breadcrumb</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="component-section">
+                    <div class="component-section-title">Social</div>
+                    <div class="component-grid">
+                        <div class="component-item" draggable="true" data-component="social">
+                            <i data-lucide="share-2" class="component-icon"></i>
+                            <div class="component-name">Redes Sociais</div>
+                        </div>
+                        <div class="component-item" draggable="true" data-component="whatsapp">
+                            <i data-lucide="message-circle" class="component-icon"></i>
+                            <div class="component-name">WhatsApp</div>
+                        </div>
+                        <div class="component-item" draggable="true" data-component="map">
+                            <i data-lucide="map-pin" class="component-icon"></i>
+                            <div class="component-name">Mapa</div>
+                        </div>
+                        <div class="component-item" draggable="true" data-component="contact">
+                            <i data-lucide="phone" class="component-icon"></i>
+                            <div class="component-name">Contato</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Tab: Camadas -->
+            <div class="tab-panel" id="panelLayers" style="display:none">
+                <div id="layersList" class="layers-list">
+                    <!-- Camadas serão carregadas dinamicamente -->
+                </div>
+            </div>
+            
+            <!-- Tab: Estilos Globais -->
+            <div class="tab-panel" id="panelGlobal" style="display:none">
+                <div class="prop-section">
+                    <div class="prop-section-title">Cores do Tema</div>
+                    <div class="styles-grid">
+                        <div class="style-card" onclick="openColorPicker('primary')">
+                            <div class="style-card-label">Primária</div>
+                            <div class="style-card-preview" id="previewPrimary" style="background:#2563eb"></div>
+                        </div>
+                        <div class="style-card" onclick="openColorPicker('secondary')">
+                            <div class="style-card-label">Secundária</div>
+                            <div class="style-card-preview" id="previewSecondary" style="background:#10b981"></div>
+                        </div>
+                        <div class="style-card" onclick="openColorPicker('accent')">
+                            <div class="style-card-label">Destaque</div>
+                            <div class="style-card-preview" id="previewAccent" style="background:#f59e0b"></div>
+                        </div>
+                        <div class="style-card" onclick="openColorPicker('background')">
+                            <div class="style-card-label">Fundo</div>
+                            <div class="style-card-preview" id="previewBackground" style="background:#ffffff;border:1px solid #e5e7eb"></div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="prop-section">
+                    <div class="prop-section-title">Tipografia</div>
+                    <div class="prop-group">
+                        <label class="prop-label">Fonte Principal</label>
+                        <select class="prop-select" id="globalFont" onchange="updateGlobalStyle('font', this.value)">
+                            <option value="Inter">Inter</option>
+                            <option value="Poppins">Poppins</option>
+                            <option value="Roboto">Roboto</option>
+                            <option value="Open Sans">Open Sans</option>
+                            <option value="Montserrat">Montserrat</option>
+                            <option value="Lato">Lato</option>
+                        </select>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Tamanho Base</label>
+                        <div class="range-row">
+                            <input type="range" class="range-slider" id="globalFontSize" min="12" max="20" value="16" oninput="updateGlobalStyle('fontSize', this.value)">
+                            <span class="range-value">16px</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="prop-section">
+                    <div class="prop-section-title">Layout</div>
+                    <div class="prop-group">
+                        <label class="prop-label">Largura do Container</label>
+                        <div class="range-row">
+                            <input type="range" class="range-slider" id="globalContainer" min="1000" max="1600" value="1400" step="50" oninput="updateGlobalStyle('container', this.value)">
+                            <span class="range-value">1400px</span>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Raio das Bordas</label>
+                        <div class="range-row">
+                            <input type="range" class="range-slider" id="globalRadius" min="0" max="20" value="8" oninput="updateGlobalStyle('radius', this.value)">
+                            <span class="range-value">8px</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="prop-section">
+                    <div class="prop-section-title">Header</div>
+                    <div class="prop-group">
+                        <label class="prop-label">Altura</label>
+                        <div class="range-row">
+                            <input type="range" class="range-slider" min="50" max="120" value="80" oninput="updateGlobalStyle('headerHeight', this.value)">
+                            <span class="range-value">80px</span>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <div class="toggle-row">
+                            <label class="prop-label">Header Fixo</label>
+                            <label class="toggle">
+                                <input type="checkbox" checked onchange="updateGlobalStyle('headerSticky', this.checked)">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </aside>
+    
+    <!-- ==================== SIDEBAR DIREITA (PROPRIEDADES) ==================== -->
+    <aside class="editor-sidebar-right" id="sidebarRight">
+        <div class="properties-header">
+            <div class="properties-title">Propriedades</div>
+            <span class="properties-element" id="selectedElementType">Nenhum</span>
+        </div>
+        
+        <div class="properties-content" id="propertiesContent">
+            <!-- Estado: Nenhum elemento selecionado -->
+            <div class="no-selection" id="noSelection">
+                <i data-lucide="mouse-pointer-click" class="no-selection-icon"></i>
+                <div class="no-selection-title">Nenhum elemento selecionado</div>
+                <div class="no-selection-text">Clique em um elemento na página para editar suas propriedades</div>
+            </div>
+            
+            <!-- Formulário de Propriedades -->
+            <div id="propertiesForm" style="display:none">
+                <div class="properties-tabs">
+                    <button class="prop-tab active" data-proptab="content">Conteúdo</button>
+                    <button class="prop-tab" data-proptab="style">Estilo</button>
+                    <button class="prop-tab" data-proptab="advanced">Avançado</button>
+                </div>
+                
+                <!-- Conteúdo dinâmico baseado no elemento -->
+                <div id="propTabContent" class="prop-tab-panel"></div>
+                <div id="propTabStyle" class="prop-tab-panel" style="display:none"></div>
+                <div id="propTabAdvanced" class="prop-tab-panel" style="display:none"></div>
+            </div>
+        </div>
+    </aside>
+    
+    <!-- ==================== CANVAS ==================== -->
+    <main class="editor-canvas-wrapper" id="canvasWrapper">
+        <div class="editor-canvas" id="editorCanvas">
+            <iframe id="pageFrame" src="about:blank"></iframe>
+        </div>
+    </main>
+    
+    <!-- ==================== MODAL: BIBLIOTECA DE MÍDIA ==================== -->
+    <div class="modal-overlay" id="mediaModal">
+        <div class="modal">
+            <div class="modal-header">
+                <div class="modal-title">Biblioteca de Mídia</div>
+                <button class="modal-close" onclick="closeModal('mediaModal')">
+                    <i data-lucide="x" style="width:20px;height:20px"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div style="margin-bottom:16px;display:flex;gap:12px">
+                    <button class="btn btn-primary" onclick="document.getElementById('mediaUpload').click()">
+                        <i data-lucide="upload" style="width:16px;height:16px"></i>
+                        Upload
+                    </button>
+                    <input type="file" id="mediaUpload" style="display:none" accept="image/*" multiple>
+                    <input type="text" class="prop-input" placeholder="Buscar..." style="flex:1">
+                </div>
+                <div class="media-grid" id="mediaGrid"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('mediaModal')">Cancelar</button>
+                <button class="btn btn-primary" onclick="selectMedia()">Selecionar</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- ==================== TOAST CONTAINER ==================== -->
+    <div class="toast-container" id="toastContainer"></div>
+    
+    <!-- ==================== JAVASCRIPT ==================== -->
+    <script>
+        // ==================== ESTADO GLOBAL ====================
+        const EditorState = {
+            selectedElement: null,
+            selectedElementData: null,
+            pageData: null,
+            history: [],
+            historyIndex: -1,
+            globalStyles: {
+                primary: '#2563eb',
+                secondary: '#10b981',
+                accent: '#f59e0b',
+                background: '#ffffff',
+                font: 'Inter',
+                fontSize: 16,
+                container: 1400,
+                radius: 8,
+                headerHeight: 80,
+                headerSticky: true
+            },
+            isDragging: false,
+            mediaTarget: null
+        };
+        
+        // ==================== INICIALIZAÇÃO ====================
+        document.addEventListener('DOMContentLoaded', function() {
+            lucide.createIcons();
+            initTabs();
+            initViewport();
+            initSidebarToggles();
+            initDragAndDrop();
+            loadPage();
+            loadMediaLibrary();
+        });
+        
+        // ==================== CARREGAR PÁGINA ====================
+        function loadPage() {
+            const iframe = document.getElementById('pageFrame');
+            
+            // URL da página do Mercado (ajuste conforme necessário)
+            // Por enquanto, vamos criar uma página de exemplo
+            const pageHTML = generateExamplePage();
+            
+            iframe.srcdoc = pageHTML;
+            
+            iframe.onload = function() {
+                initIframeEditing(iframe);
+            };
+        }
+        
+        function generateExamplePage() {
+            return `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Inter', sans-serif; }
+        
+        /* Header */
+        .header {
+            background: #2563eb;
+            padding: 20px 40px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .header-logo { color: white; font-size: 24px; font-weight: 700; }
+        .header-nav { display: flex; gap: 24px; }
+        .header-nav a { color: rgba(255,255,255,0.9); text-decoration: none; font-weight: 500; }
+        .header-actions { display: flex; gap: 16px; align-items: center; }
+        .header-actions a { color: white; }
+        .header-search { 
+            background: rgba(255,255,255,0.2); 
+            border: none; 
+            padding: 10px 16px; 
+            border-radius: 8px; 
+            color: white;
+            width: 300px;
+        }
+        .header-search::placeholder { color: rgba(255,255,255,0.7); }
+        
+        /* Banner */
+        .banner {
+            background: linear-gradient(135deg, #1e40af, #7c3aed);
+            min-height: 400px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            color: white;
+            padding: 60px 20px;
+        }
+        .banner h1 { font-size: 48px; font-weight: 700; margin-bottom: 16px; }
+        .banner p { font-size: 20px; opacity: 0.9; margin-bottom: 32px; }
+        .banner-btn {
+            display: inline-block;
+            background: white;
+            color: #1e40af;
+            padding: 14px 32px;
+            border-radius: 8px;
+            font-weight: 600;
+            text-decoration: none;
+        }
+        
+        /* Categories */
+        .categories {
+            padding: 60px 40px;
+            background: #f9fafb;
+        }
+        .section-title {
+            font-size: 28px;
+            font-weight: 700;
+            text-align: center;
+            margin-bottom: 40px;
+        }
+        .categories-grid {
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 20px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        .category-card {
+            background: white;
+            padding: 24px;
+            border-radius: 12px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            border: 1px solid #e5e7eb;
+        }
+        .category-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+        }
+        .category-icon {
+            width: 64px;
+            height: 64px;
+            background: #eff6ff;
+            border-radius: 50%;
+            margin: 0 auto 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 28px;
+        }
+        .category-name { font-weight: 600; }
+        
+        /* Products */
+        .products {
+            padding: 60px 40px;
+        }
+        .products-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 24px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        .product-card {
+            background: white;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid #e5e7eb;
+            transition: all 0.3s;
+        }
+        .product-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+        }
+        .product-image {
+            aspect-ratio: 1;
+            background: #f3f4f6;
+        }
+        .product-info {
+            padding: 16px;
+        }
+        .product-name { font-weight: 600; margin-bottom: 8px; }
+        .product-price { color: #2563eb; font-size: 20px; font-weight: 700; }
+        
+        /* CTA */
+        .cta {
+            background: #10b981;
+            padding: 80px 40px;
+            text-align: center;
+            color: white;
+        }
+        .cta h2 { font-size: 36px; font-weight: 700; margin-bottom: 16px; }
+        .cta p { font-size: 18px; opacity: 0.9; margin-bottom: 32px; }
+        .cta-btn {
+            display: inline-block;
+            background: white;
+            color: #10b981;
+            padding: 14px 32px;
+            border-radius: 8px;
+            font-weight: 600;
+            text-decoration: none;
+        }
+        
+        /* Newsletter */
+        .newsletter {
+            background: #1f2937;
+            padding: 60px 40px;
+            text-align: center;
+            color: white;
+        }
+        .newsletter h3 { font-size: 28px; font-weight: 700; margin-bottom: 12px; }
+        .newsletter p { opacity: 0.8; margin-bottom: 24px; }
+        .newsletter-form {
+            display: flex;
+            gap: 12px;
+            max-width: 500px;
+            margin: 0 auto;
+        }
+        .newsletter-input {
+            flex: 1;
+            padding: 14px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+        }
+        .newsletter-btn {
+            background: #2563eb;
+            color: white;
+            border: none;
+            padding: 14px 24px;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        
+        /* Footer */
+        .footer {
+            background: #111827;
+            color: white;
+            padding: 60px 40px 30px;
+        }
+        .footer-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 40px;
+            max-width: 1400px;
+            margin: 0 auto 40px;
+        }
+        .footer-col h4 { font-weight: 700; margin-bottom: 16px; }
+        .footer-col a { display: block; color: rgba(255,255,255,0.7); text-decoration: none; margin-bottom: 8px; }
+        .footer-bottom {
+            text-align: center;
+            padding-top: 30px;
+            border-top: 1px solid rgba(255,255,255,0.1);
+            color: rgba(255,255,255,0.5);
+        }
+        
+        /* Editor Styles */
+        [data-editable] {
+            position: relative;
+            cursor: pointer;
+            transition: outline 0.15s;
+        }
+        [data-editable]:hover {
+            outline: 2px dashed #2563eb;
+            outline-offset: 2px;
+        }
+        [data-editable].selected {
+            outline: 2px solid #2563eb;
+            outline-offset: 2px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <header class="header" data-editable data-type="header" data-id="header-1">
+        <div class="header-logo" data-editable data-type="text" data-id="logo-text">Mercado OneMundo</div>
+        <nav class="header-nav">
+            <a href="#" data-editable data-type="link" data-id="nav-1">Início</a>
+            <a href="#" data-editable data-type="link" data-id="nav-2">Produtos</a>
+            <a href="#" data-editable data-type="link" data-id="nav-3">Categorias</a>
+            <a href="#" data-editable data-type="link" data-id="nav-4">Ofertas</a>
+            <a href="#" data-editable data-type="link" data-id="nav-5">Contato</a>
+        </nav>
+        <div class="header-actions">
+            <input type="text" class="header-search" placeholder="Buscar produtos..." data-editable data-type="input" data-id="search-1">
+            <a href="#" data-editable data-type="icon" data-id="cart-icon">🛒</a>
+            <a href="#" data-editable data-type="icon" data-id="user-icon">👤</a>
+        </div>
+    </header>
+    
+    <!-- Banner -->
+    <section class="banner" data-editable data-type="banner" data-id="banner-1">
+        <div>
+            <h1 data-editable data-type="heading" data-id="banner-title">Bem-vindo ao Mercado OneMundo</h1>
+            <p data-editable data-type="text" data-id="banner-subtitle">Os melhores produtos com entrega rápida em todo Brasil</p>
+            <a href="#" class="banner-btn" data-editable data-type="button" data-id="banner-btn">Ver Ofertas</a>
+        </div>
+    </section>
+    
+    <!-- Categories -->
+    <section class="categories" data-editable data-type="section" data-id="categories-section">
+        <h2 class="section-title" data-editable data-type="heading" data-id="cat-title">Categorias</h2>
+        <div class="categories-grid">
+            <div class="category-card" data-editable data-type="category" data-id="cat-1">
+                <div class="category-icon">🍎</div>
+                <div class="category-name">Frutas</div>
+            </div>
+            <div class="category-card" data-editable data-type="category" data-id="cat-2">
+                <div class="category-icon">🥬</div>
+                <div class="category-name">Verduras</div>
+            </div>
+            <div class="category-card" data-editable data-type="category" data-id="cat-3">
+                <div class="category-icon">🥛</div>
+                <div class="category-name">Laticínios</div>
+            </div>
+            <div class="category-card" data-editable data-type="category" data-id="cat-4">
+                <div class="category-icon">🥩</div>
+                <div class="category-name">Carnes</div>
+            </div>
+            <div class="category-card" data-editable data-type="category" data-id="cat-5">
+                <div class="category-icon">🧹</div>
+                <div class="category-name">Limpeza</div>
+            </div>
+            <div class="category-card" data-editable data-type="category" data-id="cat-6">
+                <div class="category-icon">🧴</div>
+                <div class="category-name">Higiene</div>
+            </div>
+        </div>
+    </section>
+    
+    <!-- Products -->
+    <section class="products" data-editable data-type="section" data-id="products-section">
+        <h2 class="section-title" data-editable data-type="heading" data-id="prod-title">Produtos em Destaque</h2>
+        <div class="products-grid">
+            <div class="product-card" data-editable data-type="product" data-id="prod-1">
+                <div class="product-image"></div>
+                <div class="product-info">
+                    <div class="product-name">Produto Exemplo 1</div>
+                    <div class="product-price">R$ 29,90</div>
+                </div>
+            </div>
+            <div class="product-card" data-editable data-type="product" data-id="prod-2">
+                <div class="product-image"></div>
+                <div class="product-info">
+                    <div class="product-name">Produto Exemplo 2</div>
+                    <div class="product-price">R$ 49,90</div>
+                </div>
+            </div>
+            <div class="product-card" data-editable data-type="product" data-id="prod-3">
+                <div class="product-image"></div>
+                <div class="product-info">
+                    <div class="product-name">Produto Exemplo 3</div>
+                    <div class="product-price">R$ 19,90</div>
+                </div>
+            </div>
+            <div class="product-card" data-editable data-type="product" data-id="prod-4">
+                <div class="product-image"></div>
+                <div class="product-info">
+                    <div class="product-name">Produto Exemplo 4</div>
+                    <div class="product-price">R$ 39,90</div>
+                </div>
+            </div>
+        </div>
+    </section>
+    
+    <!-- CTA -->
+    <section class="cta" data-editable data-type="cta" data-id="cta-1">
+        <h2 data-editable data-type="heading" data-id="cta-title">Cadastre-se e Ganhe 10% OFF</h2>
+        <p data-editable data-type="text" data-id="cta-text">Na sua primeira compra. Válido para novos clientes.</p>
+        <a href="#" class="cta-btn" data-editable data-type="button" data-id="cta-btn">Criar Conta Grátis</a>
+    </section>
+    
+    <!-- Newsletter -->
+    <section class="newsletter" data-editable data-type="newsletter" data-id="newsletter-1">
+        <h3 data-editable data-type="heading" data-id="news-title">Receba Ofertas Exclusivas</h3>
+        <p data-editable data-type="text" data-id="news-text">Cadastre seu e-mail e fique por dentro das promoções</p>
+        <form class="newsletter-form">
+            <input type="email" class="newsletter-input" placeholder="Seu melhor e-mail" data-editable data-type="input" data-id="news-input">
+            <button type="submit" class="newsletter-btn" data-editable data-type="button" data-id="news-btn">Inscrever</button>
+        </form>
+    </section>
+    
+    <!-- Footer -->
+    <footer class="footer" data-editable data-type="footer" data-id="footer-1">
+        <div class="footer-grid">
+            <div class="footer-col">
+                <h4>Institucional</h4>
+                <a href="#">Sobre Nós</a>
+                <a href="#">Trabalhe Conosco</a>
+                <a href="#">Política de Privacidade</a>
+                <a href="#">Termos de Uso</a>
+            </div>
+            <div class="footer-col">
+                <h4>Atendimento</h4>
+                <a href="#">Central de Ajuda</a>
+                <a href="#">Fale Conosco</a>
+                <a href="#">Trocas e Devoluções</a>
+                <a href="#">Rastrear Pedido</a>
+            </div>
+            <div class="footer-col">
+                <h4>Formas de Pagamento</h4>
+                <a href="#">Cartão de Crédito</a>
+                <a href="#">Boleto Bancário</a>
+                <a href="#">PIX</a>
+            </div>
+            <div class="footer-col">
+                <h4>Redes Sociais</h4>
+                <a href="#">Facebook</a>
+                <a href="#">Instagram</a>
+                <a href="#">YouTube</a>
+                <a href="#">WhatsApp</a>
+            </div>
+        </div>
+        <div class="footer-bottom" data-editable data-type="text" data-id="footer-copy">
+            © 2024 Mercado OneMundo. Todos os direitos reservados.
+        </div>
+    </footer>
+</body>
+</html>`;
+        }
+        
+        // ==================== EDIÇÃO NO IFRAME ====================
+        function initIframeEditing(iframe) {
+            const doc = iframe.contentDocument || iframe.contentWindow.document;
+            
+            // Adicionar eventos aos elementos editáveis
+            doc.querySelectorAll('[data-editable]').forEach(el => {
+                el.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    selectElement(this);
+                });
+                
+                el.addEventListener('dblclick', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    enableInlineEdit(this);
+                });
+            });
+            
+            // Clicar fora deseleciona
+            doc.addEventListener('click', function(e) {
+                if (!e.target.closest('[data-editable]')) {
+                    deselectElement();
+                }
+            });
+            
+            // Atualizar lista de camadas
+            updateLayersList(doc);
+        }
+        
+        function selectElement(element) {
+            const iframe = document.getElementById('pageFrame');
+            const doc = iframe.contentDocument;
+            
+            // Remover seleção anterior
+            doc.querySelectorAll('[data-editable].selected').forEach(el => {
+                el.classList.remove('selected');
+            });
+            
+            // Selecionar novo elemento
+            element.classList.add('selected');
+            EditorState.selectedElement = element;
+            
+            // Atualizar painel de propriedades
+            showPropertiesFor(element);
+        }
+        
+        function deselectElement() {
+            const iframe = document.getElementById('pageFrame');
+            const doc = iframe.contentDocument;
+            
+            doc.querySelectorAll('[data-editable].selected').forEach(el => {
+                el.classList.remove('selected');
+            });
+            
+            EditorState.selectedElement = null;
+            
+            document.getElementById('noSelection').style.display = 'flex';
+            document.getElementById('propertiesForm').style.display = 'none';
+            document.getElementById('selectedElementType').textContent = 'Nenhum';
+        }
+        
+        function enableInlineEdit(element) {
+            element.contentEditable = true;
+            element.focus();
+            
+            // Selecionar todo o texto
+            const range = document.createRange();
+            range.selectNodeContents(element);
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+            
+            element.addEventListener('blur', function() {
+                this.contentEditable = false;
+                saveToHistory();
+            }, { once: true });
+            
+            element.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    this.blur();
+                }
+                if (e.key === 'Escape') {
+                    this.blur();
+                }
+            });
+        }
+        
+        // ==================== PAINEL DE PROPRIEDADES ====================
+        function showPropertiesFor(element) {
+            const type = element.dataset.type || 'element';
+            const id = element.dataset.id || '';
+            
+            document.getElementById('noSelection').style.display = 'none';
+            document.getElementById('propertiesForm').style.display = 'block';
+            document.getElementById('selectedElementType').textContent = getTypeName(type);
+            
+            // Gerar formulário baseado no tipo
+            generatePropertiesForm(element, type);
+        }
+        
+        function getTypeName(type) {
+            const names = {
+                'header': 'Header',
+                'footer': 'Footer',
+                'banner': 'Banner',
+                'section': 'Seção',
+                'heading': 'Título',
+                'text': 'Texto',
+                'button': 'Botão',
+                'link': 'Link',
+                'image': 'Imagem',
+                'icon': 'Ícone',
+                'input': 'Campo',
+                'product': 'Produto',
+                'category': 'Categoria',
+                'cta': 'CTA',
+                'newsletter': 'Newsletter'
+            };
+            return names[type] || 'Elemento';
+        }
+        
+        function generatePropertiesForm(element, type) {
+            const styles = window.getComputedStyle(element);
+            
+            // Tab: Conteúdo
+            let contentHTML = '';
+            
+            if (['heading', 'text', 'button', 'link'].includes(type)) {
+                contentHTML += `
+                    <div class="prop-section">
+                        <div class="prop-section-title">Texto</div>
+                        <div class="prop-group">
+                            <label class="prop-label">Conteúdo</label>
+                            <textarea class="prop-input prop-textarea" id="propText" oninput="updateElementText(this.value)">${element.textContent.trim()}</textarea>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            if (['button', 'link'].includes(type)) {
+                contentHTML += `
+                    <div class="prop-section">
+                        <div class="prop-section-title">Link</div>
+                        <div class="prop-group">
+                            <label class="prop-label">URL</label>
+                            <input type="text" class="prop-input" id="propUrl" value="${element.href || '#'}" onchange="updateElementAttr('href', this.value)">
+                        </div>
+                        <div class="prop-group">
+                            <div class="toggle-row">
+                                <label class="prop-label">Abrir em nova aba</label>
+                                <label class="toggle">
+                                    <input type="checkbox" ${element.target === '_blank' ? 'checked' : ''} onchange="updateElementAttr('target', this.checked ? '_blank' : '')">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            if (['banner', 'header', 'section', 'cta', 'newsletter', 'footer'].includes(type)) {
+                contentHTML += `
+                    <div class="prop-section">
+                        <div class="prop-section-title">Imagem de Fundo</div>
+                        <div class="prop-group">
+                            <div class="image-upload-box" onclick="openMediaModal('background')">
+                                <i data-lucide="image" class="image-upload-icon"></i>
+                                <div class="image-upload-text">Clique para <span>selecionar imagem</span></div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            document.getElementById('propTabContent').innerHTML = contentHTML || '<div class="no-selection" style="height:auto;padding:40px"><div class="no-selection-text">Sem opções de conteúdo para este elemento</div></div>';
+            
+            // Tab: Estilo
+            const bgColor = rgbToHex(styles.backgroundColor) || '#ffffff';
+            const textColor = rgbToHex(styles.color) || '#000000';
+            
+            let styleHTML = `
+                <div class="prop-section">
+                    <div class="prop-section-title">Cores</div>
+                    <div class="prop-group">
+                        <label class="prop-label">Cor de Fundo</label>
+                        <div class="color-row">
+                            <div class="color-preview">
+                                <input type="color" id="propBgColor" value="${bgColor}" onchange="updateElementStyle('backgroundColor', this.value)">
+                            </div>
+                            <input type="text" class="prop-input" value="${bgColor}" onchange="updateElementStyle('backgroundColor', this.value)">
+                        </div>
+                        <div class="color-presets">
+                            <div class="color-preset" style="background:#ffffff" onclick="updateElementStyle('backgroundColor','#ffffff')"></div>
+                            <div class="color-preset" style="background:#f3f4f6" onclick="updateElementStyle('backgroundColor','#f3f4f6')"></div>
+                            <div class="color-preset" style="background:#1f2937" onclick="updateElementStyle('backgroundColor','#1f2937')"></div>
+                            <div class="color-preset" style="background:#2563eb" onclick="updateElementStyle('backgroundColor','#2563eb')"></div>
+                            <div class="color-preset" style="background:#10b981" onclick="updateElementStyle('backgroundColor','#10b981')"></div>
+                            <div class="color-preset" style="background:#f59e0b" onclick="updateElementStyle('backgroundColor','#f59e0b')"></div>
+                            <div class="color-preset" style="background:#ef4444" onclick="updateElementStyle('backgroundColor','#ef4444')"></div>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Cor do Texto</label>
+                        <div class="color-row">
+                            <div class="color-preview">
+                                <input type="color" id="propTextColor" value="${textColor}" onchange="updateElementStyle('color', this.value)">
+                            </div>
+                            <input type="text" class="prop-input" value="${textColor}" onchange="updateElementStyle('color', this.value)">
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="prop-section">
+                    <div class="prop-section-title">Tipografia</div>
+                    <div class="prop-group">
+                        <label class="prop-label">Tamanho da Fonte</label>
+                        <div class="range-row">
+                            <input type="range" class="range-slider" min="10" max="72" value="${parseInt(styles.fontSize)}" oninput="updateElementStyle('fontSize', this.value + 'px'); this.nextElementSibling.textContent = this.value + 'px'">
+                            <span class="range-value">${styles.fontSize}</span>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Peso da Fonte</label>
+                        <select class="prop-select" onchange="updateElementStyle('fontWeight', this.value)">
+                            <option value="400" ${styles.fontWeight == 400 ? 'selected' : ''}>Normal</option>
+                            <option value="500" ${styles.fontWeight == 500 ? 'selected' : ''}>Medium</option>
+                            <option value="600" ${styles.fontWeight == 600 ? 'selected' : ''}>Semibold</option>
+                            <option value="700" ${styles.fontWeight == 700 ? 'selected' : ''}>Bold</option>
+                        </select>
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Alinhamento</label>
+                        <div class="align-buttons">
+                            <button class="align-btn ${styles.textAlign === 'left' ? 'active' : ''}" onclick="updateElementStyle('textAlign', 'left')">
+                                <i data-lucide="align-left" style="width:16px;height:16px"></i>
+                            </button>
+                            <button class="align-btn ${styles.textAlign === 'center' ? 'active' : ''}" onclick="updateElementStyle('textAlign', 'center')">
+                                <i data-lucide="align-center" style="width:16px;height:16px"></i>
+                            </button>
+                            <button class="align-btn ${styles.textAlign === 'right' ? 'active' : ''}" onclick="updateElementStyle('textAlign', 'right')">
+                                <i data-lucide="align-right" style="width:16px;height:16px"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="prop-section">
+                    <div class="prop-section-title">Espaçamento</div>
+                    <div class="prop-group">
+                        <label class="prop-label">Padding</label>
+                        <div class="spacing-box">
+                            <input type="number" class="spacing-input spacing-top" value="${parseInt(styles.paddingTop) || 0}" onchange="updateElementStyle('paddingTop', this.value + 'px')">
+                            <input type="number" class="spacing-input spacing-left" value="${parseInt(styles.paddingLeft) || 0}" onchange="updateElementStyle('paddingLeft', this.value + 'px')">
+                            <div class="spacing-center">Elemento</div>
+                            <input type="number" class="spacing-input spacing-right" value="${parseInt(styles.paddingRight) || 0}" onchange="updateElementStyle('paddingRight', this.value + 'px')">
+                            <input type="number" class="spacing-input spacing-bottom" value="${parseInt(styles.paddingBottom) || 0}" onchange="updateElementStyle('paddingBottom', this.value + 'px')">
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="prop-section">
+                    <div class="prop-section-title">Borda</div>
+                    <div class="prop-group">
+                        <label class="prop-label">Raio (Arredondamento)</label>
+                        <div class="range-row">
+                            <input type="range" class="range-slider" min="0" max="50" value="${parseInt(styles.borderRadius) || 0}" oninput="updateElementStyle('borderRadius', this.value + 'px'); this.nextElementSibling.textContent = this.value + 'px'">
+                            <span class="range-value">${styles.borderRadius}</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            document.getElementById('propTabStyle').innerHTML = styleHTML;
+            
+            // Tab: Avançado
+            document.getElementById('propTabAdvanced').innerHTML = `
+                <div class="prop-section">
+                    <div class="prop-section-title">Identificação</div>
+                    <div class="prop-group">
+                        <label class="prop-label">ID</label>
+                        <input type="text" class="prop-input" value="${element.dataset.id || ''}" onchange="updateElementData('id', this.value)">
+                    </div>
+                    <div class="prop-group">
+                        <label class="prop-label">Classes</label>
+                        <input type="text" class="prop-input" value="${element.className.replace('selected', '').trim()}" onchange="updateElementClasses(this.value)">
+                    </div>
+                </div>
+                
+                <div class="prop-section">
+                    <div class="prop-section-title">Visibilidade</div>
+                    <div class="prop-group">
+                        <div class="toggle-row">
+                            <label class="prop-label">Desktop</label>
+                            <label class="toggle">
+                                <input type="checkbox" checked>
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <div class="toggle-row">
+                            <label class="prop-label">Tablet</label>
+                            <label class="toggle">
+                                <input type="checkbox" checked>
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="prop-group">
+                        <div class="toggle-row">
+                            <label class="prop-label">Mobile</label>
+                            <label class="toggle">
+                                <input type="checkbox" checked>
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="prop-section">
+                    <div class="prop-section-title">Ações</div>
+                    <button class="btn btn-secondary" style="width:100%;margin-bottom:8px" onclick="duplicateElement()">
+                        <i data-lucide="copy" style="width:16px;height:16px"></i>
+                        Duplicar Elemento
+                    </button>
+                    <button class="btn" style="width:100%;background:#ef4444;color:white" onclick="deleteElement()">
+                        <i data-lucide="trash-2" style="width:16px;height:16px"></i>
+                        Excluir Elemento
+                    </button>
+                </div>
+            `;
+            
+            lucide.createIcons();
+        }
+        
+        // ==================== FUNÇÕES DE ATUALIZAÇÃO ====================
+        function updateElementText(value) {
+            if (EditorState.selectedElement) {
+                EditorState.selectedElement.textContent = value;
+                saveToHistory();
+            }
+        }
+        
+        function updateElementStyle(prop, value) {
+            if (EditorState.selectedElement) {
+                EditorState.selectedElement.style[prop] = value;
+                saveToHistory();
+            }
+        }
+        
+        function updateElementAttr(attr, value) {
+            if (EditorState.selectedElement) {
+                EditorState.selectedElement.setAttribute(attr, value);
+                saveToHistory();
+            }
+        }
+        
+        function updateElementData(key, value) {
+            if (EditorState.selectedElement) {
+                EditorState.selectedElement.dataset[key] = value;
+            }
+        }
+        
+        function updateElementClasses(classes) {
+            if (EditorState.selectedElement) {
+                const wasSelected = EditorState.selectedElement.classList.contains('selected');
+                EditorState.selectedElement.className = classes;
+                if (wasSelected) EditorState.selectedElement.classList.add('selected');
+            }
+        }
+        
+        function duplicateElement() {
+            if (EditorState.selectedElement) {
+                const clone = EditorState.selectedElement.cloneNode(true);
+                clone.dataset.id = 'element-' + Date.now();
+                clone.classList.remove('selected');
+                EditorState.selectedElement.parentNode.insertBefore(clone, EditorState.selectedElement.nextSibling);
+                
+                // Reinicializar eventos
+                const iframe = document.getElementById('pageFrame');
+                initIframeEditing(iframe);
+                
+                selectElement(clone);
+                saveToHistory();
+                showToast('Elemento duplicado!', 'success');
+            }
+        }
+        
+        function deleteElement() {
+            if (EditorState.selectedElement) {
+                if (confirm('Excluir este elemento?')) {
+                    EditorState.selectedElement.remove();
+                    deselectElement();
+                    saveToHistory();
+                    
+                    const iframe = document.getElementById('pageFrame');
+                    updateLayersList(iframe.contentDocument);
+                    
+                    showToast('Elemento excluído!');
+                }
+            }
+        }
+        
+        // ==================== CAMADAS ====================
+        function updateLayersList(doc) {
+            const elements = doc.querySelectorAll('[data-editable]');
+            const list = document.getElementById('layersList');
+            
+            let html = '';
+            elements.forEach((el, index) => {
+                const type = el.dataset.type || 'element';
+                const id = el.dataset.id || 'elemento-' + index;
+                const isSelected = el.classList.contains('selected');
+                
+                html += `
+                    <div class="layer-item ${isSelected ? 'selected' : ''}" onclick="selectLayerElement('${id}')">
+                        <i data-lucide="grip-vertical" class="layer-drag" style="width:14px;height:14px"></i>
+                        <i data-lucide="${getTypeIcon(type)}" class="layer-icon" style="width:16px;height:16px"></i>
+                        <span class="layer-name">${getTypeName(type)}</span>
+                        <div class="layer-actions">
+                            <button onclick="event.stopPropagation(); toggleLayerVisibility('${id}')" title="Visibilidade">
+                                <i data-lucide="eye" style="width:14px;height:14px"></i>
+                            </button>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            list.innerHTML = html;
+            lucide.createIcons();
+        }
+        
+        function getTypeIcon(type) {
+            const icons = {
+                'header': 'panel-top',
+                'footer': 'panel-bottom',
+                'banner': 'image',
+                'section': 'square',
+                'heading': 'type',
+                'text': 'align-left',
+                'button': 'mouse-pointer-click',
+                'link': 'link',
+                'image': 'image',
+                'product': 'package',
+                'category': 'folder',
+                'cta': 'megaphone',
+                'newsletter': 'mail'
+            };
+            return icons[type] || 'square';
+        }
+        
+        function selectLayerElement(id) {
+            const iframe = document.getElementById('pageFrame');
+            const doc = iframe.contentDocument;
+            const element = doc.querySelector(`[data-id="${id}"]`);
+            
+            if (element) {
+                selectElement(element);
+                element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }
+        
+        // ==================== TABS ====================
+        function initTabs() {
+            // Sidebar tabs
+            document.querySelectorAll('.sidebar-tab').forEach(tab => {
+                tab.addEventListener('click', function() {
+                    const tabId = this.dataset.tab;
+                    
+                    document.querySelectorAll('.sidebar-tab').forEach(t => t.classList.remove('active'));
+                    this.classList.add('active');
+                    
+                    document.querySelectorAll('.tab-panel').forEach(p => p.style.display = 'none');
+                    document.getElementById('panel' + tabId.charAt(0).toUpperCase() + tabId.slice(1)).style.display = 'block';
+                });
+            });
+            
+            // Property tabs
+            document.querySelectorAll('.prop-tab').forEach(tab => {
+                tab.addEventListener('click', function() {
+                    const tabId = this.dataset.proptab;
+                    
+                    document.querySelectorAll('.prop-tab').forEach(t => t.classList.remove('active'));
+                    this.classList.add('active');
+                    
+                    document.querySelectorAll('.prop-tab-panel').forEach(p => p.style.display = 'none');
+                    document.getElementById('propTab' + tabId.charAt(0).toUpperCase() + tabId.slice(1)).style.display = 'block';
+                });
+            });
+        }
+        
+        // ==================== VIEWPORT ====================
+        function initViewport() {
+            document.querySelectorAll('.viewport-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    const viewport = this.dataset.viewport;
+                    
+                    document.querySelectorAll('.viewport-btn').forEach(b => b.classList.remove('active'));
+                    this.classList.add('active');
+                    
+                    const canvas = document.getElementById('editorCanvas');
+                    canvas.classList.remove('tablet', 'mobile');
+                    if (viewport !== 'desktop') {
+                        canvas.classList.add(viewport);
+                    }
+                });
+            });
+        }
+        
+        // ==================== SIDEBAR TOGGLES ====================
+        function initSidebarToggles() {
+            document.getElementById('btnToggleLeftSidebar').addEventListener('click', function() {
+                document.getElementById('sidebarLeft').classList.toggle('hidden');
+                document.getElementById('canvasWrapper').classList.toggle('sidebar-left-hidden');
+            });
+            
+            document.getElementById('btnToggleRightSidebar').addEventListener('click', function() {
+                document.getElementById('sidebarRight').classList.toggle('hidden');
+                document.getElementById('canvasWrapper').classList.toggle('sidebar-right-hidden');
+            });
+        }
+        
+        // ==================== DRAG AND DROP ====================
+        function initDragAndDrop() {
+            document.querySelectorAll('.component-item').forEach(item => {
+                item.addEventListener('dragstart', function(e) {
+                    e.dataTransfer.setData('component', this.dataset.component);
+                    this.classList.add('dragging');
+                });
+                
+                item.addEventListener('dragend', function() {
+                    this.classList.remove('dragging');
+                });
+            });
+        }
+        
+        // ==================== HISTÓRICO ====================
+        function saveToHistory() {
+            const iframe = document.getElementById('pageFrame');
+            const html = iframe.contentDocument.documentElement.outerHTML;
+            
+            EditorState.history = EditorState.history.slice(0, EditorState.historyIndex + 1);
+            EditorState.history.push(html);
+            EditorState.historyIndex = EditorState.history.length - 1;
+        }
+        
+        function undo() {
+            if (EditorState.historyIndex > 0) {
+                EditorState.historyIndex--;
+                const iframe = document.getElementById('pageFrame');
+                iframe.srcdoc = EditorState.history[EditorState.historyIndex];
+                iframe.onload = () => initIframeEditing(iframe);
+            }
+        }
+        
+        function redo() {
+            if (EditorState.historyIndex < EditorState.history.length - 1) {
+                EditorState.historyIndex++;
+                const iframe = document.getElementById('pageFrame');
+                iframe.srcdoc = EditorState.history[EditorState.historyIndex];
+                iframe.onload = () => initIframeEditing(iframe);
+            }
+        }
+        
+        // Atalhos de teclado
+        document.addEventListener('keydown', function(e) {
+            if (e.ctrlKey || e.metaKey) {
+                if (e.key === 'z') {
+                    e.preventDefault();
+                    if (e.shiftKey) redo();
+                    else undo();
+                }
+                if (e.key === 's') {
+                    e.preventDefault();
+                    savePage();
+                }
+            }
+            if (e.key === 'Delete' && EditorState.selectedElement) {
+                deleteElement();
+            }
+        });
+        
+        // ==================== SALVAR/PUBLICAR ====================
+        function savePage() {
+            const iframe = document.getElementById('pageFrame');
+            const html = iframe.contentDocument.body.innerHTML;
+            
+            // Aqui você pode enviar para o servidor via AJAX
+            console.log('Salvando página...', html);
+            localStorage.setItem('mercado_page_draft', html);
+            
+            showToast('Página salva com sucesso!', 'success');
+        }
+        
+        function publishPage() {
+            savePage();
+            showToast('Página publicada!', 'success');
+        }
+        
+        function previewPage() {
+            const iframe = document.getElementById('pageFrame');
+            const html = iframe.contentDocument.documentElement.outerHTML;
+            
+            const win = window.open('', '_blank');
+            win.document.write(html);
+            win.document.close();
+        }
+        
+        // ==================== MÍDIA ====================
+        function openMediaModal(target) {
+            EditorState.mediaTarget = target;
+            document.getElementById('mediaModal').classList.add('active');
+        }
+        
+        function closeModal(id) {
+            document.getElementById(id).classList.remove('active');
+        }
+        
+        function loadMediaLibrary() {
+            const grid = document.getElementById('mediaGrid');
+            const samples = Array.from({length: 12}, (_, i) => `https://picsum.photos/200/200?random=${i + 1}`);
+            
+            grid.innerHTML = samples.map(url => `
+                <div class="media-item" onclick="this.classList.toggle('selected')">
+                    <img src="${url}" alt="">
+                </div>
+            `).join('');
+        }
+        
+        function selectMedia() {
+            const selected = document.querySelector('.media-item.selected img');
+            if (selected && EditorState.selectedElement && EditorState.mediaTarget === 'background') {
+                EditorState.selectedElement.style.backgroundImage = `url('${selected.src}')`;
+                EditorState.selectedElement.style.backgroundSize = 'cover';
+                EditorState.selectedElement.style.backgroundPosition = 'center';
+                saveToHistory();
+            }
+            closeModal('mediaModal');
+        }
+        
+        // ==================== ESTILOS GLOBAIS ====================
+        function updateGlobalStyle(prop, value) {
+            EditorState.globalStyles[prop] = value;
+            
+            const iframe = document.getElementById('pageFrame');
+            const doc = iframe.contentDocument;
+            
+            // Atualizar CSS variables no iframe
+            // Implementar conforme necessário
+            
+            // Atualizar valor na UI
+            const rangeValue = event.target.nextElementSibling;
+            if (rangeValue && rangeValue.classList.contains('range-value')) {
+                rangeValue.textContent = value + 'px';
+            }
+        }
+        
+        function openColorPicker(colorType) {
+            // Implementar modal de cores
+        }
+        
+        // ==================== UTILIDADES ====================
+        function rgbToHex(rgb) {
+            if (!rgb || rgb === 'transparent' || rgb === 'rgba(0, 0, 0, 0)') return '#ffffff';
+            
+            const result = rgb.match(/\d+/g);
+            if (!result || result.length < 3) return '#ffffff';
+            
+            return '#' + result.slice(0, 3).map(x => {
+                const hex = parseInt(x).toString(16);
+                return hex.length === 1 ? '0' + hex : hex;
+            }).join('');
+        }
+        
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.innerHTML = `
+                <i data-lucide="${type === 'success' ? 'check-circle' : type === 'error' ? 'x-circle' : 'info'}" style="width:18px;height:18px"></i>
+                <span>${message}</span>
+            `;
+            container.appendChild(toast);
+            lucide.createIcons();
+            
+            setTimeout(() => toast.remove(), 3000);
+        }
+        
+        // Inicializar histórico
+        setTimeout(() => saveToHistory(), 1000);
+    </script>
+</body>
+</html>

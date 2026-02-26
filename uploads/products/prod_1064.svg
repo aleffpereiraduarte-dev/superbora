@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300" viewBox="0 0 400 300">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#90CAF9;stop-opacity:1"/>
+      <stop offset="100%" style="stop-color:#1565C0;stop-opacity:1"/>
+    </linearGradient>
+  </defs>
+  <rect width="400" height="300" fill="url(#bg)" rx="12"/>
+  <text x="200" y="120" text-anchor="middle" font-size="72">🛒</text>
+  <text x="200" y="185" text-anchor="middle" font-family="system-ui,sans-serif" font-size="18" font-weight="700" fill="white">Pão de Forma 500g</text>
+  <text x="200" y="215" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13" fill="rgba(255,255,255,0.8)">Produto</text>
+</svg>

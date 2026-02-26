@@ -1,0 +1,3580 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Page Builder - Mercado OneMundo</title>
+    
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    
+    <!-- SortableJS para drag-and-drop -->
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+    
+    <style>
+        :root {
+            /* Cores do tema */
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --primary-light: #3b82f6;
+            --secondary: #10b981;
+            --accent: #f59e0b;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --success: #10b981;
+            
+            /* Cores neutras */
+            --gray-50: #f9fafb;
+            --gray-100: #f3f4f6;
+            --gray-200: #e5e7eb;
+            --gray-300: #d1d5db;
+            --gray-400: #9ca3af;
+            --gray-500: #6b7280;
+            --gray-600: #4b5563;
+            --gray-700: #374151;
+            --gray-800: #1f2937;
+            --gray-900: #111827;
+            
+            /* Layout */
+            --sidebar-width: 280px;
+            --properties-width: 320px;
+            --header-height: 60px;
+            
+            /* Outros */
+            --radius: 8px;
+            --shadow: 0 1px 3px rgba(0,0,0,0.1);
+            --shadow-lg: 0 10px 40px rgba(0,0,0,0.15);
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--gray-100);
+            color: var(--gray-800);
+            overflow: hidden;
+            height: 100vh;
+        }
+        
+        /* ==================== HEADER ==================== */
+        .builder-header {
+            height: var(--header-height);
+            background: var(--gray-900);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 20px;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 1000;
+        }
+        
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+        
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: white;
+            font-weight: 700;
+            font-size: 18px;
+        }
+        
+        .logo-icon {
+            width: 36px;
+            height: 36px;
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .page-title-input {
+            background: var(--gray-800);
+            border: 1px solid var(--gray-700);
+            color: white;
+            padding: 8px 14px;
+            border-radius: var(--radius);
+            font-size: 14px;
+            width: 250px;
+        }
+        
+        .page-title-input:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+        
+        .header-center {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .viewport-btn {
+            width: 40px;
+            height: 40px;
+            border: none;
+            background: transparent;
+            color: var(--gray-400);
+            border-radius: var(--radius);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+        
+        .viewport-btn:hover {
+            background: var(--gray-800);
+            color: white;
+        }
+        
+        .viewport-btn.active {
+            background: var(--primary);
+            color: white;
+        }
+        
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 18px;
+            border-radius: var(--radius);
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: none;
+        }
+        
+        .btn-ghost {
+            background: transparent;
+            color: var(--gray-400);
+        }
+        
+        .btn-ghost:hover {
+            background: var(--gray-800);
+            color: white;
+        }
+        
+        .btn-secondary {
+            background: var(--gray-700);
+            color: white;
+        }
+        
+        .btn-secondary:hover {
+            background: var(--gray-600);
+        }
+        
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: var(--primary-dark);
+        }
+        
+        .btn-success {
+            background: var(--success);
+            color: white;
+        }
+        
+        .btn-success:hover {
+            background: #059669;
+        }
+        
+        /* ==================== MAIN LAYOUT ==================== */
+        .builder-main {
+            display: flex;
+            height: calc(100vh - var(--header-height));
+            margin-top: var(--header-height);
+        }
+        
+        /* ==================== SIDEBAR ESQUERDA (COMPONENTES) ==================== */
+        .sidebar-left {
+            width: var(--sidebar-width);
+            background: white;
+            border-right: 1px solid var(--gray-200);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        
+        .sidebar-tabs {
+            display: flex;
+            border-bottom: 1px solid var(--gray-200);
+        }
+        
+        .sidebar-tab {
+            flex: 1;
+            padding: 14px;
+            background: none;
+            border: none;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--gray-500);
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+        
+        .sidebar-tab:hover {
+            background: var(--gray-50);
+            color: var(--gray-700);
+        }
+        
+        .sidebar-tab.active {
+            color: var(--primary);
+            border-bottom: 2px solid var(--primary);
+            margin-bottom: -1px;
+        }
+        
+        .sidebar-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+        }
+        
+        .component-group {
+            margin-bottom: 24px;
+        }
+        
+        .component-group-title {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--gray-400);
+            margin-bottom: 12px;
+        }
+        
+        .component-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+        }
+        
+        .component-item {
+            background: var(--gray-50);
+            border: 1px solid var(--gray-200);
+            border-radius: var(--radius);
+            padding: 14px 10px;
+            text-align: center;
+            cursor: grab;
+            transition: all 0.2s;
+            user-select: none;
+        }
+        
+        .component-item:hover {
+            background: var(--primary);
+            border-color: var(--primary);
+            color: white;
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-lg);
+        }
+        
+        .component-item:hover .component-icon {
+            color: white;
+        }
+        
+        .component-icon {
+            width: 28px;
+            height: 28px;
+            margin: 0 auto 8px;
+            color: var(--gray-500);
+            transition: color 0.2s;
+        }
+        
+        .component-name {
+            font-size: 12px;
+            font-weight: 500;
+        }
+        
+        /* ==================== CANVAS (ÁREA DE EDIÇÃO) ==================== */
+        .canvas-wrapper {
+            flex: 1;
+            background: var(--gray-200);
+            overflow: auto;
+            display: flex;
+            justify-content: center;
+            padding: 30px;
+        }
+        
+        .canvas {
+            background: white;
+            width: 100%;
+            max-width: 1400px;
+            min-height: 100%;
+            box-shadow: var(--shadow-lg);
+            border-radius: var(--radius);
+            overflow: hidden;
+            transition: max-width 0.3s ease;
+        }
+        
+        .canvas.tablet {
+            max-width: 768px;
+        }
+        
+        .canvas.mobile {
+            max-width: 375px;
+        }
+        
+        .canvas-empty {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 80px 40px;
+            text-align: center;
+            border: 2px dashed var(--gray-300);
+            border-radius: var(--radius);
+            margin: 20px;
+            min-height: 400px;
+        }
+        
+        .canvas-empty-icon {
+            width: 64px;
+            height: 64px;
+            color: var(--gray-300);
+            margin-bottom: 20px;
+        }
+        
+        .canvas-empty-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--gray-600);
+            margin-bottom: 8px;
+        }
+        
+        .canvas-empty-text {
+            font-size: 14px;
+            color: var(--gray-400);
+        }
+        
+        /* Seções no canvas */
+        .section-wrapper {
+            position: relative;
+            border: 2px solid transparent;
+            transition: all 0.2s;
+        }
+        
+        .section-wrapper:hover {
+            border-color: var(--primary-light);
+        }
+        
+        .section-wrapper.selected {
+            border-color: var(--primary);
+        }
+        
+        .section-wrapper.dragging {
+            opacity: 0.5;
+        }
+        
+        .section-controls {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            display: flex;
+            gap: 4px;
+            opacity: 0;
+            transition: opacity 0.2s;
+            z-index: 10;
+        }
+        
+        .section-wrapper:hover .section-controls {
+            opacity: 1;
+        }
+        
+        .section-ctrl-btn {
+            width: 32px;
+            height: 32px;
+            border: none;
+            background: var(--gray-800);
+            color: white;
+            border-radius: 6px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+        
+        .section-ctrl-btn:hover {
+            background: var(--primary);
+        }
+        
+        .section-ctrl-btn.delete:hover {
+            background: var(--danger);
+        }
+        
+        .section-drag-handle {
+            cursor: grab;
+        }
+        
+        .section-label {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            background: var(--primary);
+            color: white;
+            font-size: 11px;
+            font-weight: 600;
+            padding: 4px 10px;
+            border-radius: 4px;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        
+        .section-wrapper:hover .section-label {
+            opacity: 1;
+        }
+        
+        /* Drop zone */
+        .drop-zone {
+            min-height: 100px;
+            border: 2px dashed var(--gray-300);
+            border-radius: var(--radius);
+            margin: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--gray-400);
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        
+        .drop-zone.drag-over {
+            border-color: var(--primary);
+            background: rgba(37, 99, 235, 0.05);
+            color: var(--primary);
+        }
+        
+        /* ==================== SIDEBAR DIREITA (PROPRIEDADES) ==================== */
+        .sidebar-right {
+            width: var(--properties-width);
+            background: white;
+            border-left: 1px solid var(--gray-200);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        
+        .properties-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--gray-200);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        .properties-title {
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--gray-800);
+        }
+        
+        .properties-close {
+            width: 28px;
+            height: 28px;
+            border: none;
+            background: none;
+            color: var(--gray-400);
+            cursor: pointer;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .properties-close:hover {
+            background: var(--gray-100);
+            color: var(--gray-600);
+        }
+        
+        .properties-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+        }
+        
+        .properties-tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 20px;
+            background: var(--gray-100);
+            padding: 4px;
+            border-radius: var(--radius);
+        }
+        
+        .prop-tab {
+            flex: 1;
+            padding: 8px 12px;
+            border: none;
+            background: none;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--gray-500);
+            cursor: pointer;
+            border-radius: 6px;
+            transition: all 0.2s;
+        }
+        
+        .prop-tab:hover {
+            color: var(--gray-700);
+        }
+        
+        .prop-tab.active {
+            background: white;
+            color: var(--gray-800);
+            box-shadow: var(--shadow);
+        }
+        
+        .prop-section {
+            margin-bottom: 24px;
+        }
+        
+        .prop-section-title {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--gray-400);
+            margin-bottom: 12px;
+        }
+        
+        .prop-group {
+            margin-bottom: 16px;
+        }
+        
+        .prop-label {
+            display: block;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--gray-700);
+            margin-bottom: 6px;
+        }
+        
+        .prop-input {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid var(--gray-200);
+            border-radius: var(--radius);
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        
+        .prop-input:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }
+        
+        .prop-textarea {
+            min-height: 100px;
+            resize: vertical;
+        }
+        
+        .prop-select {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid var(--gray-200);
+            border-radius: var(--radius);
+            font-size: 14px;
+            background: white;
+            cursor: pointer;
+        }
+        
+        /* Color Picker */
+        .color-picker-wrapper {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        
+        .color-preview {
+            width: 40px;
+            height: 40px;
+            border-radius: var(--radius);
+            border: 2px solid var(--gray-200);
+            cursor: pointer;
+            overflow: hidden;
+        }
+        
+        .color-preview input[type="color"] {
+            width: 60px;
+            height: 60px;
+            margin: -10px;
+            border: none;
+            cursor: pointer;
+        }
+        
+        .color-input {
+            flex: 1;
+        }
+        
+        /* Color Presets */
+        .color-presets {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            margin-top: 8px;
+        }
+        
+        .color-preset {
+            width: 24px;
+            height: 24px;
+            border-radius: 4px;
+            cursor: pointer;
+            border: 2px solid transparent;
+            transition: all 0.2s;
+        }
+        
+        .color-preset:hover {
+            transform: scale(1.1);
+        }
+        
+        .color-preset.active {
+            border-color: var(--gray-800);
+        }
+        
+        /* Spacing Controls */
+        .spacing-control {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 8px;
+        }
+        
+        .spacing-input-group {
+            text-align: center;
+        }
+        
+        .spacing-input-group label {
+            font-size: 10px;
+            color: var(--gray-400);
+            text-transform: uppercase;
+        }
+        
+        .spacing-input-group input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid var(--gray-200);
+            border-radius: var(--radius);
+            text-align: center;
+            font-size: 13px;
+        }
+        
+        /* Toggle Switch */
+        .toggle-wrapper {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        .toggle {
+            position: relative;
+            width: 44px;
+            height: 24px;
+        }
+        
+        .toggle input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: var(--gray-300);
+            border-radius: 24px;
+            transition: 0.3s;
+        }
+        
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background: white;
+            border-radius: 50%;
+            transition: 0.3s;
+        }
+        
+        .toggle input:checked + .toggle-slider {
+            background: var(--primary);
+        }
+        
+        .toggle input:checked + .toggle-slider:before {
+            transform: translateX(20px);
+        }
+        
+        /* Range Slider */
+        .range-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .range-slider {
+            flex: 1;
+            height: 6px;
+            -webkit-appearance: none;
+            background: var(--gray-200);
+            border-radius: 3px;
+            outline: none;
+        }
+        
+        .range-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 18px;
+            height: 18px;
+            background: var(--primary);
+            border-radius: 50%;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .range-slider::-webkit-slider-thumb:hover {
+            transform: scale(1.1);
+        }
+        
+        .range-value {
+            min-width: 40px;
+            text-align: center;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--gray-600);
+        }
+        
+        /* Image Upload */
+        .image-upload {
+            border: 2px dashed var(--gray-300);
+            border-radius: var(--radius);
+            padding: 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .image-upload:hover {
+            border-color: var(--primary);
+            background: rgba(37, 99, 235, 0.05);
+        }
+        
+        .image-upload-icon {
+            width: 40px;
+            height: 40px;
+            color: var(--gray-400);
+            margin: 0 auto 10px;
+        }
+        
+        .image-upload-text {
+            font-size: 13px;
+            color: var(--gray-500);
+        }
+        
+        .image-upload-text span {
+            color: var(--primary);
+            font-weight: 600;
+        }
+        
+        .image-preview {
+            position: relative;
+            border-radius: var(--radius);
+            overflow: hidden;
+        }
+        
+        .image-preview img {
+            width: 100%;
+            height: 150px;
+            object-fit: cover;
+        }
+        
+        .image-preview-actions {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            display: flex;
+            gap: 4px;
+        }
+        
+        /* Icon Picker */
+        .icon-picker {
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 6px;
+            max-height: 200px;
+            overflow-y: auto;
+            padding: 10px;
+            background: var(--gray-50);
+            border-radius: var(--radius);
+        }
+        
+        .icon-option {
+            width: 36px;
+            height: 36px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid transparent;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+            color: var(--gray-600);
+        }
+        
+        .icon-option:hover {
+            background: white;
+            border-color: var(--gray-200);
+        }
+        
+        .icon-option.selected {
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
+        }
+        
+        /* Font Picker */
+        .font-preview {
+            padding: 12px;
+            border: 1px solid var(--gray-200);
+            border-radius: var(--radius);
+            margin-top: 8px;
+            font-size: 18px;
+        }
+        
+        /* Alignment Buttons */
+        .alignment-buttons {
+            display: flex;
+            gap: 4px;
+        }
+        
+        .align-btn {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid var(--gray-200);
+            background: white;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+        
+        .align-btn:first-child {
+            border-radius: var(--radius) 0 0 var(--radius);
+        }
+        
+        .align-btn:last-child {
+            border-radius: 0 var(--radius) var(--radius) 0;
+        }
+        
+        .align-btn:hover {
+            background: var(--gray-50);
+        }
+        
+        .align-btn.active {
+            background: var(--primary);
+            border-color: var(--primary);
+            color: white;
+        }
+        
+        /* No Selection State */
+        .no-selection {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            text-align: center;
+            color: var(--gray-400);
+        }
+        
+        .no-selection-icon {
+            width: 48px;
+            height: 48px;
+            margin-bottom: 16px;
+        }
+        
+        .no-selection-text {
+            font-size: 14px;
+        }
+        
+        /* ==================== MODAIS ==================== */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s;
+        }
+        
+        .modal-overlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+        
+        .modal {
+            background: white;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 600px;
+            max-height: 80vh;
+            overflow: hidden;
+            transform: scale(0.9);
+            transition: transform 0.3s;
+        }
+        
+        .modal-overlay.active .modal {
+            transform: scale(1);
+        }
+        
+        .modal-header {
+            padding: 20px 24px;
+            border-bottom: 1px solid var(--gray-200);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        .modal-title {
+            font-size: 18px;
+            font-weight: 700;
+        }
+        
+        .modal-close {
+            width: 32px;
+            height: 32px;
+            border: none;
+            background: none;
+            color: var(--gray-400);
+            cursor: pointer;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .modal-close:hover {
+            background: var(--gray-100);
+        }
+        
+        .modal-body {
+            padding: 24px;
+            overflow-y: auto;
+            max-height: calc(80vh - 140px);
+        }
+        
+        .modal-footer {
+            padding: 16px 24px;
+            border-top: 1px solid var(--gray-200);
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+        }
+        
+        /* Media Library Modal */
+        .media-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+        }
+        
+        .media-item {
+            aspect-ratio: 1;
+            border-radius: var(--radius);
+            overflow: hidden;
+            cursor: pointer;
+            border: 2px solid transparent;
+            transition: all 0.2s;
+        }
+        
+        .media-item:hover {
+            border-color: var(--primary-light);
+        }
+        
+        .media-item.selected {
+            border-color: var(--primary);
+        }
+        
+        .media-item img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        
+        /* Templates Modal */
+        .template-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 16px;
+        }
+        
+        .template-item {
+            border: 2px solid var(--gray-200);
+            border-radius: var(--radius);
+            overflow: hidden;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .template-item:hover {
+            border-color: var(--primary);
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-lg);
+        }
+        
+        .template-thumb {
+            aspect-ratio: 16/10;
+            background: var(--gray-100);
+        }
+        
+        .template-info {
+            padding: 12px;
+        }
+        
+        .template-name {
+            font-weight: 600;
+            font-size: 14px;
+        }
+        
+        /* Global Settings Panel */
+        .global-settings {
+            padding: 20px;
+        }
+        
+        .settings-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 16px;
+        }
+        
+        /* ==================== TOAST NOTIFICATIONS ==================== */
+        .toast-container {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            z-index: 3000;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        .toast {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 14px 20px;
+            background: var(--gray-800);
+            color: white;
+            border-radius: var(--radius);
+            box-shadow: var(--shadow-lg);
+            animation: slideIn 0.3s ease;
+        }
+        
+        .toast.success {
+            background: var(--success);
+        }
+        
+        .toast.error {
+            background: var(--danger);
+        }
+        
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(100%);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+        
+        /* ==================== PREVIEW COMPONENTES ==================== */
+        /* Header Preview */
+        .preview-header {
+            background: var(--primary);
+            color: white;
+            padding: 20px 40px;
+        }
+        
+        .preview-header-content {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        /* Banner Preview */
+        .preview-banner {
+            position: relative;
+            min-height: 300px;
+            background-size: cover;
+            background-position: center;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .preview-banner-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.4);
+        }
+        
+        .preview-banner-content {
+            position: relative;
+            z-index: 1;
+            text-align: center;
+            color: white;
+            padding: 40px;
+        }
+        
+        .preview-banner h2 {
+            font-size: 36px;
+            font-weight: 700;
+            margin-bottom: 16px;
+        }
+        
+        .preview-banner p {
+            font-size: 18px;
+            opacity: 0.9;
+            margin-bottom: 24px;
+        }
+        
+        .preview-banner .cta-btn {
+            display: inline-block;
+            padding: 14px 32px;
+            background: white;
+            color: var(--gray-800);
+            font-weight: 600;
+            border-radius: var(--radius);
+            text-decoration: none;
+        }
+        
+        /* Product Grid Preview */
+        .preview-product-grid {
+            padding: 40px;
+        }
+        
+        .preview-product-grid h3 {
+            font-size: 24px;
+            font-weight: 700;
+            margin-bottom: 24px;
+            text-align: center;
+        }
+        
+        .product-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 20px;
+        }
+        
+        .product-card {
+            background: white;
+            border: 1px solid var(--gray-200);
+            border-radius: var(--radius);
+            overflow: hidden;
+        }
+        
+        .product-thumb {
+            aspect-ratio: 1;
+            background: var(--gray-100);
+        }
+        
+        .product-info {
+            padding: 16px;
+        }
+        
+        .product-name {
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+        
+        .product-price {
+            color: var(--primary);
+            font-weight: 700;
+        }
+        
+        /* Text Block Preview */
+        .preview-text-block {
+            padding: 60px 40px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        
+        .preview-text-block h2 {
+            font-size: 32px;
+            font-weight: 700;
+            margin-bottom: 20px;
+        }
+        
+        .preview-text-block p {
+            font-size: 16px;
+            line-height: 1.7;
+            color: var(--gray-600);
+        }
+        
+        /* Categories Grid Preview */
+        .preview-categories {
+            padding: 40px;
+        }
+        
+        .categories-grid {
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 16px;
+        }
+        
+        .category-card {
+            text-align: center;
+            padding: 20px;
+            background: var(--gray-50);
+            border-radius: var(--radius);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .category-card:hover {
+            background: var(--primary);
+            color: white;
+        }
+        
+        .category-icon {
+            width: 48px;
+            height: 48px;
+            margin: 0 auto 12px;
+        }
+        
+        /* Carousel Preview */
+        .preview-carousel {
+            padding: 40px;
+        }
+        
+        .carousel-container {
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .carousel-track {
+            display: flex;
+            gap: 20px;
+        }
+        
+        .carousel-slide {
+            flex: 0 0 300px;
+            aspect-ratio: 16/9;
+            background: var(--gray-200);
+            border-radius: var(--radius);
+        }
+        
+        /* Video Preview */
+        .preview-video {
+            padding: 40px;
+        }
+        
+        .video-container {
+            aspect-ratio: 16/9;
+            background: var(--gray-900);
+            border-radius: var(--radius);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .video-play-btn {
+            width: 80px;
+            height: 80px;
+            background: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+        
+        /* Countdown Preview */
+        .preview-countdown {
+            padding: 60px 40px;
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            color: white;
+            text-align: center;
+        }
+        
+        .countdown-title {
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 24px;
+        }
+        
+        .countdown-timer {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+        }
+        
+        .countdown-item {
+            background: rgba(255,255,255,0.2);
+            padding: 20px 30px;
+            border-radius: var(--radius);
+        }
+        
+        .countdown-number {
+            font-size: 48px;
+            font-weight: 700;
+        }
+        
+        .countdown-label {
+            font-size: 14px;
+            opacity: 0.8;
+        }
+        
+        /* Newsletter Preview */
+        .preview-newsletter {
+            padding: 60px 40px;
+            background: var(--gray-900);
+            color: white;
+            text-align: center;
+        }
+        
+        .newsletter-form {
+            max-width: 500px;
+            margin: 24px auto 0;
+            display: flex;
+            gap: 12px;
+        }
+        
+        .newsletter-input {
+            flex: 1;
+            padding: 14px 20px;
+            border: none;
+            border-radius: var(--radius);
+            font-size: 16px;
+        }
+        
+        /* Divider Preview */
+        .preview-divider {
+            padding: 20px 40px;
+        }
+        
+        .divider-line {
+            height: 1px;
+            background: var(--gray-200);
+        }
+        
+        /* Spacer Preview */
+        .preview-spacer {
+            height: 60px;
+            background: repeating-linear-gradient(
+                45deg,
+                transparent,
+                transparent 10px,
+                var(--gray-100) 10px,
+                var(--gray-100) 20px
+            );
+        }
+        
+        /* Features Preview */
+        .preview-features {
+            padding: 60px 40px;
+        }
+        
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 30px;
+        }
+        
+        .feature-card {
+            text-align: center;
+            padding: 30px;
+        }
+        
+        .feature-icon {
+            width: 64px;
+            height: 64px;
+            margin: 0 auto 20px;
+            background: var(--primary);
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .feature-title {
+            font-size: 18px;
+            font-weight: 700;
+            margin-bottom: 12px;
+        }
+        
+        .feature-text {
+            color: var(--gray-500);
+            line-height: 1.6;
+        }
+        
+        /* Testimonials Preview */
+        .preview-testimonials {
+            padding: 60px 40px;
+            background: var(--gray-50);
+        }
+        
+        .testimonial-card {
+            background: white;
+            padding: 30px;
+            border-radius: var(--radius);
+            max-width: 600px;
+            margin: 0 auto;
+            text-align: center;
+        }
+        
+        .testimonial-text {
+            font-size: 18px;
+            font-style: italic;
+            color: var(--gray-600);
+            margin-bottom: 20px;
+        }
+        
+        .testimonial-author {
+            font-weight: 600;
+        }
+        
+        /* CTA Preview */
+        .preview-cta {
+            padding: 80px 40px;
+            background: var(--primary);
+            color: white;
+            text-align: center;
+        }
+        
+        .cta-title {
+            font-size: 36px;
+            font-weight: 700;
+            margin-bottom: 16px;
+        }
+        
+        .cta-subtitle {
+            font-size: 18px;
+            opacity: 0.9;
+            margin-bottom: 32px;
+        }
+        
+        .cta-buttons {
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+        }
+        
+        /* Gallery Preview */
+        .preview-gallery {
+            padding: 40px;
+        }
+        
+        .gallery-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+        }
+        
+        .gallery-item {
+            aspect-ratio: 1;
+            background: var(--gray-200);
+            border-radius: var(--radius);
+            overflow: hidden;
+        }
+        
+        .gallery-item img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        
+        /* Map Preview */
+        .preview-map {
+            padding: 40px;
+        }
+        
+        .map-container {
+            height: 400px;
+            background: var(--gray-200);
+            border-radius: var(--radius);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--gray-400);
+        }
+        
+        /* Social Preview */
+        .preview-social {
+            padding: 40px;
+            text-align: center;
+        }
+        
+        .social-icons {
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+        }
+        
+        .social-icon {
+            width: 48px;
+            height: 48px;
+            background: var(--gray-100);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--gray-600);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .social-icon:hover {
+            background: var(--primary);
+            color: white;
+        }
+        
+        /* ==================== RESPONSIVO ==================== */
+        @media (max-width: 1200px) {
+            .sidebar-left {
+                width: 240px;
+            }
+            
+            .sidebar-right {
+                width: 280px;
+            }
+        }
+        
+        @media (max-width: 768px) {
+            .sidebar-left,
+            .sidebar-right {
+                position: fixed;
+                z-index: 100;
+                transform: translateX(-100%);
+            }
+            
+            .sidebar-left.open {
+                transform: translateX(0);
+            }
+            
+            .sidebar-right {
+                right: 0;
+                left: auto;
+                transform: translateX(100%);
+            }
+            
+            .sidebar-right.open {
+                transform: translateX(0);
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- ==================== HEADER ==================== -->
+    <header class="builder-header">
+        <div class="header-left">
+            <div class="logo">
+                <div class="logo-icon">
+                    <i data-lucide="layout-grid" style="width:20px;height:20px;color:white"></i>
+                </div>
+                <span>Page Builder</span>
+            </div>
+            <input type="text" class="page-title-input" id="pageTitle" value="Nova Página" placeholder="Nome da página">
+        </div>
+        
+        <div class="header-center">
+            <button class="viewport-btn active" data-viewport="desktop" title="Desktop">
+                <i data-lucide="monitor" style="width:20px;height:20px"></i>
+            </button>
+            <button class="viewport-btn" data-viewport="tablet" title="Tablet">
+                <i data-lucide="tablet" style="width:20px;height:20px"></i>
+            </button>
+            <button class="viewport-btn" data-viewport="mobile" title="Mobile">
+                <i data-lucide="smartphone" style="width:20px;height:20px"></i>
+            </button>
+        </div>
+        
+        <div class="header-right">
+            <button class="btn btn-ghost" onclick="showHistory()">
+                <i data-lucide="history" style="width:18px;height:18px"></i>
+                Histórico
+            </button>
+            <button class="btn btn-ghost" onclick="showGlobalSettings()">
+                <i data-lucide="settings" style="width:18px;height:18px"></i>
+                Configurações
+            </button>
+            <button class="btn btn-secondary" onclick="previewPage()">
+                <i data-lucide="eye" style="width:18px;height:18px"></i>
+                Preview
+            </button>
+            <button class="btn btn-secondary" onclick="saveDraft()">
+                <i data-lucide="save" style="width:18px;height:18px"></i>
+                Salvar
+            </button>
+            <button class="btn btn-success" onclick="publishPage()">
+                <i data-lucide="rocket" style="width:18px;height:18px"></i>
+                Publicar
+            </button>
+        </div>
+    </header>
+    
+    <!-- ==================== MAIN CONTENT ==================== -->
+    <main class="builder-main">
+        <!-- Sidebar Esquerda - Componentes -->
+        <aside class="sidebar-left">
+            <div class="sidebar-tabs">
+                <button class="sidebar-tab active" data-tab="components">
+                    <i data-lucide="box" style="width:16px;height:16px"></i>
+                    Blocos
+                </button>
+                <button class="sidebar-tab" data-tab="templates">
+                    <i data-lucide="layout-template" style="width:16px;height:16px"></i>
+                    Templates
+                </button>
+                <button class="sidebar-tab" data-tab="layers">
+                    <i data-lucide="layers" style="width:16px;height:16px"></i>
+                    Camadas
+                </button>
+            </div>
+            
+            <div class="sidebar-content" id="sidebarContent">
+                <!-- Tab: Componentes -->
+                <div class="tab-content active" id="tabComponents">
+                    <!-- Layout -->
+                    <div class="component-group">
+                        <div class="component-group-title">Layout</div>
+                        <div class="component-grid">
+                            <div class="component-item" draggable="true" data-type="header">
+                                <i data-lucide="panel-top" class="component-icon"></i>
+                                <div class="component-name">Header</div>
+                            </div>
+                            <div class="component-item" draggable="true" data-type="footer">
+                                <i data-lucide="panel-bottom" class="component-icon"></i>
+                                <div class="component-name">Footer</div>
+                            </div>
+                            <div class="component-item" draggable="true" data-type="section">
+                                <i data-lucide="square" class="component-icon"></i>
+                                <div class="component-name">Seção</div>
+                            </div>
+                            <div class="component-item" draggable="true" data-type="columns">
+                                <i data-lucide="columns" class="component-icon"></i>
+                                <div class="component-name">Colunas</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Mídia -->
+                    <div class="component-group">
+                        <div class="component-group-title">Mídia</div>
+                        <div class="component-grid">
+                            <div class="component-item" draggable="true" data-type="banner">
+                                <i data-lucide="image" class="component-icon"></i>
+                                <div class="component-name">Banner</div>
+                            </div>
+                            <div class="component-item" draggable="true" data-type="carousel">
+                                <i data-lucide="gallery-horizontal" class="component-icon"></i>
+                                <div class="component-name">Carrossel</div>
+                            </div>
+                            <div class="component-item" draggable="true" data-type="video">
+                                <i data-lucide="play-circle" class="component-icon"></i>
+                                <div class="component-name">Vídeo</div>
+                            </div>
+                            <div class="component-item" draggable="true" data-type="gallery">
+                                <i data-lucide="layout-grid" class="component-icon"></i>
+                                <div class="component-name">Galeria</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Conteúdo -->
+                    <div class="component-group">
+                        <div class="component-group-title">Conteúdo</div>
+                        <div class="component-grid">
+                            <div class="component-item" draggable="true" data-type="text">
+                                <i data-lucide="type" class="component-icon"></i>
+                                <div class="component-name">Texto</div>
+                            </div>
+                            <div class="component-item" draggable="true" data-type="heading">
+                                <i data-lucide="heading" class="component-icon"></i>
+                                <div class="component-name">Título</div>
+                            </div>
+                            <div class="component-item" draggable="true" data-type="button">
+                                <i data-lucide="mouse-pointer-click" class="component-icon"></i>
+                                <div class="component-name">Botão</div>
+                            </div>
+                            <div class="component-item" draggable="true" data-type="icon">
+                                <i data-lucide="smile" class="component-icon"></i>
+                                <div class="component-name">Ícone</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- E-commerce -->
+                    <div class="component-group">
+                        <div class="component-group-title">E-commerce</div>
+                        <div class="component-grid">
+                            <div class="component-item" draggable="true" data-type="products">
+                                <i data-lucide="package" class="component-icon"></i>
+                                <div class="component-name">Produtos</div>
+                            </div>
+                            <div class="component-item" draggable="true" data-type="categories">
+                                <i data-lucide="folder" class="component-icon"></i>
+                                <div class="component-name">Categorias</div>
+                            </div>
+                            <div class="component-item" draggable="true" data-type="countdown">
+                                <i data-lucide="timer" class="component-icon"></i>
+                                <div class="component-name">Countdown</div>
+                            </div>
+                            <div class="component-item" draggable="true" data-type="brands">
+                                <i data-lucide="award" class="component-icon"></i>
+                                <div class="component-name">Marcas</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Marketing -->
+                    <div class="component-group">
+                        <div class="component-group-title">Marketing</div>
+                        <div class="component-grid">
+                            <div class="component-item" draggable="true" data-type="cta">
+                                <i data-lucide="megaphone" class="component-icon"></i>
+                                <div class="component-name">CTA</div>
+                            </div>
+                            <div class="component-item" draggable="true" data-type="newsletter">
+                                <i data-lucide="mail" class="component-icon"></i>
+                                <div class="component-name">Newsletter</div>
+                            </div>
+                            <div class="component-item" draggable="true" data-type="testimonials">
+                                <i data-lucide="message-square-quote" class="component-icon"></i>
+                                <div class="component-name">Depoimentos</div>
+                            </div>
+                            <div class="component-item" draggable="true" data-type="features">
+                                <i data-lucide="sparkles" class="component-icon"></i>
+                                <div class="component-name">Recursos</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Social & Outros -->
+                    <div class="component-group">
+                        <div class="component-group-title">Social & Outros</div>
+                        <div class="component-grid">
+                            <div class="component-item" draggable="true" data-type="social">
+                                <i data-lucide="share-2" class="component-icon"></i>
+                                <div class="component-name">Redes Sociais</div>
+                            </div>
+                            <div class="component-item" draggable="true" data-type="map">
+                                <i data-lucide="map-pin" class="component-icon"></i>
+                                <div class="component-name">Mapa</div>
+                            </div>
+                            <div class="component-item" draggable="true" data-type="divider">
+                                <i data-lucide="minus" class="component-icon"></i>
+                                <div class="component-name">Divisor</div>
+                            </div>
+                            <div class="component-item" draggable="true" data-type="spacer">
+                                <i data-lucide="move-vertical" class="component-icon"></i>
+                                <div class="component-name">Espaço</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Formulários -->
+                    <div class="component-group">
+                        <div class="component-group-title">Formulários</div>
+                        <div class="component-grid">
+                            <div class="component-item" draggable="true" data-type="form">
+                                <i data-lucide="clipboard-list" class="component-icon"></i>
+                                <div class="component-name">Formulário</div>
+                            </div>
+                            <div class="component-item" draggable="true" data-type="contact">
+                                <i data-lucide="contact" class="component-icon"></i>
+                                <div class="component-name">Contato</div>
+                            </div>
+                            <div class="component-item" draggable="true" data-type="search">
+                                <i data-lucide="search" class="component-icon"></i>
+                                <div class="component-name">Busca</div>
+                            </div>
+                            <div class="component-item" draggable="true" data-type="login">
+                                <i data-lucide="log-in" class="component-icon"></i>
+                                <div class="component-name">Login</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Tab: Templates -->
+                <div class="tab-content" id="tabTemplates" style="display:none">
+                    <div class="template-grid">
+                        <div class="template-item" onclick="loadTemplate('blank')">
+                            <div class="template-thumb" style="display:flex;align-items:center;justify-content:center;">
+                                <i data-lucide="file" style="width:40px;height:40px;color:var(--gray-300)"></i>
+                            </div>
+                            <div class="template-info">
+                                <div class="template-name">Página em Branco</div>
+                            </div>
+                        </div>
+                        <div class="template-item" onclick="loadTemplate('landing')">
+                            <div class="template-thumb" style="background:linear-gradient(135deg,var(--primary),var(--secondary))"></div>
+                            <div class="template-info">
+                                <div class="template-name">Landing Page</div>
+                            </div>
+                        </div>
+                        <div class="template-item" onclick="loadTemplate('catalog')">
+                            <div class="template-thumb" style="background:var(--gray-200)"></div>
+                            <div class="template-info">
+                                <div class="template-name">Catálogo</div>
+                            </div>
+                        </div>
+                        <div class="template-item" onclick="loadTemplate('promo')">
+                            <div class="template-thumb" style="background:linear-gradient(135deg,var(--accent),var(--danger))"></div>
+                            <div class="template-info">
+                                <div class="template-name">Promoção</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Tab: Layers -->
+                <div class="tab-content" id="tabLayers" style="display:none">
+                    <div id="layersList"></div>
+                </div>
+            </div>
+        </aside>
+        
+        <!-- Canvas - Área de Edição -->
+        <div class="canvas-wrapper">
+            <div class="canvas" id="canvas">
+                <div class="canvas-empty" id="canvasEmpty">
+                    <i data-lucide="layout-template" class="canvas-empty-icon"></i>
+                    <div class="canvas-empty-title">Comece a criar sua página</div>
+                    <div class="canvas-empty-text">Arraste componentes da barra lateral ou escolha um template</div>
+                </div>
+                
+                <div id="sectionsContainer"></div>
+            </div>
+        </div>
+        
+        <!-- Sidebar Direita - Propriedades -->
+        <aside class="sidebar-right" id="propertiesPanel">
+            <div class="properties-header">
+                <div class="properties-title">Propriedades</div>
+                <button class="properties-close" onclick="deselectElement()">
+                    <i data-lucide="x" style="width:18px;height:18px"></i>
+                </button>
+            </div>
+            
+            <div class="properties-content">
+                <div class="no-selection" id="noSelection">
+                    <i data-lucide="mouse-pointer" class="no-selection-icon"></i>
+                    <div class="no-selection-text">Selecione um elemento para editar suas propriedades</div>
+                </div>
+                
+                <div id="propertiesForm" style="display:none">
+                    <!-- Tabs de Propriedades -->
+                    <div class="properties-tabs">
+                        <button class="prop-tab active" data-proptab="content">Conteúdo</button>
+                        <button class="prop-tab" data-proptab="style">Estilo</button>
+                        <button class="prop-tab" data-proptab="advanced">Avançado</button>
+                    </div>
+                    
+                    <!-- Tab: Conteúdo -->
+                    <div class="prop-tab-content active" id="propContent">
+                        <!-- Conteúdo dinâmico baseado no tipo -->
+                    </div>
+                    
+                    <!-- Tab: Estilo -->
+                    <div class="prop-tab-content" id="propStyle" style="display:none">
+                        <!-- Background -->
+                        <div class="prop-section">
+                            <div class="prop-section-title">Fundo</div>
+                            
+                            <div class="prop-group">
+                                <label class="prop-label">Tipo de Fundo</label>
+                                <select class="prop-select" id="propBgType" onchange="updateBackgroundType()">
+                                    <option value="color">Cor Sólida</option>
+                                    <option value="gradient">Gradiente</option>
+                                    <option value="image">Imagem</option>
+                                </select>
+                            </div>
+                            
+                            <div class="prop-group" id="bgColorGroup">
+                                <label class="prop-label">Cor de Fundo</label>
+                                <div class="color-picker-wrapper">
+                                    <div class="color-preview">
+                                        <input type="color" id="propBgColor" value="#ffffff" onchange="updateProperty('backgroundColor', this.value)">
+                                    </div>
+                                    <input type="text" class="prop-input color-input" id="propBgColorHex" value="#ffffff" onchange="updateProperty('backgroundColor', this.value)">
+                                </div>
+                                <div class="color-presets">
+                                    <div class="color-preset" style="background:#ffffff" onclick="setColor('backgroundColor','#ffffff')"></div>
+                                    <div class="color-preset" style="background:#f3f4f6" onclick="setColor('backgroundColor','#f3f4f6')"></div>
+                                    <div class="color-preset" style="background:#1f2937" onclick="setColor('backgroundColor','#1f2937')"></div>
+                                    <div class="color-preset" style="background:#2563eb" onclick="setColor('backgroundColor','#2563eb')"></div>
+                                    <div class="color-preset" style="background:#10b981" onclick="setColor('backgroundColor','#10b981')"></div>
+                                    <div class="color-preset" style="background:#f59e0b" onclick="setColor('backgroundColor','#f59e0b')"></div>
+                                    <div class="color-preset" style="background:#ef4444" onclick="setColor('backgroundColor','#ef4444')"></div>
+                                    <div class="color-preset" style="background:#8b5cf6" onclick="setColor('backgroundColor','#8b5cf6')"></div>
+                                </div>
+                            </div>
+                            
+                            <div class="prop-group" id="bgImageGroup" style="display:none">
+                                <label class="prop-label">Imagem de Fundo</label>
+                                <div class="image-upload" onclick="openMediaLibrary('background')">
+                                    <i data-lucide="upload" class="image-upload-icon"></i>
+                                    <div class="image-upload-text">Clique para <span>selecionar imagem</span></div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Espaçamento -->
+                        <div class="prop-section">
+                            <div class="prop-section-title">Espaçamento</div>
+                            
+                            <div class="prop-group">
+                                <label class="prop-label">Padding (interno)</label>
+                                <div class="spacing-control">
+                                    <div class="spacing-input-group">
+                                        <label>Top</label>
+                                        <input type="number" value="20" onchange="updateProperty('paddingTop', this.value + 'px')">
+                                    </div>
+                                    <div class="spacing-input-group">
+                                        <label>Right</label>
+                                        <input type="number" value="20" onchange="updateProperty('paddingRight', this.value + 'px')">
+                                    </div>
+                                    <div class="spacing-input-group">
+                                        <label>Bottom</label>
+                                        <input type="number" value="20" onchange="updateProperty('paddingBottom', this.value + 'px')">
+                                    </div>
+                                    <div class="spacing-input-group">
+                                        <label>Left</label>
+                                        <input type="number" value="20" onchange="updateProperty('paddingLeft', this.value + 'px')">
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="prop-group">
+                                <label class="prop-label">Margin (externo)</label>
+                                <div class="spacing-control">
+                                    <div class="spacing-input-group">
+                                        <label>Top</label>
+                                        <input type="number" value="0" onchange="updateProperty('marginTop', this.value + 'px')">
+                                    </div>
+                                    <div class="spacing-input-group">
+                                        <label>Right</label>
+                                        <input type="number" value="0" onchange="updateProperty('marginRight', this.value + 'px')">
+                                    </div>
+                                    <div class="spacing-input-group">
+                                        <label>Bottom</label>
+                                        <input type="number" value="0" onchange="updateProperty('marginBottom', this.value + 'px')">
+                                    </div>
+                                    <div class="spacing-input-group">
+                                        <label>Left</label>
+                                        <input type="number" value="0" onchange="updateProperty('marginLeft', this.value + 'px')">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Tipografia -->
+                        <div class="prop-section">
+                            <div class="prop-section-title">Tipografia</div>
+                            
+                            <div class="prop-group">
+                                <label class="prop-label">Cor do Texto</label>
+                                <div class="color-picker-wrapper">
+                                    <div class="color-preview">
+                                        <input type="color" id="propTextColor" value="#1f2937" onchange="updateProperty('color', this.value)">
+                                    </div>
+                                    <input type="text" class="prop-input color-input" value="#1f2937">
+                                </div>
+                            </div>
+                            
+                            <div class="prop-group">
+                                <label class="prop-label">Fonte</label>
+                                <select class="prop-select" onchange="updateProperty('fontFamily', this.value)">
+                                    <option value="'Plus Jakarta Sans', sans-serif">Plus Jakarta Sans</option>
+                                    <option value="'Inter', sans-serif">Inter</option>
+                                    <option value="'Poppins', sans-serif">Poppins</option>
+                                    <option value="'Roboto', sans-serif">Roboto</option>
+                                    <option value="'Open Sans', sans-serif">Open Sans</option>
+                                    <option value="'Montserrat', sans-serif">Montserrat</option>
+                                    <option value="'Playfair Display', serif">Playfair Display</option>
+                                </select>
+                            </div>
+                            
+                            <div class="prop-group">
+                                <label class="prop-label">Tamanho</label>
+                                <div class="range-wrapper">
+                                    <input type="range" class="range-slider" min="12" max="72" value="16" onchange="updateProperty('fontSize', this.value + 'px'); this.nextElementSibling.textContent = this.value + 'px'">
+                                    <span class="range-value">16px</span>
+                                </div>
+                            </div>
+                            
+                            <div class="prop-group">
+                                <label class="prop-label">Alinhamento</label>
+                                <div class="alignment-buttons">
+                                    <button class="align-btn active" onclick="setAlignment('left')">
+                                        <i data-lucide="align-left" style="width:18px;height:18px"></i>
+                                    </button>
+                                    <button class="align-btn" onclick="setAlignment('center')">
+                                        <i data-lucide="align-center" style="width:18px;height:18px"></i>
+                                    </button>
+                                    <button class="align-btn" onclick="setAlignment('right')">
+                                        <i data-lucide="align-right" style="width:18px;height:18px"></i>
+                                    </button>
+                                    <button class="align-btn" onclick="setAlignment('justify')">
+                                        <i data-lucide="align-justify" style="width:18px;height:18px"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Borda -->
+                        <div class="prop-section">
+                            <div class="prop-section-title">Borda</div>
+                            
+                            <div class="prop-group">
+                                <label class="prop-label">Largura</label>
+                                <div class="range-wrapper">
+                                    <input type="range" class="range-slider" min="0" max="10" value="0" onchange="updateProperty('borderWidth', this.value + 'px'); this.nextElementSibling.textContent = this.value + 'px'">
+                                    <span class="range-value">0px</span>
+                                </div>
+                            </div>
+                            
+                            <div class="prop-group">
+                                <label class="prop-label">Cor da Borda</label>
+                                <div class="color-picker-wrapper">
+                                    <div class="color-preview">
+                                        <input type="color" value="#e5e7eb" onchange="updateProperty('borderColor', this.value)">
+                                    </div>
+                                    <input type="text" class="prop-input color-input" value="#e5e7eb">
+                                </div>
+                            </div>
+                            
+                            <div class="prop-group">
+                                <label class="prop-label">Raio (Arredondamento)</label>
+                                <div class="range-wrapper">
+                                    <input type="range" class="range-slider" min="0" max="50" value="8" onchange="updateProperty('borderRadius', this.value + 'px'); this.nextElementSibling.textContent = this.value + 'px'">
+                                    <span class="range-value">8px</span>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Sombra -->
+                        <div class="prop-section">
+                            <div class="prop-section-title">Sombra</div>
+                            
+                            <div class="prop-group">
+                                <div class="toggle-wrapper">
+                                    <label class="prop-label">Ativar Sombra</label>
+                                    <label class="toggle">
+                                        <input type="checkbox" onchange="toggleShadow(this.checked)">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Tab: Avançado -->
+                    <div class="prop-tab-content" id="propAdvanced" style="display:none">
+                        <div class="prop-section">
+                            <div class="prop-section-title">Identificação</div>
+                            
+                            <div class="prop-group">
+                                <label class="prop-label">ID do Elemento</label>
+                                <input type="text" class="prop-input" id="propElementId" placeholder="elemento-id">
+                            </div>
+                            
+                            <div class="prop-group">
+                                <label class="prop-label">Classes CSS</label>
+                                <input type="text" class="prop-input" id="propElementClass" placeholder="classe1 classe2">
+                            </div>
+                        </div>
+                        
+                        <div class="prop-section">
+                            <div class="prop-section-title">Visibilidade</div>
+                            
+                            <div class="prop-group">
+                                <div class="toggle-wrapper">
+                                    <label class="prop-label">Visível no Desktop</label>
+                                    <label class="toggle">
+                                        <input type="checkbox" checked>
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
+                            
+                            <div class="prop-group">
+                                <div class="toggle-wrapper">
+                                    <label class="prop-label">Visível no Tablet</label>
+                                    <label class="toggle">
+                                        <input type="checkbox" checked>
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
+                            
+                            <div class="prop-group">
+                                <div class="toggle-wrapper">
+                                    <label class="prop-label">Visível no Mobile</label>
+                                    <label class="toggle">
+                                        <input type="checkbox" checked>
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="prop-section">
+                            <div class="prop-section-title">Animação</div>
+                            
+                            <div class="prop-group">
+                                <label class="prop-label">Efeito de Entrada</label>
+                                <select class="prop-select" onchange="updateProperty('animation', this.value)">
+                                    <option value="none">Nenhum</option>
+                                    <option value="fade-in">Fade In</option>
+                                    <option value="slide-up">Slide Up</option>
+                                    <option value="slide-down">Slide Down</option>
+                                    <option value="slide-left">Slide Left</option>
+                                    <option value="slide-right">Slide Right</option>
+                                    <option value="zoom-in">Zoom In</option>
+                                    <option value="bounce">Bounce</option>
+                                </select>
+                            </div>
+                            
+                            <div class="prop-group">
+                                <label class="prop-label">Delay (ms)</label>
+                                <input type="number" class="prop-input" value="0" min="0" max="2000" step="100">
+                            </div>
+                        </div>
+                        
+                        <div class="prop-section">
+                            <div class="prop-section-title">Link</div>
+                            
+                            <div class="prop-group">
+                                <label class="prop-label">URL</label>
+                                <input type="text" class="prop-input" placeholder="https://...">
+                            </div>
+                            
+                            <div class="prop-group">
+                                <div class="toggle-wrapper">
+                                    <label class="prop-label">Abrir em nova aba</label>
+                                    <label class="toggle">
+                                        <input type="checkbox">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="prop-section">
+                            <div class="prop-section-title">CSS Customizado</div>
+                            
+                            <div class="prop-group">
+                                <textarea class="prop-input prop-textarea" placeholder="/* Adicione CSS customizado aqui */" style="font-family:monospace;font-size:12px;"></textarea>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </aside>
+    </main>
+    
+    <!-- ==================== MODAIS ==================== -->
+    
+    <!-- Modal: Biblioteca de Mídia -->
+    <div class="modal-overlay" id="mediaModal">
+        <div class="modal" style="max-width:900px">
+            <div class="modal-header">
+                <div class="modal-title">Biblioteca de Mídia</div>
+                <button class="modal-close" onclick="closeModal('mediaModal')">
+                    <i data-lucide="x" style="width:20px;height:20px"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div style="margin-bottom:20px;display:flex;gap:12px;">
+                    <button class="btn btn-primary" onclick="document.getElementById('fileUpload').click()">
+                        <i data-lucide="upload" style="width:18px;height:18px"></i>
+                        Upload
+                    </button>
+                    <input type="file" id="fileUpload" style="display:none" accept="image/*" multiple onchange="handleFileUpload(this.files)">
+                    <input type="text" class="prop-input" placeholder="Buscar imagens..." style="flex:1">
+                </div>
+                <div class="media-grid" id="mediaGrid">
+                    <!-- Imagens serão carregadas aqui -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('mediaModal')">Cancelar</button>
+                <button class="btn btn-primary" onclick="selectMedia()">Selecionar</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Modal: Configurações Globais -->
+    <div class="modal-overlay" id="settingsModal">
+        <div class="modal" style="max-width:700px">
+            <div class="modal-header">
+                <div class="modal-title">Configurações da Página</div>
+                <button class="modal-close" onclick="closeModal('settingsModal')">
+                    <i data-lucide="x" style="width:20px;height:20px"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="global-settings">
+                    <div class="settings-grid">
+                        <div class="prop-group">
+                            <label class="prop-label">Cor Primária</label>
+                            <div class="color-picker-wrapper">
+                                <div class="color-preview">
+                                    <input type="color" id="globalPrimary" value="#2563eb">
+                                </div>
+                                <input type="text" class="prop-input color-input" value="#2563eb">
+                            </div>
+                        </div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Cor Secundária</label>
+                            <div class="color-picker-wrapper">
+                                <div class="color-preview">
+                                    <input type="color" id="globalSecondary" value="#10b981">
+                                </div>
+                                <input type="text" class="prop-input color-input" value="#10b981">
+                            </div>
+                        </div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Cor de Destaque</label>
+                            <div class="color-picker-wrapper">
+                                <div class="color-preview">
+                                    <input type="color" id="globalAccent" value="#f59e0b">
+                                </div>
+                                <input type="text" class="prop-input color-input" value="#f59e0b">
+                            </div>
+                        </div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Cor do Texto</label>
+                            <div class="color-picker-wrapper">
+                                <div class="color-preview">
+                                    <input type="color" id="globalText" value="#1f2937">
+                                </div>
+                                <input type="text" class="prop-input color-input" value="#1f2937">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <hr style="margin:24px 0;border:none;border-top:1px solid var(--gray-200)">
+                    
+                    <div class="prop-group">
+                        <label class="prop-label">Fonte Principal</label>
+                        <select class="prop-select" id="globalFont">
+                            <option value="'Plus Jakarta Sans', sans-serif">Plus Jakarta Sans</option>
+                            <option value="'Inter', sans-serif">Inter</option>
+                            <option value="'Poppins', sans-serif">Poppins</option>
+                            <option value="'Roboto', sans-serif">Roboto</option>
+                            <option value="'Open Sans', sans-serif">Open Sans</option>
+                            <option value="'Montserrat', sans-serif">Montserrat</option>
+                        </select>
+                    </div>
+                    
+                    <div class="settings-grid" style="margin-top:16px">
+                        <div class="prop-group">
+                            <label class="prop-label">Largura do Container</label>
+                            <input type="number" class="prop-input" id="globalContainerWidth" value="1400">
+                        </div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Raio de Borda Padrão</label>
+                            <input type="number" class="prop-input" id="globalBorderRadius" value="8">
+                        </div>
+                    </div>
+                    
+                    <hr style="margin:24px 0;border:none;border-top:1px solid var(--gray-200)">
+                    
+                    <div class="prop-group">
+                        <label class="prop-label">Slug da Página</label>
+                        <input type="text" class="prop-input" id="pageSlug" placeholder="minha-pagina">
+                    </div>
+                    
+                    <div class="prop-group">
+                        <label class="prop-label">Descrição (SEO)</label>
+                        <textarea class="prop-input prop-textarea" id="pageDescription" placeholder="Descrição da página para SEO..."></textarea>
+                    </div>
+                    
+                    <div class="prop-group">
+                        <div class="toggle-wrapper">
+                            <label class="prop-label">Definir como Homepage</label>
+                            <label class="toggle">
+                                <input type="checkbox" id="isHomepage">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('settingsModal')">Cancelar</button>
+                <button class="btn btn-primary" onclick="saveGlobalSettings()">Salvar Configurações</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Modal: Seletor de Ícones -->
+    <div class="modal-overlay" id="iconModal">
+        <div class="modal" style="max-width:500px">
+            <div class="modal-header">
+                <div class="modal-title">Selecionar Ícone</div>
+                <button class="modal-close" onclick="closeModal('iconModal')">
+                    <i data-lucide="x" style="width:20px;height:20px"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <input type="text" class="prop-input" placeholder="Buscar ícone..." style="margin-bottom:16px" oninput="filterIcons(this.value)">
+                <div class="icon-picker" id="iconPicker">
+                    <!-- Ícones serão carregados via JS -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('iconModal')">Cancelar</button>
+                <button class="btn btn-primary" onclick="selectIcon()">Selecionar</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Toast Container -->
+    <div class="toast-container" id="toastContainer"></div>
+    
+    <!-- ==================== JAVASCRIPT ==================== -->
+    <script>
+        // ==================== ESTADO GLOBAL ====================
+        const state = {
+            pageId: null,
+            pageTitle: 'Nova Página',
+            sections: [],
+            selectedElement: null,
+            globalSettings: {
+                primaryColor: '#2563eb',
+                secondaryColor: '#10b981',
+                accentColor: '#f59e0b',
+                textColor: '#1f2937',
+                fontFamily: "'Plus Jakarta Sans', sans-serif",
+                containerWidth: 1400,
+                borderRadius: 8
+            },
+            history: [],
+            historyIndex: -1,
+            viewport: 'desktop',
+            mediaTarget: null
+        };
+        
+        // ==================== INICIALIZAÇÃO ====================
+        document.addEventListener('DOMContentLoaded', function() {
+            lucide.createIcons();
+            initDragAndDrop();
+            initTabs();
+            initPropertyTabs();
+            initViewportButtons();
+            loadIcons();
+            loadSampleMedia();
+        });
+        
+        // ==================== DRAG AND DROP ====================
+        function initDragAndDrop() {
+            // Componentes da sidebar
+            document.querySelectorAll('.component-item').forEach(item => {
+                item.addEventListener('dragstart', handleDragStart);
+                item.addEventListener('dragend', handleDragEnd);
+            });
+            
+            // Canvas
+            const canvas = document.getElementById('canvas');
+            canvas.addEventListener('dragover', handleDragOver);
+            canvas.addEventListener('drop', handleDrop);
+            canvas.addEventListener('dragleave', handleDragLeave);
+            
+            // Sortable para reordenar seções
+            new Sortable(document.getElementById('sectionsContainer'), {
+                animation: 150,
+                handle: '.section-drag-handle',
+                ghostClass: 'dragging',
+                onEnd: updateSectionOrder
+            });
+        }
+        
+        function handleDragStart(e) {
+            e.dataTransfer.setData('componentType', e.target.dataset.type);
+            e.target.classList.add('dragging');
+        }
+        
+        function handleDragEnd(e) {
+            e.target.classList.remove('dragging');
+        }
+        
+        function handleDragOver(e) {
+            e.preventDefault();
+            const canvas = document.getElementById('canvas');
+            canvas.classList.add('drag-over');
+        }
+        
+        function handleDragLeave(e) {
+            const canvas = document.getElementById('canvas');
+            canvas.classList.remove('drag-over');
+        }
+        
+        function handleDrop(e) {
+            e.preventDefault();
+            const canvas = document.getElementById('canvas');
+            canvas.classList.remove('drag-over');
+            
+            const componentType = e.dataTransfer.getData('componentType');
+            if (componentType) {
+                addSection(componentType);
+            }
+        }
+        
+        // ==================== GERENCIAMENTO DE SEÇÕES ====================
+        function addSection(type) {
+            const section = createSection(type);
+            state.sections.push(section);
+            renderSections();
+            selectElement(section.id);
+            saveToHistory();
+            showToast('Componente adicionado!', 'success');
+        }
+        
+        function createSection(type) {
+            const id = 'section_' + Date.now();
+            const defaults = getSectionDefaults(type);
+            
+            return {
+                id,
+                type,
+                ...defaults
+            };
+        }
+        
+        function getSectionDefaults(type) {
+            const defaults = {
+                banner: {
+                    title: 'Título do Banner',
+                    subtitle: 'Subtítulo ou descrição do banner',
+                    buttonText: 'Saiba Mais',
+                    buttonUrl: '#',
+                    backgroundImage: '',
+                    backgroundColor: '#2563eb',
+                    textColor: '#ffffff',
+                    height: 400,
+                    overlay: true,
+                    overlayOpacity: 40
+                },
+                products: {
+                    title: 'Produtos em Destaque',
+                    columns: 4,
+                    limit: 8,
+                    source: 'featured',
+                    categoryId: null,
+                    showPrice: true,
+                    showButton: true
+                },
+                text: {
+                    content: '<h2>Título da Seção</h2><p>Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.</p>',
+                    textAlign: 'left',
+                    maxWidth: 800
+                },
+                categories: {
+                    title: 'Categorias',
+                    columns: 6,
+                    showIcon: true,
+                    style: 'cards'
+                },
+                carousel: {
+                    title: '',
+                    slides: [],
+                    autoplay: true,
+                    interval: 5000,
+                    arrows: true,
+                    dots: true
+                },
+                video: {
+                    title: '',
+                    videoUrl: '',
+                    aspectRatio: '16:9',
+                    autoplay: false
+                },
+                countdown: {
+                    title: 'Oferta por Tempo Limitado!',
+                    endDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+                    backgroundColor: 'gradient',
+                    textColor: '#ffffff'
+                },
+                newsletter: {
+                    title: 'Inscreva-se na Newsletter',
+                    subtitle: 'Receba ofertas exclusivas!',
+                    buttonText: 'Inscrever',
+                    backgroundColor: '#1f2937'
+                },
+                features: {
+                    title: 'Nossos Diferenciais',
+                    columns: 3,
+                    items: [
+                        { icon: 'truck', title: 'Entrega Rápida', text: 'Entregamos em todo Brasil' },
+                        { icon: 'shield-check', title: 'Compra Segura', text: 'Seus dados protegidos' },
+                        { icon: 'headphones', title: 'Suporte 24h', text: 'Estamos sempre disponíveis' }
+                    ]
+                },
+                testimonials: {
+                    title: 'O que dizem nossos clientes',
+                    items: [
+                        { text: 'Excelente atendimento!', author: 'Maria Silva', rating: 5 }
+                    ],
+                    style: 'cards'
+                },
+                cta: {
+                    title: 'Pronto para começar?',
+                    subtitle: 'Aproveite nossas ofertas exclusivas',
+                    primaryButton: 'Comprar Agora',
+                    secondaryButton: 'Saiba Mais',
+                    backgroundColor: '#2563eb'
+                },
+                social: {
+                    title: 'Siga-nos',
+                    networks: ['facebook', 'instagram', 'twitter', 'youtube'],
+                    style: 'icons'
+                },
+                gallery: {
+                    title: 'Galeria',
+                    columns: 3,
+                    images: []
+                },
+                map: {
+                    title: 'Localização',
+                    address: '',
+                    lat: -23.5505,
+                    lng: -46.6333,
+                    zoom: 15
+                },
+                divider: {
+                    style: 'line',
+                    color: '#e5e7eb',
+                    width: 1,
+                    margin: 40
+                },
+                spacer: {
+                    height: 60
+                },
+                header: {
+                    logo: '',
+                    menuItems: [],
+                    backgroundColor: '#2563eb',
+                    sticky: true
+                },
+                footer: {
+                    columns: 4,
+                    backgroundColor: '#1f2937',
+                    textColor: '#ffffff'
+                },
+                columns: {
+                    layout: '1/2-1/2',
+                    gap: 20,
+                    content: []
+                },
+                section: {
+                    backgroundColor: '#ffffff',
+                    padding: 60
+                }
+            };
+            
+            return defaults[type] || {};
+        }
+        
+        function renderSections() {
+            const container = document.getElementById('sectionsContainer');
+            const emptyState = document.getElementById('canvasEmpty');
+            
+            if (state.sections.length === 0) {
+                emptyState.style.display = 'flex';
+                container.innerHTML = '';
+                return;
+            }
+            
+            emptyState.style.display = 'none';
+            container.innerHTML = state.sections.map(section => renderSection(section)).join('');
+            
+            lucide.createIcons();
+            updateLayersList();
+        }
+        
+        function renderSection(section) {
+            const isSelected = state.selectedElement === section.id ? 'selected' : '';
+            const preview = getSectionPreview(section);
+            const typeName = getTypeName(section.type);
+            
+            return `
+                <div class="section-wrapper ${isSelected}" id="${section.id}" onclick="selectElement('${section.id}')">
+                    <div class="section-label">${typeName}</div>
+                    <div class="section-controls">
+                        <button class="section-ctrl-btn section-drag-handle" title="Mover">
+                            <i data-lucide="grip-vertical" style="width:16px;height:16px"></i>
+                        </button>
+                        <button class="section-ctrl-btn" onclick="duplicateSection('${section.id}'); event.stopPropagation();" title="Duplicar">
+                            <i data-lucide="copy" style="width:16px;height:16px"></i>
+                        </button>
+                        <button class="section-ctrl-btn delete" onclick="deleteSection('${section.id}'); event.stopPropagation();" title="Excluir">
+                            <i data-lucide="trash-2" style="width:16px;height:16px"></i>
+                        </button>
+                    </div>
+                    ${preview}
+                </div>
+            `;
+        }
+        
+        function getSectionPreview(section) {
+            const previews = {
+                banner: () => `
+                    <div class="preview-banner" style="background-image:url('${section.backgroundImage || ''}');background-color:${section.backgroundColor};min-height:${section.height}px">
+                        ${section.overlay ? '<div class="preview-banner-overlay" style="opacity:' + (section.overlayOpacity/100) + '"></div>' : ''}
+                        <div class="preview-banner-content">
+                            <h2 style="color:${section.textColor}">${section.title}</h2>
+                            <p style="color:${section.textColor}">${section.subtitle}</p>
+                            <a href="${section.buttonUrl}" class="cta-btn">${section.buttonText}</a>
+                        </div>
+                    </div>
+                `,
+                products: () => `
+                    <div class="preview-product-grid">
+                        <h3>${section.title}</h3>
+                        <div class="product-grid" style="grid-template-columns:repeat(${section.columns}, 1fr)">
+                            ${Array(section.limit).fill('').map(() => `
+                                <div class="product-card">
+                                    <div class="product-thumb"></div>
+                                    <div class="product-info">
+                                        <div class="product-name">Nome do Produto</div>
+                                        ${section.showPrice ? '<div class="product-price">R$ 99,90</div>' : ''}
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `,
+                text: () => `
+                    <div class="preview-text-block" style="text-align:${section.textAlign};max-width:${section.maxWidth}px">
+                        ${section.content}
+                    </div>
+                `,
+                categories: () => `
+                    <div class="preview-categories">
+                        <h3 style="text-align:center;margin-bottom:24px">${section.title}</h3>
+                        <div class="categories-grid" style="grid-template-columns:repeat(${section.columns}, 1fr)">
+                            ${Array(6).fill('').map(() => `
+                                <div class="category-card">
+                                    ${section.showIcon ? '<i data-lucide="folder" class="category-icon"></i>' : ''}
+                                    <div>Categoria</div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `,
+                countdown: () => `
+                    <div class="preview-countdown">
+                        <div class="countdown-title">${section.title}</div>
+                        <div class="countdown-timer">
+                            <div class="countdown-item">
+                                <div class="countdown-number">07</div>
+                                <div class="countdown-label">Dias</div>
+                            </div>
+                            <div class="countdown-item">
+                                <div class="countdown-number">12</div>
+                                <div class="countdown-label">Horas</div>
+                            </div>
+                            <div class="countdown-item">
+                                <div class="countdown-number">45</div>
+                                <div class="countdown-label">Min</div>
+                            </div>
+                            <div class="countdown-item">
+                                <div class="countdown-number">30</div>
+                                <div class="countdown-label">Seg</div>
+                            </div>
+                        </div>
+                    </div>
+                `,
+                newsletter: () => `
+                    <div class="preview-newsletter" style="background:${section.backgroundColor}">
+                        <h3>${section.title}</h3>
+                        <p style="opacity:0.8">${section.subtitle}</p>
+                        <div class="newsletter-form">
+                            <input type="email" class="newsletter-input" placeholder="Seu e-mail">
+                            <button class="btn btn-primary">${section.buttonText}</button>
+                        </div>
+                    </div>
+                `,
+                features: () => `
+                    <div class="preview-features">
+                        <h3 style="text-align:center;margin-bottom:40px">${section.title}</h3>
+                        <div class="features-grid" style="grid-template-columns:repeat(${section.columns}, 1fr)">
+                            ${section.items.map(item => `
+                                <div class="feature-card">
+                                    <div class="feature-icon">
+                                        <i data-lucide="${item.icon}" style="width:28px;height:28px"></i>
+                                    </div>
+                                    <div class="feature-title">${item.title}</div>
+                                    <div class="feature-text">${item.text}</div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `,
+                cta: () => `
+                    <div class="preview-cta" style="background:${section.backgroundColor}">
+                        <div class="cta-title">${section.title}</div>
+                        <div class="cta-subtitle">${section.subtitle}</div>
+                        <div class="cta-buttons">
+                            <button class="btn" style="background:white;color:var(--gray-800)">${section.primaryButton}</button>
+                            <button class="btn" style="background:transparent;border:2px solid white;color:white">${section.secondaryButton}</button>
+                        </div>
+                    </div>
+                `,
+                video: () => `
+                    <div class="preview-video">
+                        <div class="video-container">
+                            <div class="video-play-btn">
+                                <i data-lucide="play" style="width:32px;height:32px"></i>
+                            </div>
+                        </div>
+                    </div>
+                `,
+                testimonials: () => `
+                    <div class="preview-testimonials">
+                        <h3 style="text-align:center;margin-bottom:30px">${section.title}</h3>
+                        <div class="testimonial-card">
+                            <div class="testimonial-text">"${section.items[0].text}"</div>
+                            <div class="testimonial-author">— ${section.items[0].author}</div>
+                        </div>
+                    </div>
+                `,
+                social: () => `
+                    <div class="preview-social">
+                        <h3 style="margin-bottom:20px">${section.title}</h3>
+                        <div class="social-icons">
+                            ${section.networks.map(n => `
+                                <div class="social-icon">
+                                    <i data-lucide="${n === 'facebook' ? 'facebook' : n === 'instagram' ? 'instagram' : n === 'twitter' ? 'twitter' : 'youtube'}" style="width:24px;height:24px"></i>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `,
+                gallery: () => `
+                    <div class="preview-gallery">
+                        <h3 style="text-align:center;margin-bottom:24px">${section.title}</h3>
+                        <div class="gallery-grid" style="grid-template-columns:repeat(${section.columns}, 1fr)">
+                            ${Array(6).fill('').map(() => '<div class="gallery-item"></div>').join('')}
+                        </div>
+                    </div>
+                `,
+                map: () => `
+                    <div class="preview-map">
+                        <div class="map-container">
+                            <i data-lucide="map-pin" style="width:48px;height:48px"></i>
+                            <span style="margin-left:12px">Mapa</span>
+                        </div>
+                    </div>
+                `,
+                divider: () => `
+                    <div class="preview-divider" style="padding:${section.margin}px 40px">
+                        <div class="divider-line" style="background:${section.color};height:${section.width}px"></div>
+                    </div>
+                `,
+                spacer: () => `
+                    <div class="preview-spacer" style="height:${section.height}px"></div>
+                `,
+                carousel: () => `
+                    <div class="preview-carousel">
+                        <div class="carousel-container">
+                            <div class="carousel-track">
+                                <div class="carousel-slide"></div>
+                                <div class="carousel-slide"></div>
+                                <div class="carousel-slide"></div>
+                            </div>
+                        </div>
+                    </div>
+                `
+            };
+            
+            return previews[section.type] ? previews[section.type]() : `<div style="padding:40px;text-align:center;color:var(--gray-400)">${getTypeName(section.type)}</div>`;
+        }
+        
+        function getTypeName(type) {
+            const names = {
+                banner: 'Banner',
+                products: 'Produtos',
+                text: 'Texto',
+                categories: 'Categorias',
+                carousel: 'Carrossel',
+                video: 'Vídeo',
+                countdown: 'Countdown',
+                newsletter: 'Newsletter',
+                features: 'Recursos',
+                testimonials: 'Depoimentos',
+                cta: 'CTA',
+                social: 'Redes Sociais',
+                gallery: 'Galeria',
+                map: 'Mapa',
+                divider: 'Divisor',
+                spacer: 'Espaçador',
+                header: 'Header',
+                footer: 'Footer',
+                columns: 'Colunas',
+                section: 'Seção'
+            };
+            return names[type] || type;
+        }
+        
+        function duplicateSection(id) {
+            const index = state.sections.findIndex(s => s.id === id);
+            if (index !== -1) {
+                const original = state.sections[index];
+                const duplicate = {
+                    ...JSON.parse(JSON.stringify(original)),
+                    id: 'section_' + Date.now()
+                };
+                state.sections.splice(index + 1, 0, duplicate);
+                renderSections();
+                selectElement(duplicate.id);
+                saveToHistory();
+                showToast('Componente duplicado!', 'success');
+            }
+        }
+        
+        function deleteSection(id) {
+            const index = state.sections.findIndex(s => s.id === id);
+            if (index !== -1) {
+                state.sections.splice(index, 1);
+                if (state.selectedElement === id) {
+                    state.selectedElement = null;
+                    showPropertiesPanel(false);
+                }
+                renderSections();
+                saveToHistory();
+                showToast('Componente removido!');
+            }
+        }
+        
+        function updateSectionOrder() {
+            const container = document.getElementById('sectionsContainer');
+            const newOrder = Array.from(container.children).map(el => el.id);
+            state.sections = newOrder.map(id => state.sections.find(s => s.id === id));
+            saveToHistory();
+        }
+        
+        // ==================== SELEÇÃO E PROPRIEDADES ====================
+        function selectElement(id) {
+            state.selectedElement = id;
+            
+            // Atualizar visual
+            document.querySelectorAll('.section-wrapper').forEach(el => {
+                el.classList.remove('selected');
+            });
+            const element = document.getElementById(id);
+            if (element) {
+                element.classList.add('selected');
+            }
+            
+            showPropertiesPanel(true);
+            loadPropertiesForElement(id);
+        }
+        
+        function deselectElement() {
+            state.selectedElement = null;
+            document.querySelectorAll('.section-wrapper').forEach(el => {
+                el.classList.remove('selected');
+            });
+            showPropertiesPanel(false);
+        }
+        
+        function showPropertiesPanel(show) {
+            const noSelection = document.getElementById('noSelection');
+            const form = document.getElementById('propertiesForm');
+            
+            noSelection.style.display = show ? 'none' : 'flex';
+            form.style.display = show ? 'block' : 'none';
+        }
+        
+        function loadPropertiesForElement(id) {
+            const section = state.sections.find(s => s.id === id);
+            if (!section) return;
+            
+            const contentPanel = document.getElementById('propContent');
+            contentPanel.innerHTML = getPropertiesFormForType(section);
+            lucide.createIcons();
+        }
+        
+        function getPropertiesFormForType(section) {
+            const forms = {
+                banner: () => `
+                    <div class="prop-section">
+                        <div class="prop-section-title">Conteúdo</div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Título</label>
+                            <input type="text" class="prop-input" value="${section.title}" onchange="updateSectionProp('${section.id}', 'title', this.value)">
+                        </div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Subtítulo</label>
+                            <textarea class="prop-input" rows="2" onchange="updateSectionProp('${section.id}', 'subtitle', this.value)">${section.subtitle}</textarea>
+                        </div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Texto do Botão</label>
+                            <input type="text" class="prop-input" value="${section.buttonText}" onchange="updateSectionProp('${section.id}', 'buttonText', this.value)">
+                        </div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Link do Botão</label>
+                            <input type="text" class="prop-input" value="${section.buttonUrl}" onchange="updateSectionProp('${section.id}', 'buttonUrl', this.value)">
+                        </div>
+                    </div>
+                    
+                    <div class="prop-section">
+                        <div class="prop-section-title">Imagem</div>
+                        
+                        <div class="prop-group">
+                            <div class="image-upload" onclick="openMediaLibrary('banner_${section.id}')">
+                                <i data-lucide="upload" class="image-upload-icon"></i>
+                                <div class="image-upload-text">Clique para <span>selecionar imagem</span></div>
+                            </div>
+                        </div>
+                        
+                        <div class="prop-group">
+                            <div class="toggle-wrapper">
+                                <label class="prop-label">Overlay</label>
+                                <label class="toggle">
+                                    <input type="checkbox" ${section.overlay ? 'checked' : ''} onchange="updateSectionProp('${section.id}', 'overlay', this.checked)">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Opacidade do Overlay</label>
+                            <div class="range-wrapper">
+                                <input type="range" class="range-slider" min="0" max="100" value="${section.overlayOpacity}" onchange="updateSectionProp('${section.id}', 'overlayOpacity', parseInt(this.value)); this.nextElementSibling.textContent = this.value + '%'">
+                                <span class="range-value">${section.overlayOpacity}%</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="prop-section">
+                        <div class="prop-section-title">Dimensões</div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Altura (px)</label>
+                            <div class="range-wrapper">
+                                <input type="range" class="range-slider" min="200" max="800" value="${section.height}" onchange="updateSectionProp('${section.id}', 'height', parseInt(this.value)); this.nextElementSibling.textContent = this.value + 'px'">
+                                <span class="range-value">${section.height}px</span>
+                            </div>
+                        </div>
+                    </div>
+                `,
+                products: () => `
+                    <div class="prop-section">
+                        <div class="prop-section-title">Configurações</div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Título</label>
+                            <input type="text" class="prop-input" value="${section.title}" onchange="updateSectionProp('${section.id}', 'title', this.value)">
+                        </div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Fonte dos Produtos</label>
+                            <select class="prop-select" onchange="updateSectionProp('${section.id}', 'source', this.value)">
+                                <option value="featured" ${section.source === 'featured' ? 'selected' : ''}>Em Destaque</option>
+                                <option value="bestsellers" ${section.source === 'bestsellers' ? 'selected' : ''}>Mais Vendidos</option>
+                                <option value="new" ${section.source === 'new' ? 'selected' : ''}>Novidades</option>
+                                <option value="sale" ${section.source === 'sale' ? 'selected' : ''}>Em Promoção</option>
+                                <option value="category" ${section.source === 'category' ? 'selected' : ''}>Por Categoria</option>
+                            </select>
+                        </div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Colunas</label>
+                            <div class="range-wrapper">
+                                <input type="range" class="range-slider" min="2" max="6" value="${section.columns}" onchange="updateSectionProp('${section.id}', 'columns', parseInt(this.value)); this.nextElementSibling.textContent = this.value">
+                                <span class="range-value">${section.columns}</span>
+                            </div>
+                        </div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Quantidade</label>
+                            <div class="range-wrapper">
+                                <input type="range" class="range-slider" min="4" max="24" step="4" value="${section.limit}" onchange="updateSectionProp('${section.id}', 'limit', parseInt(this.value)); this.nextElementSibling.textContent = this.value">
+                                <span class="range-value">${section.limit}</span>
+                            </div>
+                        </div>
+                        
+                        <div class="prop-group">
+                            <div class="toggle-wrapper">
+                                <label class="prop-label">Mostrar Preço</label>
+                                <label class="toggle">
+                                    <input type="checkbox" ${section.showPrice ? 'checked' : ''} onchange="updateSectionProp('${section.id}', 'showPrice', this.checked)">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                        
+                        <div class="prop-group">
+                            <div class="toggle-wrapper">
+                                <label class="prop-label">Mostrar Botão</label>
+                                <label class="toggle">
+                                    <input type="checkbox" ${section.showButton ? 'checked' : ''} onchange="updateSectionProp('${section.id}', 'showButton', this.checked)">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                `,
+                text: () => `
+                    <div class="prop-section">
+                        <div class="prop-section-title">Conteúdo</div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Texto (HTML)</label>
+                            <textarea class="prop-input prop-textarea" rows="8" onchange="updateSectionProp('${section.id}', 'content', this.value)">${section.content}</textarea>
+                        </div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Alinhamento</label>
+                            <div class="alignment-buttons">
+                                <button class="align-btn ${section.textAlign === 'left' ? 'active' : ''}" onclick="updateSectionProp('${section.id}', 'textAlign', 'left'); loadPropertiesForElement('${section.id}')">
+                                    <i data-lucide="align-left" style="width:18px;height:18px"></i>
+                                </button>
+                                <button class="align-btn ${section.textAlign === 'center' ? 'active' : ''}" onclick="updateSectionProp('${section.id}', 'textAlign', 'center'); loadPropertiesForElement('${section.id}')">
+                                    <i data-lucide="align-center" style="width:18px;height:18px"></i>
+                                </button>
+                                <button class="align-btn ${section.textAlign === 'right' ? 'active' : ''}" onclick="updateSectionProp('${section.id}', 'textAlign', 'right'); loadPropertiesForElement('${section.id}')">
+                                    <i data-lucide="align-right" style="width:18px;height:18px"></i>
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Largura Máxima (px)</label>
+                            <input type="number" class="prop-input" value="${section.maxWidth}" onchange="updateSectionProp('${section.id}', 'maxWidth', parseInt(this.value))">
+                        </div>
+                    </div>
+                `,
+                countdown: () => `
+                    <div class="prop-section">
+                        <div class="prop-section-title">Configurações</div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Título</label>
+                            <input type="text" class="prop-input" value="${section.title}" onchange="updateSectionProp('${section.id}', 'title', this.value)">
+                        </div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Data de Término</label>
+                            <input type="datetime-local" class="prop-input" value="${section.endDate.slice(0,16)}" onchange="updateSectionProp('${section.id}', 'endDate', this.value)">
+                        </div>
+                    </div>
+                `,
+                newsletter: () => `
+                    <div class="prop-section">
+                        <div class="prop-section-title">Conteúdo</div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Título</label>
+                            <input type="text" class="prop-input" value="${section.title}" onchange="updateSectionProp('${section.id}', 'title', this.value)">
+                        </div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Subtítulo</label>
+                            <input type="text" class="prop-input" value="${section.subtitle}" onchange="updateSectionProp('${section.id}', 'subtitle', this.value)">
+                        </div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Texto do Botão</label>
+                            <input type="text" class="prop-input" value="${section.buttonText}" onchange="updateSectionProp('${section.id}', 'buttonText', this.value)">
+                        </div>
+                    </div>
+                `,
+                cta: () => `
+                    <div class="prop-section">
+                        <div class="prop-section-title">Conteúdo</div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Título</label>
+                            <input type="text" class="prop-input" value="${section.title}" onchange="updateSectionProp('${section.id}', 'title', this.value)">
+                        </div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Subtítulo</label>
+                            <input type="text" class="prop-input" value="${section.subtitle}" onchange="updateSectionProp('${section.id}', 'subtitle', this.value)">
+                        </div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Botão Principal</label>
+                            <input type="text" class="prop-input" value="${section.primaryButton}" onchange="updateSectionProp('${section.id}', 'primaryButton', this.value)">
+                        </div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Botão Secundário</label>
+                            <input type="text" class="prop-input" value="${section.secondaryButton}" onchange="updateSectionProp('${section.id}', 'secondaryButton', this.value)">
+                        </div>
+                    </div>
+                `,
+                spacer: () => `
+                    <div class="prop-section">
+                        <div class="prop-section-title">Tamanho</div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Altura (px)</label>
+                            <div class="range-wrapper">
+                                <input type="range" class="range-slider" min="20" max="200" value="${section.height}" onchange="updateSectionProp('${section.id}', 'height', parseInt(this.value)); this.nextElementSibling.textContent = this.value + 'px'">
+                                <span class="range-value">${section.height}px</span>
+                            </div>
+                        </div>
+                    </div>
+                `,
+                divider: () => `
+                    <div class="prop-section">
+                        <div class="prop-section-title">Estilo</div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Espessura (px)</label>
+                            <div class="range-wrapper">
+                                <input type="range" class="range-slider" min="1" max="5" value="${section.width}" onchange="updateSectionProp('${section.id}', 'width', parseInt(this.value)); this.nextElementSibling.textContent = this.value + 'px'">
+                                <span class="range-value">${section.width}px</span>
+                            </div>
+                        </div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Cor</label>
+                            <div class="color-picker-wrapper">
+                                <div class="color-preview">
+                                    <input type="color" value="${section.color}" onchange="updateSectionProp('${section.id}', 'color', this.value)">
+                                </div>
+                                <input type="text" class="prop-input color-input" value="${section.color}">
+                            </div>
+                        </div>
+                        
+                        <div class="prop-group">
+                            <label class="prop-label">Margem (px)</label>
+                            <div class="range-wrapper">
+                                <input type="range" class="range-slider" min="10" max="100" value="${section.margin}" onchange="updateSectionProp('${section.id}', 'margin', parseInt(this.value)); this.nextElementSibling.textContent = this.value + 'px'">
+                                <span class="range-value">${section.margin}px</span>
+                            </div>
+                        </div>
+                    </div>
+                `
+            };
+            
+            return forms[section.type] ? forms[section.type]() : `<p style="color:var(--gray-400);text-align:center;padding:20px">Propriedades não disponíveis para este componente</p>`;
+        }
+        
+        function updateSectionProp(id, prop, value) {
+            const section = state.sections.find(s => s.id === id);
+            if (section) {
+                section[prop] = value;
+                renderSections();
+                saveToHistory();
+            }
+        }
+        
+        // ==================== TABS ====================
+        function initTabs() {
+            document.querySelectorAll('.sidebar-tab').forEach(tab => {
+                tab.addEventListener('click', function() {
+                    const tabId = this.dataset.tab;
+                    
+                    document.querySelectorAll('.sidebar-tab').forEach(t => t.classList.remove('active'));
+                    this.classList.add('active');
+                    
+                    document.querySelectorAll('.tab-content').forEach(c => c.style.display = 'none');
+                    document.getElementById('tab' + tabId.charAt(0).toUpperCase() + tabId.slice(1)).style.display = 'block';
+                });
+            });
+        }
+        
+        function initPropertyTabs() {
+            document.querySelectorAll('.prop-tab').forEach(tab => {
+                tab.addEventListener('click', function() {
+                    const tabId = this.dataset.proptab;
+                    
+                    document.querySelectorAll('.prop-tab').forEach(t => t.classList.remove('active'));
+                    this.classList.add('active');
+                    
+                    document.querySelectorAll('.prop-tab-content').forEach(c => c.style.display = 'none');
+                    document.getElementById('prop' + tabId.charAt(0).toUpperCase() + tabId.slice(1)).style.display = 'block';
+                });
+            });
+        }
+        
+        // ==================== VIEWPORT ====================
+        function initViewportButtons() {
+            document.querySelectorAll('.viewport-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    const viewport = this.dataset.viewport;
+                    
+                    document.querySelectorAll('.viewport-btn').forEach(b => b.classList.remove('active'));
+                    this.classList.add('active');
+                    
+                    const canvas = document.getElementById('canvas');
+                    canvas.classList.remove('tablet', 'mobile');
+                    if (viewport !== 'desktop') {
+                        canvas.classList.add(viewport);
+                    }
+                    
+                    state.viewport = viewport;
+                });
+            });
+        }
+        
+        // ==================== CAMADAS (LAYERS) ====================
+        function updateLayersList() {
+            const list = document.getElementById('layersList');
+            if (state.sections.length === 0) {
+                list.innerHTML = '<p style="color:var(--gray-400);text-align:center;padding:20px;font-size:13px">Nenhum componente adicionado</p>';
+                return;
+            }
+            
+            list.innerHTML = state.sections.map((section, index) => `
+                <div class="layer-item" style="display:flex;align-items:center;padding:10px;border-bottom:1px solid var(--gray-100);cursor:pointer;${state.selectedElement === section.id ? 'background:var(--gray-50)' : ''}" onclick="selectElement('${section.id}')">
+                    <i data-lucide="grip-vertical" style="width:16px;height:16px;color:var(--gray-400);margin-right:8px"></i>
+                    <span style="flex:1;font-size:13px">${getTypeName(section.type)}</span>
+                    <span style="font-size:11px;color:var(--gray-400)">#${index + 1}</span>
+                </div>
+            `).join('');
+            
+            lucide.createIcons();
+        }
+        
+        // ==================== HISTÓRICO (UNDO/REDO) ====================
+        function saveToHistory() {
+            state.history = state.history.slice(0, state.historyIndex + 1);
+            state.history.push(JSON.stringify(state.sections));
+            state.historyIndex = state.history.length - 1;
+        }
+        
+        function undo() {
+            if (state.historyIndex > 0) {
+                state.historyIndex--;
+                state.sections = JSON.parse(state.history[state.historyIndex]);
+                renderSections();
+            }
+        }
+        
+        function redo() {
+            if (state.historyIndex < state.history.length - 1) {
+                state.historyIndex++;
+                state.sections = JSON.parse(state.history[state.historyIndex]);
+                renderSections();
+            }
+        }
+        
+        // Keyboard shortcuts
+        document.addEventListener('keydown', function(e) {
+            if (e.ctrlKey || e.metaKey) {
+                if (e.key === 'z') {
+                    e.preventDefault();
+                    if (e.shiftKey) {
+                        redo();
+                    } else {
+                        undo();
+                    }
+                } else if (e.key === 's') {
+                    e.preventDefault();
+                    saveDraft();
+                }
+            }
+            
+            if (e.key === 'Delete' && state.selectedElement) {
+                deleteSection(state.selectedElement);
+            }
+        });
+        
+        // ==================== MODAIS ====================
+        function openModal(modalId) {
+            document.getElementById(modalId).classList.add('active');
+        }
+        
+        function closeModal(modalId) {
+            document.getElementById(modalId).classList.remove('active');
+        }
+        
+        // ==================== MÍDIA ====================
+        function openMediaLibrary(target) {
+            state.mediaTarget = target;
+            openModal('mediaModal');
+        }
+        
+        function loadSampleMedia() {
+            // Simulando imagens de exemplo
+            const grid = document.getElementById('mediaGrid');
+            const sampleImages = [
+                'https://picsum.photos/200/200?random=1',
+                'https://picsum.photos/200/200?random=2',
+                'https://picsum.photos/200/200?random=3',
+                'https://picsum.photos/200/200?random=4',
+                'https://picsum.photos/200/200?random=5',
+                'https://picsum.photos/200/200?random=6',
+                'https://picsum.photos/200/200?random=7',
+                'https://picsum.photos/200/200?random=8'
+            ];
+            
+            grid.innerHTML = sampleImages.map(url => `
+                <div class="media-item" onclick="this.classList.toggle('selected')">
+                    <img src="${url}" alt="">
+                </div>
+            `).join('');
+        }
+        
+        function handleFileUpload(files) {
+            // Simular upload
+            showToast('Upload em desenvolvimento', 'warning');
+        }
+        
+        function selectMedia() {
+            const selected = document.querySelector('.media-item.selected img');
+            if (selected && state.mediaTarget) {
+                const target = state.mediaTarget.split('_');
+                if (target[0] === 'banner') {
+                    updateSectionProp(target[1], 'backgroundImage', selected.src);
+                }
+            }
+            closeModal('mediaModal');
+        }
+        
+        // ==================== ÍCONES ====================
+        function loadIcons() {
+            const icons = ['home', 'package', 'truck', 'shield-check', 'headphones', 'star', 'heart', 'shopping-cart', 'user', 'settings', 'mail', 'phone', 'map-pin', 'clock', 'calendar', 'check', 'x', 'plus', 'minus', 'search', 'filter', 'edit', 'trash', 'download', 'upload', 'share', 'link', 'image', 'video', 'music', 'file', 'folder', 'tag', 'bookmark', 'flag', 'bell', 'message-circle', 'send', 'gift', 'award', 'zap', 'target'];
+            
+            const picker = document.getElementById('iconPicker');
+            picker.innerHTML = icons.map(icon => `
+                <div class="icon-option" data-icon="${icon}" onclick="selectIconOption(this)">
+                    <i data-lucide="${icon}" style="width:20px;height:20px"></i>
+                </div>
+            `).join('');
+        }
+        
+        function selectIconOption(el) {
+            document.querySelectorAll('.icon-option').forEach(i => i.classList.remove('selected'));
+            el.classList.add('selected');
+        }
+        
+        function filterIcons(query) {
+            document.querySelectorAll('.icon-option').forEach(el => {
+                const icon = el.dataset.icon;
+                el.style.display = icon.includes(query.toLowerCase()) ? 'flex' : 'none';
+            });
+        }
+        
+        // ==================== TEMPLATES ====================
+        function loadTemplate(type) {
+            if (type === 'blank') {
+                state.sections = [];
+            } else if (type === 'landing') {
+                state.sections = [
+                    createSection('banner'),
+                    createSection('features'),
+                    createSection('products'),
+                    createSection('testimonials'),
+                    createSection('cta'),
+                    createSection('newsletter')
+                ];
+            } else if (type === 'catalog') {
+                state.sections = [
+                    createSection('banner'),
+                    createSection('categories'),
+                    createSection('products'),
+                    createSection('products')
+                ];
+            } else if (type === 'promo') {
+                state.sections = [
+                    createSection('countdown'),
+                    createSection('banner'),
+                    createSection('products'),
+                    createSection('cta')
+                ];
+            }
+            
+            renderSections();
+            saveToHistory();
+            showToast('Template carregado!', 'success');
+        }
+        
+        // ==================== CONFIGURAÇÕES GLOBAIS ====================
+        function showGlobalSettings() {
+            openModal('settingsModal');
+        }
+        
+        function saveGlobalSettings() {
+            state.globalSettings = {
+                primaryColor: document.getElementById('globalPrimary').value,
+                secondaryColor: document.getElementById('globalSecondary').value,
+                accentColor: document.getElementById('globalAccent').value,
+                textColor: document.getElementById('globalText').value,
+                fontFamily: document.getElementById('globalFont').value,
+                containerWidth: parseInt(document.getElementById('globalContainerWidth').value),
+                borderRadius: parseInt(document.getElementById('globalBorderRadius').value)
+            };
+            
+            // Aplicar CSS vars
+            document.documentElement.style.setProperty('--primary', state.globalSettings.primaryColor);
+            document.documentElement.style.setProperty('--secondary', state.globalSettings.secondaryColor);
+            document.documentElement.style.setProperty('--accent', state.globalSettings.accentColor);
+            
+            closeModal('settingsModal');
+            showToast('Configurações salvas!', 'success');
+        }
+        
+        // ==================== SALVAR/PUBLICAR ====================
+        function saveDraft() {
+            const data = {
+                title: document.getElementById('pageTitle').value,
+                sections: state.sections,
+                settings: state.globalSettings,
+                status: 'draft'
+            };
+            
+            // Simular salvamento (implementar API real)
+            console.log('Salvando:', data);
+            localStorage.setItem('pageBuilder_draft', JSON.stringify(data));
+            
+            showToast('Rascunho salvo!', 'success');
+        }
+        
+        function publishPage() {
+            const data = {
+                title: document.getElementById('pageTitle').value,
+                slug: document.getElementById('pageSlug')?.value || '',
+                sections: state.sections,
+                settings: state.globalSettings,
+                status: 'published'
+            };
+            
+            // Simular publicação (implementar API real)
+            console.log('Publicando:', data);
+            
+            showToast('Página publicada com sucesso!', 'success');
+        }
+        
+        function previewPage() {
+            // Abrir preview em nova aba
+            const data = {
+                sections: state.sections,
+                settings: state.globalSettings
+            };
+            
+            localStorage.setItem('pageBuilder_preview', JSON.stringify(data));
+            window.open('/mercado/preview', '_blank');
+        }
+        
+        function showHistory() {
+            showToast('Histórico de versões em desenvolvimento');
+        }
+        
+        // ==================== TOAST ====================
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.innerHTML = `
+                <i data-lucide="${type === 'success' ? 'check-circle' : type === 'error' ? 'x-circle' : 'info'}" style="width:20px;height:20px"></i>
+                <span>${message}</span>
+            `;
+            container.appendChild(toast);
+            lucide.createIcons();
+            
+            setTimeout(() => {
+                toast.remove();
+            }, 3000);
+        }
+        
+        // ==================== UTILITÁRIOS ====================
+        function setColor(prop, color) {
+            if (state.selectedElement) {
+                updateSectionProp(state.selectedElement, prop, color);
+            }
+        }
+        
+        function updateProperty(prop, value) {
+            // Para propriedades de estilo global
+            console.log('Update:', prop, value);
+        }
+        
+        function setAlignment(align) {
+            document.querySelectorAll('.align-btn').forEach(btn => btn.classList.remove('active'));
+            event.target.closest('.align-btn').classList.add('active');
+        }
+        
+        function updateBackgroundType() {
+            const type = document.getElementById('propBgType').value;
+            document.getElementById('bgColorGroup').style.display = type === 'color' || type === 'gradient' ? 'block' : 'none';
+            document.getElementById('bgImageGroup').style.display = type === 'image' ? 'block' : 'none';
+        }
+        
+        function toggleShadow(enabled) {
+            console.log('Shadow:', enabled);
+        }
+        
+        // Carregar rascunho ao iniciar
+        const saved = localStorage.getItem('pageBuilder_draft');
+        if (saved) {
+            try {
+                const data = JSON.parse(saved);
+                state.sections = data.sections || [];
+                state.globalSettings = data.settings || state.globalSettings;
+                document.getElementById('pageTitle').value = data.title || 'Nova Página';
+                renderSections();
+                saveToHistory();
+            } catch (e) {
+                console.error('Erro ao carregar rascunho:', e);
+            }
+        }
+    </script>
+</body>
+</html>

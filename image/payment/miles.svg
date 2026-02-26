@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" fill="none">
+  <circle cx="100" cy="100" r="90" fill="#FFD700"/>
+  <circle cx="100" cy="100" r="70" fill="#FFA500"/>
+  <path d="M100 40l15 45h47l-38 28 15 45-39-28-39 28 15-45-38-28h47z" fill="#fff"/>
+  <text x="100" y="175" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#333">MILHAS</text>
+</svg>

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300">
+  <defs>
+    <linearGradient id="g2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#2d1b69"/>
+      <stop offset="100%" style="stop-color:#11998e"/>
+    </linearGradient>
+  </defs>
+  <rect fill="url(#g2)" width="1200" height="300"/>
+  <circle cx="1050" cy="150" r="180" fill="#fff" opacity="0.05"/>
+  <text x="60" y="120" font-family="Arial Black" font-size="48" fill="#fff">SMARTPHONES</text>
+  <text x="60" y="170" font-family="Arial" font-size="24" fill="#7FFF00">Os melhores celulares do mercado</text>
+  <text x="60" y="220" font-family="Arial" font-size="18" fill="rgba(255,255,255,0.7)">iPhone • Samsung • Xiaomi • Motorola</text>
+</svg>
