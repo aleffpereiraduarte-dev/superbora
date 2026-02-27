@@ -32,12 +32,12 @@ class EmailService {
 
     public function __construct(PDO $db) {
         $this->db = $db;
-        $this->fromEmail = $_ENV['SMTP_FROM_EMAIL'] ?? 'noreply@superbora.com.br';
-        $this->fromName = $_ENV['SMTP_FROM_NAME'] ?? 'SuperBora';
-        $this->smtpHost = $_ENV['SMTP_HOST'] ?? '';
-        $this->smtpPort = (int)($_ENV['SMTP_PORT'] ?? 587);
-        $this->smtpUser = $_ENV['SMTP_USER'] ?? '';
-        $this->smtpPass = $_ENV['SMTP_PASS'] ?? '';
+        $this->fromEmail = $_ENV['SUPERBORA_MAIL_FROM'] ?? $_ENV['SMTP_FROM_EMAIL'] ?? 'contato@superbora.com.br';
+        $this->fromName = $_ENV['SUPERBORA_MAIL_FROM_NAME'] ?? $_ENV['SMTP_FROM_NAME'] ?? 'SuperBora';
+        $this->smtpHost = $_ENV['SUPERBORA_MAIL_HOST'] ?? $_ENV['SMTP_HOST'] ?? '';
+        $this->smtpPort = (int)($_ENV['SUPERBORA_MAIL_PORT'] ?? $_ENV['SMTP_PORT'] ?? 465);
+        $this->smtpUser = $_ENV['SUPERBORA_MAIL_USERNAME'] ?? $_ENV['SMTP_USER'] ?? '';
+        $this->smtpPass = $_ENV['SUPERBORA_MAIL_PASSWORD'] ?? $_ENV['SMTP_PASS'] ?? '';
         $this->enabled = !empty($this->smtpHost) && !empty($this->smtpUser);
     }
 
@@ -188,11 +188,25 @@ class EmailService {
 
             $mail->send();
             error_log("[EmailService] Sent '{$subject}' to " . self::maskEmail($to));
+            $this->logEmail($to, $subject, 'sent');
             return true;
 
         } catch (PHPMailerException $e) {
             error_log("[EmailService] Failed to send to " . self::maskEmail($to) . ": " . $e->getMessage());
+            $this->logEmail($to, $subject, 'failed', $e->getMessage());
             return false;
+        }
+    }
+
+    private function logEmail(string $to, string $subject, string $status, string $error = ''): void {
+        try {
+            $stmt = $this->db->prepare("
+                INSERT INTO om_email_logs (email_to, template, subject, status, metadata, sent_at, created_at)
+                VALUES (?, 'transactional', ?, ?, ?, " . ($status === 'sent' ? 'NOW()' : 'NULL') . ", NOW())
+            ");
+            $stmt->execute([$to, $subject, $status, json_encode($error ? ['error' => $error] : [])]);
+        } catch (Exception $e) {
+            // Silent — logging failure should not break email flow
         }
     }
 

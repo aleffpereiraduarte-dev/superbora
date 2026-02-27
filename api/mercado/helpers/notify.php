@@ -25,7 +25,7 @@ function notifyPartner(PDO $db, int $partner_id, string $title, string $body, st
 }
 
 /**
- * Notifica cliente via Push (mobile + web)
+ * Notifica cliente via Push (mobile + web) + Email (quando disponivel)
  */
 function notifyCustomer(PDO $db, int $customer_id, string $title, string $body, string $url = '/mercado/', array $extra = []): int {
     $sent = 0;
@@ -35,6 +35,17 @@ function notifyCustomer(PDO $db, int $customer_id, string $title, string $body, 
 
     // 2. Web Push (browser)
     $sent += _sendWebPushToUser($db, $customer_id, 'customer', $title, $body, $url, $extra);
+
+    // 3. Email (for order-related notifications only)
+    if (!empty($extra['send_email']) && !empty($extra['email'])) {
+        try {
+            require_once __DIR__ . '/email.php';
+            $customerName = $extra['customer_name'] ?? 'Cliente';
+            $sent += sendEmail($extra['email'], $title, "<p>{$body}</p>", $db, $customer_id, $extra['email_template'] ?? 'notification') ? 1 : 0;
+        } catch (Exception $e) {
+            error_log("[notify] Email erro: " . $e->getMessage());
+        }
+    }
 
     return $sent;
 }
