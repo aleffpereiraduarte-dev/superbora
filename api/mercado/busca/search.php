@@ -120,6 +120,37 @@ try {
     $processingTime = $result['processingTimeMs'] ?? 0;
     $facets = $result['facetDistribution'] ?? [];
 
+    // Track search history (fire-and-forget)
+    if (!empty($q) && strlen($q) >= 2) {
+        try {
+            $city = trim($_GET['city'] ?? '');
+            // Get customer ID from auth if available
+            require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
+            OmAuth::getInstance()->setDb($db ?? getDB());
+            $authToken = om_auth()->getTokenFromRequest();
+            $searchCustomerId = 0;
+            if ($authToken) {
+                $authPayload = om_auth()->validateToken($authToken);
+                if ($authPayload && ($authPayload['type'] ?? '') === 'customer') {
+                    $searchCustomerId = (int)$authPayload['uid'];
+                }
+            }
+
+            $searchDb = $db ?? getDB();
+            // Save to customer history
+            if ($searchCustomerId) {
+                $searchDb->prepare("INSERT INTO om_search_history (customer_id, query, results_count, city, created_at) VALUES (?, ?, ?, ?, NOW())")
+                    ->execute([$searchCustomerId, substr($q, 0, 255), $total, $city ?: null]);
+            }
+            // Update trending
+            $searchDb->prepare("INSERT INTO om_search_trending (query, city, search_count, period) VALUES (?, ?, 1, CURRENT_DATE) ON CONFLICT (query, city, period) DO UPDATE SET search_count = om_search_trending.search_count + 1")
+                ->execute([strtolower(substr($q, 0, 255)), $city ?: null]);
+        } catch (Exception $trackErr) {
+            // Non-blocking — don't fail the search
+            error_log("[busca/search] Track error: " . $trackErr->getMessage());
+        }
+    }
+
     response(true, [
         'hits' => $hits,
         'total' => $total,

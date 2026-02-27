@@ -158,7 +158,7 @@ CREATE INDEX IF NOT EXISTS idx_cards_customer ON om_customer_cards(customer_id);
 
 CREATE TABLE IF NOT EXISTS om_churn_scores (
     id SERIAL PRIMARY KEY,
-    customer_id INT NOT NULL,
+    customer_id INT NOT NULL UNIQUE,
     score NUMERIC(5,2) NOT NULL,              -- 0.00 to 100.00 (higher = more likely to churn)
     risk_level VARCHAR(20),                    -- 'low', 'medium', 'high', 'critical'
     last_order_days INT,                       -- days since last order
