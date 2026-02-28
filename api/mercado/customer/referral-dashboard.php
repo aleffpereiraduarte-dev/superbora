@@ -100,7 +100,7 @@ try {
             c.email as referred_email
         FROM om_market_referrals r
         LEFT JOIN om_customers c ON c.customer_id = r.referee_customer_id
-        WHERE r.referrer_id = ?
+        WHERE r.referrer_customer_id = ?
         ORDER BY r.created_at DESC
         LIMIT 10
     ");

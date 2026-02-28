@@ -32,7 +32,7 @@ try {
                    p.trade_name as partner_name, p.logo as partner_logo
             FROM om_recurring_orders r
             INNER JOIN om_market_partners p ON r.market_id = p.partner_id
-            WHERE r.customer_id = ? AND r.is_active = true
+            WHERE r.customer_id = ? AND r.is_active = 1
             ORDER BY r.created_at DESC
         ");
         $stmt->execute([$customerId]);
@@ -200,7 +200,7 @@ try {
         if ($action === 'pause') {
             $db->prepare("
                 UPDATE om_recurring_orders
-                SET is_active = false
+                SET is_active = 0
                 WHERE recurring_id = ? AND customer_id = ?
             ")->execute([$id, $customerId]);
 
@@ -210,7 +210,7 @@ try {
         if ($action === 'resume') {
             $db->prepare("
                 UPDATE om_recurring_orders
-                SET is_active = true
+                SET is_active = 1
                 WHERE recurring_id = ? AND customer_id = ?
             ")->execute([$id, $customerId]);
 
@@ -220,7 +220,7 @@ try {
         // Cancelar
         $db->prepare("
             UPDATE om_recurring_orders
-            SET is_active = false
+            SET is_active = 0
             WHERE recurring_id = ? AND customer_id = ?
         ")->execute([$id, $customerId]);
 
