@@ -85,7 +85,7 @@ try {
             JOIN om_market_products p ON p.product_id = oi.product_id
             JOIN om_market_orders o ON o.order_id = oi.order_id
             WHERE o.partner_id = ? AND o.created_at >= NOW() - INTERVAL '30 days'
-            GROUP BY p.product_id
+            GROUP BY p.product_id, p.name
             ORDER BY order_count DESC
             LIMIT 10
         ");
