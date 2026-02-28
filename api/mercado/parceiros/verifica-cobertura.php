@@ -20,7 +20,7 @@ try {
     $db = getDB();
 
     // Buscar parceiro
-    $stmt = $db->prepare("SELECT partner_id, name, trade_name, logo, city, state, zipcode, cep, delivery_fee, delivery_time_min, delivery_radius_km FROM om_market_partners WHERE partner_id = ? AND status::text = '1'");
+    $stmt = $db->prepare("SELECT partner_id, name, trade_name, logo, city, cidade, state, cep, delivery_fee, delivery_time_min, delivery_radius_km FROM om_market_partners WHERE partner_id = ? AND status::text = '1'");
     $stmt->execute([$partner_id]);
     $parceiro = $stmt->fetch();
 
@@ -53,7 +53,7 @@ try {
     }
 
     // 2. Se não tem cobertura específica, verificar por região (3 primeiros dígitos)
-    $cepParceiro = preg_replace('/\D/', '', $parceiro['zipcode'] ?? '');
+    $cepParceiro = preg_replace('/\D/', '', $parceiro['cep'] ?? '');
     $prefixoParceiro = substr($cepParceiro, 0, 3);
     $prefixoCliente = substr($cep, 0, 3);
 
@@ -89,6 +89,6 @@ function formatarParceiro($p) {
         "id" => (int)$p["partner_id"],
         "nome" => $p["name"] ?? $p["trade_name"],
         "logo" => $p["logo"] ?? null,
-        "cidade" => $p["city"] ?? ""
+        "cidade" => $p["cidade"] ?? $p["city"] ?? ""
     ];
 }
