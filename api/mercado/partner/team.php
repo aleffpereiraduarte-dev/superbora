@@ -28,7 +28,7 @@ try {
     if ($method === 'GET') {
         // Listar membros (excluindo password_hash por seguranca)
         $stmt = $db->prepare("
-            SELECT id, name, email, role, status, last_login, created_at
+            SELECT id, name, email, role, status, created_at
             FROM om_partner_team
             WHERE partner_id = ?
             ORDER BY array_position(ARRAY['admin','gerente','atendente'], role), name ASC

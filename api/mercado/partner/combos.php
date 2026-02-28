@@ -27,9 +27,9 @@ try {
     if ($method === "GET") {
         $stmt = $db->prepare("
             SELECT c.*,
-                   STRING_AGG(CONCAT(ci.product_id, ':', ci.quantity), ',') AS items_raw
+                   STRING_AGG(CONCAT(ci.item_product_id, ':', ci.quantity), ',') AS items_raw
             FROM om_market_combos c
-            LEFT JOIN om_market_combo_items ci ON ci.combo_id = c.id
+            LEFT JOIN om_market_combo_items ci ON ci.combo_product_id = c.id
             WHERE c.partner_id = ?
             GROUP BY c.id
             ORDER BY c.created_at DESC
@@ -121,7 +121,7 @@ try {
                 $stmt->execute([$name, $description, $image, $price, $originalPrice, $status, $comboId, $partnerId]);
 
                 // Remover items antigos
-                $db->prepare("DELETE FROM om_market_combo_items WHERE combo_id = ?")->execute([$comboId]);
+                $db->prepare("DELETE FROM om_market_combo_items WHERE combo_product_id = ?")->execute([$comboId]);
             } else {
                 // Criar
                 $stmt = $db->prepare("
@@ -134,7 +134,7 @@ try {
             }
 
             // Inserir items
-            $stmtItem = $db->prepare("INSERT INTO om_market_combo_items (combo_id, product_id, quantity) VALUES (?, ?, ?)");
+            $stmtItem = $db->prepare("INSERT INTO om_market_combo_items (combo_product_id, item_product_id, quantity) VALUES (?, ?, ?)");
             foreach ($items as $item) {
                 $stmtItem->execute([
                     $comboId,

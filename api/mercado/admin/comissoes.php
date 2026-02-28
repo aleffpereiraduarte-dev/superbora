@@ -38,6 +38,9 @@ try {
     $stmt->execute($params);
     $total = (int)$stmt->fetch()['total'];
 
+    // Save base params before adding limit/offset (for totals query)
+    $baseParams = $params;
+
     // Fetch
     $stmt = $db->prepare("
         SELECT s.*, p.name as partner_name,
@@ -54,7 +57,7 @@ try {
     $stmt->execute($params);
     $comissoes = $stmt->fetchAll();
 
-    // Totals
+    // Totals (use baseParams without limit/offset)
     $stmt = $db->prepare("
         SELECT COALESCE(SUM(commission), 0) as total_comissao,
                COALESCE(SUM(net_amount), 0) as total_net,
@@ -62,7 +65,7 @@ try {
         FROM om_market_sales s
         WHERE {$where}
     ");
-    $stmt->execute($params);
+    $stmt->execute($baseParams);
     $totals = $stmt->fetch();
 
     response(true, [

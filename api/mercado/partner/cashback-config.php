@@ -12,7 +12,7 @@
  *   "cashback_percent": 5.0,    // 0-20%
  *   "min_order_value": 30.00,   // valor minimo do pedido
  *   "max_cashback": 50.00,      // maximo de cashback por pedido
- *   "valid_days": 30,           // dias para expirar
+ *   "expiry_days": 30,           // dias para expirar
  *   "status": 1                 // 1=ativo, 0=inativo
  * }
  */
@@ -41,7 +41,7 @@ try {
     if ($method === 'GET') {
         // Buscar config especifica do parceiro
         $stmt = $db->prepare("
-            SELECT id, partner_id, cashback_percent, min_order_value, max_cashback, valid_days, status
+            SELECT id, partner_id, cashback_percent, min_order_value, max_cashback, expiry_days, status
             FROM om_cashback_config
             WHERE partner_id = ?
         ");
@@ -52,7 +52,7 @@ try {
         $globalConfig = null;
         if (!$config) {
             $stmt = $db->prepare("
-                SELECT id, partner_id, cashback_percent, min_order_value, max_cashback, valid_days, status
+                SELECT id, partner_id, cashback_percent, min_order_value, max_cashback, expiry_days, status
                 FROM om_cashback_config
                 WHERE partner_id IS NULL AND status = '1'
                 LIMIT 1
@@ -97,7 +97,7 @@ try {
             'cashback_percent' => $globalConfig['cashback_percent'] ?? 5.00,
             'min_order_value' => $globalConfig['min_order_value'] ?? 0.00,
             'max_cashback' => $globalConfig['max_cashback'] ?? 50.00,
-            'valid_days' => $globalConfig['valid_days'] ?? 30,
+            'expiry_days' => $globalConfig['expiry_days'] ?? 30,
             'status' => 0 // se nao tem config propria, usa global
         ];
 
@@ -108,14 +108,14 @@ try {
                 'cashback_percent' => (float)$configData['cashback_percent'],
                 'min_order_value' => (float)$configData['min_order_value'],
                 'max_cashback' => (float)$configData['max_cashback'],
-                'valid_days' => (int)$configData['valid_days'],
+                'expiry_days' => (int)$configData['expiry_days'],
                 'using_global' => $config === null || $config === false
             ],
             'global_config' => $globalConfig ? [
                 'cashback_percent' => (float)$globalConfig['cashback_percent'],
                 'min_order_value' => (float)$globalConfig['min_order_value'],
                 'max_cashback' => (float)$globalConfig['max_cashback'],
-                'valid_days' => (int)$globalConfig['valid_days']
+                'expiry_days' => (int)$globalConfig['expiry_days']
             ] : null,
             'stats' => [
                 'total_customers' => (int)($stats['total_customers'] ?? 0),
@@ -146,7 +146,7 @@ try {
         $cashbackPercent = isset($input['cashback_percent']) ? (float)$input['cashback_percent'] : null;
         $minOrderValue = isset($input['min_order_value']) ? (float)$input['min_order_value'] : null;
         $maxCashback = isset($input['max_cashback']) ? (float)$input['max_cashback'] : null;
-        $validDays = isset($input['valid_days']) ? (int)$input['valid_days'] : null;
+        $validDays = isset($input['expiry_days']) ? (int)$input['expiry_days'] : null;
         $status = isset($input['status']) ? (int)$input['status'] : null;
         $enabled = isset($input['enabled']) ? (int)$input['enabled'] : null;
 
@@ -195,7 +195,7 @@ try {
                 $params[] = $maxCashback;
             }
             if ($validDays !== null) {
-                $sets[] = "valid_days = ?";
+                $sets[] = "expiry_days = ?";
                 $params[] = $validDays;
             }
             if ($status !== null) {
@@ -216,7 +216,7 @@ try {
             // Criar nova config
             $stmt = $db->prepare("
                 INSERT INTO om_cashback_config
-                (partner_id, cashback_percent, min_order_value, max_cashback, valid_days, status)
+                (partner_id, cashback_percent, min_order_value, max_cashback, expiry_days, status)
                 VALUES (?, ?, ?, ?, ?, ?)
             ");
             $stmt->execute([
@@ -230,7 +230,7 @@ try {
         }
 
         // Buscar config atualizada
-        $stmt = $db->prepare("SELECT id, partner_id, cashback_percent, min_order_value, max_cashback, valid_days, status FROM om_cashback_config WHERE partner_id = ?");
+        $stmt = $db->prepare("SELECT id, partner_id, cashback_percent, min_order_value, max_cashback, expiry_days, status FROM om_cashback_config WHERE partner_id = ?");
         $stmt->execute([$partnerId]);
         $config = $stmt->fetch();
 
@@ -241,7 +241,7 @@ try {
                 'cashback_percent' => (float)$config['cashback_percent'],
                 'min_order_value' => (float)$config['min_order_value'],
                 'max_cashback' => (float)$config['max_cashback'],
-                'valid_days' => (int)$config['valid_days']
+                'expiry_days' => (int)$config['expiry_days']
             ]
         ], "Configuracao de cashback atualizada!");
     }

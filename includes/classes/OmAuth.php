@@ -86,9 +86,17 @@ class OmAuth {
         }
 
         // Verificar se token não foi revogado
-        if (!$this->isTokenValid($payload['type'], $payload['uid'], $payload['jti'])) {
+        // Tokens must have uid and jti fields (homegrown tokens use user_id instead — reject gracefully)
+        $uid = $payload['uid'] ?? $payload['user_id'] ?? null;
+        $jti = $payload['jti'] ?? null;
+        if ($uid === null || $jti === null) {
             return null;
         }
+        if (!$this->isTokenValid($payload['type'], (int)$uid, $jti)) {
+            return null;
+        }
+        // Normalize uid for callers
+        $payload['uid'] = (int)$uid;
 
         return $payload;
     }
