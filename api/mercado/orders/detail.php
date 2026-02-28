@@ -117,7 +117,7 @@ try {
     // If cancelled, replace timeline
     if ($cancelled) {
         $timeline = [
-            ["status" => "criado", "label" => "Pedido realizado", "date" => $order['date_added'], "completed" => true, "current" => false],
+            ["status" => "criado", "label" => "Pedido realizado", "date" => $order['date_added'] ?: $order['created_at'], "completed" => true, "current" => false],
             ["status" => "cancelado", "label" => "Cancelado", "date" => $order['cancelled_at'] ?? $order['date_modified'], "completed" => true, "current" => true, "error" => true]
         ];
     }
@@ -165,12 +165,12 @@ try {
             "codigo_entrega" => $deliveryCode,
             "delivery_photo" => $order['delivery_photo'] ?? null,
             "delivery_photo_at" => $order['delivery_photo_at'] ?? null,
-            "date" => $order['date_added'],
+            "date" => $order['date_added'] ?: $order['created_at'],
             "confirmed_at" => $order['confirmed_at'] ?? null,
             "preparing_at" => $order['shopping_started_at'] ?? null,
             "dispatched_at" => $order['delivering_at'] ?? null,
             "delivered_at" => $order['delivered_at'] ?? null,
-            "status_updated_at" => $order['date_modified'] ?? $order['date_added'],
+            "status_updated_at" => $order['date_modified'] ?? $order['date_added'] ?: $order['created_at'],
             "items" => $items,
             "timeline" => $timeline,
             "review" => $review,

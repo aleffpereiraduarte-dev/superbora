@@ -40,14 +40,14 @@ try {
     $stmt = $db->prepare("
         SELECT o.order_id, o.order_number, o.partner_id, o.status, o.subtotal,
                o.delivery_fee, o.total, o.tip_amount, o.coupon_discount,
-               o.forma_pagamento, o.payment_method, o.delivery_address, o.date_added,
+               o.forma_pagamento, o.payment_method, o.delivery_address, o.date_added, o.created_at,
                o.customer_name, o.is_pickup, o.schedule_date, o.schedule_time,
                o.items_count, o.partner_name,
                p.trade_name, p.logo as partner_logo, p.categoria as partner_category
         FROM om_market_orders o
         LEFT JOIN om_market_partners p ON o.partner_id = p.partner_id
         WHERE $where
-        ORDER BY o.date_added DESC
+        ORDER BY COALESCE(o.date_added, o.created_at) DESC, o.order_id DESC
         LIMIT ? OFFSET ?
     ");
     $stmt->execute(array_merge($params, [$limit, $offset]));
@@ -67,7 +67,7 @@ try {
             "payment_method" => $o['forma_pagamento'] ?: $o['payment_method'],
             "address" => $o['delivery_address'],
             "is_pickup" => (bool)$o['is_pickup'],
-            "date" => $o['date_added'],
+            "date" => $o['date_added'] ?: $o['created_at'],
             "schedule_date" => $o['schedule_date'],
             "schedule_time" => $o['schedule_time'],
             "items_count" => (int)($o['items_count'] ?? 0),

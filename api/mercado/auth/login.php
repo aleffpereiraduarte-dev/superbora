@@ -4,7 +4,6 @@
  * Login do cliente - email + senha
  */
 require_once __DIR__ . "/../config/database.php";
-require_once __DIR__ . "/../helpers/rate-limit.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
 
 setCorsHeaders();
@@ -18,11 +17,7 @@ try {
     $db = getDB();
     OmAuth::getInstance()->setDb($db);
 
-    // Rate limiting: 10 tentativas por 15 minutos por IP
-    $ip = getRateLimitIP();
-    if (!checkRateLimit("customer_login_{$ip}", 10, 15)) {
-        response(false, null, "Muitas tentativas de login. Tente novamente em 15 minutos.", 429);
-    }
+    // Rate limiting handled globally by config/ratelimit.php (5/min per IP for auth routes)
 
     $email = filter_var(trim($input['email'] ?? ''), FILTER_SANITIZE_EMAIL);
     $password = $input['senha'] ?? $input['password'] ?? '';

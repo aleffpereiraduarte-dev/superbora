@@ -13,7 +13,7 @@ try {
 
     $db = getDB();
     $stmt = $db->prepare("
-        SELECT status, customer_id FROM om_market_orders WHERE order_id = ?
+        SELECT status, customer_id, date_added FROM om_market_orders WHERE order_id = ?
     ");
     $stmt->execute([$order_id]);
     $order = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -24,9 +24,39 @@ try {
 
     // Can only add items if order is in early stages
     $addableStatuses = ['pendente', 'confirmado', 'aceito'];
-    $canAdd = in_array($order['status'], $addableStatuses);
+    $statusOk = in_array($order['status'], $addableStatuses);
 
-    response(true, ['pode_adicionar' => $canAdd]);
+    // 30-minute time window from order creation
+    $canAdd = false;
+    $motivo = null;
+    $tempoRestante = null;
+
+    if (!$statusOk) {
+        $motivo = "Pedido nao pode ser editado (status: {$order['status']})";
+    } else {
+        $createdAt = new DateTime($order['date_added']);
+        $now = new DateTime();
+        $limitTime = (clone $createdAt)->modify('+30 minutes');
+        $diff = $now->diff($limitTime);
+
+        if ($now > $limitTime) {
+            $motivo = "Tempo limite excedido";
+        } else {
+            $canAdd = true;
+            $remainingSeconds = $limitTime->getTimestamp() - $now->getTimestamp();
+            $tempoRestante = [
+                'minutos' => floor($remainingSeconds / 60),
+                'segundos' => $remainingSeconds % 60,
+                'total_segundos' => $remainingSeconds,
+            ];
+        }
+    }
+
+    $data = ['pode_adicionar' => $canAdd];
+    if ($motivo) $data['motivo'] = $motivo;
+    if ($tempoRestante) $data['tempo_restante'] = $tempoRestante;
+
+    response(true, $data);
 
 } catch (Exception $e) {
     error_log("[pedido/pode-adicionar] Erro: " . $e->getMessage());

@@ -13,7 +13,7 @@ require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
 setCorsHeaders();
 
 // Editable statuses
-const EDITABLE_STATUSES = ['pending', 'pendente', 'aceito'];
+const EDITABLE_STATUSES = ['pendente', 'confirmado', 'aceito'];
 
 try {
     $db = getDB();
@@ -139,11 +139,12 @@ try {
                 SELECT o.order_id, o.order_number, o.partner_id, o.status, o.subtotal,
                        o.delivery_fee, o.service_fee, o.total, o.tip_amount, o.coupon_id,
                        o.coupon_discount, o.is_pickup, o.modification_count, o.partner_name,
+                       o.date_added,
                        p.delivery_fee as partner_delivery_fee, p.free_delivery_above,
                        p.min_order_value, p.partner_id as p_id
                 FROM om_market_orders o
                 LEFT JOIN om_market_partners p ON o.partner_id = p.partner_id
-                WHERE o.order_id = ? AND o.customer_id = ? FOR UPDATE
+                WHERE o.order_id = ? AND o.customer_id = ? FOR UPDATE OF o
             ");
             $stmt->execute([$orderId, $customerId]);
             $order = $stmt->fetch();
@@ -156,6 +157,14 @@ try {
             if (!in_array($order['status'], EDITABLE_STATUSES)) {
                 $db->rollBack();
                 response(false, null, "Pedido nao pode ser editado (status: {$order['status']})", 400);
+            }
+
+            // 30-minute time window from order creation
+            $createdAt = new DateTime($order['date_added']);
+            $limitTime = (clone $createdAt)->modify('+30 minutes');
+            if (new DateTime() > $limitTime) {
+                $db->rollBack();
+                response(false, null, "Tempo para edicao expirou", 400);
             }
 
             $partnerId = (int)$order['partner_id'];
