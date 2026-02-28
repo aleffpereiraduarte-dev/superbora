@@ -169,26 +169,28 @@ CREATE TABLE IF NOT EXISTS om_favorite_items (
 -- =====================================================
 
 CREATE TABLE IF NOT EXISTS om_post_delivery_tips (
-    id INT AUTO_INCREMENT PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
     order_id INT NOT NULL UNIQUE,
     customer_id INT NOT NULL,
     shopper_id INT,
     driver_id INT,
     amount DECIMAL(10,2) NOT NULL,
     message VARCHAR(255),
-    status ENUM('pending', 'paid', 'cancelled') DEFAULT 'pending',
-    paid_at DATETIME,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_order (order_id),
-    INDEX idx_shopper (shopper_id),
-    INDEX idx_driver (driver_id),
-    INDEX idx_status (status)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'paid', 'cancelled')),
+    paid_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_post_tips_order ON om_post_delivery_tips (order_id);
+CREATE INDEX IF NOT EXISTS idx_post_tips_shopper ON om_post_delivery_tips (shopper_id);
+CREATE INDEX IF NOT EXISTS idx_post_tips_driver ON om_post_delivery_tips (driver_id);
+CREATE INDEX IF NOT EXISTS idx_post_tips_status ON om_post_delivery_tips (status);
 
 -- Flag no pedido para indicar se gorjeta pos foi dada
 ALTER TABLE om_market_orders
-ADD COLUMN IF NOT EXISTS post_tip_given TINYINT(1) DEFAULT 0 AFTER tip_amount,
-ADD COLUMN IF NOT EXISTS post_tip_amount DECIMAL(10,2) DEFAULT 0 AFTER post_tip_given;
+ADD COLUMN IF NOT EXISTS post_tip_given SMALLINT DEFAULT 0;
+ALTER TABLE om_market_orders
+ADD COLUMN IF NOT EXISTS post_tip_amount DECIMAL(10,2) DEFAULT 0;
 
 -- =====================================================
 -- 6. DIVISAO DE CONTA (Bill Split)

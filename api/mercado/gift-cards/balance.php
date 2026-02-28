@@ -29,25 +29,33 @@ try {
         exit;
     }
 
-    // Sum of all redeemed gift cards for this customer
+    // Sum of remaining balance from all redeemed gift cards for this customer
     $stmt = $db->prepare("
-        SELECT COALESCE(SUM(amount), 0) as total_redeemed
+        SELECT COALESCE(SUM(balance), 0) as total_balance,
+               COALESCE(SUM(amount), 0) as total_redeemed
         FROM om_market_gift_cards
         WHERE redeemed_by = ? AND status = 'redeemed'
     ");
     $stmt->execute([$customerId]);
-    $totalRedeemed = (float)$stmt->fetch()['total_redeemed'];
+    $row = $stmt->fetch();
+    $balance = (float)$row['total_balance'];
+    $totalRedeemed = (float)$row['total_redeemed'];
 
-    // Sum of amounts spent from gift card balance
-    $stmtSpent = $db->prepare("
-        SELECT COALESCE(SUM(amount), 0) as total_spent
-        FROM om_market_gift_card_transactions
-        WHERE customer_id = ? AND type = 'spent'
-    ");
-    $stmtSpent->execute([$customerId]);
-    $totalSpent = (float)$stmtSpent->fetch()['total_spent'];
+    // Check if transactions table exists for detailed spent tracking
+    $txTableExists = $db->query("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'om_market_gift_card_transactions')")->fetchColumn();
 
-    $balance = $totalRedeemed - $totalSpent;
+    if ($txTableExists) {
+        $stmtSpent = $db->prepare("
+            SELECT COALESCE(SUM(amount), 0) as total_spent
+            FROM om_market_gift_card_transactions
+            WHERE customer_id = ? AND type = 'spent'
+        ");
+        $stmtSpent->execute([$customerId]);
+        $totalSpent = (float)$stmtSpent->fetch()['total_spent'];
+    } else {
+        // Derive spent from difference between redeemed amounts and remaining balances
+        $totalSpent = $totalRedeemed - $balance;
+    }
 
     // Get history of redeemed cards
     $stmt = $db->prepare("

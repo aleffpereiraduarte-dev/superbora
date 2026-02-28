@@ -5,9 +5,8 @@
  * Retorna dados completos de rastreamento para o cliente
  * ══════════════════════════════════════════════════════════════════════════════
  *
- * REQUER: Autenticacao de Customer ou token do pedido
+ * REQUER: Autenticacao de Customer (JWT)
  * Header: Authorization: Bearer <token>
- *   ou Query: ?order_id=X&token=Y (token do pedido)
  *
  * Response: {
  *   "success": true,
@@ -39,12 +38,11 @@ try {
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // AUTENTICACAO - Aceita token de customer ou tracking_token do pedido
+    // AUTENTICACAO - Requer JWT de customer
     // ═══════════════════════════════════════════════════════════════════
     $customerId = null;
-    $trackingToken = $_GET['tracking_token'] ?? null;
 
-    // Tentar autenticacao por token JWT
+    // Autenticacao por token JWT
     $token = om_auth()->getTokenFromRequest();
     if ($token) {
         $payload = om_auth()->validateToken($token);
@@ -53,8 +51,7 @@ try {
         }
     }
 
-    // Se nao tem customer autenticado, precisa de tracking_token
-    if (!$customerId && !$trackingToken) {
+    if (!$customerId) {
         response(false, null, "Autenticacao necessaria", 401);
     }
 
@@ -69,7 +66,7 @@ try {
     $sql = "
         SELECT o.order_id, o.order_number, o.status, o.shopper_id,
                o.shipping_lat, o.shipping_lng, o.delivery_address,
-               o.partner_id, o.customer_id, o.tracking_token,
+               o.partner_id, o.customer_id,
                o.route_id, o.route_stop_sequence,
                o.created_at, COALESCE(o.date_modified, o.created_at) AS updated_at,
                p.latitude AS partner_lat, p.longitude AS partner_lng,
@@ -79,16 +76,10 @@ try {
         WHERE o.order_id = ?
     ";
 
-    // Adicionar verificacao de ownership
-    if ($customerId) {
-        $sql .= " AND o.customer_id = ?";
-        $stmt = $db->prepare($sql);
-        $stmt->execute([$orderId, $customerId]);
-    } elseif ($trackingToken) {
-        $sql .= " AND o.tracking_token = ?";
-        $stmt = $db->prepare($sql);
-        $stmt->execute([$orderId, $trackingToken]);
-    }
+    // Verificacao de ownership
+    $sql .= " AND o.customer_id = ?";
+    $stmt = $db->prepare($sql);
+    $stmt->execute([$orderId, $customerId]);
 
     $order = $stmt->fetch();
 
@@ -123,12 +114,10 @@ try {
         ],
         'driver' => null,
         'tracking' => null,
-        'pusher' => [
-            'app_key' => PusherService::getAppKey(),
-            'cluster' => PusherService::getCluster(),
+        'pusher' => PusherService::isConfigured() ? [
             'channel' => "order-{$orderId}",
             'events' => ['location-update', 'status-update', 'driver-arriving', 'driver-arrived']
-        ],
+        ] : null,
         'route' => null
     ];
 
@@ -289,10 +278,10 @@ try {
     // BUSCAR HISTORICO DE LOCALIZACOES (ultimos 10 pontos para smooth animation)
     // ═══════════════════════════════════════════════════════════════════
     $stmt = $db->prepare("
-        SELECT latitude, longitude, heading, speed, created_at
+        SELECT lat, lng, heading, speed, recorded_at
         FROM om_delivery_locations
         WHERE order_id = ?
-        ORDER BY created_at DESC
+        ORDER BY recorded_at DESC
         LIMIT 10
     ");
     $stmt->execute([$orderId]);
@@ -301,11 +290,11 @@ try {
     if ($history) {
         $data['location_history'] = array_map(function($loc) {
             return [
-                'lat' => (float)$loc['latitude'],
-                'lng' => (float)$loc['longitude'],
+                'lat' => (float)$loc['lat'],
+                'lng' => (float)$loc['lng'],
                 'heading' => $loc['heading'] ? (int)$loc['heading'] : null,
                 'speed' => $loc['speed'] ? (float)$loc['speed'] : null,
-                'timestamp' => $loc['created_at']
+                'timestamp' => $loc['recorded_at']
             ];
         }, array_reverse($history));
     }

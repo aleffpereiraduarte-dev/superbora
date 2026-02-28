@@ -74,7 +74,7 @@ try {
             $stmt = $db->prepare("
                 SELECT DISTINCT
                     p.partner_id, COALESCE(p.name, p.trade_name) as display_name, p.logo, p.categoria,
-                    p.rating, p.delivery_time_min
+                    p.rating, p.delivery_time_min, f.created_at
                 FROM om_customer_favorites f
                 INNER JOIN om_market_partners p ON f.partner_id = p.partner_id
                 WHERE f.customer_id = ? AND p.status = '1'
