@@ -28,22 +28,12 @@
 <link rel="icon" href="/favicon.ico" /></head>
 
   <body>
-    <script>
-      // Redirect non-SPA routes to their PHP backends before Expo loads
-      (function(){
-        var p = window.location.pathname;
-        if (p === '/painel' || p.indexOf('/painel/') === 0) {
-          window.location.replace('/painel/mercado/login.php');
-          return;
-        }
-      })();
-    </script>
     <!-- Use static rendering with Expo Router to support running without JavaScript. -->
     <noscript>
       You need to enable JavaScript to run this app.
     </noscript>
     <!-- The root element for your Expo app. -->
     <div id="root"></div>
-  <script src="/_expo/static/js/web/entry-9e7a1c7c30f44c044c718742989d92f0.js" defer></script>
+  <script src="/_expo/static/js/web/entry-178d970209ae8f8aa67cd3ee9ab12832.js" defer></script>
 </body>
 </html>

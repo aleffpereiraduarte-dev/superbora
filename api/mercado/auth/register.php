@@ -86,14 +86,14 @@ try {
     $stmt = $db->prepare("SELECT customer_id FROM om_customers WHERE email = ?");
     $stmt->execute([$email]);
     if ($stmt->fetch()) {
-        response(false, null, "Este email ja esta cadastrado", 409);
+        response(false, null, "Dados ja cadastrados. Tente fazer login ou recuperar sua conta.", 409);
     }
 
     // Verificar CPF unico
     $stmt = $db->prepare("SELECT customer_id FROM om_customers WHERE cpf = ?");
     $stmt->execute([$cpf]);
     if ($stmt->fetch()) {
-        response(false, null, "Este CPF ja esta cadastrado", 409);
+        response(false, null, "Dados ja cadastrados. Tente fazer login ou recuperar sua conta.", 409);
     }
 
     // Verificar telefone unico
@@ -101,7 +101,7 @@ try {
     $stmt = $db->prepare("SELECT customer_id FROM om_customers WHERE REPLACE(REPLACE(phone, '+', ''), '-', '') = ?");
     $stmt->execute([$phoneClean]);
     if ($stmt->fetch()) {
-        response(false, null, "Este telefone ja esta cadastrado", 409);
+        response(false, null, "Dados ja cadastrados. Tente fazer login ou recuperar sua conta.", 409);
     }
 
     // Verificar OTP se fornecido

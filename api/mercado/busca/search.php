@@ -41,12 +41,18 @@ try {
     }
 
     if (!empty($_GET['category'])) {
-        $cat = $_GET['category'];
-        // Whitelist validation: only allow alphanumeric, spaces, accented chars, hyphens, ampersand
+        $cat = trim($_GET['category']);
+        // Strict whitelist: only allow letters (accented), numbers, spaces, hyphens, ampersand, dots
         if (!preg_match('/^[\p{L}\p{N} &\-\.]{1,100}$/u', $cat)) {
             response(false, null, "Categoria invalida", 400);
         }
-        $cat = str_replace('"', '', $cat);
+        // Escape all characters that could break Meilisearch filter syntax
+        $cat = str_replace(['\\', '"', "'"], '', $cat);
+        // Double-check no filter operators leak through
+        $catLower = mb_strtolower($cat);
+        if (preg_match('/\b(OR|AND|NOT|TO)\b/i', $cat)) {
+            response(false, null, "Categoria invalida", 400);
+        }
         $filters[] = 'category_name = "' . $cat . '"';
     }
 

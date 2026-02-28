@@ -35,10 +35,10 @@ try {
 
     $stmt = $db->prepare("
         SELECT p.partner_id, p.name, p.trade_name, p.email, p.phone, p.cnpj,
-               p.address, p.city, p.state, p.neighborhood, p.zip_code,
-               p.logo, p.banner, p.category, p.description, p.status,
+               p.address, p.city, p.state, p.neighborhood, p.cep,
+               p.logo, p.banner, p.categoria, p.description, p.status,
                p.is_open, p.opening_hours, p.delivery_fee, p.min_order,
-               p.rating, p.rating_count, p.commission_rate,
+               p.rating, p.commission_rate,
                p.created_at, p.updated_at
         FROM om_market_partners p
         WHERE {$where_sql}

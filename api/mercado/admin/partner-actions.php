@@ -126,10 +126,10 @@ try {
             // Dados do parceiro (explicit columns — excludes password_hash, password, salt, token)
             $stmt = $db->prepare("
                 SELECT partner_id, name, trade_name, email, phone, cnpj,
-                       address, city, state, neighborhood, zip_code,
-                       logo, banner, category, description, status,
+                       address, city, state, neighborhood, cep,
+                       logo, banner, categoria, description, status,
                        is_open, opening_hours, delivery_fee, min_order,
-                       rating, rating_count, commission_rate,
+                       rating, commission_rate,
                        suspended_until, suspension_reason,
                        created_at, updated_at
                 FROM om_market_partners WHERE partner_id = ?

@@ -33,9 +33,9 @@ try {
         // Pedir de novo (baseado em historico)
         if ($type === 'all' || $type === 'reorder') {
             $stmt = $db->prepare("
-                SELECT DISTINCT
+                SELECT
                     p.partner_id, p.trade_name, p.logo, p.banner,
-                    p.rating_average, p.delivery_time_min,
+                    p.rating, p.delivery_time_min,
                     COUNT(DISTINCT o.order_id) as order_count,
                     MAX(o.created_at) as last_order
                 FROM om_market_orders o
@@ -43,7 +43,7 @@ try {
                 WHERE o.customer_id = ?
                 AND o.status = 'entregue'
                 AND p.status = '1'
-                GROUP BY p.partner_id
+                GROUP BY p.partner_id, p.trade_name, p.logo, p.banner, p.rating, p.delivery_time_min
                 ORDER BY order_count DESC, last_order DESC
                 LIMIT ?
             ");
@@ -60,7 +60,7 @@ try {
                             'id' => (int)$p['partner_id'],
                             'name' => $p['trade_name'],
                             'image' => $p['logo'],
-                            'rating' => (float)$p['rating_average'],
+                            'rating' => (float)$p['rating'],
                             'delivery_time' => $p['delivery_time_min'],
                             'order_count' => (int)$p['order_count'],
                         ];
@@ -74,10 +74,10 @@ try {
             $stmt = $db->prepare("
                 SELECT DISTINCT
                     p.partner_id, p.trade_name, p.logo, p.categoria,
-                    p.rating_average, p.delivery_time_min
-                FROM om_favorites f
+                    p.rating, p.delivery_time_min
+                FROM om_customer_favorites f
                 INNER JOIN om_market_partners p ON f.partner_id = p.partner_id
-                WHERE f.customer_id = ? AND f.partner_id IS NOT NULL AND p.status = '1'
+                WHERE f.customer_id = ? AND p.status = '1'
                 ORDER BY f.created_at DESC
                 LIMIT ?
             ");
@@ -93,12 +93,12 @@ try {
 
                 $stmt = $db->prepare("
                     SELECT p.partner_id, p.trade_name, p.logo, p.categoria,
-                           p.rating_average, p.delivery_time_min
+                           p.rating, p.delivery_time_min
                     FROM om_market_partners p
                     WHERE p.categoria IN ($placeholders)
                     AND p.partner_id NOT IN ($excludePlaceholders)
                     AND p.status = '1'
-                    ORDER BY p.rating_average DESC
+                    ORDER BY p.rating DESC
                     LIMIT ?
                 ");
                 $stmt->execute(array_merge($categories, $favoriteIds, [$limit]));
@@ -115,7 +115,7 @@ try {
                                 'name' => $p['trade_name'],
                                 'image' => $p['logo'],
                                 'category' => $p['categoria'],
-                                'rating' => (float)$p['rating_average'],
+                                'rating' => (float)$p['rating'],
                                 'delivery_time' => $p['delivery_time_min'],
                             ];
                         }, $similarPartners)
@@ -131,10 +131,11 @@ try {
     if ($type === 'all' || $type === 'popular') {
         $stmt = $db->prepare("
             SELECT p.partner_id, p.trade_name, p.logo, p.categoria,
-                   p.rating_average, p.rating_count, p.delivery_time_min
+                   p.rating, p.delivery_time_min,
+                   (SELECT COUNT(*) FROM om_market_orders o WHERE o.partner_id = p.partner_id AND o.status = 'entregue') as order_count
             FROM om_market_partners p
             WHERE p.status = '1'
-            ORDER BY p.rating_count DESC, p.rating_average DESC
+            ORDER BY order_count DESC, p.rating DESC
             LIMIT ?
         ");
         $stmt->execute([$limit]);
@@ -150,8 +151,8 @@ try {
                     'name' => $p['trade_name'],
                     'image' => $p['logo'],
                     'category' => $p['categoria'],
-                    'rating' => (float)$p['rating_average'],
-                    'review_count' => (int)$p['rating_count'],
+                    'rating' => (float)$p['rating'],
+                    'review_count' => (int)$p['order_count'],
                     'delivery_time' => $p['delivery_time_min'],
                 ];
             }, $popular)
@@ -162,10 +163,11 @@ try {
     if ($type === 'all' || $type === 'top_rated') {
         $stmt = $db->prepare("
             SELECT p.partner_id, p.trade_name, p.logo, p.categoria,
-                   p.rating_average, p.rating_count, p.delivery_time_min
+                   p.rating, p.delivery_time_min,
+                   (SELECT COUNT(*) FROM om_market_orders o WHERE o.partner_id = p.partner_id AND o.status = 'entregue') as review_count
             FROM om_market_partners p
-            WHERE p.status = '1' AND p.rating_count >= 10
-            ORDER BY p.rating_average DESC
+            WHERE p.status = '1' AND p.rating >= 4.5
+            ORDER BY p.rating DESC
             LIMIT ?
         ");
         $stmt->execute([$limit]);
@@ -181,8 +183,8 @@ try {
                     'name' => $p['trade_name'],
                     'image' => $p['logo'],
                     'category' => $p['categoria'],
-                    'rating' => (float)$p['rating_average'],
-                    'review_count' => (int)$p['rating_count'],
+                    'rating' => (float)$p['rating'],
+                    'review_count' => (int)$p['review_count'],
                 ];
             }, $topRated)
         ];
@@ -192,7 +194,7 @@ try {
     if ($type === 'all' || $type === 'new') {
         $stmt = $db->prepare("
             SELECT p.partner_id, p.trade_name, p.logo, p.categoria,
-                   p.rating_average, p.delivery_time_min, p.created_at
+                   p.rating, p.delivery_time_min, p.created_at
             FROM om_market_partners p
             WHERE p.status = '1'
             AND p.created_at >= NOW() - INTERVAL '30 days'
@@ -213,7 +215,7 @@ try {
                         'name' => $p['trade_name'],
                         'image' => $p['logo'],
                         'category' => $p['categoria'],
-                        'rating' => (float)$p['rating_average'],
+                        'rating' => (float)$p['rating'],
                         'is_new' => true,
                     ];
                 }, $newPartners)
@@ -224,13 +226,15 @@ try {
     // Produtos em promocao
     if ($type === 'all' || $type === 'deals') {
         $stmt = $db->prepare("
-            SELECT pr.*, p.trade_name as partner_name, p.logo as partner_logo
+            SELECT pr.id, pr.name, pr.image, pr.price, pr.special_price, pr.partner_id,
+                   p.trade_name as partner_name, p.logo as partner_logo
             FROM om_market_products pr
             INNER JOIN om_market_partners p ON pr.partner_id = p.partner_id
             WHERE pr.status = '1' AND p.status = '1'
-            AND pr.preco_promocional IS NOT NULL
-            AND pr.preco_promocional < pr.preco
-            ORDER BY (pr.preco - pr.preco_promocional) / pr.preco DESC
+            AND pr.special_price IS NOT NULL
+            AND pr.special_price > 0
+            AND pr.special_price < pr.price
+            ORDER BY (pr.price - pr.special_price) / pr.price DESC
             LIMIT ?
         ");
         $stmt->execute([$limit]);
@@ -241,14 +245,14 @@ try {
                 'title' => 'Ofertas do dia',
                 'subtitle' => 'Aproveite os descontos',
                 'items' => array_map(function($pr) {
-                    $discount = round((($pr['preco'] - $pr['preco_promocional']) / $pr['preco']) * 100);
+                    $discount = round((($pr['price'] - $pr['special_price']) / $pr['price']) * 100);
                     return [
                         'type' => 'product',
                         'id' => (int)$pr['id'],
-                        'name' => $pr['nome'],
-                        'image' => $pr['imagem'],
-                        'original_price' => (float)$pr['preco'],
-                        'sale_price' => (float)$pr['preco_promocional'],
+                        'name' => $pr['name'],
+                        'image' => $pr['image'],
+                        'original_price' => (float)$pr['price'],
+                        'sale_price' => (float)$pr['special_price'],
                         'discount_percent' => $discount,
                         'partner' => [
                             'id' => (int)$pr['partner_id'],

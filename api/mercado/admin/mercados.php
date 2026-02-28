@@ -33,7 +33,7 @@ try {
         $params[] = $status;
     }
     if ($category) {
-        $where[] = "p.category = ?";
+        $where[] = "p.categoria = ?";
         $params[] = $category;
     }
 
@@ -45,9 +45,9 @@ try {
 
     $stmt = $db->prepare("
         SELECT p.partner_id, p.name, p.trade_name, p.email, p.phone, p.cnpj,
-               p.logo, p.banner, p.category, p.description, p.status,
+               p.logo, p.banner, p.categoria, p.description, p.status,
                p.is_open, p.opening_hours, p.delivery_fee, p.min_order,
-               p.rating, p.rating_count, p.commission_rate,
+               p.rating, p.commission_rate,
                p.city, p.state, p.created_at, p.updated_at,
                (SELECT COUNT(*) FROM om_market_orders o WHERE o.partner_id = p.partner_id) as total_orders,
                (SELECT COALESCE(SUM(o2.total), 0) FROM om_market_orders o2

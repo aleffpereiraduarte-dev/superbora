@@ -224,14 +224,4 @@ function nomeDiaSemana($dia) {
     return $dias[$dia] ?? '';
 }
 
-/**
- * Resposta padronizada
- */
-function response($success, $data = null, $message = null, $httpCode = 200) {
-    http_response_code($httpCode);
-    $response = ["success" => $success];
-    if ($message) $response["message"] = $message;
-    if ($data) $response = array_merge($response, $data);
-    echo json_encode($response, JSON_UNESCAPED_UNICODE);
-    exit;
-}
+// response() is already defined in config/database.php

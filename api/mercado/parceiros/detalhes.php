@@ -19,7 +19,7 @@ try {
     $data = CacheHelper::remember($cacheKey, 600, function() use ($id) {
         $db = getDB();
 
-        $stmt = $db->prepare("SELECT partner_id, name, trade_name, logo, banner, address, city, state, phone, email, cep, categoria, description, display_name, specialty, delivery_fee, minimum_order, min_order, delivery_time_min, delivery_time_max, rating, is_open, open_time, close_time, lat, lng, latitude, longitude, free_delivery_above, status FROM om_market_partners WHERE partner_id = ?");
+        $stmt = $db->prepare("SELECT partner_id, name, trade_name, logo, banner, address, city, state, phone, email, cep, categoria, description, delivery_fee, min_order, min_order_value, delivery_time_min, delivery_time_max, rating, is_open, open_time, close_time, latitude, longitude, free_delivery_above, status FROM om_market_partners WHERE partner_id = ?");
         $stmt->execute([$id]);
         $parceiro = $stmt->fetch();
 
@@ -41,7 +41,7 @@ try {
                 "cidade" => $parceiro["city"],
                 "telefone" => $parceiro["phone"],
                 "taxa_entrega" => $parceiro["delivery_fee"] ?? 0,
-                "pedido_minimo" => $parceiro["minimum_order"] ?? 0,
+                "pedido_minimo" => $parceiro["min_order"] ?? $parceiro["min_order_value"] ?? 0,
                 "tempo_estimado" => $parceiro["delivery_time_min"] ?? 60
             ],
             "categorias" => $categorias

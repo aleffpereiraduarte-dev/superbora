@@ -52,7 +52,7 @@ try {
         // Buscar todos parceiros ativos
         $stmt = $db->query("
             SELECT p.partner_id, p.name, p.trade_name, p.logo, p.banner, p.address, p.neighborhood, p.bairro, p.city, p.cidade, p.state, p.estado, p.cep, p.categoria,
-                   p.delivery_fee, p.taxa_entrega, p.minimum_order, p.min_order, p.min_order_value, p.delivery_time_min, p.tempo_preparo,
+                   p.delivery_fee, p.taxa_entrega, p.min_order, p.min_order_value, p.delivery_time_min, p.tempo_preparo,
                    p.free_delivery_above, p.free_delivery_min, p.rating, p.is_open, p.is_featured, p.featured,
                    p.cep_inicio, p.cep_fim, p.delivery_radius_km, p.delivery_radius, p.raio_entrega_km,
                    (SELECT COUNT(*) FROM om_market_products mp WHERE mp.partner_id = p.partner_id AND mp.status::text = '1') as total_produtos
@@ -144,7 +144,7 @@ function formatarParceiro($p, $atende, $mensagem) {
         "cep" => $p["cep"] ?? "",
         "categoria" => $p["categoria"] ?? "",
         "taxa_entrega" => floatval($p["delivery_fee"] ?? $p["taxa_entrega"] ?? 0),
-        "pedido_minimo" => floatval($p["minimum_order"] ?? $p["min_order"] ?? $p["min_order_value"] ?? 0),
+        "pedido_minimo" => floatval($p["min_order"] ?? $p["min_order_value"] ?? 0),
         "tempo_estimado" => (int)($p["delivery_time_min"] ?? $p["tempo_preparo"] ?? 60),
         "entrega_gratis_acima" => floatval($p["free_delivery_above"] ?? $p["free_delivery_min"] ?? 0),
         "avaliacao" => floatval($p["rating"] ?? 5.0),

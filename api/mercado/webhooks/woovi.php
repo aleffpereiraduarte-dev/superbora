@@ -39,20 +39,24 @@ $signature = $_SERVER['HTTP_X_WEBHOOK_SECRET'] ?? $_SERVER['HTTP_X_OPENPIX_SIGNA
 $publicKey = $_ENV['WOOVI_WEBHOOK_PUBLIC_KEY'] ?? getenv('WOOVI_WEBHOOK_PUBLIC_KEY') ?: '';
 
 if (empty($publicKey)) {
-    error_log("[woovi-webhook] WARNING: WOOVI_WEBHOOK_PUBLIC_KEY not configured — accepting without verification");
-    // Accept webhook without verification if no key configured (to not lose payments)
+    error_log("[woovi-webhook] CRITICAL: WOOVI_WEBHOOK_PUBLIC_KEY not configured — rejecting");
+    http_response_code(500);
+    echo json_encode(['error' => 'Webhook not configured']);
+    exit;
 }
 
-if (!empty($publicKey) && !empty($signature)) {
-    if (!WooviClient::verifyWebhookSignature($rawBody, $signature, $publicKey)) {
-        error_log("[woovi-webhook] Assinatura invalida — sig: " . substr($signature, 0, 20) . "...");
-        // Log but don't reject — payment confirmation is critical
-        // http_response_code(401);
-        // echo json_encode(['error' => 'Invalid signature']);
-        // exit;
-    }
-} else if (empty($signature)) {
-    error_log("[woovi-webhook] No signature header — accepting anyway (check Woovi dashboard config)");
+if (empty($signature)) {
+    error_log("[woovi-webhook] Rejected: no signature header");
+    http_response_code(401);
+    echo json_encode(['error' => 'Missing signature']);
+    exit;
+}
+
+if (!WooviClient::verifyWebhookSignature($rawBody, $signature, $publicKey)) {
+    error_log("[woovi-webhook] Rejected: invalid signature — sig: " . substr($signature, 0, 20) . "...");
+    http_response_code(401);
+    echo json_encode(['error' => 'Invalid signature']);
+    exit;
 }
 
 $payload = json_decode($rawBody, true);

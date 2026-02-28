@@ -6,11 +6,11 @@
 
 // DB
 define('DB_DRIVER', 'mysqli');
-define('DB_HOSTNAME', '147.93.12.236');
+define('DB_HOSTNAME', '127.0.0.1');
 define('DB_USERNAME', 'love1');
 define('DB_PASSWORD', 'Aleff2009@');
 define('DB_DATABASE', 'love1');
-define('DB_PORT', '3306');
+define('DB_PORT', '6432');
 define('DB_PREFIX', 'oc_');
 
 // URLs
