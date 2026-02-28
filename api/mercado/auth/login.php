@@ -1,5 +1,4 @@
 <?php
-require_once __DIR__ . "/_debug_log.php";
 /**
  * POST /api/mercado/auth/login.php
  * Login do cliente - email + senha

@@ -24,12 +24,10 @@ try {
                p.trade_name, p.logo as partner_logo,
                p.phone as partner_phone, p.categoria as partner_category,
                p.address as partner_address,
-               sh.name as shopper_name, sh.phone as shopper_phone, sh.photo as shopper_photo, sh.rating as shopper_rating,
-               mot.name as motorista_name
+               sh.name as shopper_name, sh.phone as shopper_phone, sh.photo as shopper_photo, sh.rating as shopper_rating
         FROM om_market_orders o
         LEFT JOIN om_market_partners p ON o.partner_id = p.partner_id
         LEFT JOIN om_market_shoppers sh ON o.shopper_id = sh.shopper_id
-        LEFT JOIN om_market_motoristas mot ON o.motorista_id = mot.motorista_id
         WHERE o.order_id = ? AND o.customer_id = ?
     ");
     $stmt->execute([$orderId, $customerId]);
@@ -191,10 +189,19 @@ try {
                 "photo" => $order['shopper_photo'] ?? null,
                 "rating" => isset($order['shopper_rating']) ? (float)$order['shopper_rating'] : null
             ] : null,
-            "driver" => !empty($order['motorista_name']) ? [
+            "driver" => !empty($order['motorista_nome']) ? [
                 "id" => (int)($order['motorista_id'] ?? 0),
-                "name" => $order['motorista_name']
-            ] : null
+                "name" => $order['motorista_nome'],
+                "phone" => $order['motorista_telefone'] ?? null,
+                "photo" => $order['motorista_foto'] ?? null,
+                "vehicle" => $order['motorista_carro'] ?? null,
+                "plate" => $order['motorista_placa'] ?? null
+            ] : (!empty($order['driver_name']) ? [
+                "id" => (int)($order['driver_id'] ?? 0),
+                "name" => $order['driver_name'],
+                "phone" => $order['driver_phone'] ?? null,
+                "photo" => $order['driver_photo'] ?? null
+            ] : null)
         ]
     ]);
 

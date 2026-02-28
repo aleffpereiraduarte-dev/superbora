@@ -17,13 +17,13 @@ try {
     // Single query with JOIN to avoid N+1
     $stmt = $db->prepare("
         SELECT c.id, c.name, c.description, c.image, c.price, c.original_price,
-               ci.product_id AS item_product_id, ci.quantity AS item_quantity,
+               ci.item_product_id AS item_product_id, ci.quantity AS item_quantity,
                p.name AS item_name, p.price AS item_price, p.image AS item_image
         FROM om_market_combos c
-        LEFT JOIN om_market_combo_items ci ON ci.combo_id = c.id
-        LEFT JOIN om_market_products p ON p.product_id = ci.product_id
+        LEFT JOIN om_market_combo_items ci ON ci.combo_product_id = c.id
+        LEFT JOIN om_market_products p ON p.product_id = ci.item_product_id
         WHERE c.partner_id = ? AND c.status = '1'
-        ORDER BY c.created_at DESC, ci.product_id ASC
+        ORDER BY c.created_at DESC, ci.item_product_id ASC
     ");
     $stmt->execute([$partnerId]);
     $rows = $stmt->fetchAll();

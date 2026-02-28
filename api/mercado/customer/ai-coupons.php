@@ -42,9 +42,9 @@ try {
     // 2. Fetch purchase history (last 90 days)
     $stmtOrders = $db->prepare("
         SELECT o.order_id, o.total, o.status, o.created_at, o.partner_id,
-               p.name as partner_name, p.category as partner_category
+               p.name as partner_name, p.categoria as partner_category
         FROM om_market_orders o
-        LEFT JOIN om_partners p ON o.partner_id = p.id
+        LEFT JOIN om_market_partners p ON o.partner_id = p.partner_id
         WHERE o.customer_id = ? AND o.created_at >= NOW() - INTERVAL '90 days'
         ORDER BY o.created_at DESC
         LIMIT 50
@@ -71,11 +71,11 @@ try {
         SELECT code, discount_type, discount_value, min_order_value, valid_until
         FROM om_market_coupons
         WHERE status = 'active' AND (valid_until IS NULL OR valid_until > NOW())
-        AND (customer_id IS NULL OR customer_id = ?)
+        AND (specific_customers IS NULL OR specific_customers::text LIKE ?)
         ORDER BY created_at DESC
         LIMIT 10
     ");
-    $stmtExistingCoupons->execute([$customerId]);
+    $stmtExistingCoupons->execute(['%' . $customerId . '%']);
     $existingCoupons = $stmtExistingCoupons->fetchAll(PDO::FETCH_ASSOC);
 
     // 5. Calculate customer metrics
@@ -232,8 +232,9 @@ PROMPT;
                 INSERT INTO om_market_coupons
                     (code, discount_type, discount_value, min_order_value, max_discount,
                      max_uses, max_uses_per_user, valid_from, valid_until, status,
-                     description, customer_id, created_at)
-                VALUES (?, ?, ?, ?, ?, 1, 1, NOW(), ?, 'active', ?, ?, NOW())
+                     description, specific_customers, created_at)
+                VALUES (?, ?, ?, ?, ?, 1, 1, NOW(), ?, 'active', ?, ?::jsonb, NOW())
+                RETURNING id
             ");
             $stmtInsert->execute([
                 $coupon['code'],
@@ -243,9 +244,10 @@ PROMPT;
                 $coupon['max_discount'],
                 $coupon['valid_until'],
                 $coupon['title'] . ' - ' . $coupon['description'],
-                $customerId,
+                json_encode([$customerId]),
             ]);
-            $coupon['coupon_id'] = (int)$db->lastInsertId();
+            $row = $stmtInsert->fetch(PDO::FETCH_ASSOC);
+            $coupon['coupon_id'] = (int)($row['id'] ?? 0);
         } else {
             $coupon['coupon_id'] = (int)$existingId;
         }

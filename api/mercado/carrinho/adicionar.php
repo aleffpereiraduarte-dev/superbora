@@ -30,7 +30,11 @@ try {
     $customer_id = $authCustomerId; // SECURITY: never trust client-supplied customer_id
     $partner_id = (int)($input["partner_id"] ?? 0);
     $product_id = (int)($input["product_id"] ?? 0);
-    $quantity = max(1, (int)($input["quantity"] ?? 1));
+    $rawQuantity = (int)($input["quantity"] ?? 1);
+    if ($rawQuantity <= 0) {
+        response(false, null, "Quantidade deve ser maior que zero", 400);
+    }
+    $quantity = $rawQuantity;
     $notes = mb_substr(trim($input["notes"] ?? ""), 0, 500);
 
     if (!$partner_id || !$product_id) {

@@ -60,7 +60,7 @@ try {
                       AND (p.available::text = '1' OR p.available IS NULL)
                       AND mp.status::text = '1'
                       AND p.category_id IN ($ph)
-                    ORDER BY RAND()
+                    ORDER BY RANDOM()
                     LIMIT ?
                 ");
                 $stmt->execute(array_merge($categoryIds, [$limit]));
@@ -90,7 +90,7 @@ try {
                   AND (p.available::text = '1' OR p.available IS NULL)
                   AND mp.status::text = '1'
                   $excludeSQL
-                ORDER BY mp.rating DESC, RAND()
+                ORDER BY mp.rating DESC, RANDOM()
                 LIMIT ?
             ");
             $stmt->execute(array_merge($params, [$remaining]));

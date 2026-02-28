@@ -22,9 +22,7 @@ try {
     $data = CacheHelper::remember($cacheKey, 300, function() use ($q, $partner_id) {
         $db = getDB();
 
-        // Inicializar OmPricing
-        $pricing = OmPricing::getInstance();
-        $pricing->setDb($db);
+        // OmPricing is static-only — no getInstance needed
 
         $termo = "%{$q}%";
         // Normalizar busca: remover acentos comuns pra fuzzy match
@@ -45,7 +43,7 @@ try {
         $produtos = $stmt->fetchAll();
 
         // Processar produtos para retornar preco_venda ao cliente
-        $produtos_processados = array_map(function($p) use ($pricing) {
+        $produtos_processados = array_map(function($p) {
             // Determinar preco de venda
             // Se preco_venda ja esta preenchido, usar ele
             // Caso contrario, calcular on-the-fly

@@ -29,11 +29,11 @@ try {
     if ($method === "GET") {
         $stmt = $db->prepare("
             SELECT f.partner_id, f.created_at,
-                   p.name AS partner_name, p.logo, p.logo_url,
+                   p.name AS partner_name, p.logo,
                    p.delivery_fee, p.delivery_time_min, p.delivery_time_max,
-                   p.rating, p.is_open, p.category
+                   p.rating, p.is_open, p.categoria AS category
             FROM om_customer_favorites f
-            LEFT JOIN om_partners p ON p.partner_id = f.partner_id
+            LEFT JOIN om_market_partners p ON p.partner_id = f.partner_id
             WHERE f.customer_id = ? AND f.partner_id IS NOT NULL
             ORDER BY f.created_at DESC
         ");
