@@ -47,7 +47,7 @@ try {
             AND p.product_id != ?
             AND p.status = '1'
             GROUP BY p.product_id, p.name, p.image, p.price, p.special_price
-            ORDER BY total_sold DESC, p.created_at DESC
+            ORDER BY total_sold DESC, p.product_id DESC
             LIMIT ?
         ");
         $stmt->execute([$partnerId, $productId, $limit]);

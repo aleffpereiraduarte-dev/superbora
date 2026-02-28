@@ -26,7 +26,7 @@ try {
         $stmtFees = $db->query("
             SELECT days_min, days_max, fee_percent
             FROM om_anticipation_fees
-            WHERE active = 1
+            WHERE active = true
             ORDER BY days_min ASC
         ");
         $feeRanges = $stmtFees->fetchAll(PDO::FETCH_ASSOC);
@@ -204,7 +204,7 @@ try {
         $stmtFee = $db->prepare("
             SELECT fee_percent
             FROM om_anticipation_fees
-            WHERE ? >= days_min AND ? <= days_max AND active = 1
+            WHERE ? >= days_min AND ? <= days_max AND active = true
             LIMIT 1
         ");
         $stmtFee->execute([$daysAhead, $daysAhead]);

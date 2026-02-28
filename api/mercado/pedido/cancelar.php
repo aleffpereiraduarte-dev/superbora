@@ -36,7 +36,7 @@ try {
     $customer_id = requireCustomerAuth();
 
     $order_id = intval($input["order_id"] ?? 0);
-    $motivo = trim(substr($input["motivo"] ?? "", 0, 500));
+    $motivo = strip_tags(trim(substr($input["motivo"] ?? "", 0, 500)));
     $confirmFee = !empty($input["confirm_fee"]);
 
     if (!$order_id) response(false, null, "order_id obrigatorio", 400);

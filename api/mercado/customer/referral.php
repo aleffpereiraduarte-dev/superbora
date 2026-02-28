@@ -32,7 +32,7 @@ try {
     $stmt = $db->prepare("
         SELECT
             COUNT(CASE WHEN status = 'completed' THEN 1 END) as total_referrals,
-            COALESCE(SUM(CASE WHEN status = 'completed' THEN reward_amount ELSE 0 END), 0) as total_earnings
+            COALESCE(SUM(CASE WHEN status = 'completed' THEN referrer_reward ELSE 0 END), 0) as total_earnings
         FROM om_referrals
         WHERE referrer_id = ? AND referred_id IS NOT NULL
     ");
@@ -41,10 +41,10 @@ try {
 
     // Últimas indicações
     $stmt = $db->prepare("
-        SELECT r.status, r.reward_amount, r.created_at, r.completed_at,
-               p.nome as referred_name
+        SELECT r.status, r.referrer_reward, r.created_at,
+               c.name as referred_name
         FROM om_referrals r
-        LEFT JOIN boraum_passageiros p ON p.passageiro_id = r.referred_id
+        LEFT JOIN om_customers c ON c.customer_id = r.referred_id
         WHERE r.referrer_id = ? AND r.referred_id IS NOT NULL
         ORDER BY r.created_at DESC
         LIMIT 20

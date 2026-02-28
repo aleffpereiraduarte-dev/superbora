@@ -429,7 +429,7 @@ function generateDailyReconciliation($db, $partnerId, $date) {
             COALESCE(SUM(total), 0) as total_sales,
             COALESCE(SUM(COALESCE(delivery_fee, 0)), 0) as total_delivery_fee,
             COALESCE(SUM(COALESCE(discount, 0)), 0) as total_discounts,
-            COALESCE(SUM(COALESCE(tip, 0)), 0) as total_tips
+            COALESCE(SUM(COALESCE(tip_amount, 0)), 0) as total_tips
         FROM om_market_orders
         WHERE partner_id = ?
           AND DATE(date_added) = ?

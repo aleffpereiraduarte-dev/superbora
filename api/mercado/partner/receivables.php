@@ -48,24 +48,24 @@ try {
         // Considera pedidos entregues nos ultimos 60 dias
         $stmtOrders = $db->prepare("
             SELECT
-                o.id,
+                o.order_id,
                 o.order_number,
                 o.total,
                 o.subtotal,
                 COALESCE(o.delivery_fee, 0) as delivery_fee,
                 COALESCE(o.discount, 0) as discount,
-                COALESCE(o.tip, 0) as tip,
+                COALESCE(o.tip_amount, 0) as tip,
                 o.status,
                 o.date_added,
-                o.date_delivered,
-                COALESCE(o.date_delivered, o.date_added) + (? || ' days')::INTERVAL as expected_payment_date,
-                ((COALESCE(o.date_delivered, o.date_added) + (? || ' days')::INTERVAL)::date - CURRENT_DATE) as days_until_payment
+                o.delivered_at,
+                COALESCE(o.delivered_at, o.date_added) + (? || ' days')::INTERVAL as expected_payment_date,
+                ((COALESCE(o.delivered_at, o.date_added) + (? || ' days')::INTERVAL)::date - CURRENT_DATE) as days_until_payment
             FROM om_market_orders o
-            LEFT JOIN om_partner_receivable_items pri ON pri.order_id = o.id
+            LEFT JOIN om_partner_receivable_items pri ON pri.order_id = o.order_id
             WHERE o.partner_id = ?
               AND o.status IN ('entregue', 'completed', 'concluido')
               AND pri.id IS NULL
-              AND o.date_delivered >= CURRENT_DATE - INTERVAL '60 days'
+              AND o.delivered_at >= CURRENT_DATE - INTERVAL '60 days'
             ORDER BY expected_payment_date ASC
         ");
         $stmtOrders->execute([DEFAULT_PAYMENT_DAYS, DEFAULT_PAYMENT_DAYS, $partnerId]);
@@ -90,7 +90,7 @@ try {
             $netAfterAnticipation = round($netAmount - $anticipationFee, 2);
 
             $receivableItem = [
-                'id' => (int)$order['id'],
+                'id' => (int)$order['order_id'],
                 'order_number' => $order['order_number'],
                 'order_date' => $order['date_added'],
                 'delivered_date' => $order['date_delivered'],
@@ -270,12 +270,12 @@ try {
             $params = array_merge($receivableIds, [$partnerId]);
             $stmtOrders = $db->prepare("
                 SELECT
-                    o.id,
+                    o.order_id,
                     o.order_number,
                     o.total
                 FROM om_market_orders o
-                LEFT JOIN om_partner_receivable_items pri ON pri.order_id = o.id
-                WHERE o.id IN ($placeholders)
+                LEFT JOIN om_partner_receivable_items pri ON pri.order_id = o.order_id
+                WHERE o.order_id IN ($placeholders)
                   AND o.partner_id = ?
                   AND o.status IN ('entregue', 'completed', 'concluido')
                   AND pri.id IS NULL
@@ -292,7 +292,7 @@ try {
             $orderIds = [];
             foreach ($validOrders as $order) {
                 $totalGross += (float)$order['total'];
-                $orderIds[] = (int)$order['id'];
+                $orderIds[] = (int)$order['order_id'];
             }
 
             $totalCommission = round($totalGross * $commissionRate / 100, 2);
@@ -327,7 +327,7 @@ try {
 
                 foreach ($validOrders as $order) {
                     $orderNet = round((float)$order['total'] * (1 - $commissionRate / 100), 2);
-                    $stmtItem->execute([$anticipationId, $order['id'], $orderNet]);
+                    $stmtItem->execute([$anticipationId, $order['order_id'], $orderNet]);
                 }
 
                 $db->commit();
@@ -383,11 +383,11 @@ try {
             $params = array_merge($receivableIds, [$partnerId]);
             $stmtOrders = $db->prepare("
                 SELECT
-                    o.id,
+                    o.order_id,
                     o.total
                 FROM om_market_orders o
-                LEFT JOIN om_partner_receivable_items pri ON pri.order_id = o.id
-                WHERE o.id IN ($placeholders)
+                LEFT JOIN om_partner_receivable_items pri ON pri.order_id = o.order_id
+                WHERE o.order_id IN ($placeholders)
                   AND o.partner_id = ?
                   AND o.status IN ('entregue', 'completed', 'concluido')
                   AND pri.id IS NULL

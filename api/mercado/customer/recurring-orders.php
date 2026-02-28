@@ -26,20 +26,19 @@ try {
     // GET - Listar pedidos recorrentes
     if ($method === 'GET') {
         $stmt = $db->prepare("
-            SELECT r.id, r.customer_id, r.partner_id, r.name, r.items, r.frequency,
-                   r.day_of_week, r.day_of_month, r.preferred_time, r.next_order_at,
-                   r.total_orders, r.status, r.created_at,
+            SELECT r.recurring_id as id, r.customer_id, r.market_id as partner_id, r.name, r.frequency,
+                   r.day_of_week, r.day_of_month, r.preferred_time, r.next_order_date as next_order_at,
+                   r.is_active, r.created_at,
                    p.trade_name as partner_name, p.logo as partner_logo
             FROM om_recurring_orders r
-            INNER JOIN om_market_partners p ON r.partner_id = p.partner_id
-            WHERE r.customer_id = ? AND r.status != 'cancelled'
+            INNER JOIN om_market_partners p ON r.market_id = p.partner_id
+            WHERE r.customer_id = ? AND r.is_active = true
             ORDER BY r.created_at DESC
         ");
         $stmt->execute([$customerId]);
         $orders = $stmt->fetchAll();
 
         $formattedOrders = array_map(function($o) {
-            $items = json_decode($o['items'], true) ?: [];
             $nextOrder = $o['next_order_at'] ? new DateTime($o['next_order_at']) : null;
             $now = new DateTime();
 
@@ -51,8 +50,6 @@ try {
                     'name' => $o['partner_name'],
                     'logo' => $o['partner_logo'],
                 ],
-                'items' => $items,
-                'items_count' => count($items),
                 'frequency' => $o['frequency'],
                 'frequency_label' => match($o['frequency']) {
                     'daily' => 'Diario',
@@ -65,8 +62,7 @@ try {
                 'preferred_time' => $o['preferred_time'],
                 'next_order_at' => $o['next_order_at'],
                 'days_until_next' => $nextOrder ? max(0, (int)$now->diff($nextOrder)->days) : null,
-                'total_orders' => (int)$o['total_orders'],
-                'status' => $o['status'],
+                'status' => $o['is_active'] ? 'active' : 'paused',
             ];
         }, $orders);
 
@@ -155,15 +151,15 @@ try {
             // Atualizar
             $stmt = $db->prepare("
                 UPDATE om_recurring_orders SET
-                    name = ?, items = ?, frequency = ?, day_of_week = ?,
-                    day_of_month = ?, preferred_time = ?, address_id = ?,
-                    payment_method = ?, next_order_at = ?, updated_at = NOW()
-                WHERE id = ? AND customer_id = ?
+                    name = ?, frequency = ?, day_of_week = ?,
+                    day_of_month = ?, preferred_time = ?, delivery_address_id = ?,
+                    next_order_date = ?
+                WHERE recurring_id = ? AND customer_id = ?
             ");
             $stmt->execute([
-                $name, $itemsJson, $frequency, $dayOfWeek,
+                $name, $frequency, $dayOfWeek,
                 $dayOfMonth, $preferredTime, $addressId ?: null,
-                $paymentMethod, $nextOrderAt, $id, $customerId
+                $nextOrderAt, $id, $customerId
             ]);
 
             if ($stmt->rowCount() === 0) {
@@ -176,13 +172,13 @@ try {
         // Criar novo
         $stmt = $db->prepare("
             INSERT INTO om_recurring_orders
-            (customer_id, partner_id, name, items, frequency, day_of_week,
-             day_of_month, preferred_time, address_id, payment_method, next_order_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (customer_id, market_id, name, frequency, day_of_week,
+             day_of_month, preferred_time, delivery_address_id, next_order_date)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ");
         $stmt->execute([
-            $customerId, $partnerId, $name, $itemsJson, $frequency, $dayOfWeek,
-            $dayOfMonth, $preferredTime, $addressId ?: null, $paymentMethod, $nextOrderAt
+            $customerId, $partnerId, $name, $frequency, $dayOfWeek,
+            $dayOfMonth, $preferredTime, $addressId ?: null, $nextOrderAt
         ]);
 
         response(true, [
@@ -204,8 +200,8 @@ try {
         if ($action === 'pause') {
             $db->prepare("
                 UPDATE om_recurring_orders
-                SET status = 'paused'
-                WHERE id = ? AND customer_id = ?
+                SET is_active = false
+                WHERE recurring_id = ? AND customer_id = ?
             ")->execute([$id, $customerId]);
 
             response(true, ['message' => 'Pedido recorrente pausado']);
@@ -214,8 +210,8 @@ try {
         if ($action === 'resume') {
             $db->prepare("
                 UPDATE om_recurring_orders
-                SET status = 'active'
-                WHERE id = ? AND customer_id = ?
+                SET is_active = true
+                WHERE recurring_id = ? AND customer_id = ?
             ")->execute([$id, $customerId]);
 
             response(true, ['message' => 'Pedido recorrente reativado']);
@@ -224,8 +220,8 @@ try {
         // Cancelar
         $db->prepare("
             UPDATE om_recurring_orders
-            SET status = 'cancelled'
-            WHERE id = ? AND customer_id = ?
+            SET is_active = false
+            WHERE recurring_id = ? AND customer_id = ?
         ")->execute([$id, $customerId]);
 
         response(true, ['message' => 'Pedido recorrente cancelado']);

@@ -145,7 +145,7 @@ try {
     if ($method === 'POST') {
         $input = getInput();
         $orderId = (int)($input['order_id'] ?? 0);
-        $message = trim(substr($input['message'] ?? '', 0, 1000));
+        $message = strip_tags(trim(substr($input['message'] ?? '', 0, 1000)));
         $chatType = $input['chat_type'] ?? 'customer';
 
         if (!$orderId) response(false, null, "order_id obrigatorio", 400);

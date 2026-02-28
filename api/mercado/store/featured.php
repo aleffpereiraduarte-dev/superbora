@@ -21,22 +21,22 @@ try {
             p.name as nome,
             p.description as descricao,
             p.price as preco,
-            p.promo_price as preco_promo,
+            p.special_price as preco_promo,
             p.image as imagem,
             p.unit as unidade,
             p.status as disponivel,
             p.stock as estoque,
-            COALESCE(p.total_vendas, 0) as total_vendas,
+            0 as total_vendas,
             CASE
-                WHEN p.promo_price > 0 AND p.promo_price < p.price
-                THEN ROUND((1 - p.promo_price / p.price) * 100)
+                WHEN p.special_price > 0 AND p.special_price < p.price
+                THEN ROUND((1 - p.special_price / p.price) * 100)
                 ELSE 0
             END as desconto
         FROM om_market_products p
         WHERE p.partner_id = ?
           AND p.status = '1'
           AND p.stock > 0
-        ORDER BY COALESCE(p.total_vendas, 0) DESC, p.product_id DESC
+        ORDER BY p.product_id DESC
         LIMIT 10
     ");
     $stmt->execute([$partnerId]);

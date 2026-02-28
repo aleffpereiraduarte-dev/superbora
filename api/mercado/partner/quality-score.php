@@ -99,11 +99,11 @@ try {
 
     // 5. Tempo médio de entrega (total: aceito até entregue)
     $stmtDeliveryTime = $db->prepare("
-        SELECT AVG(delivery_time_minutes) as avg_minutes
+        SELECT AVG(total_time_minutes) as avg_minutes
         FROM om_market_orders
         WHERE partner_id = ?
           AND DATE(date_added) BETWEEN ? AND ?
-          AND delivery_time_minutes IS NOT NULL
+          AND total_time_minutes IS NOT NULL
     ");
     $stmtDeliveryTime->execute([$partnerId, $startDate, $endDate]);
     $deliveryTimeAvg = round((float)($stmtDeliveryTime->fetchColumn() ?: 35));

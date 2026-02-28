@@ -65,7 +65,7 @@ try {
                     p.delivery_time_min, p.delivery_time_max, p.rating, p.delivery_radius,
                     p.free_delivery_min, p.free_delivery_above,
                     p.open_time, p.close_time,
-                    p.cupom_clube, p.cupom_app, p.cupom_promo, p.mais_pedido, p.total_pedidos,
+                    p.total_orders as total_pedidos,
                     p.lat, p.latitude, p.lng, p.longitude, p.city, p.cidade, p.cep_coverage,
                     (6371 * acos(
                         LEAST(1.0, cos(radians(?)) * cos(radians(COALESCE(p.lat, p.latitude, 0)))
@@ -90,7 +90,7 @@ try {
                    p.delivery_time_min, p.delivery_time_max, p.rating, p.delivery_radius,
                    p.free_delivery_min, p.free_delivery_above,
                    p.open_time, p.close_time,
-                   p.cupom_clube, p.cupom_app, p.cupom_promo, p.mais_pedido, p.total_pedidos,
+                   p.total_orders as total_pedidos,
                    p.city, p.cidade, p.cep_coverage
             FROM om_market_partners p
             WHERE p.status::text = '1'
@@ -153,11 +153,6 @@ try {
             'rating' => floatval($m['rating'] ?? 5),
             'avaliacao' => floatval($m['rating'] ?? 5),
             'entrega_gratis_acima' => floatval($m['free_delivery_min'] ?? $m['free_delivery_above'] ?? 0),
-            // Discount badges - iFood style
-            'cupom_clube' => !empty($m['cupom_clube']) ? floatval($m['cupom_clube']) : null,
-            'cupom_app' => !empty($m['cupom_app']) ? floatval($m['cupom_app']) : null,
-            'cupom_promo' => !empty($m['cupom_promo']) ? floatval($m['cupom_promo']) : null,
-            'mais_pedido' => (bool)($m['mais_pedido'] ?? false),
             'total_pedidos' => (int)($m['total_pedidos'] ?? 0)
         ];
     }

@@ -13,16 +13,27 @@ try {
     $partner_id = (int)($_GET["partner_id"] ?? 0);
     $category_id = isset($_GET["category_id"]) && $_GET["category_id"] !== "" ? (int)$_GET["category_id"] : null;
     $busca = isset($_GET["q"]) ? trim($_GET["q"]) : null;
-    $pagina = max(1, (int)($_GET["pagina"] ?? 1));
-    $limite = min(100, max(1, (int)($_GET["limite"] ?? 50)));
+    $pagina = max(1, (int)($_GET["page"] ?? ($_GET["pagina"] ?? 1)));
+    $limite = min(100, max(1, (int)($_GET["limit"] ?? ($_GET["limite"] ?? 50))));
     $offset = ($pagina - 1) * $limite;
+    $ordenar = $_GET["ordenar"] ?? $_GET["sort"] ?? null;
+
+    // Validar ordenacao
+    $allowedSorts = [
+        'preco_asc' => 'p.price ASC',
+        'preco_desc' => 'p.price DESC',
+        'nome_asc' => 'p.name ASC',
+        'nome_desc' => 'p.name DESC',
+        'recente' => 'p.product_id DESC',
+    ];
+    $orderBy = $allowedSorts[$ordenar] ?? 'p.name';
 
     // Cache key baseado nos parâmetros
     $cacheKey = "mercado_produtos_" . md5(json_encode([
-        $partner_id, $category_id, $busca, $pagina, $limite
+        $partner_id, $category_id, $busca, $pagina, $limite, $ordenar
     ]));
 
-    $data = CacheHelper::remember($cacheKey, 300, function() use ($partner_id, $category_id, $busca, $pagina, $limite, $offset) {
+    $data = CacheHelper::remember($cacheKey, 300, function() use ($partner_id, $category_id, $busca, $pagina, $limite, $offset, $orderBy) {
         $db = getDB();
 
         $where = ["p.status::text = '1'", "(p.available::text = '1' OR p.available IS NULL)"];
@@ -52,7 +63,7 @@ try {
                 FROM om_market_products p
                 LEFT JOIN om_market_categories c ON p.category_id = c.category_id
                 WHERE $whereSQL
-                ORDER BY p.name
+                ORDER BY $orderBy
                 LIMIT ? OFFSET ?";
 
         $stmt = $db->prepare($sql);

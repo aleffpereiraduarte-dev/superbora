@@ -33,7 +33,7 @@ try {
     // Sanitizar entrada
     $order_id = (int)($input["order_id"] ?? 0);
     $nota = (int)($input["nota"] ?? $input["rating"] ?? 5);
-    $comentario = trim(substr($input["comentario"] ?? $input["comment"] ?? "", 0, 500));
+    $comentario = strip_tags(trim(substr($input["comentario"] ?? $input["comment"] ?? "", 0, 500)));
 
     if (!$order_id) {
         response(false, null, "order_id é obrigatório", 400);

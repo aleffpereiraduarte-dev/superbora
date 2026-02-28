@@ -37,7 +37,7 @@ try {
 
         // Get daily analytics
         $stmt = $db->prepare("
-            SELECT id, partner_id, date, orders, revenue, avg_ticket, new_customers, returning_customers, cancellation_rate
+            SELECT id, partner_id, date, total_orders, total_revenue, avg_order_value, new_customers, returning_customers, cancellation_rate
             FROM om_partner_analytics_daily
             WHERE partner_id = ? AND date >= CURRENT_DATE - INTERVAL '30 days'
             ORDER BY date DESC
@@ -47,7 +47,7 @@ try {
 
         // Get benchmark data
         $stmt = $db->prepare("
-            SELECT id, partner_id, metric, value, percentile, period, created_at
+            SELECT id, partner_id, metric, partner_value as value, percentile, period, created_at
             FROM om_partner_benchmark
             WHERE partner_id = ? AND period = 'last_30_days'
         ");

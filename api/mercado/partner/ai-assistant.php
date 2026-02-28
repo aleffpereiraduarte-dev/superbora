@@ -34,7 +34,7 @@ try {
 
     // Rate limiting: 20 AI calls per hour per partner (expensive API calls)
     if ($method === 'POST') {
-        if (!checkRateLimit("ai_assistant_{$partnerId}", 20, 60)) {
+        if (!checkRateLimit("ai_assistant_{$partnerId}", 20, 3600)) {
             response(false, null, "Muitas requisicoes de IA. Tente novamente em 1 hora.", 429);
         }
     }
@@ -256,7 +256,7 @@ function buildSystemPrompt($partnerData, $context) {
 
 function getPartnerContext($db, $partnerId) {
     // Partner info (explicit columns — no password_hash, bank details, etc.)
-    $stmt = $db->prepare("SELECT partner_id, name, trade_name, category, is_open FROM om_market_partners WHERE partner_id = ?");
+    $stmt = $db->prepare("SELECT partner_id, name, trade_name, categoria, is_open FROM om_market_partners WHERE partner_id = ?");
     $stmt->execute([$partnerId]);
     $partner = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -310,7 +310,7 @@ function getPartnerContext($db, $partnerId) {
 
     return [
         'name' => $partner['trade_name'] ?? $partner['name'] ?? 'Loja',
-        'category' => $partner['category'] ?? 'Restaurante',
+        'category' => $partner['categoria'] ?? 'Restaurante',
         'total_orders_30d' => (int)$stats['total_orders'],
         'total_revenue_30d' => round((float)$stats['total_revenue'], 2),
         'avg_order_value' => round((float)$stats['avg_order_value'], 2),

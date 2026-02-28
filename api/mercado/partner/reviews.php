@@ -83,13 +83,13 @@ function handleGetReviews($db, $partnerId) {
     // Get reviews with order and customer info
     $stmt = $db->prepare("
         SELECT
-            r.review_id,
+            r.id as review_id,
             r.order_id,
             r.customer_id,
             r.rating,
             r.comment,
-            r.partner_response,
-            r.partner_response_at,
+            r.response as partner_response,
+            r.responded_at as partner_response_at,
             r.created_at,
             o.order_number,
             o.total as order_total,
@@ -113,7 +113,7 @@ function handleGetReviews($db, $partnerId) {
             SUM(CASE WHEN rating = 3 THEN 1 ELSE 0 END) as stars_3,
             SUM(CASE WHEN rating = 2 THEN 1 ELSE 0 END) as stars_2,
             SUM(CASE WHEN rating = 1 THEN 1 ELSE 0 END) as stars_1,
-            SUM(CASE WHEN partner_response IS NOT NULL THEN 1 ELSE 0 END) as responded
+            SUM(CASE WHEN response IS NOT NULL THEN 1 ELSE 0 END) as responded
         FROM om_market_order_reviews
         WHERE partner_id = ?
     ");
@@ -191,7 +191,7 @@ function handleRespondToReview($db, $partnerId) {
     }
 
     // Verify the review belongs to this partner
-    $stmt = $db->prepare("SELECT review_id FROM om_market_order_reviews WHERE review_id = ? AND partner_id = ?");
+    $stmt = $db->prepare("SELECT id FROM om_market_order_reviews WHERE id = ? AND partner_id = ?");
     $stmt->execute([$reviewId, $partnerId]);
     if (!$stmt->fetch()) {
         response(false, null, "Avaliacao nao encontrada", 404);
@@ -200,8 +200,8 @@ function handleRespondToReview($db, $partnerId) {
     // Update with partner response
     $stmt = $db->prepare("
         UPDATE om_market_order_reviews
-        SET partner_response = ?, partner_response_at = NOW(), updated_at = NOW()
-        WHERE review_id = ? AND partner_id = ?
+        SET response = ?, responded_at = NOW()
+        WHERE id = ? AND partner_id = ?
     ");
     $stmt->execute([$responseText, $reviewId, $partnerId]);
 

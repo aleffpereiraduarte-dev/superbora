@@ -28,7 +28,7 @@ try {
 
     $input = getInput();
     $orderId = (int)($input['order_id'] ?? 0);
-    $reason = trim(substr($input['reason'] ?? '', 0, 500));
+    $reason = strip_tags(trim(substr($input['reason'] ?? '', 0, 500)));
 
     if (!$orderId) response(false, null, "order_id obrigatorio", 400);
 

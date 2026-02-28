@@ -25,7 +25,7 @@ try {
     $tableCheck = $db->query("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'om_partner_delivery_zones')");
     if (!$tableCheck->fetchColumn()) {
         // Table doesn't exist, return empty with store's default fee
-        $stmt = $db->prepare("SELECT delivery_fee, delivery_time FROM om_market_partners WHERE partner_id = ?");
+        $stmt = $db->prepare("SELECT delivery_fee, delivery_time_min, delivery_time_max FROM om_market_partners WHERE partner_id = ?");
         $stmt->execute([$partnerId]);
         $partner = $stmt->fetch();
 
@@ -37,7 +37,7 @@ try {
                     'radius_min_km' => 0,
                     'radius_max_km' => 10,
                     'fee' => (float)($partner['delivery_fee'] ?? 0),
-                    'estimated_time' => $partner['delivery_time'] ?: '30-45 min',
+                    'estimated_time' => ($partner['delivery_time_min'] ?? '30') . '-' . ($partner['delivery_time_max'] ?? '45') . ' min',
                 ]],
                 'has_zones' => false
             ]);
@@ -65,7 +65,7 @@ try {
 
     // If no zones, try to get from partner's default settings
     if (empty($zones)) {
-        $stmt = $db->prepare("SELECT delivery_fee, delivery_time FROM om_market_partners WHERE partner_id = ?");
+        $stmt = $db->prepare("SELECT delivery_fee, delivery_time_min, delivery_time_max FROM om_market_partners WHERE partner_id = ?");
         $stmt->execute([$partnerId]);
         $partner = $stmt->fetch();
 
@@ -76,7 +76,7 @@ try {
                 'radius_min_km' => 0,
                 'radius_max_km' => 10,
                 'fee' => (float)($partner['delivery_fee'] ?? 0),
-                'estimated_time' => $partner['delivery_time'] ?: '30-45 min',
+                'estimated_time' => ($partner['delivery_time_min'] ?? '30') . '-' . ($partner['delivery_time_max'] ?? '45') . ' min',
             ]];
         }
     }

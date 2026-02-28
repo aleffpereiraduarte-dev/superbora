@@ -74,12 +74,12 @@ try {
     $shareUrl = "https://superbora.com.br/mercado/vitrine/login?ref={$code}";
 
     // Total referrals
-    $stmtTotal = $db->prepare("SELECT COUNT(*) as total FROM om_market_referrals WHERE referrer_id = ?");
+    $stmtTotal = $db->prepare("SELECT COUNT(*) as total FROM om_market_referrals WHERE referrer_customer_id = ?");
     $stmtTotal->execute([$customerId]);
     $totalReferrals = (int)$stmtTotal->fetch()['total'];
 
     // Completed referrals (reward_given = 1, meaning referred user made first order)
-    $stmtCompleted = $db->prepare("SELECT COUNT(*) as completed FROM om_market_referrals WHERE referrer_id = ? AND reward_given = 1");
+    $stmtCompleted = $db->prepare("SELECT COUNT(*) as completed FROM om_market_referrals WHERE referrer_customer_id = ? AND status = 'converted'");
     $stmtCompleted->execute([$customerId]);
     $completed = (int)$stmtCompleted->fetch()['completed'];
 
@@ -93,13 +93,13 @@ try {
     $stmtRecent = $db->prepare("
         SELECT
             r.id,
-            r.referred_id,
-            r.reward_given,
+            r.referee_customer_id as referred_id,
+            CASE WHEN r.status = 'converted' THEN 1 ELSE 0 END as reward_given,
             r.created_at,
             c.name as referred_name,
             c.email as referred_email
         FROM om_market_referrals r
-        LEFT JOIN om_customers c ON c.customer_id = r.referred_id
+        LEFT JOIN om_customers c ON c.customer_id = r.referee_customer_id
         WHERE r.referrer_id = ?
         ORDER BY r.created_at DESC
         LIMIT 10

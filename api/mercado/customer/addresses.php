@@ -75,17 +75,17 @@ try {
     elseif ($method === 'POST') {
         $input = getInput();
 
-        $label = trim(substr($input['label'] ?? 'Casa', 0, 30));
+        $label = strip_tags(trim(substr($input['label'] ?? 'Casa', 0, 30)));
         $zipcode = preg_replace('/[^0-9]/', '', $input['cep'] ?? $input['zipcode'] ?? '');
-        $street = trim(substr($input['logradouro'] ?? $input['street'] ?? '', 0, 200));
-        $number = trim(substr($input['numero'] ?? $input['number'] ?? '', 0, 20));
-        $complement = trim(substr($input['complemento'] ?? $input['complement'] ?? '', 0, 100));
-        $neighborhood = trim(substr($input['bairro'] ?? $input['neighborhood'] ?? '', 0, 100));
-        $city = trim(substr($input['cidade'] ?? $input['city'] ?? '', 0, 100));
+        $street = strip_tags(trim(substr($input['logradouro'] ?? $input['street'] ?? '', 0, 200)));
+        $number = strip_tags(trim(substr($input['numero'] ?? $input['number'] ?? '', 0, 20)));
+        $complement = strip_tags(trim(substr($input['complemento'] ?? $input['complement'] ?? '', 0, 100)));
+        $neighborhood = strip_tags(trim(substr($input['bairro'] ?? $input['neighborhood'] ?? '', 0, 100)));
+        $city = strip_tags(trim(substr($input['cidade'] ?? $input['city'] ?? '', 0, 100)));
         $state = strtoupper(trim(substr($input['estado'] ?? $input['state'] ?? '', 0, 2)));
         $lat = !empty($input['latitude']) ? (float)$input['latitude'] : null;
         $lng = !empty($input['longitude']) ? (float)$input['longitude'] : null;
-        $reference = trim(substr($input['referencia'] ?? $input['reference'] ?? '', 0, 255));
+        $reference = strip_tags(trim(substr($input['referencia'] ?? $input['reference'] ?? '', 0, 255)));
         $isDefault = (bool)($input['is_default'] ?? false);
 
         // Validar campos obrigatorios
@@ -154,15 +154,15 @@ try {
             response(false, null, "Endereco nao encontrado", 404);
         }
 
-        $label = trim(substr($input['label'] ?? 'Casa', 0, 30));
+        $label = strip_tags(trim(substr($input['label'] ?? 'Casa', 0, 30)));
         $zipcode = preg_replace('/[^0-9]/', '', $input['cep'] ?? $input['zipcode'] ?? '');
-        $street = trim(substr($input['logradouro'] ?? $input['street'] ?? '', 0, 200));
-        $number = trim(substr($input['numero'] ?? $input['number'] ?? '', 0, 20));
-        $complement = trim(substr($input['complemento'] ?? $input['complement'] ?? '', 0, 100));
-        $neighborhood = trim(substr($input['bairro'] ?? $input['neighborhood'] ?? '', 0, 100));
-        $city = trim(substr($input['cidade'] ?? $input['city'] ?? '', 0, 100));
+        $street = strip_tags(trim(substr($input['logradouro'] ?? $input['street'] ?? '', 0, 200)));
+        $number = strip_tags(trim(substr($input['numero'] ?? $input['number'] ?? '', 0, 20)));
+        $complement = strip_tags(trim(substr($input['complemento'] ?? $input['complement'] ?? '', 0, 100)));
+        $neighborhood = strip_tags(trim(substr($input['bairro'] ?? $input['neighborhood'] ?? '', 0, 100)));
+        $city = strip_tags(trim(substr($input['cidade'] ?? $input['city'] ?? '', 0, 100)));
         $state = strtoupper(trim(substr($input['estado'] ?? $input['state'] ?? '', 0, 2)));
-        $reference = trim(substr($input['referencia'] ?? $input['reference'] ?? '', 0, 255));
+        $reference = strip_tags(trim(substr($input['referencia'] ?? $input['reference'] ?? '', 0, 255)));
 
         if (empty($street) || empty($number) || empty($neighborhood) || empty($city) || empty($state)) {
             response(false, null, "Endereco incompleto", 400);

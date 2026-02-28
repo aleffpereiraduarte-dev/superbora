@@ -18,7 +18,7 @@ try {
 
     // Rate limiting: 5 subscribe actions per hour per customer (POST only)
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-        if (!checkRateLimit("superbora_plus_c{$customer_id}", 5, 60)) {
+        if (!checkRateLimit("superbora_plus_c{$customer_id}", 5, 3600)) {
             response(false, null, "Muitas requisicoes. Tente novamente em 1 hora.", 429);
         }
     }
@@ -197,7 +197,7 @@ try {
                 // Check PIX was confirmed in our payments table
                 $stmtPix = $db->prepare("
                     SELECT status, amount FROM om_pix_payments
-                    WHERE tx_id = ? AND customer_id = ? AND status = 'confirmed'
+                    WHERE external_id = ? AND customer_id = ? AND status = 'confirmed'
                 ");
                 $stmtPix->execute([$pixTxId, $customer_id]);
                 $pixPayment = $stmtPix->fetch(PDO::FETCH_ASSOC);

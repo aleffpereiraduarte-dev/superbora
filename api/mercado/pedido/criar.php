@@ -35,7 +35,7 @@ try {
     $latitude = isset($input["latitude"]) ? floatval($input["latitude"]) : null;
     $longitude = isset($input["longitude"]) ? floatval($input["longitude"]) : null;
     $forma_pagamento = preg_replace('/[^a-z_]/', '', $input["forma_pagamento"] ?? "pix");
-    $observacoes = trim(substr($input["observacoes"] ?? "", 0, 1000));
+    $observacoes = strip_tags(trim(substr($input["observacoes"] ?? "", 0, 1000)));
 
     // Validar forma de pagamento
     $formasPermitidas = ['pix', 'credito', 'debito', 'dinheiro'];
@@ -76,7 +76,7 @@ try {
     $partner_id = (int)$itens[0]["partner_id"];
 
     // Dados do cliente
-    $customer_name = trim(substr($input["nome"] ?? $input["customer_name"] ?? "Cliente", 0, 200));
+    $customer_name = strip_tags(trim(substr($input["nome"] ?? $input["customer_name"] ?? "Cliente", 0, 200)));
     $customer_phone = preg_replace('/[^0-9+]/', '', $input["telefone"] ?? $input["customer_phone"] ?? "");
     $customer_email = filter_var($input["email"] ?? $input["customer_email"] ?? "", FILTER_SANITIZE_EMAIL);
     $shipping_city = trim(substr($input["cidade"] ?? $input["shipping_city"] ?? "", 0, 100));

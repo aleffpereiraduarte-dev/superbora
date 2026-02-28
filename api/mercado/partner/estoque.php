@@ -110,7 +110,7 @@ try {
                            pp.price, pp.stock as current_stock,
                            COALESCE(s.quantidade, pp.stock) as quantidade,
                            COALESCE(s.estoque_minimo, 0) as estoque_minimo,
-                           COALESCE(s.auto_pausar, 0) as auto_pausar,
+                           COALESCE(s.auto_pausar, false) as auto_pausar,
                            s.ultima_movimentacao
                     FROM om_market_products_price pp
                     INNER JOIN om_market_products_base pb ON pb.product_id = pp.product_id
@@ -127,7 +127,7 @@ try {
                            COALESCE(p.quantity, p.stock, 0) as current_stock,
                            COALESCE(s.quantidade, COALESCE(p.quantity, p.stock, 0)) as quantidade,
                            COALESCE(s.estoque_minimo, 0) as estoque_minimo,
-                           COALESCE(s.auto_pausar, 0) as auto_pausar,
+                           COALESCE(s.auto_pausar, false) as auto_pausar,
                            s.ultima_movimentacao
                     FROM om_market_products p
                     LEFT JOIN om_market_product_stock s ON s.product_id = p.product_id AND s.partner_id = p.partner_id
@@ -183,7 +183,7 @@ try {
                        pp.status,
                        COALESCE(s.quantidade, pp.stock) as quantidade,
                        COALESCE(s.estoque_minimo, 0) as estoque_minimo,
-                       COALESCE(s.auto_pausar, 0) as auto_pausar,
+                       COALESCE(s.auto_pausar, false) as auto_pausar,
                        s.ultima_movimentacao
                 FROM om_market_products_price pp
                 INNER JOIN om_market_products_base pb ON pb.product_id = pp.product_id
@@ -217,7 +217,7 @@ try {
                        COALESCE(p.status, 1) as status,
                        COALESCE(s.quantidade, COALESCE(p.quantity, p.stock, 0)) as quantidade,
                        COALESCE(s.estoque_minimo, 0) as estoque_minimo,
-                       COALESCE(s.auto_pausar, 0) as auto_pausar,
+                       COALESCE(s.auto_pausar, false) as auto_pausar,
                        s.ultima_movimentacao
                 FROM om_market_products p
                 LEFT JOIN om_market_product_stock s ON s.product_id = p.product_id AND s.partner_id = p.partner_id

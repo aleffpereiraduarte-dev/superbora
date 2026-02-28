@@ -24,9 +24,11 @@ try {
 
         // OmPricing is static-only — no getInstance needed
 
-        $termo = "%{$q}%";
+        // Escape ILIKE wildcard characters in user input
+        $qEscaped = str_replace(['%', '_'], ['\\%', '\\_'], $q);
+        $termo = "%{$qEscaped}%";
         // Normalizar busca: remover acentos comuns pra fuzzy match
-        $termoNorm = "%{$q}%";
+        $termoNorm = "%{$qEscaped}%";
         $params = [$termo, $termo, $termo, $termoNorm];
 
         $where = "p.status::text = '1' AND (p.name ILIKE ? OR p.description ILIKE ? OR p.barcode ILIKE ? OR p.category ILIKE ?)";
@@ -84,7 +86,7 @@ try {
         }, $produtos);
 
         return [
-            "termo" => $q,
+            "termo" => htmlspecialchars($q, ENT_QUOTES, 'UTF-8'),
             "total" => count($produtos_processados),
             "produtos" => $produtos_processados
         ];

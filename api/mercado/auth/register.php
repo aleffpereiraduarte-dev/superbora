@@ -46,8 +46,8 @@ try {
     $db = getDB();
     OmAuth::getInstance()->setDb($db);
 
-    $nome = trim(substr($input['nome'] ?? '', 0, 100));
-    $sobrenome = trim(substr($input['sobrenome'] ?? '', 0, 100));
+    $nome = strip_tags(trim(substr($input['nome'] ?? '', 0, 100)));
+    $sobrenome = strip_tags(trim(substr($input['sobrenome'] ?? '', 0, 100)));
     $email = filter_var(trim($input['email'] ?? ''), FILTER_SANITIZE_EMAIL);
     $telefone = preg_replace('/[^0-9+]/', '', $input['telefone'] ?? '');
     $cpf = preg_replace('/[^0-9]/', '', $input['cpf'] ?? '');

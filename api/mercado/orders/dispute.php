@@ -248,7 +248,7 @@ try {
         $orderId     = (int)($input['order_id'] ?? 0);
         $category    = trim($input['category'] ?? '');
         $subcategory = trim($input['subcategory'] ?? '');
-        $description = trim(substr($input['description'] ?? '', 0, 2000));
+        $description = strip_tags(trim(substr($input['description'] ?? '', 0, 2000)));
         $affectedItems = $input['affected_items'] ?? [];
         $photoUrls   = $input['photo_urls'] ?? [];
 

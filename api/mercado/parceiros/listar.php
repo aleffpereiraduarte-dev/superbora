@@ -13,23 +13,47 @@ try {
     $lat = $_GET["lat"] ?? null;
     $lng = $_GET["lng"] ?? null;
     $raio = $_GET["raio"] ?? 10;
+    $cidade = isset($_GET["cidade"]) ? trim($_GET["cidade"]) : null;
+    $page = max(1, (int)($_GET["page"] ?? ($_GET["pagina"] ?? 1)));
+    $limit = min(100, max(1, (int)($_GET["limit"] ?? ($_GET["limite"] ?? 50))));
+    $offset = ($page - 1) * $limit;
 
-    // Cache key baseado na localização
-    $cacheKey = "mercado_parceiros_" . md5($lat . $lng . $raio);
+    // Cache key baseado nos parâmetros
+    $cacheKey = "mercado_parceiros_" . md5($lat . $lng . $raio . $cidade . $page . $limit);
 
-    $data = CacheHelper::remember($cacheKey, 600, function() use ($lat, $lng, $raio) {
+    $data = CacheHelper::remember($cacheKey, 600, function() use ($lat, $lng, $raio, $cidade, $page, $limit, $offset) {
         $db = getDB();
+
+        $where = ["p.status::text = '1'"];
+        $params = [];
+
+        if ($cidade) {
+            $where[] = "p.city ILIKE ?";
+            $params[] = $cidade;
+        }
+
+        $whereSQL = implode(" AND ", $where);
+
+        // Count total
+        $countStmt = $db->prepare("SELECT COUNT(*) FROM om_market_partners p WHERE $whereSQL");
+        $countStmt->execute($params);
+        $total = (int)$countStmt->fetchColumn();
 
         $sql = "SELECT p.*,
                 (SELECT COUNT(*) FROM om_market_products WHERE partner_id = p.partner_id AND status::text = '1') as total_produtos
                 FROM om_market_partners p
-                WHERE p.status::text = '1'
-                ORDER BY p.partner_id DESC";
+                WHERE $whereSQL
+                ORDER BY p.partner_id DESC
+                LIMIT ? OFFSET ?";
 
-        $parceiros = $db->query($sql)->fetchAll();
+        $stmt = $db->prepare($sql);
+        $stmt->execute(array_merge($params, [$limit, $offset]));
+        $parceiros = $stmt->fetchAll();
 
         return [
-            "total" => count($parceiros),
+            "total" => $total,
+            "page" => $page,
+            "limit" => $limit,
             "parceiros" => array_map(function($p) {
                 return [
                     "id" => $p["partner_id"],

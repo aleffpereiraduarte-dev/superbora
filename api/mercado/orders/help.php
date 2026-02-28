@@ -78,7 +78,7 @@ try {
         $input = getInput();
         $orderId = (int)($input['order_id'] ?? 0);
         $category = trim($input['category'] ?? '');
-        $description = trim(substr($input['description'] ?? '', 0, 2000));
+        $description = strip_tags(trim(substr($input['description'] ?? '', 0, 2000)));
         $photoEvidence = trim($input['photo_evidence'] ?? '');
 
         if (!$orderId) response(false, null, "order_id obrigatorio", 400);
