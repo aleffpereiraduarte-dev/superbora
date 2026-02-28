@@ -82,6 +82,7 @@ try {
                        p.address, p.city, p.state, p.phone,
                        p.open_time, p.close_time, p.is_open,
                        p.rating, p.delivery_fee, p.delivery_time_min,
+                       p.busy_mode, p.current_prep_time,
                        p.lat, p.lng
                        {$distanciaSelect},
                        (SELECT COUNT(*) FROM om_market_products mp WHERE mp.partner_id = p.partner_id AND mp.status::text = '1') as total_produtos
@@ -106,9 +107,12 @@ try {
                 "horario_abertura" => $p["open_time"] ?? null,
                 "horario_fechamento" => $p["close_time"] ?? null,
                 "aberto" => (int)($p["is_open"] ?? 0) === 1,
+                "busy_mode" => (bool)($p["busy_mode"] ?? false),
                 "avaliacao" => (float)($p["rating"] ?? 5.0),
                 "taxa_entrega" => (float)($p["delivery_fee"] ?? 0),
-                "tempo_estimado" => (int)($p["delivery_time_min"] ?? 60),
+                "tempo_estimado" => ($p["busy_mode"] && $p["current_prep_time"])
+                    ? (int)$p["current_prep_time"]
+                    : (int)($p["delivery_time_min"] ?? 60),
                 "total_produtos" => (int)($p["total_produtos"] ?? 0),
                 "distancia" => isset($p["distancia"]) ? round((float)$p["distancia"], 1) : null
             ];

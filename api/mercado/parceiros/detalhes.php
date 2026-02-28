@@ -19,7 +19,7 @@ try {
     $data = CacheHelper::remember($cacheKey, 600, function() use ($id) {
         $db = getDB();
 
-        $stmt = $db->prepare("SELECT partner_id, name, trade_name, logo, banner, address, city, state, phone, email, cep, categoria, description, delivery_fee, min_order, min_order_value, delivery_time_min, delivery_time_max, rating, is_open, open_time, close_time, latitude, longitude, free_delivery_above, status FROM om_market_partners WHERE partner_id = ?");
+        $stmt = $db->prepare("SELECT partner_id, name, trade_name, logo, banner, address, city, state, phone, email, cep, categoria, description, delivery_fee, min_order, min_order_value, delivery_time_min, delivery_time_max, rating, is_open, open_time, close_time, latitude, longitude, free_delivery_above, status, busy_mode, pause_until FROM om_market_partners WHERE partner_id = ?");
         $stmt->execute([$id]);
         $parceiro = $stmt->fetch();
 
@@ -42,7 +42,10 @@ try {
                 "telefone" => $parceiro["phone"],
                 "taxa_entrega" => $parceiro["delivery_fee"] ?? 0,
                 "pedido_minimo" => $parceiro["min_order"] ?? $parceiro["min_order_value"] ?? 0,
-                "tempo_estimado" => $parceiro["delivery_time_min"] ?? 60
+                "tempo_estimado" => $parceiro["delivery_time_min"] ?? 60,
+                "aberto" => (int)($parceiro["is_open"] ?? 0) === 1,
+                "busy_mode" => (bool)($parceiro["busy_mode"] ?? false),
+                "pause_until" => $parceiro["pause_until"] ?? null
             ],
             "categorias" => $categorias
         ];

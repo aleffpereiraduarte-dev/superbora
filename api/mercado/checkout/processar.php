@@ -172,6 +172,13 @@ try {
         response(false, null, "Estabelecimento nao disponivel", 400);
     }
 
+    // Verificar se loja esta aberta (antes de travar estoque)
+    $lojaFechada = (int)($parceiro['is_open'] ?? 0) !== 1;
+    $lojaPausada = !empty($parceiro['pause_until']) && strtotime($parceiro['pause_until']) > time();
+    if ($lojaFechada || $lojaPausada) {
+        response(false, null, "Loja fechada no momento. Tente novamente mais tarde.", 400);
+    }
+
     // Calcular valores
     $subtotal = 0;
     foreach ($itens as $item) {

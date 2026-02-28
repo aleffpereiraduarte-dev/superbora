@@ -1346,6 +1346,321 @@
       transition: width 0.1s linear;
       border-radius: 0 2px 2px 0;
     }
+
+    /* ================================================================
+       AUTH MODALS (Login / Cadastro)
+       ================================================================ */
+    .auth-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 10000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.35s ease;
+    }
+    .auth-overlay.open {
+      opacity: 1;
+      pointer-events: all;
+    }
+    .auth-backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.7);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+    }
+    .auth-modal {
+      position: relative;
+      width: 100%;
+      max-width: 440px;
+      max-height: 90vh;
+      overflow-y: auto;
+      background: rgba(255, 255, 255, 0.95);
+      backdrop-filter: blur(20px) saturate(180%);
+      -webkit-backdrop-filter: blur(20px) saturate(180%);
+      border: 1px solid rgba(255, 255, 255, 0.6);
+      border-radius: var(--radius-xl);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(255,255,255,0.1);
+      padding: 40px 36px;
+      transform: translateY(30px) scale(0.97);
+      transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .auth-overlay.open .auth-modal {
+      transform: translateY(0) scale(1);
+    }
+    .auth-close {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background: rgba(0,0,0,0.05);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.2s, transform 0.2s;
+      color: var(--text-secondary);
+    }
+    .auth-close:hover {
+      background: rgba(0,0,0,0.1);
+      transform: rotate(90deg);
+    }
+    .auth-header {
+      text-align: center;
+      margin-bottom: 28px;
+    }
+    .auth-header-logo {
+      width: 48px;
+      height: 48px;
+      background: var(--gradient-primary);
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.25rem;
+      color: var(--white);
+      font-weight: 900;
+      margin: 0 auto 16px;
+      box-shadow: 0 4px 16px rgba(0,168,104,0.3);
+    }
+    .auth-header h2 {
+      font-size: 1.5rem;
+      font-weight: 800;
+      color: var(--dark);
+      margin-bottom: 6px;
+    }
+    .auth-header p {
+      font-size: 0.9rem;
+      color: var(--text-secondary);
+    }
+
+    /* Form fields */
+    .auth-field {
+      margin-bottom: 16px;
+    }
+    .auth-field label {
+      display: block;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .auth-input-wrap {
+      position: relative;
+    }
+    .auth-input-wrap input {
+      width: 100%;
+      padding: 14px 16px;
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius-md);
+      font-size: 1rem;
+      font-family: inherit;
+      color: var(--text);
+      background: var(--white);
+      transition: border-color 0.25s, box-shadow 0.25s;
+      outline: none;
+    }
+    .auth-input-wrap input:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(3, 107, 82, 0.1);
+    }
+    .auth-input-wrap input::placeholder {
+      color: var(--text-muted);
+    }
+    .auth-toggle-pw {
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      padding: 4px;
+      color: var(--text-muted);
+      transition: color 0.2s;
+    }
+    .auth-toggle-pw:hover {
+      color: var(--text-secondary);
+    }
+
+    /* Submit button */
+    .auth-submit {
+      width: 100%;
+      padding: 15px;
+      border-radius: var(--radius-md);
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--white);
+      background: var(--gradient-primary);
+      margin-top: 8px;
+      transition: transform 0.25s, box-shadow 0.25s, opacity 0.25s;
+      box-shadow: 0 4px 16px rgba(0, 168, 104, 0.3);
+    }
+    .auth-submit:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 24px rgba(0, 168, 104, 0.4);
+    }
+    .auth-submit:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    /* Error message */
+    .auth-error {
+      display: none;
+      padding: 12px 16px;
+      border-radius: var(--radius-sm);
+      background: rgba(239, 68, 68, 0.08);
+      border: 1px solid rgba(239, 68, 68, 0.2);
+      color: var(--danger);
+      font-size: 0.875rem;
+      font-weight: 500;
+      margin-bottom: 16px;
+      text-align: center;
+    }
+    .auth-error.show {
+      display: block;
+    }
+
+    /* Success message */
+    .auth-success {
+      display: none;
+      padding: 12px 16px;
+      border-radius: var(--radius-sm);
+      background: rgba(0, 168, 104, 0.08);
+      border: 1px solid rgba(0, 168, 104, 0.2);
+      color: var(--primary);
+      font-size: 0.875rem;
+      font-weight: 500;
+      margin-bottom: 16px;
+      text-align: center;
+    }
+    .auth-success.show {
+      display: block;
+    }
+
+    /* Links row */
+    .auth-links {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 16px;
+      font-size: 0.85rem;
+    }
+    .auth-links a {
+      color: var(--primary);
+      font-weight: 600;
+      transition: color 0.2s;
+    }
+    .auth-links a:hover {
+      color: var(--primary-light);
+    }
+
+    /* Divider */
+    .auth-divider {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin: 24px 0;
+    }
+    .auth-divider::before,
+    .auth-divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+    .auth-divider span {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+
+    /* Social buttons */
+    .auth-social {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .btn-social {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      width: 100%;
+      padding: 13px;
+      border-radius: var(--radius-md);
+      font-size: 0.925rem;
+      font-weight: 600;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .btn-social:hover {
+      transform: translateY(-1px);
+      box-shadow: var(--shadow-md);
+    }
+    .btn-social-google {
+      background: var(--white);
+      color: var(--dark);
+      border: 1.5px solid var(--border);
+    }
+    .btn-social-google:hover {
+      border-color: #c2c8d0;
+    }
+    .btn-social-apple {
+      background: var(--dark);
+      color: var(--white);
+    }
+
+    /* Switch auth mode link */
+    .auth-switch {
+      text-align: center;
+      margin-top: 24px;
+      font-size: 0.875rem;
+      color: var(--text-secondary);
+    }
+    .auth-switch a {
+      color: var(--primary);
+      font-weight: 700;
+      transition: color 0.2s;
+    }
+    .auth-switch a:hover {
+      color: var(--primary-light);
+    }
+
+    /* Spinner for loading state */
+    .auth-spinner {
+      display: inline-block;
+      width: 18px;
+      height: 18px;
+      border: 2.5px solid rgba(255,255,255,0.3);
+      border-top-color: var(--white);
+      border-radius: 50%;
+      animation: auth-spin 0.6s linear infinite;
+      vertical-align: middle;
+      margin-right: 8px;
+    }
+    @keyframes auth-spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* Mobile adjustments */
+    @media (max-width: 600px) {
+      .auth-modal {
+        padding: 32px 24px;
+        border-radius: var(--radius-lg);
+        max-height: 95vh;
+      }
+      .auth-header h2 {
+        font-size: 1.3rem;
+      }
+    }
   </style>
 </head>
 <body>
@@ -1367,8 +1682,8 @@
         <a href="#reviews">Avalia&ccedil;&otilde;es</a>
       </div>
       <div class="nav-cta">
-        <a href="/login" class="btn-nav-login">Entrar</a>
-        <a href="/cadastro" class="btn-nav-signup">Criar Conta</a>
+        <a href="javascript:void(0)" class="btn-nav-login" onclick="openAuth('login')">Entrar</a>
+        <a href="javascript:void(0)" class="btn-nav-signup" onclick="openAuth('signup')">Criar Conta</a>
       </div>
       <button class="hamburger" id="hamburger" aria-label="Menu">
         <span></span>
@@ -1384,7 +1699,7 @@
     <a href="#how" onclick="closeMobile()">Como Funciona</a>
     <a href="#download" onclick="closeMobile()">Baixar App</a>
     <a href="#reviews" onclick="closeMobile()">Avalia&ccedil;&otilde;es</a>
-    <a href="/login" class="btn-mobile-cta">Entrar no SuperBora</a>
+    <a href="javascript:void(0)" class="btn-mobile-cta" onclick="closeMobile(); openAuth('login')">Entrar no SuperBora</a>
   </div>
 
   <!-- Hero Section -->
@@ -1764,7 +2079,7 @@
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
             </a>
             <span class="cta-divider">ou</span>
-            <a href="/login" class="btn-cta-webapp" style="background: var(--gradient-accent);">
+            <a href="javascript:void(0)" class="btn-cta-webapp" style="background: var(--gradient-accent);" onclick="openAuth('login')">
               Entrar na minha conta
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
             </a>
@@ -1849,6 +2164,147 @@
       </div>
     </div>
   </footer>
+
+  <!-- Login Modal -->
+  <div class="auth-overlay" id="authLoginOverlay">
+    <div class="auth-backdrop" onclick="closeAuth('login')"></div>
+    <div class="auth-modal">
+      <button class="auth-close" onclick="closeAuth('login')" aria-label="Fechar">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+      <div class="auth-header">
+        <div class="auth-header-logo">S</div>
+        <h2>Bem-vindo de volta</h2>
+        <p>Entre na sua conta SuperBora</p>
+      </div>
+
+      <div class="auth-error" id="loginError"></div>
+
+      <form id="loginForm" onsubmit="handleLogin(event)">
+        <div class="auth-field">
+          <label for="loginEmail">E-mail</label>
+          <div class="auth-input-wrap">
+            <input type="email" id="loginEmail" name="email" placeholder="seu@email.com" required autocomplete="email">
+          </div>
+        </div>
+
+        <div class="auth-field">
+          <label for="loginPassword">Senha</label>
+          <div class="auth-input-wrap">
+            <input type="password" id="loginPassword" name="password" placeholder="Sua senha" required autocomplete="current-password" minlength="6">
+            <button type="button" class="auth-toggle-pw" onclick="togglePw('loginPassword', this)" aria-label="Mostrar senha">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <button type="submit" class="auth-submit" id="loginSubmit">Entrar</button>
+
+        <div class="auth-links">
+          <a href="javascript:void(0)" onclick="switchAuth('login','signup')">Criar conta</a>
+          <a href="javascript:void(0)" onclick="alert('Em breve! Use o app para recuperar sua senha.')">Esqueci minha senha</a>
+        </div>
+      </form>
+
+      <div class="auth-divider"><span>ou</span></div>
+
+      <div class="auth-social">
+        <button type="button" class="btn-social btn-social-google" onclick="socialLogin('google')">
+          <svg width="20" height="20" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18A10.96 10.96 0 001 12c0 1.77.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+          Continuar com Google
+        </button>
+        <button type="button" class="btn-social btn-social-apple" onclick="socialLogin('apple')">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M17.05 20.28c-.98.95-2.05.88-3.08.4-1.09-.5-2.08-.48-3.24 0-1.44.62-2.2.44-3.06-.4C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/></svg>
+          Continuar com Apple
+        </button>
+      </div>
+
+      <div class="auth-switch">
+        N&atilde;o tem conta? <a href="javascript:void(0)" onclick="switchAuth('login','signup')">Criar conta gr&aacute;tis</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Signup Modal -->
+  <div class="auth-overlay" id="authSignupOverlay">
+    <div class="auth-backdrop" onclick="closeAuth('signup')"></div>
+    <div class="auth-modal">
+      <button class="auth-close" onclick="closeAuth('signup')" aria-label="Fechar">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+      <div class="auth-header">
+        <div class="auth-header-logo">S</div>
+        <h2>Crie sua conta</h2>
+        <p>Comece a comprar com cashback</p>
+      </div>
+
+      <div class="auth-error" id="signupError"></div>
+      <div class="auth-success" id="signupSuccess"></div>
+
+      <form id="signupForm" onsubmit="handleSignup(event)">
+        <div class="auth-field">
+          <label for="signupNome">Nome completo</label>
+          <div class="auth-input-wrap">
+            <input type="text" id="signupNome" name="nome" placeholder="Jo&atilde;o Silva" required autocomplete="name" minlength="3">
+          </div>
+        </div>
+
+        <div class="auth-field">
+          <label for="signupEmail">E-mail</label>
+          <div class="auth-input-wrap">
+            <input type="email" id="signupEmail" name="email" placeholder="seu@email.com" required autocomplete="email">
+          </div>
+        </div>
+
+        <div class="auth-field">
+          <label for="signupTelefone">Telefone</label>
+          <div class="auth-input-wrap">
+            <input type="tel" id="signupTelefone" name="telefone" placeholder="(11) 99999-9999" required autocomplete="tel" maxlength="15">
+          </div>
+        </div>
+
+        <div class="auth-field">
+          <label for="signupCPF">CPF</label>
+          <div class="auth-input-wrap">
+            <input type="text" id="signupCPF" name="cpf" placeholder="000.000.000-00" required autocomplete="off" maxlength="14">
+          </div>
+        </div>
+
+        <div class="auth-field">
+          <label for="signupSenha">Senha</label>
+          <div class="auth-input-wrap">
+            <input type="password" id="signupSenha" name="senha" placeholder="M&iacute;nimo 8 caracteres" required autocomplete="new-password" minlength="8">
+            <button type="button" class="auth-toggle-pw" onclick="togglePw('signupSenha', this)" aria-label="Mostrar senha">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <button type="submit" class="auth-submit" id="signupSubmit">Criar Conta</button>
+
+        <div class="auth-links" style="justify-content: center;">
+          <a href="javascript:void(0)" onclick="switchAuth('signup','login')">J&aacute; tenho conta &rarr; Entrar</a>
+        </div>
+      </form>
+
+      <div class="auth-divider"><span>ou</span></div>
+
+      <div class="auth-social">
+        <button type="button" class="btn-social btn-social-google" onclick="socialLogin('google')">
+          <svg width="20" height="20" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18A10.96 10.96 0 001 12c0 1.77.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+          Continuar com Google
+        </button>
+        <button type="button" class="btn-social btn-social-apple" onclick="socialLogin('apple')">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M17.05 20.28c-.98.95-2.05.88-3.08.4-1.09-.5-2.08-.48-3.24 0-1.44.62-2.2.44-3.06-.4C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/></svg>
+          Continuar com Apple
+        </button>
+      </div>
+
+      <div class="auth-switch">
+        J&aacute; tem conta? <a href="javascript:void(0)" onclick="switchAuth('signup','login')">Fazer login</a>
+      </div>
+    </div>
+  </div>
 
   <!-- Minimal JS -->
   <script>
@@ -1943,6 +2399,216 @@
       // Initial calls
       updateNav();
       updateProgress();
+    })();
+
+    // ── Auth Modal System ──
+    (function() {
+      'use strict';
+
+      // ── Open / Close ──
+      window.openAuth = function(mode) {
+        var id = mode === 'signup' ? 'authSignupOverlay' : 'authLoginOverlay';
+        document.getElementById(id).classList.add('open');
+        document.body.style.overflow = 'hidden';
+      };
+
+      window.closeAuth = function(mode) {
+        var id = mode === 'signup' ? 'authSignupOverlay' : 'authLoginOverlay';
+        document.getElementById(id).classList.remove('open');
+        document.body.style.overflow = '';
+      };
+
+      window.switchAuth = function(from, to) {
+        closeAuth(from);
+        setTimeout(function() { openAuth(to); }, 200);
+      };
+
+      // ── Auto-open if URL is /login or /cadastro ──
+      var path = window.location.pathname;
+      if (path === '/login') {
+        setTimeout(function() { openAuth('login'); }, 400);
+      } else if (path === '/cadastro') {
+        setTimeout(function() { openAuth('signup'); }, 400);
+      }
+
+      // ── Close on Escape ──
+      document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+          closeAuth('login');
+          closeAuth('signup');
+        }
+      });
+
+      // ── Password toggle ──
+      window.togglePw = function(inputId, btn) {
+        var input = document.getElementById(inputId);
+        if (input.type === 'password') {
+          input.type = 'text';
+          btn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+        } else {
+          input.type = 'password';
+          btn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+        }
+      };
+
+      // ── Phone mask (XX) XXXXX-XXXX ──
+      var phoneInput = document.getElementById('signupTelefone');
+      if (phoneInput) {
+        phoneInput.addEventListener('input', function() {
+          var v = this.value.replace(/\D/g, '');
+          if (v.length > 11) v = v.substring(0, 11);
+          if (v.length > 6) {
+            this.value = '(' + v.substring(0, 2) + ') ' + v.substring(2, 7) + '-' + v.substring(7);
+          } else if (v.length > 2) {
+            this.value = '(' + v.substring(0, 2) + ') ' + v.substring(2);
+          } else if (v.length > 0) {
+            this.value = '(' + v;
+          }
+        });
+      }
+
+      // ── CPF mask XXX.XXX.XXX-XX ──
+      var cpfInput = document.getElementById('signupCPF');
+      if (cpfInput) {
+        cpfInput.addEventListener('input', function() {
+          var v = this.value.replace(/\D/g, '');
+          if (v.length > 11) v = v.substring(0, 11);
+          if (v.length > 9) {
+            this.value = v.substring(0, 3) + '.' + v.substring(3, 6) + '.' + v.substring(6, 9) + '-' + v.substring(9);
+          } else if (v.length > 6) {
+            this.value = v.substring(0, 3) + '.' + v.substring(3, 6) + '.' + v.substring(6);
+          } else if (v.length > 3) {
+            this.value = v.substring(0, 3) + '.' + v.substring(3);
+          }
+        });
+      }
+
+      // ── Login handler ──
+      window.handleLogin = function(e) {
+        e.preventDefault();
+        var email = document.getElementById('loginEmail').value.trim();
+        var password = document.getElementById('loginPassword').value;
+        var errorDiv = document.getElementById('loginError');
+        var submitBtn = document.getElementById('loginSubmit');
+
+        errorDiv.classList.remove('show');
+        errorDiv.textContent = '';
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<span class="auth-spinner"></span>Entrando...';
+
+        fetch('/api/mercado/auth/login.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: email, senha: password })
+        })
+        .then(function(res) { return res.json(); })
+        .then(function(data) {
+          if (data.success && data.data && data.data.token) {
+            // Store token and user data
+            localStorage.setItem('token', data.data.token);
+            localStorage.setItem('user', JSON.stringify(data.data.customer));
+            // Redirect to the app
+            window.location.href = '/busca';
+          } else {
+            errorDiv.textContent = data.message || 'Email ou senha incorretos';
+            errorDiv.classList.add('show');
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = 'Entrar';
+          }
+        })
+        .catch(function(err) {
+          errorDiv.textContent = 'Erro de conexao. Tente novamente.';
+          errorDiv.classList.add('show');
+          submitBtn.disabled = false;
+          submitBtn.innerHTML = 'Entrar';
+        });
+      };
+
+      // ── Signup handler ──
+      window.handleSignup = function(e) {
+        e.preventDefault();
+        var nome = document.getElementById('signupNome').value.trim();
+        var email = document.getElementById('signupEmail').value.trim();
+        var telefone = document.getElementById('signupTelefone').value.replace(/\D/g, '');
+        var cpf = document.getElementById('signupCPF').value.replace(/\D/g, '');
+        var senha = document.getElementById('signupSenha').value;
+        var errorDiv = document.getElementById('signupError');
+        var successDiv = document.getElementById('signupSuccess');
+        var submitBtn = document.getElementById('signupSubmit');
+
+        errorDiv.classList.remove('show');
+        successDiv.classList.remove('show');
+        errorDiv.textContent = '';
+
+        // Client-side validation
+        if (senha.length < 8) {
+          errorDiv.textContent = 'Senha deve ter no minimo 8 caracteres';
+          errorDiv.classList.add('show');
+          return;
+        }
+        if (!/[a-zA-Z]/.test(senha) || !/[0-9]/.test(senha)) {
+          errorDiv.textContent = 'Senha deve conter pelo menos uma letra e um numero';
+          errorDiv.classList.add('show');
+          return;
+        }
+        if (telefone.length < 10) {
+          errorDiv.textContent = 'Telefone invalido. Use DDD + numero';
+          errorDiv.classList.add('show');
+          return;
+        }
+        if (cpf.length !== 11) {
+          errorDiv.textContent = 'CPF invalido';
+          errorDiv.classList.add('show');
+          return;
+        }
+
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<span class="auth-spinner"></span>Criando conta...';
+
+        fetch('/api/mercado/auth/register.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            nome: nome,
+            email: email,
+            telefone: telefone,
+            cpf: cpf,
+            senha: senha
+          })
+        })
+        .then(function(res) { return res.json(); })
+        .then(function(data) {
+          if (data.success && data.data && data.data.token) {
+            localStorage.setItem('token', data.data.token);
+            localStorage.setItem('user', JSON.stringify(data.data.customer));
+            successDiv.textContent = 'Conta criada! Redirecionando...';
+            successDiv.classList.add('show');
+            setTimeout(function() {
+              window.location.href = '/busca';
+            }, 1000);
+          } else {
+            errorDiv.textContent = data.message || 'Erro ao criar conta';
+            errorDiv.classList.add('show');
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = 'Criar Conta';
+          }
+        })
+        .catch(function(err) {
+          errorDiv.textContent = 'Erro de conexao. Tente novamente.';
+          errorDiv.classList.add('show');
+          submitBtn.disabled = false;
+          submitBtn.innerHTML = 'Criar Conta';
+        });
+      };
+
+      // ── Social login (redirect to API) ──
+      window.socialLogin = function(provider) {
+        if (provider === 'google') {
+          window.location.href = '/api/mercado/auth/google.php';
+        } else if (provider === 'apple') {
+          window.location.href = '/api/mercado/auth/apple.php';
+        }
+      };
     })();
   </script>
 </body>

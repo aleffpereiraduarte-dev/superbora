@@ -64,6 +64,19 @@ try {
     $produto = $stmtProd->fetch();
     if (!$produto) response(false, null, "Produto não encontrado", 404);
 
+    // Verificar se a loja está aberta antes de adicionar ao carrinho
+    $stmtPartner = $db->prepare("SELECT is_open, pause_until FROM om_market_partners WHERE partner_id = ? AND status::text = '1'");
+    $stmtPartner->execute([$partner_id]);
+    $partnerData = $stmtPartner->fetch();
+    if (!$partnerData) {
+        response(false, null, "Estabelecimento não encontrado", 404);
+    }
+    $lojaFechada = (int)($partnerData['is_open'] ?? 0) !== 1;
+    $lojaPausada = !empty($partnerData['pause_until']) && strtotime($partnerData['pause_until']) > time();
+    if ($lojaFechada || $lojaPausada) {
+        response(false, null, "Esta loja está fechada no momento", 400);
+    }
+
     // Build WHERE clause — authenticated users use customer_id only, anonymous use session_id
     if ($customer_id > 0) {
         $whereClause = "customer_id = ?";

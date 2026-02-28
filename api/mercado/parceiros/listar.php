@@ -65,8 +65,7 @@ try {
                     "taxa_entrega" => $p["delivery_fee"] ?? 0,
                     "tempo_estimado" => $p["delivery_time_min"] ?? 60,
                     "avaliacao" => $p["rating"] ?? 5.0,
-                    // TODO: Replace hardcoded open status with dynamic isOpenNow($p) check from horarios.php
-                    "aberto" => ($p["is_open"] ?? null) !== '0' && ($p["is_open"] ?? null) !== false
+                    "aberto" => (int)($p["is_open"] ?? 0) === 1
                 ];
             }, $parceiros)
         ];

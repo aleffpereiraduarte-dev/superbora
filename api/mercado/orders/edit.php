@@ -44,7 +44,8 @@ try {
         $stmt = $db->prepare("
             SELECT o.order_id, o.order_number, o.partner_id, o.status, o.subtotal,
                    o.delivery_fee, o.service_fee, o.total, o.tip_amount, o.coupon_id,
-                   o.coupon_discount, o.is_pickup, o.modification_count, o.partner_name,
+                   o.coupon_discount, o.is_pickup, o.delivery_type, o.modification_count,
+                   o.partner_name,
                    p.trade_name, p.logo as partner_logo, p.delivery_fee as partner_delivery_fee,
                    p.free_delivery_above, p.min_order_value, p.name as p_name
             FROM om_market_orders o
@@ -58,6 +59,20 @@ try {
 
         if (!in_array($order['status'], EDITABLE_STATUSES)) {
             response(false, null, "Pedido nao pode ser editado (status: {$order['status']})", 400);
+        }
+
+        // Only BoraUm delivery orders can be edited
+        $isPickupGet = (bool)($order['is_pickup'] ?? false);
+        $deliveryTypeGet = $order['delivery_type'] ?? '';
+
+        if ($isPickupGet || $deliveryTypeGet === 'retirada') {
+            response(false, null, "Não disponível para pedidos de retirada", 400);
+        }
+        if ($deliveryTypeGet === 'proprio') {
+            response(false, null, "Disponível apenas para entregas BoraUm", 400);
+        }
+        if ($deliveryTypeGet !== 'boraum') {
+            response(false, null, "Disponível apenas para entregas BoraUm", 400);
         }
 
         // Fetch order items with current product data
@@ -138,8 +153,8 @@ try {
             $stmt = $db->prepare("
                 SELECT o.order_id, o.order_number, o.partner_id, o.status, o.subtotal,
                        o.delivery_fee, o.service_fee, o.total, o.tip_amount, o.coupon_id,
-                       o.coupon_discount, o.is_pickup, o.modification_count, o.partner_name,
-                       o.date_added,
+                       o.coupon_discount, o.is_pickup, o.delivery_type, o.modification_count,
+                       o.partner_name, o.date_added,
                        p.delivery_fee as partner_delivery_fee, p.free_delivery_above,
                        p.min_order_value, p.partner_id as p_id
                 FROM om_market_orders o
@@ -157,6 +172,23 @@ try {
             if (!in_array($order['status'], EDITABLE_STATUSES)) {
                 $db->rollBack();
                 response(false, null, "Pedido nao pode ser editado (status: {$order['status']})", 400);
+            }
+
+            // Only BoraUm delivery orders can be edited
+            $isPickupOrder = (bool)($order['is_pickup'] ?? false);
+            $deliveryTypePut = $order['delivery_type'] ?? '';
+
+            if ($isPickupOrder || $deliveryTypePut === 'retirada') {
+                $db->rollBack();
+                response(false, null, "Não disponível para pedidos de retirada", 400);
+            }
+            if ($deliveryTypePut === 'proprio') {
+                $db->rollBack();
+                response(false, null, "Disponível apenas para entregas BoraUm", 400);
+            }
+            if ($deliveryTypePut !== 'boraum') {
+                $db->rollBack();
+                response(false, null, "Disponível apenas para entregas BoraUm", 400);
             }
 
             // 30-minute time window from order creation

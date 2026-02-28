@@ -13,13 +13,39 @@ try {
 
     $db = getDB();
     $stmt = $db->prepare("
-        SELECT status, customer_id, date_added FROM om_market_orders WHERE order_id = ?
+        SELECT status, customer_id, date_added, is_pickup, delivery_type
+        FROM om_market_orders WHERE order_id = ?
     ");
     $stmt->execute([$order_id]);
     $order = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$order || (int)$order['customer_id'] !== $customer_id) {
         response(false, null, "Pedido nao encontrado", 404);
+    }
+
+    // Only BoraUm delivery orders can add items
+    $isPickup = (bool)($order['is_pickup'] ?? false);
+    $deliveryType = $order['delivery_type'] ?? '';
+
+    if ($isPickup || $deliveryType === 'retirada') {
+        response(true, [
+            'pode_adicionar' => false,
+            'motivo' => 'Não disponível para pedidos de retirada',
+        ]);
+    }
+
+    if ($deliveryType === 'proprio') {
+        response(true, [
+            'pode_adicionar' => false,
+            'motivo' => 'Disponível apenas para entregas BoraUm',
+        ]);
+    }
+
+    if ($deliveryType !== 'boraum') {
+        response(true, [
+            'pode_adicionar' => false,
+            'motivo' => 'Disponível apenas para entregas BoraUm',
+        ]);
     }
 
     // Can only add items if order is in early stages

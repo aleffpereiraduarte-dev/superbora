@@ -53,7 +53,8 @@ try {
 
     $sql = "SELECT c.cart_id, c.product_id, c.partner_id, c.quantity, p.price, c.notes,
                    p.name, p.image, p.unit, p.special_price, p.quantity as estoque,
-                   pr.name as parceiro_nome, pr.delivery_fee, pr.free_delivery_above, pr.entrega_propria
+                   pr.name as parceiro_nome, pr.delivery_fee, pr.free_delivery_above, pr.entrega_propria,
+                   pr.is_open, pr.pause_until
             FROM om_market_cart c
             INNER JOIN om_market_products p ON c.product_id = p.product_id
             INNER JOIN om_market_partners pr ON c.partner_id = pr.partner_id
@@ -87,10 +88,13 @@ try {
             if (!$i['entrega_propria'] && $fee > 0 && $fee < OmPricing::BORAUM_MINIMO) {
                 $fee = OmPricing::BORAUM_MINIMO;
             }
+            $isOpen = (int)($i['is_open'] ?? 0) === 1;
+            $isPaused = !empty($i['pause_until']) && strtotime($i['pause_until']) > time();
             $partnerFees[$pid] = [
                 'nome' => $i['parceiro_nome'],
                 'delivery_fee' => $fee,
                 'free_delivery_above' => floatval($i['free_delivery_above'] ?? 0),
+                'loja_aberta' => $isOpen && !$isPaused,
             ];
         }
     }
@@ -126,13 +130,15 @@ try {
             'entrega_gratis_acima' => $freeAbove > 0 ? round($freeAbove, 2) : null,
             'subtotal' => round($storeSub, 2),
             'route_store' => $isRouteStore,
+            'loja_aberta' => $pf['loja_aberta'],
         ];
     }
 
     response(true, [
         "parceiro" => [
             "id" => $itens[0]["partner_id"],
-            "nome" => $itens[0]["parceiro_nome"]
+            "nome" => $itens[0]["parceiro_nome"],
+            "loja_aberta" => $partnerFees[$itens[0]["partner_id"]]['loja_aberta'] ?? true
         ],
         "parceiros" => $parceiros,
         "itens" => array_map(function($i) {
