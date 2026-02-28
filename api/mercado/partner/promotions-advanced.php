@@ -71,11 +71,14 @@ try {
 
         // Buscar promocoes
         $stmt = $db->prepare("
-            id, partner_id, name, description, promotion_type, discount_type,
-                   discount_value, min_order_value, max_discount, buy_quantity, get_quantity,
-                   applicable_products, applicable_categories, valid_from, valid_until,
-                   active_days, active_hours_start, active_hours_end, max_uses, current_uses,
-                   priority, status, created_at
+            SELECT id, partner_id, type, name, description, badge_text, badge_color,
+                   discount_percent, start_time, end_time, days_of_week,
+                   buy_quantity, get_quantity, get_discount_percent,
+                   min_quantity, quantity_discount_percent,
+                   applies_to, product_ids, category_ids,
+                   valid_from, valid_until,
+                   max_uses, max_uses_per_customer, current_uses,
+                   priority, status, created_at, updated_at
             FROM om_promotions_advanced
             WHERE {$whereSQL}
             ORDER BY priority DESC, created_at DESC

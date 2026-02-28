@@ -33,25 +33,21 @@ try {
     if (!$pushToken) response(false, null, "Token de push obrigatorio", 400);
     if (!in_array($deviceType, ['web', 'android', 'ios'])) $deviceType = 'web';
 
-    // Verificar se token ja existe
-    $stmt = $db->prepare("SELECT id FROM om_market_push_tokens WHERE token = ? AND user_id = ?");
-    $stmt->execute([$pushToken, $userId]);
-    $existing = $stmt->fetch();
-
-    if ($existing) {
-        // Atualizar
-        $db->prepare("UPDATE om_market_push_tokens SET device_type = ?, updated_at = NOW() WHERE id = ?")->execute([$deviceType, $existing['id']]);
-        response(true, ['id' => (int)$existing['id']], "Token atualizado");
-    }
-
-    // Inserir novo
+    // Upsert: insert or update if token already exists (handles unique constraint on token column)
     $stmt = $db->prepare("
-        INSERT INTO om_market_push_tokens (user_id, user_type, token, device_type, created_at)
-        VALUES (?, ?, ?, ?, NOW())
+        INSERT INTO om_market_push_tokens (user_id, user_type, token, device_type, created_at, updated_at)
+        VALUES (?, ?, ?, ?, NOW(), NOW())
+        ON CONFLICT (token) DO UPDATE
+        SET user_id = EXCLUDED.user_id,
+            user_type = EXCLUDED.user_type,
+            device_type = EXCLUDED.device_type,
+            updated_at = NOW()
+        RETURNING id
     ");
     $stmt->execute([$userId, $userType, $pushToken, $deviceType]);
+    $row = $stmt->fetch();
 
-    response(true, ['id' => (int)$db->lastInsertId()], "Token registrado");
+    response(true, ['id' => (int)$row['id']], "Token registrado");
 
 } catch (Exception $e) {
     error_log("[notifications/register-token] Erro: " . $e->getMessage());

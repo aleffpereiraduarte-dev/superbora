@@ -96,9 +96,9 @@ try {
         if ($disputeId) {
             $stmt = $db->prepare("
                 SELECT d.*,
-                    c.nome as customer_name, c.email as customer_email, c.celular as customer_phone,
-                    p.nome as partner_name,
-                    o.total as order_total_real, o.status as order_status, o.date_added as order_date
+                    c.name as customer_name, c.email as customer_email, c.phone as customer_phone,
+                    p.name as partner_name,
+                    o.total as order_total_real, o.status as order_status, o.created_at as order_date
                 FROM om_order_disputes d
                 LEFT JOIN om_market_customers c ON c.customer_id = d.customer_id
                 LEFT JOIN om_market_partners p ON p.partner_id = d.partner_id
@@ -186,8 +186,8 @@ try {
         // List
         $stmt = $db->prepare("
             SELECT d.*,
-                c.nome as customer_name, c.email as customer_email,
-                p.nome as partner_name
+                c.name as customer_name, c.email as customer_email,
+                p.name as partner_name
             FROM om_order_disputes d
             LEFT JOIN om_market_customers c ON c.customer_id = d.customer_id
             LEFT JOIN om_market_partners p ON p.partner_id = d.partner_id

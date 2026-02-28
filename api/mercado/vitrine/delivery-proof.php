@@ -63,7 +63,7 @@ try {
             o.shopper_id,
             s.nome as shopper_nome,
             s.foto as shopper_foto,
-            s.avaliacao as shopper_rating,
+            s.rating as shopper_rating,
             p.trade_name as parceiro_nome,
             p.logo as parceiro_logo
         FROM om_market_orders o

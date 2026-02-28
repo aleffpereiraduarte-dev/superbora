@@ -17,8 +17,8 @@ try {
 
     // Customer profile — explicit columns to avoid exposing sensitive data
     $stmt = $db->prepare("
-        SELECT customer_id as id, firstname as nome, email, telephone as telefone,
-               date_added as created_at, status, cpf
+        SELECT customer_id as id, name as nome, email, phone as telefone,
+               created_at, status, cpf
         FROM om_customers
         WHERE customer_id = ?
     ");

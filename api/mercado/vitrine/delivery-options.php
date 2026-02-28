@@ -139,7 +139,7 @@ try {
         $stmtExpressOrders = $db->prepare("
             SELECT COUNT(*) as cnt FROM om_market_orders
             WHERE partner_id = ?
-            AND is_express = 1
+            AND express_fee IS NOT NULL AND express_fee > 0
             AND date_added >= NOW() - INTERVAL '1 hours'
             AND status NOT IN ('cancelled', 'entregue')
         ");

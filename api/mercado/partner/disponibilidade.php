@@ -192,7 +192,7 @@ try {
         $stmtScheduled = $db->prepare("
             SELECT id, tipo, motivo, inicio, fim, ativo, created_at
             FROM om_market_partner_pauses
-            WHERE partner_id = ? AND tipo = 'scheduled' AND ativo = 1 AND fim > NOW()
+            WHERE partner_id = ? AND tipo = 'scheduled' AND ativo = TRUE AND fim > NOW()
             ORDER BY inicio ASC
         ");
         $stmtScheduled->execute([$partnerId]);
@@ -333,8 +333,8 @@ try {
             // Deactivate current active pauses
             $stmtDeactivate = $db->prepare("
                 UPDATE om_market_partner_pauses
-                SET ativo = 0, fim = NOW()
-                WHERE partner_id = ? AND ativo = 1 AND tipo IN ('manual', 'scheduled')
+                SET ativo = FALSE, fim = NOW()
+                WHERE partner_id = ? AND ativo = TRUE AND tipo IN ('manual', 'scheduled')
             ");
             $stmtDeactivate->execute([$partnerId]);
 
@@ -658,7 +658,7 @@ try {
 
         $stmt = $db->prepare("
             DELETE FROM om_market_partner_pauses
-            WHERE id = ? AND partner_id = ? AND tipo = 'scheduled' AND ativo = 1
+            WHERE id = ? AND partner_id = ? AND tipo = 'scheduled' AND ativo = TRUE
         ");
         $stmt->execute([$pauseId, $partnerId]);
 

@@ -18,15 +18,8 @@ require_once __DIR__ . '/../helpers/rate-limit.php';
 header('Content-Type: application/json; charset=utf-8');
 setCorsHeaders();
 
-require_once dirname(dirname(dirname(__DIR__))) . '/config.php';
-
 try {
-    $pdo = new PDO(
-        "pgsql:host=" . DB_HOSTNAME . ";dbname=" . DB_DATABASE,
-        DB_USERNAME,
-        DB_PASSWORD,
-        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-    );
+    $pdo = getDB();
 
     // Table om_product_stock_alerts created via migration
 

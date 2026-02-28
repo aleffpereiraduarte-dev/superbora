@@ -32,7 +32,7 @@ try {
         }
 
         $stmt = $db->prepare("
-            SELECT id, categoria, pergunta, resposta, ativo, ordem, created_at, updated_at
+            SELECT id, categoria, pergunta, resposta, ativo, ordem, created_at
             FROM om_support_faq
             WHERE $where
             ORDER BY ordem ASC, id ASC
@@ -68,7 +68,7 @@ try {
         if ($faqId > 0) {
             $stmt = $db->prepare("
                 UPDATE om_support_faq
-                SET pergunta = ?, resposta = ?, categoria = ?, ativo = ?, ordem = ?, updated_at = NOW()
+                SET pergunta = ?, resposta = ?, categoria = ?, ativo = ?, ordem = ?
                 WHERE id = ?
             ");
             $stmt->execute([$pergunta, $resposta, $categoria, $ativo ? 1 : 0, $ordem, $faqId]);

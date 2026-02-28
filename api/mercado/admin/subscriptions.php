@@ -35,7 +35,7 @@ try {
         $view = $_GET['view'] ?? 'subscriptions';
 
         if ($view === 'plans') {
-            // Listar planos
+            // Listar planos — use only columns that exist in om_subscription_plans
             $stmt = $db->query("
                 SELECT p.*,
                     (SELECT COUNT(*) FROM om_subscriptions WHERE plan_id = p.id AND status = 'active') as active_count,
@@ -62,14 +62,20 @@ try {
             ");
             $stats['subscriptions'] = $stmt->fetch();
 
-            $stmt = $db->query("
-                SELECT
-                    COUNT(*) as total_payments,
-                    SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END) as total_revenue,
-                    SUM(CASE WHEN status = 'paid' AND EXTRACT(MONTH FROM paid_at) = EXTRACT(MONTH FROM NOW()) THEN amount ELSE 0 END) as month_revenue
-                FROM om_subscription_payments
-            ");
-            $stats['revenue'] = $stmt->fetch();
+            // om_subscription_payments table may not exist — return zero stats if missing
+            $paymentsExist = $db->query("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'om_subscription_payments')")->fetchColumn();
+            if ($paymentsExist) {
+                $stmt = $db->query("
+                    SELECT
+                        COUNT(*) as total_payments,
+                        SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END) as total_revenue,
+                        SUM(CASE WHEN status = 'paid' AND EXTRACT(MONTH FROM paid_at) = EXTRACT(MONTH FROM NOW()) THEN amount ELSE 0 END) as month_revenue
+                    FROM om_subscription_payments
+                ");
+                $stats['revenue'] = $stmt->fetch();
+            } else {
+                $stats['revenue'] = ['total_payments' => 0, 'total_revenue' => 0, 'month_revenue' => 0];
+            }
 
             response(true, ['stats' => $stats]);
         }
@@ -99,10 +105,10 @@ try {
         $stmt->execute($params);
         $total = $stmt->fetchColumn();
 
-        // Assinaturas
+        // Assinaturas — om_market_customers uses name/phone (not nome/celular)
         $stmt = $db->prepare("
             SELECT s.*, p.name as plan_name, p.price as plan_price,
-                   c.nome as customer_name, c.email as customer_email, c.celular as customer_phone
+                   c.name as customer_name, c.email as customer_email, c.phone as customer_phone
             FROM om_subscriptions s
             INNER JOIN om_subscription_plans p ON s.plan_id = p.id
             INNER JOIN om_market_customers c ON s.customer_id = c.customer_id
@@ -134,48 +140,38 @@ try {
             $name = trim($input['name'] ?? '');
             $slug = trim($input['slug'] ?? '');
             $price = (float)($input['price'] ?? 0);
-            $billingCycle = $input['billing_cycle'] ?? 'monthly';
-            $features = $input['features'] ?? [];
             $freeDelivery = (int)($input['free_delivery'] ?? 0);
-            $cashbackPercent = (float)($input['cashback_percent'] ?? 0);
             $prioritySupport = (int)($input['priority_support'] ?? 0);
-            $exclusiveOffers = (int)($input['exclusive_offers'] ?? 0);
 
             if (empty($name) || empty($slug)) {
                 response(false, null, "Nome e slug obrigatorios", 400);
             }
 
-            $featuresJson = json_encode($features);
-
             if ($planId) {
-                // Atualizar plano
+                // Atualizar plano — only columns that exist: name, slug, price, free_delivery, priority_support, status
                 $stmt = $db->prepare("
                     UPDATE om_subscription_plans SET
-                        name = ?, slug = ?, price = ?, billing_cycle = ?,
-                        features = ?, free_delivery = ?, cashback_percent = ?,
-                        priority_support = ?, exclusive_offers = ?, updated_at = NOW()
+                        name = ?, slug = ?, price = ?,
+                        free_delivery = ?, priority_support = ?
                     WHERE id = ?
                 ");
                 $stmt->execute([
-                    $name, $slug, $price, $billingCycle,
-                    $featuresJson, $freeDelivery, $cashbackPercent,
-                    $prioritySupport, $exclusiveOffers, $planId
+                    $name, $slug, $price,
+                    $freeDelivery, $prioritySupport, $planId
                 ]);
 
                 response(true, ['message' => 'Plano atualizado!']);
             }
 
-            // Criar plano
+            // Criar plano — only existing columns
             $stmt = $db->prepare("
                 INSERT INTO om_subscription_plans
-                (name, slug, price, billing_cycle, features, free_delivery,
-                 cashback_percent, priority_support, exclusive_offers)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (name, slug, price, free_delivery, priority_support)
+                VALUES (?, ?, ?, ?, ?)
             ");
             $stmt->execute([
-                $name, $slug, $price, $billingCycle,
-                $featuresJson, $freeDelivery, $cashbackPercent,
-                $prioritySupport, $exclusiveOffers
+                $name, $slug, $price,
+                $freeDelivery, $prioritySupport
             ]);
 
             response(true, [
@@ -186,18 +182,18 @@ try {
 
         if ($action === 'cancel_subscription') {
             $subscriptionId = (int)($input['subscription_id'] ?? 0);
-            $reason = trim($input['reason'] ?? 'Cancelado pelo admin');
 
             if (!$subscriptionId) {
                 response(false, null, "ID da assinatura obrigatorio", 400);
             }
 
+            // om_subscriptions has no cancelled_at or cancel_reason — update only status
             $stmt = $db->prepare("
                 UPDATE om_subscriptions
-                SET status = 'cancelled', cancelled_at = NOW(), cancel_reason = ?
+                SET status = 'cancelled'
                 WHERE id = ?
             ");
-            $stmt->execute([$reason, $subscriptionId]);
+            $stmt->execute([$subscriptionId]);
 
             response(true, ['message' => 'Assinatura cancelada']);
         }
@@ -210,9 +206,10 @@ try {
                 response(false, null, "ID da assinatura obrigatorio", 400);
             }
 
+            // om_subscriptions uses expires_at (not ends_at)
             $stmt = $db->prepare("
                 UPDATE om_subscriptions
-                SET ends_at = COALESCE(ends_at, NOW()) + (? || ' days')::INTERVAL,
+                SET expires_at = COALESCE(expires_at, NOW()) + (? || ' days')::INTERVAL,
                     status = 'active'
                 WHERE id = ?
             ");

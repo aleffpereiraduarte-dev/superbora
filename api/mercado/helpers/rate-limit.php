@@ -25,8 +25,37 @@
  * @return bool  true = allowed, false = rate limited
  */
 if (!function_exists('checkRateLimit')) {
-function checkRateLimit(PDO $db, string $key, int $maxAttempts = 10, int $windowMinutes = 15): bool {
+/**
+ * @param PDO|string $dbOrKey  Either a PDO connection (legacy callers) or the rate-limit key string
+ * @param string|int $keyOrMax Either the key string (when $dbOrKey is PDO) or maxAttempts (when $dbOrKey is string)
+ * @param int        $maxOrWindow Either maxAttempts or windowMinutes depending on call style
+ * @param int|null   $windowMinutes Only set when called with 4 args (PDO, key, max, window)
+ */
+function checkRateLimit($dbOrKey, $keyOrMax = 10, int $maxOrWindow = 15, ?int $windowMinutes = null): bool {
+    // Support both call styles:
+    // Old style: checkRateLimit(PDO $db, string $key, int $max, int $window)
+    // New style: checkRateLimit(string $key, int $max, int $window)
+    if ($dbOrKey instanceof PDO) {
+        $db = $dbOrKey;
+        $key = (string)$keyOrMax;
+        $maxAttempts = (int)$maxOrWindow;
+        $window = (int)($windowMinutes ?? 15);
+    } else {
+        $db = null;
+        $key = (string)$dbOrKey;
+        $maxAttempts = (int)$keyOrMax;
+        $window = (int)$maxOrWindow;
+    }
+
     try {
+        // Lazily obtain DB connection if not provided
+        if ($db === null) {
+            if (!function_exists('getDB')) {
+                return true; // No DB available, fail-open
+            }
+            $db = getDB();
+        }
+
         // Table om_rate_limits created via migration
 
         // Probabilistic cleanup: 1% chance per request to avoid overhead on every call
@@ -35,8 +64,7 @@ function checkRateLimit(PDO $db, string $key, int $maxAttempts = 10, int $window
         }
 
         // Count attempts in current window
-        $windowMinutes = (int)$windowMinutes;
-        $cutoff = date('Y-m-d H:i:s', time() - $windowMinutes * 60);
+        $cutoff = date('Y-m-d H:i:s', time() - $window * 60);
         $stmt = $db->prepare(
             "SELECT COUNT(*) FROM om_rate_limits WHERE rate_key = ? AND created_at > ?"
         );

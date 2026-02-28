@@ -98,13 +98,13 @@ try {
     $costs = [];
     if ($hasCostTable) {
         $stmtCosts = $db->prepare("
-            SELECT product_id, cost
+            SELECT product_id, custo
             FROM om_market_product_costs
             WHERE partner_id = ?
         ");
         $stmtCosts->execute([$partner_id]);
         foreach ($stmtCosts->fetchAll() as $row) {
-            $costs[(int)$row['product_id']] = (float)$row['cost'];
+            $costs[(int)$row['product_id']] = (float)$row['custo'];
         }
     }
 

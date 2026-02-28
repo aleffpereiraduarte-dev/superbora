@@ -17,12 +17,12 @@ try {
 
     $stmt = $db->prepare("
         SELECT partner_id, name, nome, email, phone, telefone, cnpj,
-               address, endereco, city, state, neighborhood, zip_code,
-               category, categoria, status, logo, banner, description,
+               address, endereco, city, state, neighborhood, cep,
+               categoria, status, logo, banner, description,
                commission_rate, commission_type, partnership_type,
-               opening_hours, delivery_radius, min_order, avg_delivery_time,
+               opening_hours, delivery_radius, min_order, avg_prep_time,
                rating, total_orders, total_vendas,
-               created_at, updated_at
+               date_added as created_at, date_modified as updated_at
         FROM om_market_partners WHERE partner_id = ?
     ");
     $stmt->execute([$id]);
