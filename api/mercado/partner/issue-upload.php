@@ -45,16 +45,45 @@ try {
         response(false, null, "Tipo de arquivo nao permitido", 400);
     }
 
+    // SECURITY: Re-encode image via GD to strip malicious payloads
+    $img = @imagecreatefromstring(file_get_contents($file['tmp_name']));
+    if (!$img) {
+        response(false, null, "Imagem corrompida ou invalida", 400);
+    }
+
+    // Resize if too large (max 1600px width)
+    $w = imagesx($img);
+    $h = imagesy($img);
+    if ($w > 1600) {
+        $newW = 1600;
+        $newH = (int)round($h * (1600 / $w));
+        $resized = imagecreatetruecolor($newW, $newH);
+        imagecopyresampled($resized, $img, 0, 0, 0, 0, $newW, $newH, $w, $h);
+        imagedestroy($img);
+        $img = $resized;
+    }
+
+    $mimeToExt = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp'];
+    $ext = $mimeToExt[$mime] ?? 'jpg';
+
     $year = date('Y');
     $month = date('m');
     $uploadDir = "/var/www/html/uploads/partner-issues/{$year}/{$month}";
-    if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
+    if (!is_dir($uploadDir)) mkdir($uploadDir, 0750, true);
 
     $filename = "partner_{$partnerId}_" . time() . "_" . bin2hex(random_bytes(4)) . ".{$ext}";
     $filepath = "{$uploadDir}/{$filename}";
     $publicUrl = "/uploads/partner-issues/{$year}/{$month}/{$filename}";
 
-    if (!move_uploaded_file($file['tmp_name'], $filepath)) {
+    $saved = false;
+    switch ($ext) {
+        case 'jpg': $saved = imagejpeg($img, $filepath, 85); break;
+        case 'png': $saved = imagepng($img, $filepath, 8); break;
+        case 'webp': $saved = imagewebp($img, $filepath, 85); break;
+    }
+    imagedestroy($img);
+
+    if (!$saved) {
         response(false, null, "Erro ao salvar foto", 500);
     }
 
