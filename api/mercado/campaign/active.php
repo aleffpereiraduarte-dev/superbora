@@ -12,27 +12,46 @@ try {
     $db = getDB();
 
     $city = trim($_GET['city'] ?? '');
-    if (empty($city)) {
+    $campaignId = isset($_GET['id']) ? (int)$_GET['id'] : null;
+
+    if (empty($city) && !$campaignId) {
         response(true, ['campaigns' => []]);
     }
 
     $now = date('Y-m-d H:i:s');
 
-    $stmt = $db->prepare("
-        SELECT campaign_id, slug, name, description, reward_text,
-               banner_title, banner_subtitle, banner_gradient, banner_icon,
-               max_redemptions, current_redemptions, new_customers_only,
-               start_date, end_date
-        FROM om_campaigns
-        WHERE status = 'active'
-          AND city ILIKE ?
-          AND start_date <= ?
-          AND end_date >= ?
-          AND current_redemptions < max_redemptions
-        ORDER BY start_date
-        LIMIT 5
-    ");
-    $stmt->execute([$city, $now, $now]);
+    // If specific campaign ID requested, fetch by ID (for detail screen)
+    if ($campaignId) {
+        $stmt = $db->prepare("
+            SELECT campaign_id, slug, name, description, reward_text,
+                   banner_title, banner_subtitle, banner_gradient, banner_icon,
+                   max_redemptions, current_redemptions, new_customers_only,
+                   start_date, end_date, city
+            FROM om_campaigns
+            WHERE campaign_id = ?
+              AND status = 'active'
+              AND start_date <= ?
+              AND end_date >= ?
+            LIMIT 1
+        ");
+        $stmt->execute([$campaignId, $now, $now]);
+    } else {
+        $stmt = $db->prepare("
+            SELECT campaign_id, slug, name, description, reward_text,
+                   banner_title, banner_subtitle, banner_gradient, banner_icon,
+                   max_redemptions, current_redemptions, new_customers_only,
+                   start_date, end_date
+            FROM om_campaigns
+            WHERE status = 'active'
+              AND city ILIKE ?
+              AND start_date <= ?
+              AND end_date >= ?
+              AND current_redemptions < max_redemptions
+            ORDER BY start_date
+            LIMIT 5
+        ");
+        $stmt->execute([$city, $now, $now]);
+    }
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     if (empty($rows)) {
