@@ -546,47 +546,29 @@ try {
         $isMercado = in_array($categoria, ['mercado', 'supermercado']);
         $totalFormatted = number_format($total, 2, ',', '.');
 
-        // Sempre notificar parceiro (legacy web push)
-        $notifTitle = $autoAccept ? 'Pedido aceito automaticamente!' : 'Novo pedido!';
-        notifyPartner($db, $partnerId, $notifTitle,
-            "Pedido #$orderNumber - R$ $totalFormatted - " . $customer['name'],
-            '/painel/mercado/pedidos.php'
-        );
-
-        // Feature 9: Notificacao in-app para parceiro (inclui FCM + WhatsApp automatico)
-        require_once __DIR__ . '/../config/notify.php';
+        // Notify shoppers for mercado orders
         if ($isMercado) {
-            sendNotification($db, $partnerId, 'partner', 'Novo pedido de mercado!',
-                "Pedido #$orderNumber - R$ $totalFormatted - Aguardando shopper",
-                ['order_id' => $orderId, 'url' => '/pedidos']
-            );
             require_once __DIR__ . '/../helpers/shopper-notify.php';
             notifyAvailableShoppers($db, $orderId, $orderNumber, $total, $partnerDisplayName);
-        } else {
-            sendNotification($db, $partnerId, 'partner', 'Novo pedido!',
-                "Pedido #$orderNumber - R$ $totalFormatted - " . $customer['name'] . " - Confirme agora!",
-                ['order_id' => $orderId, 'url' => '/pedidos']
-            );
         }
 
-        // FCM Push via NotificationSender (direct FCM for partner + customer confirmation)
+        // Single notification dispatch via NotificationSender (dedup-aware, inserts + FCM push)
         try {
             require_once __DIR__ . '/../helpers/NotificationSender.php';
             $notifSender = NotificationSender::getInstance($db);
 
-            // Push to partner via FCM
-            $notifSender->notifyPartner($partnerId, "Novo pedido #$orderNumber!",
+            $notifTitle = $autoAccept ? 'Pedido aceito automaticamente!' : 'Novo pedido!';
+            $notifSender->notifyPartner($partnerId, "$notifTitle #$orderNumber",
                 "R$ $totalFormatted - " . $customer['name'] . ($isPickup ? ' (Retirada)' : ''),
                 ['order_id' => $orderId, 'order_number' => $orderNumber, 'url' => '/pedidos', 'type' => 'new_order']
             );
 
-            // Push confirmation to customer via FCM
             $notifSender->notifyCustomer($customerId, 'Pedido confirmado!',
                 "Seu pedido #$orderNumber foi recebido! Acompanhe em tempo real.",
                 ['order_id' => $orderId, 'order_number' => $orderNumber, 'url' => '/pedidos?id=' . $orderId, 'type' => 'order_confirmed']
             );
         } catch (Exception $pushErr) {
-            error_log("[checkout] FCM push erro: " . $pushErr->getMessage());
+            error_log("[checkout] Notification erro: " . $pushErr->getMessage());
         }
 
         // WhatsApp direto para o cliente (confirmacao de pedido)

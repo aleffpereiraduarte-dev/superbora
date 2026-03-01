@@ -107,6 +107,9 @@ try {
     // Limpar tokens de push
     $db->prepare("DELETE FROM om_market_push_tokens WHERE user_id = ? AND user_type = 'customer'")->execute([$customerId]);
 
+    // SECURITY: Revoke all JWT auth tokens to prevent deleted account from making API calls
+    om_auth()->revokeAllTokens('customer', $customerId);
+
     // Zerar cashback wallet
     $db->prepare("UPDATE om_cashback_wallet SET balance = 0, total_earned = 0, total_used = 0 WHERE customer_id = ?")->execute([$customerId]);
 

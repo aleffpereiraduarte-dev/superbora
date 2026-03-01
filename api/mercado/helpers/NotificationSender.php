@@ -40,6 +40,10 @@ class NotificationSender
     {
         if (self::$instance === null) {
             self::$instance = new self($db);
+        } else {
+            // Always update PDO to avoid stale connection issues
+            self::$instance->db = $db;
+            self::$instance->fcm = FCMHelper::getInstance($db);
         }
         return self::$instance;
     }
