@@ -1242,34 +1242,33 @@ function cobrarCartaoPagarme($orderId, $total, $name, $email, $phone, $customerI
 }
 
 /**
- * Verificar status de PaymentIntent no Stripe
+ * Load all Stripe secret keys from .env.stripe (BR + US)
  */
-function verificarStripePayment($paymentIntentId) {
+function getStripeKeys(): array {
     $envFile = dirname(dirname(dirname(__DIR__))) . '/.env.stripe';
-    $stripeSK = '';
+    $keys = ['br' => '', 'us' => ''];
     if (file_exists($envFile)) {
-        $lines = file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-        foreach ($lines as $line) {
+        foreach (file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
             if (strpos(trim($line), '#') === 0) continue;
-            if (strpos($line, 'STRIPE_SECRET_KEY=') === 0) {
-                $stripeSK = trim(substr($line, strlen('STRIPE_SECRET_KEY=')));
-                break;
+            if (strpos($line, '=') !== false) {
+                [$k, $v] = explode('=', $line, 2);
+                $k = trim($k); $v = trim($v);
+                if ($k === 'STRIPE_SECRET_KEY') $keys['br'] = $v;
+                if ($k === 'STRIPE_SECRET_KEY_US') $keys['us'] = $v;
             }
         }
     }
+    return $keys;
+}
 
-    if (empty($stripeSK)) {
-        error_log("[Stripe-Verify] Stripe secret key not configured");
-        return ['paid' => false, 'error' => 'Stripe not configured'];
-    }
-
-    // Sanitize PI ID
-    $piId = preg_replace('/[^a-zA-Z0-9_]/', '', $paymentIntentId);
-
+/**
+ * Check a PaymentIntent against a single Stripe secret key
+ */
+function checkStripePI(string $piId, string $secretKey): array {
     $ch = curl_init("https://api.stripe.com/v1/payment_intents/{$piId}");
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $stripeSK],
+        CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $secretKey],
         CURLOPT_TIMEOUT => 15,
     ]);
     $response = curl_exec($ch);
@@ -1277,18 +1276,49 @@ function verificarStripePayment($paymentIntentId) {
     curl_close($ch);
 
     $data = json_decode($response, true);
-
-    error_log("[Stripe-Verify] PI {$piId}: HTTP {$httpCode}, status=" . ($data['status'] ?? 'null'));
-
     $piStatus = $data['status'] ?? 'unknown';
+
     if ($httpCode === 200 && $piStatus === 'succeeded') {
         return [
-            'paid' => true,
+            'found' => true, 'paid' => true,
             'amount' => ($data['amount'] ?? 0) / 100,
             'amount_cents' => (int)($data['amount'] ?? 0),
             'status' => $piStatus,
         ];
     }
+    if ($httpCode === 200) {
+        return ['found' => true, 'paid' => false, 'status' => $piStatus];
+    }
+    return ['found' => false, 'paid' => false, 'status' => $piStatus];
+}
 
-    return ['paid' => false, 'status' => $piStatus];
+/**
+ * Verificar status de PaymentIntent no Stripe (tenta BR, fallback US)
+ */
+function verificarStripePayment($paymentIntentId) {
+    $keys = getStripeKeys();
+
+    if (empty($keys['br']) && empty($keys['us'])) {
+        error_log("[Stripe-Verify] No Stripe secret keys configured");
+        return ['paid' => false, 'error' => 'Stripe not configured'];
+    }
+
+    $piId = preg_replace('/[^a-zA-Z0-9_]/', '', $paymentIntentId);
+
+    // Try BR account first (majority of payments)
+    if (!empty($keys['br'])) {
+        $result = checkStripePI($piId, $keys['br']);
+        error_log("[Stripe-Verify] PI {$piId} on BR: HTTP found=" . ($result['found'] ? 'yes' : 'no') . ", status=" . ($result['status'] ?? 'null'));
+        if ($result['found']) return $result;
+    }
+
+    // Fallback: try US account
+    if (!empty($keys['us'])) {
+        $result = checkStripePI($piId, $keys['us']);
+        error_log("[Stripe-Verify] PI {$piId} on US: HTTP found=" . ($result['found'] ? 'yes' : 'no') . ", status=" . ($result['status'] ?? 'null'));
+        if ($result['found']) return $result;
+    }
+
+    error_log("[Stripe-Verify] PI {$piId}: not found on any account");
+    return ['paid' => false, 'error' => 'PI not found on any Stripe account'];
 }

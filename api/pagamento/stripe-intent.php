@@ -45,10 +45,10 @@ if (file_exists($envPath)) {
     }
 }
 
-// Load Stripe keys from .env.stripe
+// Load Stripe keys from .env.stripe (BR + US accounts)
 $stripeEnv = dirname(__DIR__, 2) . '/.env.stripe';
-$STRIPE_SK = '';
-$STRIPE_PK = '';
+$STRIPE_SK_BR = ''; $STRIPE_PK_BR = '';
+$STRIPE_SK_US = ''; $STRIPE_PK_US = '';
 if (file_exists($stripeEnv)) {
     foreach (file($stripeEnv, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
         if (strpos(trim($line), '#') === 0) continue;
@@ -56,13 +56,15 @@ if (file_exists($stripeEnv)) {
             [$key, $value] = explode('=', $line, 2);
             $k = trim($key);
             $v = trim($value);
-            if ($k === 'STRIPE_SECRET_KEY') $STRIPE_SK = $v;
-            if ($k === 'STRIPE_PUBLIC_KEY') $STRIPE_PK = $v;
+            if ($k === 'STRIPE_SECRET_KEY') $STRIPE_SK_BR = $v;
+            if ($k === 'STRIPE_PUBLIC_KEY') $STRIPE_PK_BR = $v;
+            if ($k === 'STRIPE_SECRET_KEY_US') $STRIPE_SK_US = $v;
+            if ($k === 'STRIPE_PUBLIC_KEY_US') $STRIPE_PK_US = $v;
         }
     }
 }
 
-if (empty($STRIPE_SK) || strpos($STRIPE_SK, 'XXX') !== false) {
+if (empty($STRIPE_SK_BR) || strpos($STRIPE_SK_BR, 'XXX') !== false) {
     http_response_code(503);
     exit(json_encode(['success' => false, 'message' => 'Stripe nao configurado. Configure .env.stripe com chaves reais.']));
 }
@@ -93,6 +95,17 @@ try {
     $currency = strtolower($input['currency'] ?? 'brl');
     $customerEmail = trim($input['customer_email'] ?? '');
     $customerName = trim($input['customer_name'] ?? '');
+
+    // Route to BR or US Stripe account based on card brand
+    $stripeAccount = strtolower(trim($input['stripe_account'] ?? 'br'));
+    if ($stripeAccount === 'us' && !empty($STRIPE_SK_US)) {
+        $STRIPE_SK = $STRIPE_SK_US;
+        $STRIPE_PK = $STRIPE_PK_US;
+    } else {
+        $STRIPE_SK = $STRIPE_SK_BR;
+        $STRIPE_PK = $STRIPE_PK_BR;
+        $stripeAccount = 'br';
+    }
 
     if ($amount < 100) { // R$1.00 minimum
         http_response_code(400);
@@ -168,6 +181,7 @@ try {
         'automatic_payment_methods[enabled]' => 'true',
         'metadata[customer_id]' => $customerId,
         'metadata[source]' => 'superbora_mobile_app',
+        'metadata[stripe_account]' => $stripeAccount,
     ];
     if ($stripeCustomerId) {
         $piData['customer'] = $stripeCustomerId;
@@ -191,6 +205,7 @@ try {
             'clientSecret' => $r['data']['client_secret'],
             'paymentIntentId' => $r['data']['id'],
             'publishableKey' => $STRIPE_PK,
+            'account' => $stripeAccount,
         ],
     ]);
 
