@@ -14,6 +14,23 @@ try {
     $city = trim($_GET['city'] ?? '');
     $campaignId = isset($_GET['id']) ? (int)$_GET['id'] : null;
 
+    // If no city provided, try to get from user's saved address
+    if (empty($city) && !$campaignId) {
+        try {
+            require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
+            $token = om_auth()->getTokenFromRequest();
+            if ($token) {
+                $payload = om_auth()->validateToken($token);
+                if ($payload && isset($payload['uid'])) {
+                    $addrStmt = $db->prepare("SELECT city FROM om_market_customer_addresses WHERE customer_email = (SELECT email FROM om_market_customers WHERE customer_id = ?) AND is_default = true LIMIT 1");
+                    $addrStmt->execute([(int)$payload['uid']]);
+                    $addrCity = $addrStmt->fetchColumn();
+                    if ($addrCity) $city = $addrCity;
+                }
+            }
+        } catch (Exception $e) {}
+    }
+
     if (empty($city) && !$campaignId) {
         response(true, ['campaigns' => []]);
     }
