@@ -73,27 +73,10 @@ try {
         response(false, null, "Esta loja esta fechada no momento", 400);
     }
 
-    // Prevent duplicate PIX intents: reuse existing pending intent for same customer+partner
-    $existingStmt = $db->prepare("
-        SELECT intent_id, pix_code, pix_qr_url, amount_cents, expires_at
-        FROM om_pix_intents
-        WHERE customer_id = ? AND status = 'pending' AND expires_at > NOW()
-        AND cart_snapshot->>'partner_id' = ?
-        ORDER BY created_at DESC LIMIT 1
-    ");
-    $existingStmt->execute([$customer_id, (string)$partner_id]);
-    $existingIntent = $existingStmt->fetch(PDO::FETCH_ASSOC);
-    if ($existingIntent) {
-        response(true, [
-            'intent_id' => (int)$existingIntent['intent_id'],
-            'pix_code' => $existingIntent['pix_code'],
-            'pix_qr_url' => $existingIntent['pix_qr_url'],
-            'amount' => round($existingIntent['amount_cents'] / 100, 2),
-            'amount_cents' => (int)$existingIntent['amount_cents'],
-            'expires_at' => $existingIntent['expires_at'],
-            'partner_name' => $partner['trade_name'] ?: $partner['name'],
-        ]);
-    }
+    // NOTE: We do NOT reuse existing PIX intents blindly.
+    // The cart may have changed since the intent was created (TOCTOU vulnerability).
+    // Instead, we expire any stale intents and always recalculate from the current cart.
+    // Reuse is only safe if the amount matches exactly (validated after cart calculation below).
 
     // Get customer data
     $custStmt = $db->prepare("SELECT name, phone, email, cpf FROM om_customers WHERE customer_id = ?");
@@ -202,6 +185,33 @@ try {
 
     if ($amountCents < 100) {
         response(false, null, "Valor minimo para PIX: R$ 1,00", 400);
+    }
+
+    // Safe reuse: only reuse existing intent if amount matches exactly (within 1 cent)
+    $existingStmt = $db->prepare("
+        SELECT intent_id, pix_code, pix_qr_url, amount_cents, expires_at
+        FROM om_pix_intents
+        WHERE customer_id = ? AND status = 'pending' AND expires_at > NOW()
+        AND cart_snapshot->>'partner_id' = ?
+        ORDER BY created_at DESC LIMIT 1
+    ");
+    $existingStmt->execute([$customer_id, (string)$partner_id]);
+    $existingIntent = $existingStmt->fetch(PDO::FETCH_ASSOC);
+    if ($existingIntent && abs((int)$existingIntent['amount_cents'] - $amountCents) <= 1) {
+        // Amount matches current cart — safe to reuse
+        response(true, [
+            'intent_id' => (int)$existingIntent['intent_id'],
+            'pix_code' => $existingIntent['pix_code'],
+            'pix_qr_url' => $existingIntent['pix_qr_url'],
+            'amount' => round($existingIntent['amount_cents'] / 100, 2),
+            'amount_cents' => (int)$existingIntent['amount_cents'],
+            'expires_at' => $existingIntent['expires_at'],
+            'partner_name' => $partner['trade_name'] ?: $partner['name'],
+        ]);
+    } elseif ($existingIntent) {
+        // Amount changed — expire the old intent so a fresh one is created
+        $db->prepare("UPDATE om_pix_intents SET status = 'expired' WHERE intent_id = ? AND status = 'pending'")
+           ->execute([(int)$existingIntent['intent_id']]);
     }
 
     // Build cart snapshot (everything needed to create the order later)

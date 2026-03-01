@@ -15,6 +15,7 @@
  */
 require_once __DIR__ . "/../config/database.php";
 require_once __DIR__ . "/../helpers/claude-client.php";
+setCorsHeaders();
 
 try {
     $limit = min(30, max(1, (int)($_GET["limit"] ?? 12)));

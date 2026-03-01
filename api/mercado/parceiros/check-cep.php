@@ -9,21 +9,10 @@
 require_once __DIR__ . "/../config/database.php";
 setCorsHeaders();
 
-// SECURITY: Rate limiting to prevent DoS
-$clientIp = $_SERVER['HTTP_CF_CONNECTING_IP'] ?? $_SERVER['REMOTE_ADDR'];
-try {
-    $rlDb = getDB();
-    $rlDb->exec("CREATE TABLE IF NOT EXISTS om_rate_limits (id SERIAL PRIMARY KEY, ip VARCHAR(45), endpoint VARCHAR(100), created_at TIMESTAMP DEFAULT NOW())");
-    $rlStmt = $rlDb->prepare("SELECT COUNT(*) FROM om_rate_limits WHERE ip = ? AND endpoint = 'check-cep' AND created_at > NOW() - INTERVAL '1 minute'");
-    $rlStmt->execute([$clientIp]);
-    if ((int)$rlStmt->fetchColumn() >= 30) {
-        http_response_code(429);
-        echo json_encode(['success' => false, 'message' => 'Muitas requisicoes. Aguarde 1 minuto.']);
-        exit;
-    }
-    $rlDb->prepare("INSERT INTO om_rate_limits (ip, endpoint) VALUES (?, 'check-cep')")->execute([$clientIp]);
-} catch (Exception $rlErr) {
-    error_log("[check-cep] Rate limit error: " . $rlErr->getMessage());
+// SECURITY: Rate limiting to prevent DoS — 30 requests/min per IP
+require_once dirname(__DIR__, 2) . "/rate-limit/RateLimiter.php";
+if (!RateLimiter::check(30, 60)) {
+    exit;
 }
 
 try {

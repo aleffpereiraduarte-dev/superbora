@@ -5,6 +5,7 @@
  * event_type: view_product, search, add_to_cart, view_store, view_category, purchase, remove_from_cart
  */
 require_once __DIR__ . '/../config/database.php';
+setCorsHeaders();
 
 header('Content-Type: application/json');
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') { response(false, null, 'Method not allowed', 405); }

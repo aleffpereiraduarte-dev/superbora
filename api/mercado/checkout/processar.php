@@ -633,11 +633,16 @@ try {
             }
         }
 
-        // Registrar uso do cupom + incrementar current_uses
+        // Registrar uso do cupom + incrementar current_uses (atomic max_uses check)
         if ($coupon_id) {
             $stmtCoupon = $db->prepare("INSERT INTO om_market_coupon_usage (coupon_id, customer_id, order_id) VALUES (?, ?, ?)");
             $stmtCoupon->execute([$coupon_id, $customer_id, $order_id]);
-            $db->prepare("UPDATE om_market_coupons SET current_uses = current_uses + 1 WHERE id = ?")->execute([$coupon_id]);
+            $stmtInc = $db->prepare("UPDATE om_market_coupons SET current_uses = current_uses + 1 WHERE id = ? AND (max_uses IS NULL OR max_uses = 0 OR current_uses < max_uses)");
+            $stmtInc->execute([$coupon_id]);
+            if ($stmtInc->rowCount() === 0) {
+                $db->rollBack();
+                response(false, null, "Cupom esgotado", 400);
+            }
         }
 
         // Deduzir pontos de fidelidade

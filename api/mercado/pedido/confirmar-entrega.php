@@ -110,7 +110,7 @@ try {
         if ($authType === OmAuth::USER_TYPE_SHOPPER && (int)($pedido['shopper_id'] ?? 0) === $authUid) {
             $ownershipOk = true;
         }
-        if ($authType === OmAuth::USER_TYPE_MOTORISTA && (int)($pedido['shopper_id'] ?? 0) === $authUid) {
+        if ($authType === OmAuth::USER_TYPE_MOTORISTA && (int)($pedido['driver_id'] ?? 0) === $authUid) {
             $ownershipOk = true;
         }
         if ($authType === OmAuth::USER_TYPE_PARTNER && (int)($pedido['partner_id'] ?? 0) === $authUid) {
