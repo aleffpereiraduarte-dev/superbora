@@ -176,16 +176,16 @@ try {
             }
         }
 
-        // 5. Restaurar cashback usado (proporcional se taxa)
+        // 5. Restaurar cashback usado (always refund — customer already pays the cancellation fee)
         $cashbackUsed = (float)($pedido['cashback_discount'] ?? 0);
-        if ($cashbackUsed > 0 && $cancellationFee == 0) {
+        if ($cashbackUsed > 0) {
             require_once __DIR__ . '/../helpers/cashback.php';
             refundCashback($db, $order_id);
         }
 
-        // 6. Restaurar cupom de uso unico (so se cancelamento gratuito)
+        // 6. Restaurar cupom de uso unico (always restore — order is cancelled regardless of fee)
         $couponId = (int)($pedido['coupon_id'] ?? 0);
-        if ($couponId && $cancellationFee == 0) {
+        if ($couponId) {
             $db->prepare("DELETE FROM om_market_coupon_usage WHERE coupon_id = ? AND customer_id = ? AND order_id = ?")
                ->execute([$couponId, $customer_id, $order_id]);
             $db->prepare("UPDATE om_market_coupons SET current_uses = GREATEST(0, current_uses - 1) WHERE id = ?")->execute([$couponId]);
@@ -214,8 +214,17 @@ try {
         if ($needsStripeRefund) {
             try {
                 $refundResult = refundStripePayment($stripePi, $order_id, $stripeRefundAmount);
+                if ($refundResult['success'] ?? false) {
+                    $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ? WHERE order_id = ?")
+                       ->execute([" [REFUND OK: {$refundResult['refund_id']}]", $order_id]);
+                } else {
+                    $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ' [REFUND FAILED]' WHERE order_id = ?")
+                       ->execute([$order_id]);
+                }
             } catch (Exception $refErr) {
                 error_log("[cancelar] Erro estorno Stripe PI={$stripePi}: " . $refErr->getMessage());
+                $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ' [REFUND ERROR]' WHERE order_id = ?")
+                   ->execute([$order_id]);
             }
         }
 
@@ -324,6 +333,10 @@ function refundStripePayment(string $paymentIntentId, int $orderId, ?float $amou
         $postFields['amount'] = (int)round($amount * 100);
     }
 
+    // Idempotency-Key prevents double refunds on retries/timeouts
+    $amountKey = $amount !== null ? (int)round($amount * 100) : 'full';
+    $idempotencyKey = "refund_cancelar_{$orderId}_{$paymentIntentId}_{$amountKey}";
+
     $ch = curl_init("https://api.stripe.com/v1/refunds");
     curl_setopt_array($ch, [
         CURLOPT_POST => true,
@@ -331,7 +344,8 @@ function refundStripePayment(string $paymentIntentId, int $orderId, ?float $amou
         CURLOPT_HTTPHEADER => [
             'Authorization: Bearer ' . $STRIPE_SK,
             'Content-Type: application/x-www-form-urlencoded',
-            'Stripe-Version: 2023-10-16'
+            'Stripe-Version: 2023-10-16',
+            'Idempotency-Key: ' . $idempotencyKey,
         ],
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT => 15,

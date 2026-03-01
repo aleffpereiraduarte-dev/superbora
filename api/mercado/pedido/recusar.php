@@ -134,6 +134,8 @@ try {
                 }
             }
             if ($STRIPE_SK) {
+                // Idempotency-Key prevents double refunds on retries/timeouts
+                $idempotencyKey = "refund_recusar_{$order_id}_{$stripePi}";
                 $ch = curl_init("https://api.stripe.com/v1/refunds");
                 curl_setopt_array($ch, [
                     CURLOPT_POST => true,
@@ -143,7 +145,11 @@ try {
                         'metadata[order_id]' => $order_id,
                         'metadata[source]' => 'superbora_partner_reject',
                     ]),
-                    CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $STRIPE_SK, 'Content-Type: application/x-www-form-urlencoded'],
+                    CURLOPT_HTTPHEADER => [
+                        'Authorization: Bearer ' . $STRIPE_SK,
+                        'Content-Type: application/x-www-form-urlencoded',
+                        'Idempotency-Key: ' . $idempotencyKey,
+                    ],
                     CURLOPT_RETURNTRANSFER => true,
                     CURLOPT_TIMEOUT => 15,
                 ]);
@@ -153,10 +159,12 @@ try {
                 $refundData = json_decode($refundResult, true);
                 $refundOk = $httpCode >= 200 && $httpCode < 300 && !empty($refundData['id']);
                 if ($refundOk) {
-                    error_log("[recusar] Stripe refund OK para pedido #$order_id PI=$stripePi");
+                    error_log("[recusar] Stripe refund OK para pedido #$order_id PI=$stripePi refund_id={$refundData['id']}");
+                    $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ? WHERE order_id = ?")
+                       ->execute([" [REFUND OK: {$refundData['id']}]", $order_id]);
                 } else {
                     error_log("[recusar] FALHA refund Stripe PI=$stripePi code=$httpCode resp=$refundResult");
-                    $db->prepare("UPDATE om_market_orders SET notes = CONCAT(COALESCE(notes,''), ' [REFUND FAILED]') WHERE order_id = ?")->execute([$order_id]);
+                    $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ' [REFUND FAILED]' WHERE order_id = ?")->execute([$order_id]);
                 }
             }
         } catch (Exception $refErr) {
