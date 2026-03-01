@@ -311,6 +311,30 @@ try {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// 4b. Promote pending cashback for delivered orders (catch-up)
+//     If confirmar-entrega crashed after commit but before cashback update,
+//     this ensures pending cashback is eventually promoted to available.
+// ═══════════════════════════════════════════════════════════════
+try {
+    $stmt = $db->prepare("
+        UPDATE om_cashback
+        SET status = 'available'
+        WHERE status = 'pending'
+          AND order_id IN (
+              SELECT order_id FROM om_market_orders
+              WHERE status IN ('entregue', 'retirado', 'finalizado')
+          )
+    ");
+    $stmt->execute();
+    $promoted = $stmt->rowCount();
+    if ($promoted > 0) {
+        $log("Cashback promovido: $promoted registros (pending → available)");
+    }
+} catch (Exception $e) {
+    // Table may not exist
+}
+
+// ═══════════════════════════════════════════════════════════════
 // 5. Limpar push tokens inativos (30 dias sem uso)
 // ═══════════════════════════════════════════════════════════════
 try {

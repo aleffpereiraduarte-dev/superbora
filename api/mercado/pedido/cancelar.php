@@ -144,8 +144,10 @@ try {
         $stmtItens->execute([$order_id]);
         $itens = $stmtItens->fetchAll();
         foreach ($itens as $item) {
-            $db->prepare("UPDATE om_market_products SET quantity = quantity + ? WHERE product_id = ?")
-               ->execute([$item['quantity'], $item['product_id']]);
+            if ($item['product_id']) {
+                $db->prepare("UPDATE om_market_products SET quantity = quantity + ? WHERE product_id = ?")
+                   ->execute([$item['quantity'], $item['product_id']]);
+            }
         }
 
         // 3. Save Stripe info for refund AFTER commit (external call must not hold FOR UPDATE lock)
