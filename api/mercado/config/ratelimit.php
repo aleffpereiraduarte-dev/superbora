@@ -197,6 +197,11 @@ function applyRateLimit(): void {
     $trustedProxies = ['127.0.0.1', '::1'];
     if (in_array($ip, $trustedProxies, true)) {
         $forwarded = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? '';
+        // Skip rate limiting for truly local requests (no proxy, no forwarded IP)
+        // This allows internal services, cron jobs, and E2E tests to run without limits
+        if (!$forwarded && empty($_SERVER['HTTP_CF_CONNECTING_IP'])) {
+            return;
+        }
         if ($forwarded) {
             $ips = array_map('trim', explode(',', $forwarded));
             $candidate = $ips[0]; // SECURITY: Use first (leftmost/client) IP, not last
