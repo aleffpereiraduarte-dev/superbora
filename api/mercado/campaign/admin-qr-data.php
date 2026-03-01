@@ -28,7 +28,7 @@ try {
     $stmt->execute([$campaignId]);
     $campaign = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    if (!$campaign || $campaign['admin_pin'] !== $pin) {
+    if (!$campaign || !hash_equals($campaign['admin_pin'], $pin)) {
         echo json_encode(['error' => 'Unauthorized']);
         exit;
     }

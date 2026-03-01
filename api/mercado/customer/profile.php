@@ -77,7 +77,7 @@ try {
     if ($method === 'PUT' || $method === 'POST') {
         $input = getInput();
 
-        $nome = trim($input['nome'] ?? '');
+        $nome = strip_tags(trim(substr($input['nome'] ?? '', 0, 100)));
         $telefone = trim($input['telefone'] ?? '');
         $cpfInput = trim($input['cpf'] ?? '');
         $generoInput = trim($input['genero'] ?? '');
@@ -143,6 +143,25 @@ try {
             $d = DateTime::createFromFormat('Y-m-d', $nascimentoInput);
             if ($d && $d->format('Y-m-d') === $nascimentoInput) {
                 $nascimentoFinal = $nascimentoInput;
+            }
+        }
+
+        // Verificar unicidade do CPF (se alterado)
+        if ($cpfFinal && $cpfFinal !== ($customer['cpf'] ?? '')) {
+            $stmtChk = $db->prepare("SELECT customer_id FROM om_customers WHERE cpf = ? AND customer_id != ?");
+            $stmtChk->execute([$cpfFinal, $customerId]);
+            if ($stmtChk->fetch()) {
+                response(false, null, "CPF ja cadastrado em outra conta", 409);
+            }
+        }
+
+        // Verificar unicidade do telefone (se alterado)
+        $currentPhoneClean = preg_replace('/[^0-9]/', '', $customer['phone'] ?? '');
+        if ($telefoneLimpo !== $currentPhoneClean) {
+            $stmtChk = $db->prepare("SELECT customer_id FROM om_customers WHERE REPLACE(REPLACE(phone, '+', ''), '-', '') = ? AND customer_id != ?");
+            $stmtChk->execute([$telefoneLimpo, $customerId]);
+            if ($stmtChk->fetch()) {
+                response(false, null, "Telefone ja cadastrado em outra conta", 409);
             }
         }
 

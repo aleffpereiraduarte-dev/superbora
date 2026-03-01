@@ -71,7 +71,7 @@ try {
         // ─── Lock and fetch campaign ───
         $campStmt = $db->prepare("
             SELECT campaign_id, qr_secret, qr_validity_seconds, max_redemptions,
-                   current_redemptions, status, start_date, end_date, new_customers_only
+                   current_redemptions, status, start_date, end_date, new_customers_only, reward_text
             FROM om_campaigns
             WHERE campaign_id = ?
             FOR UPDATE
@@ -139,9 +139,14 @@ try {
         }
 
         // ─── Get customer info ───
-        $custStmt = $db->prepare("SELECT name, phone FROM om_market_customers WHERE customer_id = ?");
+        $custStmt = $db->prepare("SELECT name, phone FROM om_customers WHERE customer_id = ?");
         $custStmt->execute([$customerId]);
         $customer = $custStmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$customer) {
+            $db->rollBack();
+            response(false, null, "Cliente nao encontrado", 404);
+        }
 
         // ─── Generate unique redemption code ───
         $redemptionCode = strtoupper(gerarCodigo(6));
@@ -191,7 +196,7 @@ try {
 
         response(true, [
             'redemption_code' => $redemptionCode,
-            'reward_text' => 'Cachorro-quente gratis',
+            'reward_text' => $campaign['reward_text'] ?? 'Brinde gratis',
             'message' => 'Mostre este codigo para o atendente!',
         ], "Resgate realizado com sucesso!");
 

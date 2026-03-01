@@ -529,6 +529,16 @@ try {
         $total = $subtotal - $coupon_discount - $loyalty_discount - $cashback_discount + $delivery_fee + $tip + $service_fee;
         if ($total < 0) $total = 0;
 
+        // Re-verify Stripe amount after in-transaction recalculation
+        if ($stripe_verified && $stripe_pi_id && !$is_route_secondary) {
+            $newTotalCents = (int)round($total * 100);
+            if ($paidAmountCents > 0 && abs($paidAmountCents - $newTotalCents) > 5) {
+                $db->rollBack();
+                error_log("[Checkout] SECURITY: Post-lock Stripe mismatch! Paid: {$paidAmountCents} cents, New total: {$newTotalCents} cents, PI: {$stripe_pi_id}");
+                response(false, null, "Valor do pagamento divergiu. Tente novamente.", 402);
+            }
+        }
+
         // Criar pedido
         $installments = max(1, min(12, (int)($input['installments'] ?? 1)));
         $installment_value = $installments > 1 ? round($total / $installments, 2) : $total;

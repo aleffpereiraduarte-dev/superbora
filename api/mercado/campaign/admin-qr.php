@@ -18,7 +18,7 @@ $stmt = $db->prepare("SELECT * FROM om_campaigns WHERE campaign_id = ?");
 $stmt->execute([$campaignId]);
 $campaign = $stmt->fetch(PDO::FETCH_ASSOC);
 
-if (!$campaign || $campaign['admin_pin'] !== $pin) {
+if (!$campaign || !hash_equals($campaign['admin_pin'], $pin)) {
     die('PIN invalido.');
 }
 
@@ -313,9 +313,9 @@ function updateRecentList(items) {
         return `<div class="recent-item">
             <div>
                 <div class="name">${escHtml(name)}</div>
-                <div class="time">${time} · ${item.customer_phone || '--'}</div>
+                <div class="time">${time} · ${escHtml(item.customer_phone || '--')}</div>
             </div>
-            <div class="code">${item.redemption_code}</div>
+            <div class="code">${escHtml(item.redemption_code)}</div>
         </div>`;
     }).join('');
 }

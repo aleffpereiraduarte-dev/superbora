@@ -170,14 +170,21 @@ try {
     $passwordHash = om_auth()->hashPassword($senha);
     $fullName = trim($nome . ' ' . $sobrenome);
 
-    // Criar cliente
-    $stmt = $db->prepare("
-        INSERT INTO om_customers (name, email, password_hash, phone, cpf, phone_verified, is_active, is_verified, gender, birth_date, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?, NOW(), NOW())
-        RETURNING customer_id
-    ");
-    $stmt->execute([$fullName, $email, $passwordHash, $telefone, $cpf ?: null, $phoneVerified, $genero ?: null, $birthDate]);
-    $customerId = (int)$stmt->fetch()['customer_id'];
+    // Criar cliente (catch UNIQUE violation for race condition between check + insert)
+    try {
+        $stmt = $db->prepare("
+            INSERT INTO om_customers (name, email, password_hash, phone, cpf, phone_verified, is_active, is_verified, gender, birth_date, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?, NOW(), NOW())
+            RETURNING customer_id
+        ");
+        $stmt->execute([$fullName, $email, $passwordHash, $telefone, $cpf ?: null, $phoneVerified, $genero ?: null, $birthDate]);
+        $customerId = (int)$stmt->fetch()['customer_id'];
+    } catch (PDOException $e) {
+        if (strpos($e->getCode(), '23505') !== false || stripos($e->getMessage(), 'unique') !== false) {
+            response(false, null, "Dados ja cadastrados. Tente fazer login ou recuperar sua conta.", 409);
+        }
+        throw $e;
+    }
 
     // Auto-login: gerar token
     $token = om_auth()->generateToken('customer', $customerId, [
