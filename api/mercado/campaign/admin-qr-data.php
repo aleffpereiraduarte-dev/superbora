@@ -5,6 +5,7 @@
  * Also returns recent redemptions for live feed.
  */
 require_once __DIR__ . "/../config/database.php";
+require_once __DIR__ . "/../helpers/rate-limit.php";
 
 header('Content-Type: application/json');
 header('Cache-Control: no-cache, no-store');
@@ -18,6 +19,10 @@ try {
         exit;
     }
 
+    // Rate limit failed PIN attempts: 10 per 5 minutes per IP
+    $ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+    $rlKey = "admin_qr_fail:{$campaignId}:{$ip}";
+
     $db = getDB();
 
     $stmt = $db->prepare("
@@ -29,6 +34,12 @@ try {
     $campaign = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$campaign || !hash_equals($campaign['admin_pin'], $pin)) {
+        // Count failed PIN attempt for rate limiting
+        if (!checkRateLimit($rlKey, 10, 300)) {
+            http_response_code(429);
+            echo json_encode(['error' => 'Muitas tentativas. Aguarde 5 minutos.']);
+            exit;
+        }
         echo json_encode(['error' => 'Unauthorized']);
         exit;
     }

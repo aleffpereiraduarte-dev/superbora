@@ -11,6 +11,7 @@
  * 3. Liberar repasses em hold apos 2 horas
  * 4. Expirar cashback vencido
  * 5. Limpar push tokens inativos (30 dias)
+ * 6. Expirar/limpar PIX intents pendentes
  */
 
 // Prevent web access
@@ -324,6 +325,37 @@ try {
     }
 } catch (Exception $e) {
     // Table may not exist yet
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 6. Expirar/limpar PIX intents pendentes expirados
+// ═══════════════════════════════════════════════════════════════
+try {
+    // Mark expired intents
+    $stmt = $db->prepare("
+        UPDATE om_pix_intents
+        SET status = 'expired'
+        WHERE status = 'pending' AND expires_at < NOW()
+    ");
+    $stmt->execute();
+    $expired = $stmt->rowCount();
+    if ($expired > 0) {
+        $log("PIX intents expirados: $expired");
+    }
+
+    // Clean old expired/cancelled intents (older than 7 days)
+    $stmt = $db->prepare("
+        DELETE FROM om_pix_intents
+        WHERE status IN ('expired', 'cancelled')
+        AND created_at < NOW() - INTERVAL '7 days'
+    ");
+    $stmt->execute();
+    $cleaned = $stmt->rowCount();
+    if ($cleaned > 0) {
+        $log("PIX intents limpos: $cleaned");
+    }
+} catch (Exception $e) {
+    $log("Erro ao limpar PIX intents: " . $e->getMessage());
 }
 
 $log("=== Cron cleanup finished ===\n");

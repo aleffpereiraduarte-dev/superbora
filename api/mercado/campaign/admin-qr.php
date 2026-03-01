@@ -5,6 +5,7 @@
  * Shows GREEN flash when someone redeems, RED for errors.
  */
 require_once __DIR__ . "/../config/database.php";
+require_once __DIR__ . "/../helpers/rate-limit.php";
 
 $campaignId = (int)($_GET['id'] ?? 0);
 $pin = trim($_GET['pin'] ?? '');
@@ -13,12 +14,20 @@ if (!$campaignId || empty($pin)) {
     die('Acesso negado. Use: ?id=X&pin=XXXX');
 }
 
+// Rate limit failed PIN attempts: 10 per 5 minutes per IP
+$ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+$rlKey = "admin_qr_pin:{$campaignId}:{$ip}";
+
 $db = getDB();
 $stmt = $db->prepare("SELECT * FROM om_campaigns WHERE campaign_id = ?");
 $stmt->execute([$campaignId]);
 $campaign = $stmt->fetch(PDO::FETCH_ASSOC);
 
 if (!$campaign || !hash_equals($campaign['admin_pin'], $pin)) {
+    if (!checkRateLimit($rlKey, 10, 300)) {
+        http_response_code(429);
+        die('Muitas tentativas. Aguarde 5 minutos.');
+    }
     die('PIN invalido.');
 }
 
@@ -240,8 +249,8 @@ body.flash-red { background: #dc2626 !important; }
 </div>
 
 <script>
-const CAMPAIGN_ID = <?= $campaignId ?>;
-const PIN = '<?= htmlspecialchars($pin) ?>';
+const CAMPAIGN_ID = <?= (int)$campaignId ?>;
+const PIN = <?= json_encode($pin, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG) ?>;
 const DATA_URL = `admin-qr-data.php?id=${CAMPAIGN_ID}&pin=${PIN}`;
 
 let qrInstance = null;
