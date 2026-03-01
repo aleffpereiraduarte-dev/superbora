@@ -53,6 +53,23 @@ try {
     $cpf = preg_replace('/[^0-9]/', '', $input['cpf'] ?? '');
     $senha = $input['senha'] ?? '';
     $otpCode = trim($input['otp_code'] ?? '');
+    $genero = trim($input['genero'] ?? '');
+    $dataNascimento = trim($input['data_nascimento'] ?? '');
+
+    // Validar genero (opcional)
+    $validGenders = ['masculino', 'feminino', 'outro', 'prefiro_nao_dizer', ''];
+    if (!in_array($genero, $validGenders)) {
+        $genero = '';
+    }
+
+    // Validar data de nascimento (opcional, formato YYYY-MM-DD)
+    $birthDate = null;
+    if (!empty($dataNascimento)) {
+        $d = DateTime::createFromFormat('Y-m-d', $dataNascimento);
+        if ($d && $d->format('Y-m-d') === $dataNascimento) {
+            $birthDate = $dataNascimento;
+        }
+    }
 
     // Validacoes
     if (empty($nome)) {
@@ -155,11 +172,11 @@ try {
 
     // Criar cliente
     $stmt = $db->prepare("
-        INSERT INTO om_customers (name, email, password_hash, phone, cpf, phone_verified, is_active, is_verified, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 1, 0, NOW(), NOW())
+        INSERT INTO om_customers (name, email, password_hash, phone, cpf, phone_verified, is_active, is_verified, gender, birth_date, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?, NOW(), NOW())
         RETURNING customer_id
     ");
-    $stmt->execute([$fullName, $email, $passwordHash, $telefone, $cpf ?: null, $phoneVerified]);
+    $stmt->execute([$fullName, $email, $passwordHash, $telefone, $cpf ?: null, $phoneVerified, $genero ?: null, $birthDate]);
     $customerId = (int)$stmt->fetch()['customer_id'];
 
     // Auto-login: gerar token
@@ -175,7 +192,9 @@ try {
             "nome" => $fullName,
             "email" => $email,
             "telefone" => $telefone,
-            "cpf" => $cpf
+            "cpf" => $cpf,
+            "genero" => $genero ?: null,
+            "data_nascimento" => $birthDate,
         ]
     ], "Conta criada com sucesso!", 201);
 

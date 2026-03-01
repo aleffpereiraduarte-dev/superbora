@@ -33,7 +33,7 @@ try {
 
     // Verificar se o cliente existe e esta ativo
     $stmt = $db->prepare("
-        SELECT customer_id, name, email, phone, cpf, foto, is_active
+        SELECT customer_id, name, email, phone, cpf, foto, is_active, gender, birth_date
         FROM om_customers
         WHERE customer_id = ? AND is_active = '1'
     ");
@@ -65,6 +65,8 @@ try {
             "cpf" => $customer['cpf'],
             "foto" => $customer['foto'],
             "avatar" => $customer['foto'],
+            "genero" => $customer['gender'] ?? null,
+            "data_nascimento" => $customer['birth_date'] ?? null,
             "is_partner" => $partner ? true : false,
             "partner_id" => $partner ? (int)$partner['partner_id'] : null,
             "partner_status" => $partner ? (int)$partner['status'] : null
@@ -78,6 +80,8 @@ try {
         $nome = trim($input['nome'] ?? '');
         $telefone = trim($input['telefone'] ?? '');
         $cpfInput = trim($input['cpf'] ?? '');
+        $generoInput = trim($input['genero'] ?? '');
+        $nascimentoInput = trim($input['data_nascimento'] ?? '');
 
         // Validacoes
         if (empty($nome)) {
@@ -129,13 +133,26 @@ try {
             $cpfFinal = $cpfLimpo;
         }
 
+        // Validar genero
+        $validGenders = ['masculino', 'feminino', 'outro', 'prefiro_nao_dizer', ''];
+        $generoFinal = in_array($generoInput, $validGenders) ? ($generoInput ?: null) : ($customer['gender'] ?? null);
+
+        // Validar data de nascimento
+        $nascimentoFinal = $customer['birth_date'] ?? null;
+        if (!empty($nascimentoInput)) {
+            $d = DateTime::createFromFormat('Y-m-d', $nascimentoInput);
+            if ($d && $d->format('Y-m-d') === $nascimentoInput) {
+                $nascimentoFinal = $nascimentoInput;
+            }
+        }
+
         // Atualizar no banco
         $stmtUpdate = $db->prepare("
             UPDATE om_customers
-            SET name = ?, phone = ?, cpf = ?, updated_at = NOW()
+            SET name = ?, phone = ?, cpf = ?, gender = ?, birth_date = ?, updated_at = NOW()
             WHERE customer_id = ?
         ");
-        $stmtUpdate->execute([$nome, $telefoneLimpo, $cpfFinal, $customerId]);
+        $stmtUpdate->execute([$nome, $telefoneLimpo, $cpfFinal, $generoFinal, $nascimentoFinal, $customerId]);
 
         response(true, [
             "id" => (int)$customer['customer_id'],
@@ -144,7 +161,9 @@ try {
             "telefone" => $telefoneLimpo,
             "cpf" => $cpfFinal,
             "foto" => $customer['foto'],
-            "avatar" => $customer['foto']
+            "avatar" => $customer['foto'],
+            "genero" => $generoFinal,
+            "data_nascimento" => $nascimentoFinal,
         ], "Perfil atualizado com sucesso!");
     }
 
