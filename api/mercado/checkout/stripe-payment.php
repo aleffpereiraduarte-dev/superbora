@@ -86,7 +86,7 @@ try {
     }
 
     $amount = intval(round((float)$order['total'] * 100)); // centavos
-    if ($amount < 100) response(false, null, "Valor minimo R$ 1,00", 400);
+    if ($amount < 100) { $db->rollBack(); response(false, null, "Valor minimo R$ 1,00", 400); }
 
     // Criar ou buscar Stripe customer
     $stmtCust = $db->prepare("SELECT stripe_customer_id FROM om_customers WHERE customer_id = ?");
@@ -156,6 +156,7 @@ try {
     if ($r['code'] !== 200 || empty($r['data']['client_secret'])) {
         $err = $r['data']['error']['message'] ?? 'Erro ao criar pagamento';
         error_log("[stripe-payment] Stripe error for order {$orderId}: {$err}");
+        $db->rollBack();
         response(false, null, "Erro ao processar pagamento. Tente novamente.", 500);
     }
 

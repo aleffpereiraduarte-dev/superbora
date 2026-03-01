@@ -19,7 +19,11 @@ class OmAuth {
     const USER_TYPE_RH = 'rh';              // Super admin - gerencia tudo
 
     private function __construct() {
-        $this->secretKey = $_ENV['JWT_SECRET'] ?? $_ENV['APP_KEY'] ?? 'om_secure_key_' . md5(__FILE__);
+        $secret = $_ENV['JWT_SECRET'] ?? $_ENV['APP_KEY'] ?? '';
+        if (empty($secret)) {
+            error_log("[OmAuth] CRITICAL: JWT_SECRET or APP_KEY not configured in environment! Authentication will fail.");
+        }
+        $this->secretKey = $secret;
     }
 
     public static function getInstance(): self {
@@ -37,6 +41,10 @@ class OmAuth {
      * Gera um token seguro para o usuário
      */
     public function generateToken(string $userType, int $userId, array $extraData = []): string {
+        if (empty($this->secretKey)) {
+            throw new \RuntimeException('[OmAuth] Cannot generate token: JWT_SECRET not configured');
+        }
+
         $payload = [
             'type' => $userType,
             'uid' => $userId,
@@ -61,6 +69,11 @@ class OmAuth {
      * Valida um token e retorna os dados do payload
      */
     public function validateToken(string $token): ?array {
+        if (empty($this->secretKey)) {
+            error_log("[OmAuth] Cannot validate token: JWT_SECRET not configured");
+            return null;
+        }
+
         $parts = explode('.', $token);
         if (count($parts) !== 2) {
             return null;

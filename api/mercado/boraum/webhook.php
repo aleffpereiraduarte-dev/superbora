@@ -270,7 +270,7 @@ try {
     $db->beginTransaction();
 
     try {
-        // Re-fetch order with FOR UPDATE lock inside transaction to prevent race conditions
+        // Re-fetch order AND entrega with FOR UPDATE locks inside transaction to prevent race conditions
         $stmt = $db->prepare("SELECT * FROM om_market_orders WHERE order_id = ? FOR UPDATE");
         $stmt->execute([$orderId]);
         $pedido = $stmt->fetch();
@@ -278,6 +278,17 @@ try {
             $db->rollBack();
             http_response_code(404);
             echo json_encode(['success' => false, 'message' => 'Order not found']);
+            exit;
+        }
+
+        // Re-fetch entrega with FOR UPDATE to prevent stale data from concurrent webhooks
+        $stmt = $db->prepare("SELECT * FROM om_entregas WHERE id = ? FOR UPDATE");
+        $stmt->execute([$entrega['id']]);
+        $entrega = $stmt->fetch();
+        if (!$entrega) {
+            $db->rollBack();
+            http_response_code(404);
+            echo json_encode(['success' => false, 'message' => 'Delivery record not found']);
             exit;
         }
 

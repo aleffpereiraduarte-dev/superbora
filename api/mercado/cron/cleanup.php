@@ -384,9 +384,15 @@ try {
 
 $log("=== Cron cleanup finished ===\n");
 
+// Release file lock
+flock($lockFp, LOCK_UN);
+fclose($lockFp);
+
 // ─── Helpers ─────────────────────────────────────────────────
 
 function refundStripe(string $paymentIntentId, int $orderId): void {
+    global $db;
+
     $stripeEnv = dirname(__DIR__, 3) . '/.env.stripe';
     $STRIPE_SK = '';
     if (file_exists($stripeEnv)) {
@@ -400,6 +406,7 @@ function refundStripe(string $paymentIntentId, int $orderId): void {
     }
     if (empty($STRIPE_SK)) return;
 
+    $idempotencyKey = "refund_cron_expire_{$orderId}_{$paymentIntentId}";
     $ch = curl_init("https://api.stripe.com/v1/refunds");
     curl_setopt_array($ch, [
         CURLOPT_POST => true,
@@ -412,6 +419,7 @@ function refundStripe(string $paymentIntentId, int $orderId): void {
         CURLOPT_HTTPHEADER => [
             'Authorization: Bearer ' . $STRIPE_SK,
             'Content-Type: application/x-www-form-urlencoded',
+            'Idempotency-Key: ' . $idempotencyKey,
         ],
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT => 15,
@@ -419,7 +427,22 @@ function refundStripe(string $paymentIntentId, int $orderId): void {
     $response = curl_exec($ch);
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
-    if ($httpCode < 200 || $httpCode >= 300) {
-        error_log("[cron/cleanup] Stripe refund failed for PI $paymentIntentId (order #$orderId): HTTP $httpCode — $response");
+
+    $refundData = json_decode($response, true);
+    $refundOk = $httpCode >= 200 && $httpCode < 300 && !empty($refundData['id']);
+
+    // Track refund result in order notes for audit trail
+    try {
+        if ($refundOk) {
+            error_log("[cron/cleanup] Stripe refund OK for order #$orderId PI=$paymentIntentId refund_id={$refundData['id']}");
+            $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ? WHERE order_id = ?")
+               ->execute([" [CRON REFUND OK: {$refundData['id']}]", $orderId]);
+        } else {
+            error_log("[cron/cleanup] Stripe refund FAILED for PI $paymentIntentId (order #$orderId): HTTP $httpCode — $response");
+            $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ? WHERE order_id = ?")
+               ->execute([" [CRON REFUND FAILED: HTTP $httpCode]", $orderId]);
+        }
+    } catch (Exception $e) {
+        error_log("[cron/cleanup] Failed to update refund notes for order #$orderId: " . $e->getMessage());
     }
 }

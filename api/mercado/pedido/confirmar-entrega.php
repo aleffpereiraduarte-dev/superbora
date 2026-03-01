@@ -60,10 +60,11 @@ try {
 
     if ($confirmado_por === 'cliente') {
         // Cliente: must be a customer token — reject non-customer types
-        if ($authType !== '' && $authType !== 'customer') {
+        if ($authType !== 'customer') {
             response(false, null, "Token invalido para confirmacao de cliente", 403);
         }
-        $auth_customer_id = getCustomerIdFromToken();
+        // Use $authUid from OmAuth (already validated with revocation check)
+        $auth_customer_id = $authUid;
         if (!$auth_customer_id) {
             response(false, null, "Autenticacao obrigatoria", 401);
         }

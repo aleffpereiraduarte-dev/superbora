@@ -654,10 +654,12 @@ try {
         ];
 
         if ($paymentMethod === 'pix') {
-            $pixCode = "00020126580014br.gov.bcb.pix0136" . bin2hex(random_bytes(16));
+            // PIX payment requires a real Stripe PaymentIntent — client must call
+            // /checkout/stripe-payment.php with the order_id to get a real PIX QR code.
             $responseData["pix"] = [
-                "qr_code" => $pixCode . "5204000053039865802BR5913SuperBora6008SaoPaulo62070503***6304",
-                "qr_code_text" => $pixCode,
+                "requires_payment" => true,
+                "payment_url" => "/api/mercado/checkout/stripe-payment.php",
+                "message" => "Finalize o pagamento PIX para confirmar o pedido.",
                 "expiration" => date('Y-m-d H:i:s', strtotime('+30 minutes'))
             ];
         }
