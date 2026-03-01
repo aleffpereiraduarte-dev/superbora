@@ -59,19 +59,35 @@ try {
     $delivery_fee = max(0, (float)($input["delivery_fee"] ?? 0));
     $service_fee = OmPricing::TAXA_SERVICO;
 
-    // Validate partner
-    if (!$partner_id) {
+    // Multi-store: collect all partner_ids (primary + route partners)
+    $allPartnerIds = [];
+    if ($partner_id) $allPartnerIds[] = $partner_id;
+    foreach ($route_partner_ids as $rpid) {
+        $rpid = (int)$rpid;
+        if ($rpid > 0 && !in_array($rpid, $allPartnerIds)) $allPartnerIds[] = $rpid;
+    }
+    if (empty($allPartnerIds)) {
         response(false, null, "partner_id obrigatorio", 400);
     }
+
+    // Validate all partners
+    $partners = [];
+    $partnerNames = [];
     $partnerStmt = $db->prepare("SELECT partner_id, name, trade_name, is_open, status FROM om_market_partners WHERE partner_id = ?");
-    $partnerStmt->execute([$partner_id]);
-    $partner = $partnerStmt->fetch(PDO::FETCH_ASSOC);
-    if (!$partner) {
-        response(false, null, "Parceiro nao encontrado", 404);
+    foreach ($allPartnerIds as $pid) {
+        $partnerStmt->execute([$pid]);
+        $p = $partnerStmt->fetch(PDO::FETCH_ASSOC);
+        if (!$p) {
+            response(false, null, "Parceiro #{$pid} nao encontrado", 404);
+        }
+        if (!$p['is_open']) {
+            $pName = $p['trade_name'] ?: $p['name'];
+            response(false, null, "{$pName} esta fechada no momento", 400);
+        }
+        $partners[$pid] = $p;
+        $partnerNames[] = $p['trade_name'] ?: $p['name'];
     }
-    if (!$partner['is_open']) {
-        response(false, null, "Esta loja esta fechada no momento", 400);
-    }
+    $partner = $partners[$allPartnerIds[0]];
 
     // NOTE: We do NOT reuse existing PIX intents blindly.
     // The cart may have changed since the intent was created (TOCTOU vulnerability).
@@ -92,18 +108,16 @@ try {
     }
     $customer_email = $custData['email'] ?? '';
 
-    // Get cart items (from DB cart)
-    $cartWhere = "c.customer_id = ?";
-    $cartParams = [$customer_id];
-
+    // Get cart items from ALL partners (multi-store support)
+    $placeholders = implode(',', array_fill(0, count($allPartnerIds), '?'));
     $cartSql = "SELECT c.product_id, c.partner_id, c.quantity, c.notes as item_notes,
                        p.price, p.special_price, p.name as product_name, p.quantity as stock
                 FROM om_market_cart c
                 INNER JOIN om_market_products p ON c.product_id = p.product_id
-                WHERE {$cartWhere} AND c.partner_id = ?
-                ORDER BY c.cart_id ASC";
+                WHERE c.customer_id = ? AND c.partner_id IN ({$placeholders})
+                ORDER BY c.partner_id, c.cart_id ASC";
     $cartStmt = $db->prepare($cartSql);
-    $cartStmt->execute(array_merge($cartParams, [$partner_id]));
+    $cartStmt->execute(array_merge([$customer_id], $allPartnerIds));
     $cartItems = $cartStmt->fetchAll(PDO::FETCH_ASSOC);
 
     if (empty($cartItems)) {
@@ -125,6 +139,7 @@ try {
         $subtotal += $itemTotal;
         $orderItems[] = [
             'product_id' => (int)$item['product_id'],
+            'partner_id' => (int)$item['partner_id'],
             'name' => $item['product_name'],
             'price' => $price,
             'quantity' => $qty,
@@ -188,6 +203,7 @@ try {
     }
 
     // Safe reuse: only reuse existing intent if amount matches exactly (within 1 cent)
+    $combinedPartnerName = implode(' + ', $partnerNames);
     $existingStmt = $db->prepare("
         SELECT intent_id, pix_code, pix_qr_url, amount_cents, expires_at
         FROM om_pix_intents
@@ -206,7 +222,7 @@ try {
             'amount' => round($existingIntent['amount_cents'] / 100, 2),
             'amount_cents' => (int)$existingIntent['amount_cents'],
             'expires_at' => $existingIntent['expires_at'],
-            'partner_name' => $partner['trade_name'] ?: $partner['name'],
+            'partner_name' => $combinedPartnerName,
         ]);
     } elseif ($existingIntent) {
         // Amount changed — expire the old intent so a fresh one is created
@@ -218,7 +234,9 @@ try {
     $cartSnapshot = [
         'customer_id' => $customer_id,
         'partner_id' => $partner_id,
-        'partner_name' => $partner['trade_name'] ?: $partner['name'],
+        'partner_ids' => $allPartnerIds,
+        'partner_names' => $partnerNames,
+        'partner_name' => $combinedPartnerName,
         'items' => $orderItems,
         'subtotal' => round($subtotal, 2),
         'delivery_fee' => round($delivery_fee, 2),
@@ -250,7 +268,7 @@ try {
 
     // Generate PIX via Woovi
     $correlationId = 'pix_intent_' . $customer_id . '_' . time() . '_' . bin2hex(random_bytes(4));
-    $comment = "SuperBora - " . ($partner['trade_name'] ?: $partner['name']);
+    $comment = "SuperBora - " . $combinedPartnerName;
 
     $woovi = new WooviClient();
 
@@ -307,7 +325,7 @@ try {
         'amount' => round($total, 2),
         'amount_cents' => $amountCents,
         'expires_at' => $intent['expires_at'],
-        'partner_name' => $partner['trade_name'] ?: $partner['name'],
+        'partner_name' => $combinedPartnerName,
     ]);
 
 } catch (Exception $e) {
