@@ -72,10 +72,10 @@ try {
     if (!in_array($remetente_tipo, $allowed_types)) $remetente_tipo = 'cliente';
 
     $stmt = $db->prepare("INSERT INTO om_order_chat (order_id, sender_type, sender_id, message, created_at)
-               VALUES (?, ?, ?, ?, NOW()) RETURNING id");
+               VALUES (?, ?, ?, ?, NOW()) RETURNING message_id");
     $stmt->execute([$order_id, $remetente_tipo, $remetente_id, $mensagem]);
 
-    response(true, ["chat_id" => $stmt->fetchColumn()], "Mensagem enviada");
+    response(true, ["chat_id" => (int)$stmt->fetchColumn()], "Mensagem enviada");
     
 } catch (Exception $e) {
     error_log("[chat/enviar] Erro: " . $e->getMessage());

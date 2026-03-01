@@ -38,7 +38,8 @@ try {
                    p.open_time, p.close_time, p.is_open,
                    p.rating, p.delivery_fee, p.delivery_time_min,
                    p.min_order, p.free_delivery_above,
-                   p.description, p.banner
+                   p.description, p.banner,
+                   p.entrega_propria, p.aceita_boraum, p.aceita_retirada
             FROM om_market_partners p
             WHERE p.partner_id = ? AND p.status::text = '1'
         ");
@@ -71,7 +72,9 @@ try {
             "horario_funcionamento" => [
                 "abertura" => $partner["open_time"] ?? null,
                 "fechamento" => $partner["close_time"] ?? null
-            ]
+            ],
+            "pickup_only" => !($partner["entrega_propria"] ?? false) && !($partner["aceita_boraum"] ?? true),
+            "aceita_retirada" => (bool)($partner["aceita_retirada"] ?? true)
         ];
 
         // 2. Categories with product count

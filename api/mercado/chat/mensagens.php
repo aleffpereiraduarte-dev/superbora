@@ -47,7 +47,7 @@ try {
     }
 
     // Buscar mensagens (prepared statement)
-    $stmtMsg = $db->prepare("SELECT id, order_id, sender_type, sender_id, message, created_at FROM om_order_chat WHERE order_id = ? ORDER BY created_at ASC");
+    $stmtMsg = $db->prepare("SELECT message_id AS id, order_id, sender_type, sender_id, message, created_at FROM om_order_chat WHERE order_id = ? ORDER BY created_at ASC");
     $stmtMsg->execute([$order_id]);
     $mensagens = $stmtMsg->fetchAll();
 

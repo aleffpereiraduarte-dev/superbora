@@ -53,7 +53,9 @@ try {
             aceita_boraum,
             delivery_radius_km,
             latitude,
-            longitude
+            longitude,
+            delivery_start_time,
+            delivery_end_time
         FROM om_market_partners
         WHERE partner_id IN ($placeholders)
     ");
@@ -96,6 +98,27 @@ try {
         // Pedido minimo = max(parceiro, distancia)
         $pedidoMinimo = max($minOrder, $minimo_distancia);
 
+        // Pickup-only: no own fleet AND no BoraUm
+        $pickupOnly = !$row['entrega_propria'] && !($row['aceita_boraum'] ?? true);
+
+        // Delivery hours: check if delivery is available right now
+        $deliveryStartTime = $row['delivery_start_time'] ?? null;
+        $deliveryEndTime = $row['delivery_end_time'] ?? null;
+        $deliveryAvailableNow = true;
+
+        if ($pickupOnly) {
+            $deliveryAvailableNow = false;
+        } elseif ($deliveryStartTime && $deliveryEndTime) {
+            $now = (new DateTime('now', new DateTimeZone('America/Sao_Paulo')))->format('H:i');
+            $deliveryAvailableNow = ($now >= $deliveryStartTime && $now <= $deliveryEndTime);
+        }
+
+        // Force aceita_retirada for pickup-only stores
+        $aceitaRetirada = (bool)$row['aceita_retirada'];
+        if ($pickupOnly) {
+            $aceitaRetirada = true;
+        }
+
         $result[(string)$pid] = [
             'taxa_entrega' => round($fee, 2),
             'entrega_gratis_acima' => $freeAbove > 0 ? $freeAbove : null,
@@ -105,13 +128,17 @@ try {
             'distancia_km' => round($distancia_km, 1),
             'tempo_min' => (int)($row['delivery_time_min'] ?: 30),
             'tempo_max' => (int)($row['delivery_time_max'] ?: 60),
-            'aceita_retirada' => (bool)$row['aceita_retirada'],
+            'aceita_retirada' => $aceitaRetirada,
             'entrega_propria' => (bool)$row['entrega_propria'],
             'aceita_boraum' => (bool)$row['aceita_boraum'],
             'raio_km' => (float)($row['delivery_radius_km'] ?: 10),
             'usa_boraum' => $usaBoraUm,
             'latitude' => (float)($row['latitude'] ?? 0),
             'longitude' => (float)($row['longitude'] ?? 0),
+            'pickup_only' => $pickupOnly,
+            'delivery_available_now' => $deliveryAvailableNow,
+            'delivery_start_time' => $deliveryStartTime,
+            'delivery_end_time' => $deliveryEndTime,
         ];
     }
 

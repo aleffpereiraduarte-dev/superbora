@@ -66,11 +66,11 @@ try {
         INSERT INTO om_age_verifications
         (customer_id, order_id, birth_date, age_at_verification, document_type, document_number, verified)
         VALUES (?, ?, ?, ?, ?, ?, 1)
-        ON DUPLICATE KEY UPDATE
-            birth_date = VALUES(birth_date),
-            age_at_verification = VALUES(age_at_verification),
-            document_type = VALUES(document_type),
-            document_number = VALUES(document_number),
+        ON CONFLICT (customer_id, order_id) DO UPDATE SET
+            birth_date = EXCLUDED.birth_date,
+            age_at_verification = EXCLUDED.age_at_verification,
+            document_type = EXCLUDED.document_type,
+            document_number = EXCLUDED.document_number,
             verified = 1,
             verified_at = NOW()
     ");

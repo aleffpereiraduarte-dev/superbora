@@ -44,7 +44,7 @@ try {
         if (!$stmtOrder->fetch()) response(false, null, "Pedido nao encontrado", 404);
 
         $stmt = $db->prepare("
-            SELECT id, order_id, amount, reason, items_json, status, admin_note, created_at, reviewed_at
+            SELECT refund_id, order_id, amount, reason, items_json, status, admin_note, created_at, reviewed_at
             FROM om_market_refunds
             WHERE order_id = ? AND customer_id = ?
             ORDER BY created_at DESC
@@ -59,11 +59,11 @@ try {
 
         response(true, [
             'refund' => [
-                'id' => (int)$refund['id'],
+                'id' => (int)$refund['refund_id'],
                 'order_id' => (int)$refund['order_id'],
                 'amount' => (float)$refund['amount'],
                 'reason' => $refund['reason'],
-                'items' => json_decode($refund['items_json'], true),
+                'items' => json_decode($refund['items_json'] ?? '[]', true),
                 'status' => $refund['status'],
                 'admin_note' => $refund['admin_note'],
                 'created_at' => $refund['created_at'],
@@ -108,7 +108,7 @@ try {
 
         // Check for existing pending/approved refund (preliminary check before transaction)
         $stmtExisting = $db->prepare("
-            SELECT id, status FROM om_market_refunds
+            SELECT refund_id, status FROM om_market_refunds
             WHERE order_id = ? AND customer_id = ? AND status IN ('pending', 'approved')
             LIMIT 1
         ");
@@ -215,7 +215,7 @@ try {
 
         // Re-check for existing refund inside the transaction with lock held
         $stmtExisting2 = $db->prepare("
-            SELECT id, status FROM om_market_refunds
+            SELECT refund_id, status FROM om_market_refunds
             WHERE order_id = ? AND customer_id = ? AND status IN ('pending', 'approved')
             LIMIT 1
         ");
@@ -230,7 +230,7 @@ try {
         $stmt = $db->prepare("
             INSERT INTO om_market_refunds (order_id, customer_id, amount, reason, items_json, status, created_at)
             VALUES (?, ?, ?, ?, ?, ?, NOW())
-            RETURNING id
+            RETURNING refund_id
         ");
         $stmt->execute([
             $orderId,
@@ -240,11 +240,11 @@ try {
             json_encode($refundItems, JSON_UNESCAPED_UNICODE),
             $status
         ]);
-        $refundId = (int)$stmt->fetch()['id'];
+        $refundId = (int)$stmt->fetch()['refund_id'];
 
         // If auto-approved, update the refund reviewed_at
         if ($status === 'approved') {
-            $db->prepare("UPDATE om_market_refunds SET reviewed_at = NOW(), admin_note = 'Auto-aprovado (valor abaixo de R$ 30,00)' WHERE id = ?")
+            $db->prepare("UPDATE om_market_refunds SET reviewed_at = NOW(), admin_note = 'Auto-aprovado (valor abaixo de R$ 30,00)' WHERE refund_id = ?")
                ->execute([$refundId]);
         }
 

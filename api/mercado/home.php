@@ -463,9 +463,9 @@ function buscarBanners($db) {
     $cacheKey = "home_banners";
     return CacheHelper::remember($cacheKey, 300, function() use ($db) {
         $stmt = $db->prepare("
-            SELECT id, title, subtitle, image_url, link, icon, bg_color, gradient
+            SELECT banner_id AS id, title, subtitle, image AS image_url, link, icon, bg_color
             FROM om_market_banners
-            WHERE status = '1' AND (expires_at IS NULL OR expires_at > NOW())
+            WHERE status::text = '1' AND (end_date IS NULL OR end_date > NOW())
             ORDER BY sort_order ASC, created_at DESC
             LIMIT 5
         ");
