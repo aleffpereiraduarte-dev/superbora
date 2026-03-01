@@ -84,7 +84,7 @@ try {
 
     // Save Stripe info for refund after commit (external call must be outside transaction)
     $paymentMethod = $pedido['forma_pagamento'] ?? $pedido['payment_method'] ?? '';
-    $stripePi = $pedido['stripe_payment_intent_id'] ?? '';
+    $stripePi = $pedido['stripe_payment_intent_id'] ?? $pedido['payment_id'] ?? '';
     $needsStripeRefund = in_array($paymentMethod, ['stripe_card', 'stripe_wallet', 'credito']) && $stripePi;
 
     // Restaurar pontos e cashback

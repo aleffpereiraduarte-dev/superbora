@@ -157,7 +157,7 @@ try {
                 // Lock the row and verify it's still pendente/confirmado
                 $stmtLock = $db->prepare("
                     SELECT order_id, customer_id, loyalty_points_used, coupon_id,
-                           forma_pagamento, stripe_payment_intent_id
+                           forma_pagamento, stripe_payment_intent_id, payment_id
                     FROM om_market_orders
                     WHERE order_id = ?
                       AND status IN ('pendente', 'confirmado')
@@ -212,8 +212,9 @@ try {
                 $expiredIds[] = $orderId;
 
                 // Queue Stripe refund for after commit (don't refund inside transaction)
-                if (in_array($orderData['forma_pagamento'], ['stripe_card', 'stripe_wallet', 'credito']) && $orderData['stripe_payment_intent_id']) {
-                    $refundQueue[] = ['pi' => $orderData['stripe_payment_intent_id'], 'id' => $orderId];
+                $cronStripePi = $orderData['stripe_payment_intent_id'] ?? $orderData['payment_id'] ?? '';
+                if (in_array($orderData['forma_pagamento'], ['stripe_card', 'stripe_wallet', 'credito']) && $cronStripePi) {
+                    $refundQueue[] = ['pi' => $cronStripePi, 'id' => $orderId];
                 }
             } catch (Exception $e) {
                 if ($db->inTransaction()) {

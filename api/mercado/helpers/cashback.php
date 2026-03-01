@@ -74,8 +74,8 @@ function calculateCashback(PDO $db, int $partnerId, float $orderTotal): array {
         'cashback_amount' => round($cashbackAmount, 2),
         'cashback_percent' => $cashbackPercent,
         'max_cashback' => $maxCashback,
-        'valid_days' => (int)$config['valid_days'],
-        'expires_at' => date('Y-m-d', strtotime('+' . $config['valid_days'] . ' days'))
+        'valid_days' => (int)($config['valid_days'] ?? $config['expiry_days'] ?? 90),
+        'expires_at' => date('Y-m-d', strtotime('+' . ($config['valid_days'] ?? $config['expiry_days'] ?? 90) . ' days'))
     ];
 }
 

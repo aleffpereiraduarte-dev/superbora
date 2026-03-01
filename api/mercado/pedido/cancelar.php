@@ -153,7 +153,7 @@ try {
         // 3. Save Stripe info for refund AFTER commit (external call must not hold FOR UPDATE lock)
         $refundResult = null;
         $paymentMethod = $pedido['forma_pagamento'] ?? $pedido['payment_method'] ?? '';
-        $stripePi = $pedido['stripe_payment_intent_id'] ?? '';
+        $stripePi = $pedido['stripe_payment_intent_id'] ?? $pedido['payment_id'] ?? '';
         $needsStripeRefund = in_array($paymentMethod, ['stripe_card', 'stripe_wallet', 'credito']) && $stripePi;
         // Se tem taxa, fazer refund parcial no Stripe. null = full refund, 0 = no refund needed
         $stripeRefundAmount = $cancellationFee > 0 ? max(0, $refundAmount) : null; // null = full refund

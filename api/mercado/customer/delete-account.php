@@ -118,8 +118,8 @@ try {
     $db->prepare("UPDATE om_subscriptions SET status = 'cancelled', cancelled_at = NOW() WHERE customer_id = ? AND status IN ('active', 'trial')")->execute([$customerId]);
 
     // Limpar recomendacoes e verificacoes
-    $db->prepare("DELETE FROM om_smart_recommendations WHERE customer_id = ?")->execute([$customerId]);
-    $db->prepare("DELETE FROM om_age_verifications WHERE customer_id = ?")->execute([$customerId]);
+    try { $db->prepare("DELETE FROM om_smart_recommendations WHERE customer_id = ?")->execute([$customerId]); } catch (Exception $e) { /* table may not exist */ }
+    try { $db->prepare("DELETE FROM om_age_verifications WHERE customer_id = ?")->execute([$customerId]); } catch (Exception $e) { /* table may not exist */ }
 
     // Limpar favoritos
     $db->prepare("DELETE FROM om_favorites WHERE customer_id = ?")->execute([$customerId]);

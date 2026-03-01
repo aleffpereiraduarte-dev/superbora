@@ -160,9 +160,9 @@ try {
         response(false, null, "Erro ao processar pagamento. Tente novamente.", 500);
     }
 
-    // Salvar payment_intent_id no pedido
-    $db->prepare("UPDATE om_market_orders SET payment_id = ?, pagarme_status = 'pending' WHERE order_id = ?")
-        ->execute([$r['data']['id'], $orderId]);
+    // Salvar payment_intent_id no pedido (both columns for compatibility)
+    $db->prepare("UPDATE om_market_orders SET payment_id = ?, stripe_payment_intent_id = ?, pagarme_status = 'pending' WHERE order_id = ?")
+        ->execute([$r['data']['id'], $r['data']['id'], $orderId]);
     $db->commit();
 
     response(true, [
