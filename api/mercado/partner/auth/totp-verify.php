@@ -44,7 +44,7 @@ try {
         response(false, null, "Token temporario invalido ou expirado", 401);
     }
 
-    if (empty($payload['2fa_pending'])) {
+    if (empty($payload['data']['2fa_pending'])) {
         response(false, null, "Token nao e de verificacao 2FA", 400);
     }
 

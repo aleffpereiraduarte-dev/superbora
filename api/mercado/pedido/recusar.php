@@ -77,6 +77,11 @@ try {
         }
     }
 
+    // Liberar shopper se alocado
+    if (!empty($pedido['shopper_id'])) {
+        $db->prepare("UPDATE om_market_shoppers SET disponivel = 1, pedido_atual_id = NULL WHERE shopper_id = ?")->execute([$pedido['shopper_id']]);
+    }
+
     // Save Stripe info for refund after commit (external call must be outside transaction)
     $paymentMethod = $pedido['forma_pagamento'] ?? $pedido['payment_method'] ?? '';
     $stripePi = $pedido['stripe_payment_intent_id'] ?? '';

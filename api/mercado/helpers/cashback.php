@@ -303,7 +303,11 @@ function refundCashback(PDO $db, int $orderId): array {
     }
 
     try {
-        $db->beginTransaction();
+        // Support being called inside an existing transaction (e.g. from cancelar.php, recusar.php)
+        $ownTransaction = !$db->inTransaction();
+        if ($ownTransaction) {
+            $db->beginTransaction();
+        }
 
         $customerId = $transactions[0]['customer_id'];
 
@@ -319,7 +323,7 @@ function refundCashback(PDO $db, int $orderId): array {
         $stmt->execute([$customerId, $orderId]);
 
         if ($stmt->rowCount() === 0) {
-            $db->rollBack();
+            if ($ownTransaction) $db->rollBack();
             return ['success' => false, 'message' => 'Cashback ja estornado para este pedido'];
         }
 
@@ -363,12 +367,12 @@ function refundCashback(PDO $db, int $orderId): array {
         ");
         $stmt->execute([$newBalance, $orderId]);
 
-        $db->commit();
+        if ($ownTransaction) $db->commit();
 
         return ['success' => true, 'message' => 'Cashback estornado'];
 
     } catch (Exception $e) {
-        $db->rollBack();
+        if ($ownTransaction && $db->inTransaction()) $db->rollBack();
         error_log("[refundCashback] Erro: " . $e->getMessage());
         return ['success' => false, 'message' => 'Erro ao estornar cashback'];
     }

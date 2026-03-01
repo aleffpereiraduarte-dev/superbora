@@ -79,7 +79,265 @@ if (empty($correlationId)) {
     exit;
 }
 
-// ═══ CHARGE EVENTS (PIX payment from customer) ═══
+// ═══ PIX INTENT EVENTS (payment-first flow) ═══
+if (stripos($event, 'CHARGE') !== false && strpos($correlationId, 'pix_intent_') === 0) {
+    try {
+        $db = getDB();
+        require_once dirname(__DIR__) . '/helpers/notify.php';
+        require_once dirname(__DIR__, 3) . '/includes/classes/OmPricing.php';
+
+        if (stripos($event, 'COMPLETED') !== false || stripos($event, 'CONFIRMED') !== false) {
+            error_log("[woovi-webhook] PIX intent COMPLETED: $correlationId");
+
+            $db->beginTransaction();
+
+            // Lock and fetch intent
+            $intentStmt = $db->prepare("
+                SELECT * FROM om_pix_intents
+                WHERE correlation_id = ? FOR UPDATE
+            ");
+            $intentStmt->execute([$correlationId]);
+            $intent = $intentStmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$intent) {
+                $db->rollBack();
+                error_log("[woovi-webhook] Intent not found: $correlationId");
+                http_response_code(200);
+                echo json_encode(['ok' => true, 'message' => 'Intent not found']);
+                exit;
+            }
+
+            // Skip if already processed
+            if ($intent['status'] !== 'pending') {
+                $db->rollBack();
+                error_log("[woovi-webhook] Intent already processed: $correlationId (status: {$intent['status']})");
+                http_response_code(200);
+                echo json_encode(['ok' => true, 'message' => 'Already processed']);
+                exit;
+            }
+
+            // Mark intent as paid
+            $db->prepare("UPDATE om_pix_intents SET status = 'paid', paid_at = NOW() WHERE intent_id = ?")
+               ->execute([$intent['intent_id']]);
+
+            // Deserialize cart snapshot
+            $cart = json_decode($intent['cart_snapshot'], true);
+            if (!$cart) {
+                $db->rollBack();
+                error_log("[woovi-webhook] Invalid cart_snapshot for intent: $correlationId");
+                http_response_code(200);
+                echo json_encode(['ok' => true, 'message' => 'Invalid cart']);
+                exit;
+            }
+
+            $customer_id = (int)$cart['customer_id'];
+            $partner_id = (int)$cart['partner_id'];
+            $items = $cart['items'] ?? [];
+
+            // Re-validate and lock stock
+            foreach ($items as $item) {
+                $stmtLock = $db->prepare("SELECT quantity FROM om_market_products WHERE product_id = ? FOR UPDATE");
+                $stmtLock->execute([$item['product_id']]);
+                $estoque = (int)$stmtLock->fetchColumn();
+                if ((int)$item['quantity'] > $estoque) {
+                    // Stock insufficient after payment — create order anyway but log warning
+                    error_log("[woovi-webhook] WARNING: Stock insufficient for product #{$item['product_id']} ({$item['name']}). Needed: {$item['quantity']}, Available: {$estoque}. Creating order anyway (PIX paid).");
+                }
+            }
+
+            // Determine delivery type
+            $is_pickup = (int)($cart['is_pickup'] ?? 0);
+            $delivery_type = 'boraum';
+            if ($is_pickup) {
+                $delivery_type = 'retirada';
+            } else {
+                $partnerStmt = $db->prepare("SELECT entrega_propria FROM om_market_partners WHERE partner_id = ?");
+                $partnerStmt->execute([$partner_id]);
+                $entregaPropria = (bool)$partnerStmt->fetchColumn();
+                if ($entregaPropria) $delivery_type = 'proprio';
+            }
+
+            // Generate delivery code
+            $codigo_entrega = strtoupper(bin2hex(random_bytes(3)));
+            $timer_started = date('Y-m-d H:i:s');
+            $timer_expires = date('Y-m-d H:i:s', strtotime('+5 minutes'));
+
+            // Create order
+            $orderStmt = $db->prepare("INSERT INTO om_market_orders (
+                order_number, partner_id, customer_id,
+                customer_name, customer_phone, customer_email,
+                status, subtotal, delivery_fee, total, tip_amount,
+                delivery_address, shipping_address, shipping_cep, shipping_city, shipping_state,
+                notes, codigo_entrega, forma_pagamento,
+                coupon_id, coupon_discount, loyalty_points_used, loyalty_discount, cashback_discount,
+                is_pickup, schedule_date, schedule_time,
+                timer_started, timer_expires,
+                delivery_type, cpf_nota, service_fee,
+                pix_paid, pagamento_status, payment_status,
+                date_added
+            ) VALUES (?, ?, ?, ?, ?, ?, 'aceito', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pix',
+                      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      true, 'pago', 'paid', NOW())
+            RETURNING order_id");
+
+            $orderStmt->execute([
+                'SB-TEMP', $partner_id, $customer_id,
+                $cart['customer_name'] ?? 'Cliente', $cart['customer_phone'] ?? '', $cart['customer_email'] ?? '',
+                round((float)($cart['subtotal'] ?? 0), 2),
+                round((float)($cart['delivery_fee'] ?? 0), 2),
+                round((float)($cart['total'] ?? 0), 2),
+                round((float)($cart['tip'] ?? 0), 2),
+                $cart['address'] ?? '', $cart['address'] ?? '',
+                $cart['cep'] ?? '', $cart['city'] ?? '', $cart['state'] ?? '',
+                $cart['notes'] ?? '', $codigo_entrega,
+                (int)($cart['coupon_id'] ?? 0) ?: null,
+                round((float)($cart['coupon_discount'] ?? 0), 2),
+                (int)($cart['points_used'] ?? 0),
+                round((float)($cart['points_discount'] ?? 0), 2),
+                round((float)($cart['cashback_discount'] ?? 0), 2),
+                $is_pickup,
+                ($cart['schedule_date'] ?? '') ?: null,
+                ($cart['schedule_time'] ?? '') ?: null,
+                $timer_started, $timer_expires,
+                $delivery_type, ($cart['cpf_nota'] ?? '') ?: null,
+                OmPricing::TAXA_SERVICO,
+            ]);
+
+            $orderId = (int)$orderStmt->fetchColumn();
+
+            // Generate proper order_number
+            $order_number = 'SB' . str_pad($orderId, 5, '0', STR_PAD_LEFT);
+            $db->prepare("UPDATE om_market_orders SET order_number = ? WHERE order_id = ?")->execute([$order_number, $orderId]);
+
+            // Create order items and decrement stock
+            $stmtItem = $db->prepare("INSERT INTO om_market_order_items (order_id, product_id, name, quantity, price, total) VALUES (?, ?, ?, ?, ?, ?)");
+            foreach ($items as $item) {
+                $price = (float)$item['price'];
+                $qty = (int)$item['quantity'];
+                $itemTotal = round($price * $qty, 2);
+                $stmtItem->execute([$orderId, $item['product_id'], $item['name'], $qty, $price, $itemTotal]);
+
+                // Decrement stock (defensive WHERE)
+                $db->prepare("UPDATE om_market_products SET quantity = GREATEST(0, quantity - ?) WHERE product_id = ?")
+                   ->execute([$qty, $item['product_id']]);
+            }
+
+            // Register coupon usage
+            $coupon_id = (int)($cart['coupon_id'] ?? 0);
+            if ($coupon_id > 0) {
+                $db->prepare("INSERT INTO om_market_coupon_usage (coupon_id, customer_id, order_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING")
+                   ->execute([$coupon_id, $customer_id, $orderId]);
+                $db->prepare("UPDATE om_market_coupons SET current_uses = current_uses + 1 WHERE id = ?")->execute([$coupon_id]);
+            }
+
+            // Deduct loyalty points
+            $pointsUsed = (int)($cart['points_used'] ?? 0);
+            if ($pointsUsed > 0) {
+                $db->prepare("UPDATE om_market_loyalty_points SET current_points = GREATEST(0, current_points - ?), updated_at = NOW() WHERE customer_id = ?")
+                   ->execute([$pointsUsed, $customer_id]);
+                $db->prepare("INSERT INTO om_market_loyalty_transactions (customer_id, points, type, source, reference_id, description, created_at) VALUES (?, ?, 'redeem', 'checkout', ?, ?, NOW())")
+                   ->execute([$customer_id, -$pointsUsed, $orderId, "Resgate no pedido #$order_number"]);
+            }
+
+            // Deduct cashback
+            $cashbackDiscount = (float)($cart['cashback_discount'] ?? 0);
+            if ($cashbackDiscount > 0) {
+                $remaining = $cashbackDiscount;
+                $cbRows = $db->prepare("SELECT id, COALESCE(amount, 0) as amount FROM om_cashback WHERE customer_id = ? AND type IN ('earned','bonus') AND status = 'available' AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY expires_at ASC NULLS LAST FOR UPDATE");
+                $cbRows->execute([$customer_id]);
+                foreach ($cbRows->fetchAll() as $cb) {
+                    if ($remaining <= 0) break;
+                    $use = min($remaining, (float)$cb['amount']);
+                    if ($use >= (float)$cb['amount']) {
+                        $db->prepare("UPDATE om_cashback SET status = 'used', order_id = ? WHERE id = ?")->execute([$orderId, $cb['id']]);
+                    } else {
+                        $db->prepare("UPDATE om_cashback SET amount = amount - ? WHERE id = ?")->execute([$use, $cb['id']]);
+                    }
+                    $remaining -= $use;
+                }
+            }
+
+            // Clear cart
+            $db->prepare("DELETE FROM om_market_cart WHERE customer_id = ? AND partner_id = ?")
+               ->execute([$customer_id, $partner_id]);
+
+            // Link intent to order
+            $db->prepare("UPDATE om_pix_intents SET order_id = ? WHERE intent_id = ?")
+               ->execute([$orderId, $intent['intent_id']]);
+
+            $db->commit();
+
+            // Notify partner
+            $partnerName = $cart['partner_name'] ?? '';
+            $custName = $cart['customer_name'] ?? 'Cliente';
+            $orderTotal = round((float)($cart['total'] ?? 0), 2);
+
+            try {
+                notifyPartner($db, $partner_id,
+                    'Novo pedido - PIX confirmado!',
+                    "Pedido #{$order_number} - R$ " . number_format($orderTotal, 2, ',', '.') . " - {$custName}",
+                    '/painel/mercado/pedidos.php'
+                );
+            } catch (\Exception $e) {
+                error_log("[woovi-webhook] notifyPartner intent erro: " . $e->getMessage());
+            }
+
+            try {
+                PusherService::newOrder($partner_id, [
+                    'order_id' => $orderId,
+                    'order_number' => $order_number,
+                    'customer_name' => $custName,
+                    'total' => $orderTotal,
+                    'payment_method' => 'pix',
+                    'pix_paid' => true,
+                    'created_at' => date('c')
+                ]);
+            } catch (\Exception $e) {
+                error_log("[woovi-webhook] Pusher newOrder intent erro: " . $e->getMessage());
+            }
+
+            // Notify customer via Pusher (with order_id so frontend can navigate)
+            try {
+                PusherService::orderUpdate($orderId, [
+                    'status' => 'aceito',
+                    'payment_status' => 'pago',
+                    'order_id' => $orderId,
+                    'order_number' => $order_number,
+                    'message' => 'PIX confirmado! Pedido criado.'
+                ]);
+                // Also push to intent channel so polling frontend catches it
+                PusherService::trigger("pix-intent-{$intent['intent_id']}", 'paid', [
+                    'order_id' => $orderId,
+                    'order_number' => $order_number,
+                ]);
+            } catch (\Exception $e) {
+                error_log("[woovi-webhook] Pusher intent erro: " . $e->getMessage());
+            }
+
+            error_log("[woovi-webhook] PIX intent $correlationId → order #{$orderId} ({$order_number}) created");
+
+        } elseif (stripos($event, 'EXPIRED') !== false || stripos($event, 'FAILED') !== false) {
+            error_log("[woovi-webhook] PIX intent EXPIRED/FAILED: $correlationId");
+            $db = getDB();
+            $db->prepare("UPDATE om_pix_intents SET status = 'expired' WHERE correlation_id = ? AND status = 'pending'")
+               ->execute([$correlationId]);
+        }
+
+        http_response_code(200);
+        echo json_encode(['ok' => true, 'event' => $event, 'type' => 'pix_intent']);
+        exit;
+    } catch (Exception $e) {
+        if (isset($db) && $db->inTransaction()) {
+            $db->rollBack();
+        }
+        error_log("[woovi-webhook] PIX intent error: " . $e->getMessage());
+        http_response_code(200);
+        echo json_encode(['ok' => true, 'error' => 'Internal processing error']);
+        exit;
+    }
+}
+
+// ═══ CHARGE EVENTS (PIX payment from customer — legacy order flow) ═══
 if (stripos($event, 'CHARGE') !== false || ($charge && strpos($correlationId, 'order_') === 0)) {
     try {
         $db = getDB();
@@ -100,6 +358,28 @@ if (stripos($event, 'CHARGE') !== false || ($charge && strpos($correlationId, 'o
             error_log("[woovi-webhook] Charge COMPLETED for order #{$orderId}");
 
             $db->beginTransaction();
+
+            // Lock the order row and check current state (idempotency + race condition prevention)
+            $lockStmt = $db->prepare("SELECT order_id, status, pix_paid FROM om_market_orders WHERE order_id = ? FOR UPDATE");
+            $lockStmt->execute([$orderId]);
+            $orderLock = $lockStmt->fetch();
+
+            if (!$orderLock) {
+                $db->rollBack();
+                error_log("[woovi-webhook] Order #{$orderId} not found");
+                http_response_code(200);
+                echo json_encode(['ok' => true, 'message' => 'Order not found']);
+                exit;
+            }
+
+            // Idempotency: skip if already paid
+            if ($orderLock['pix_paid']) {
+                $db->rollBack();
+                error_log("[woovi-webhook] Order #{$orderId} already paid — skipping duplicate");
+                http_response_code(200);
+                echo json_encode(['ok' => true, 'message' => 'Already processed']);
+                exit;
+            }
 
             // Atualizar pedido: pix confirmado
             $db->prepare("UPDATE om_market_orders SET pix_paid = true, pagamento_status = 'pago', payment_status = 'paid', status = CASE WHEN status = 'pendente' THEN 'aceito' ELSE status END, date_modified = NOW() WHERE order_id = ?")->execute([$orderId]);
@@ -165,25 +445,39 @@ if (stripos($event, 'CHARGE') !== false || ($charge && strpos($correlationId, 'o
             error_log("[woovi-webhook] Charge EXPIRED/FAILED for order #{$orderId}");
 
             $db->beginTransaction();
-            $db->prepare("UPDATE om_market_orders SET status = 'cancelado', cancel_reason = 'PIX expirado', cancelled_at = NOW(), date_modified = NOW() WHERE order_id = ? AND status = 'pendente'")->execute([$orderId]);
-            // Restore stock
-            $items = $db->prepare("SELECT product_id, quantity FROM om_market_order_items WHERE order_id = ?");
-            $items->execute([$orderId]);
-            foreach ($items->fetchAll() as $item) {
-                if ($item['product_id']) {
-                    $db->prepare("UPDATE om_market_products SET quantity = quantity + ? WHERE product_id = ?")->execute([$item['quantity'], $item['product_id']]);
+
+            // Lock and verify order is still pendente (idempotency — prevent double stock restore)
+            $lockExpired = $db->prepare("SELECT order_id, status FROM om_market_orders WHERE order_id = ? FOR UPDATE");
+            $lockExpired->execute([$orderId]);
+            $expOrder = $lockExpired->fetch();
+
+            if (!$expOrder || $expOrder['status'] !== 'pendente') {
+                $db->rollBack();
+                error_log("[woovi-webhook] Order #{$orderId} not pendente (status={$expOrder['status']}) — skipping expire");
+            } else {
+                $db->prepare("UPDATE om_market_orders SET status = 'cancelado', cancel_reason = 'PIX expirado', cancelled_at = NOW(), date_modified = NOW() WHERE order_id = ?")->execute([$orderId]);
+                // Restore stock
+                $items = $db->prepare("SELECT product_id, quantity FROM om_market_order_items WHERE order_id = ?");
+                $items->execute([$orderId]);
+                foreach ($items->fetchAll() as $item) {
+                    if ($item['product_id']) {
+                        $db->prepare("UPDATE om_market_products SET quantity = quantity + ? WHERE product_id = ?")->execute([$item['quantity'], $item['product_id']]);
+                    }
                 }
+                $db->commit();
             }
-            $db->commit();
         }
 
         http_response_code(200);
         echo json_encode(['ok' => true, 'event' => $event]);
         exit;
     } catch (Exception $e) {
+        if (isset($db) && $db->inTransaction()) {
+            $db->rollBack();
+        }
         error_log("[woovi-webhook] Charge error: " . $e->getMessage());
         http_response_code(200);
-        echo json_encode(['ok' => true, 'error' => $e->getMessage()]);
+        echo json_encode(['ok' => true, 'error' => 'Internal processing error']);
         exit;
     }
 }

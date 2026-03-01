@@ -92,21 +92,29 @@ try {
     $db->beginTransaction();
 
     try {
+        // Verificar pedidos ativos antes de deletar
+        $activeStmt = $db->prepare("SELECT COUNT(*) FROM om_market_orders WHERE customer_id = ? AND status NOT IN ('entregue', 'cancelado', 'cancelled', 'completed', 'retirado', 'finalizado')");
+        $activeStmt->execute([$customerId]);
+        if ((int)$activeStmt->fetchColumn() > 0) {
+            $db->rollBack();
+            response(false, null, 'Voce tem pedidos em andamento. Aguarde a conclusao antes de excluir a conta.', 400);
+        }
+
         // Anonimizar e desativar o cliente
         $stmtDelete = $db->prepare("
             UPDATE om_customers
-            SET is_active = 0,
+            SET is_active = '0',
                 name = ?,
                 email = ?,
-                phone = ?,
+                phone = NULL,
                 cpf = NULL,
-                password_hash = '',
+                password_hash = NULL,
                 foto = NULL,
                 deleted_at = NOW(),
                 updated_at = NOW()
             WHERE customer_id = ?
         ");
-        $stmtDelete->execute([$anonymizedName, $anonymizedEmail, $anonymizedPhone, $customerId]);
+        $stmtDelete->execute([$anonymizedName, $anonymizedEmail, $customerId]);
 
         // Desativar enderecos
         $stmtAddr = $db->prepare("
@@ -115,6 +123,26 @@ try {
             WHERE customer_id = ?
         ");
         $stmtAddr->execute([$customerId]);
+
+        // Limpar carrinho
+        $db->prepare("DELETE FROM om_market_cart WHERE customer_id = ?")->execute([$customerId]);
+
+        // Limpar push tokens
+        $db->prepare("DELETE FROM om_market_push_tokens WHERE user_id = ? AND user_type = 'customer'")->execute([$customerId]);
+
+        // Zerar cashback
+        try {
+            $db->prepare("UPDATE om_cashback_wallet SET balance = 0, total_earned = 0, total_used = 0 WHERE customer_id = ?")->execute([$customerId]);
+        } catch (Exception $e) {}
+
+        // Cancelar assinaturas
+        try {
+            $db->prepare("UPDATE om_subscriptions SET status = 'cancelled', cancelled_at = NOW() WHERE customer_id = ? AND status IN ('active', 'trial')")->execute([$customerId]);
+        } catch (Exception $e) {}
+
+        // Limpar favoritos e recomendacoes
+        try { $db->prepare("DELETE FROM om_favorites WHERE customer_id = ?")->execute([$customerId]); } catch (Exception $e) {}
+        try { $db->prepare("DELETE FROM om_smart_recommendations WHERE customer_id = ?")->execute([$customerId]); } catch (Exception $e) {}
 
         // Revogar todos os tokens (invalidar pela tabela se existir)
         try {

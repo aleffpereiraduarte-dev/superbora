@@ -37,6 +37,19 @@ try {
             response(true, ['unread_count' => 0], "Todas notificacoes marcadas como lidas");
         }
 
+        // Delete a notification (swipe to dismiss)
+        $deleteId = (int)($input['delete_id'] ?? 0);
+        if ($deleteId) {
+            $db->prepare("DELETE FROM om_market_notifications WHERE notification_id = ? AND recipient_id = ? AND recipient_type = 'customer'")
+                ->execute([$deleteId, $customerId]);
+
+            $stmt = $db->prepare("SELECT COUNT(*) AS cnt FROM om_market_notifications WHERE recipient_id = ? AND recipient_type = 'customer' AND is_read = 0");
+            $stmt->execute([$customerId]);
+            $remaining = (int)$stmt->fetch()['cnt'];
+
+            response(true, ['unread_count' => $remaining], "Notificacao removida");
+        }
+
         $notifId = (int)($input['notification_id'] ?? 0);
         if ($notifId) {
             $db->prepare("UPDATE om_market_notifications SET is_read = 1, read_at = NOW() WHERE notification_id = ? AND recipient_id = ? AND recipient_type = 'customer'")

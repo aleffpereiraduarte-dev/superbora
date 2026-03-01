@@ -153,8 +153,12 @@ try {
         $paymentMethod = $pedido['forma_pagamento'] ?? $pedido['payment_method'] ?? '';
         $stripePi = $pedido['stripe_payment_intent_id'] ?? '';
         $needsStripeRefund = in_array($paymentMethod, ['stripe_card', 'stripe_wallet', 'credito']) && $stripePi;
-        // Se tem taxa, fazer refund parcial no Stripe
+        // Se tem taxa, fazer refund parcial no Stripe. null = full refund, 0 = no refund needed
         $stripeRefundAmount = $cancellationFee > 0 ? max(0, $refundAmount) : null; // null = full refund
+        // If refund amount is 0 (e.g. pickup order cancelled at 'pronto' status), skip Stripe call
+        if ($stripeRefundAmount !== null && $stripeRefundAmount <= 0) {
+            $needsStripeRefund = false;
+        }
 
         // 4. Restaurar pontos de fidelidade usados (proporcional se taxa)
         $pointsUsed = (int)($pedido['loyalty_points_used'] ?? 0);

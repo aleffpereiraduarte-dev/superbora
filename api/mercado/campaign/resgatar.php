@@ -123,6 +123,8 @@ try {
 
         // ─── New customer check ───
         if ($campaign['new_customers_only']) {
+            // Advisory lock on customer to prevent race with concurrent order creation
+            $db->prepare("SELECT pg_advisory_xact_lock(?)")->execute([$customerId]);
             $orderStmt = $db->prepare("
                 SELECT COUNT(*) FROM om_market_orders
                 WHERE customer_id = ? AND status NOT IN ('cancelado', 'pendente')

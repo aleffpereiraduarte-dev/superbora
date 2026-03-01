@@ -19,6 +19,15 @@ $sessionId = $input['session_id'] ?? '';
 $validTypes = ['view_product', 'search', 'add_to_cart', 'view_store', 'view_category', 'purchase', 'remove_from_cart'];
 if (!in_array($eventType, $validTypes)) { response(false, null, 'Invalid event_type', 400); }
 
+// Validate entity_type whitelist
+$validEntityTypes = ['product', 'store', 'category', 'order', 'search', ''];
+if ($entityType && !in_array($entityType, $validEntityTypes)) { $entityType = ''; }
+
+// Size limits to prevent storage abuse
+$sessionId = substr($sessionId, 0, 128);
+$metadataJson = json_encode($metadata ?: new stdClass());
+if (strlen($metadataJson) > 4096) { $metadata = ['truncated' => true]; }
+
 // Optional auth — get customer_id if logged in
 $customerId = null;
 try {
@@ -44,7 +53,7 @@ $stmt->execute([
     $eventType,
     $entityType ?: null,
     $entityId ?: null,
-    json_encode($metadata ?: new stdClass()),
+    json_encode($metadata),
 ]);
 
 response(true);

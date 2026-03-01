@@ -1,4 +1,7 @@
 <?php
+// Ensure consistent timezone between PHP and PostgreSQL
+date_default_timezone_set('America/Sao_Paulo');
+
 // Carrega variáveis de ambiente (MUST be before ratelimit/redis to set REDIS_PASSWORD)
 if (file_exists(__DIR__ . '/../../../.env')) {
     $envFile = file(__DIR__ . '/../../../.env', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
@@ -44,6 +47,7 @@ function getDB() {
                 PDO::ATTR_EMULATE_PREPARES => false
             ]);
             $db->exec("SET client_encoding TO 'UTF8'");
+            $db->exec("SET timezone TO 'America/Sao_Paulo'");
         } catch (PDOException $e) {
             // SECURITY: Log error details but don't expose them to client
             error_log("[Database] Connection failed: " . $e->getMessage());

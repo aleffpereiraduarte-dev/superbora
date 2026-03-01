@@ -324,7 +324,8 @@ function handleRefunded($db, $chargeId, $orderId, $eventData, $amount) {
     }
 
     if ($orderId) {
-        $db->prepare("UPDATE om_market_orders SET pagamento_status = 'estornado', date_modified = NOW() WHERE order_id = ?")
+        // Only update payment status if not already refunded (idempotency)
+        $db->prepare("UPDATE om_market_orders SET pagamento_status = 'estornado', date_modified = NOW() WHERE order_id = ? AND pagamento_status != 'estornado'")
            ->execute([$orderId]);
     }
 
@@ -338,7 +339,8 @@ function handleCanceled($db, $chargeId, $orderId) {
     }
 
     if ($orderId) {
-        $db->prepare("UPDATE om_market_orders SET pagamento_status = 'cancelado', status = 'cancelled', date_modified = NOW() WHERE order_id = ?")
+        // Only cancel orders in early states — never revert delivered/completed orders
+        $db->prepare("UPDATE om_market_orders SET pagamento_status = 'cancelado', status = 'cancelled', date_modified = NOW() WHERE order_id = ? AND status IN ('pendente', 'confirmado')")
            ->execute([$orderId]);
     }
 

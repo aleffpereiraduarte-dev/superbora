@@ -178,6 +178,11 @@ class OmAuth {
     public function requirePartner(int $requestedPartnerId = null): array {
         $payload = $this->requireAuth(self::USER_TYPE_PARTNER);
 
+        // SECURITY: Block 2FA temp tokens — require full auth
+        if (!empty($payload['data']['2fa_pending'])) {
+            $this->forbidden('Verificacao 2FA obrigatoria');
+        }
+
         // Verificar se mercado foi aprovado pelo RH
         if (!$this->isPartnerApproved($payload['uid'])) {
             $this->forbidden('Mercado ainda não foi aprovado pelo RH');

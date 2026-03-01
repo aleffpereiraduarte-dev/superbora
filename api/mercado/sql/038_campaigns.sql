@@ -80,7 +80,7 @@ INSERT INTO om_campaigns (
     '["#FF6B00","#E65100"]',
     'Gift',
     500,
-    md5(random()::text || now()::text),
+    encode(gen_random_bytes(32), 'hex'),
     'SB2026',
     true,
     '2026-05-05 08:00:00',

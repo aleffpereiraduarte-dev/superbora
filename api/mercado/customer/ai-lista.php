@@ -32,12 +32,13 @@ if (!$result['success']) { response(false, null, 'AI processing failed', 500); }
 $parsed = ClaudeClient::parseJson($result['text']);
 if (!$parsed || !isset($parsed['ingredients'])) { response(false, null, 'Could not parse ingredients', 500); }
 
-// Search each ingredient in Meilisearch
+// Search each ingredient in Meilisearch (cap at 30 to prevent DoS)
+$ingredients = array_slice($parsed['ingredients'], 0, 30);
 $matched = [];
 $totalEstimated = 0;
 $meiliKey = $_ENV['MEILI_ADMIN_KEY'] ?? getenv('MEILI_ADMIN_KEY') ?: '';
 
-foreach ($parsed['ingredients'] as $ing) {
+foreach ($ingredients as $ing) {
     $searchTerm = $ing['search_term'] ?? $ing['name'];
     $products = [];
 

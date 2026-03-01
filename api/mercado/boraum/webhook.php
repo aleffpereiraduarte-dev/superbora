@@ -220,8 +220,12 @@ try {
 
     // ── Evento especial: mensagem do motorista no chat ──
     if ($event === 'driver_chat') {
-        $chatMessage = trim($input['message'] ?? '');
+        $chatMessage = strip_tags(trim($input['message'] ?? ''));
         $chatImage = trim($input['image_url'] ?? '') ?: null;
+        // Validate image URL if provided (prevent javascript: or data: URLs)
+        if ($chatImage && !preg_match('#^https?://#i', $chatImage)) {
+            $chatImage = null;
+        }
         $chatDriverName = $driver['name'] ?? 'Entregador';
         $chatDriverId = isset($driver['id']) ? (int)$driver['id'] : 0;
 
