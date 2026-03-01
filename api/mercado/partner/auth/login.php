@@ -172,11 +172,11 @@ try {
 
     // Check 2FA before issuing full token
     if ($partner['totp_enabled'] && !empty($partner['totp_secret'])) {
-        // Generate temp token for 2FA step (uses standard TTL but has 2fa_pending flag)
+        // Generate temp token for 2FA step — SHORT TTL (10 min) to limit exposure
         $tempToken = om_auth()->generateToken(
             OmAuth::USER_TYPE_PARTNER,
             (int)$partner["partner_id"],
-            ['2fa_pending' => true, 'name' => $partner["name"]]
+            ['2fa_pending' => true, 'name' => $partner["name"], 'temp_exp' => time() + 600]
         );
 
         om_audit()->logLogin('partner', (int)$partner["partner_id"], true);

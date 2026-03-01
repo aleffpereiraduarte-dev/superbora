@@ -85,6 +85,12 @@ class OmAuth {
             return null;
         }
 
+        // SECURITY: Enforce short TTL for 2FA temporary tokens (10 min instead of 7 days)
+        $tempExp = $payload['data']['temp_exp'] ?? null;
+        if ($tempExp && $tempExp < time()) {
+            return null;
+        }
+
         // Verificar se token não foi revogado
         // Tokens must have uid and jti fields (homegrown tokens use user_id instead — reject gracefully)
         $uid = $payload['uid'] ?? $payload['user_id'] ?? null;

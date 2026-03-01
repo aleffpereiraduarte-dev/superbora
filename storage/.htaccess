@@ -1,0 +1,10 @@
+# Bloquear execucao de PHP e scripts em toda a pasta storage
+<FilesMatch "\.(php|phtml|php3|php4|php5|php7|phps|phar|pl|py|cgi|sh|bash)$">
+    Require all denied
+</FilesMatch>
+
+# Desativar listagem de diretorio
+Options -Indexes
+
+# Desativar execucao de PHP
+php_flag engine off

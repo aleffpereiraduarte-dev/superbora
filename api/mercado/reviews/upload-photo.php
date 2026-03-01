@@ -99,16 +99,52 @@ try {
         response(false, null, "Imagem muito grande (max 5MB)", 400);
     }
 
+    // SECURITY: Validate actual MIME type via finfo (not client-reported type)
+    $finfo = new finfo(FILEINFO_MIME_TYPE);
+    $actualMime = $finfo->buffer($imageData);
+    $mimeMap = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp', 'image/gif' => 'gif'];
+    if (!isset($mimeMap[$actualMime])) {
+        response(false, null, "Tipo de arquivo invalido", 400);
+    }
+    $imageType = $mimeMap[$actualMime];
+
+    // SECURITY: Re-encode image via GD to strip malicious payloads (polyglot attacks, EXIF injection)
+    $img = @imagecreatefromstring($imageData);
+    if (!$img) {
+        response(false, null, "Imagem corrompida ou invalida", 400);
+    }
+
+    // Resize if too large (max 1200px width)
+    $w = imagesx($img);
+    $h = imagesy($img);
+    if ($w > 1200) {
+        $newW = 1200;
+        $newH = (int)round($h * (1200 / $w));
+        $resized = imagecreatetruecolor($newW, $newH);
+        imagecopyresampled($resized, $img, 0, 0, 0, 0, $newW, $newH, $w, $h);
+        imagedestroy($img);
+        $img = $resized;
+    }
+
     // Salvar arquivo
     $uploadDir = dirname(__DIR__, 3) . '/uploads/reviews/';
     if (!is_dir($uploadDir)) {
-        mkdir($uploadDir, 0755, true);
+        mkdir($uploadDir, 0750, true);
     }
 
     $filename = 'review_' . $orderId . '_' . time() . '_' . bin2hex(random_bytes(4)) . '.' . $imageType;
     $filepath = $uploadDir . $filename;
 
-    if (!file_put_contents($filepath, $imageData)) {
+    $saved = false;
+    switch ($imageType) {
+        case 'jpg': $saved = imagejpeg($img, $filepath, 85); break;
+        case 'png': $saved = imagepng($img, $filepath, 8); break;
+        case 'webp': $saved = imagewebp($img, $filepath, 85); break;
+        case 'gif': $saved = imagegif($img, $filepath); break;
+    }
+    imagedestroy($img);
+
+    if (!$saved) {
         response(false, null, "Erro ao salvar imagem", 500);
     }
 
