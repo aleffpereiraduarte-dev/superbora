@@ -212,6 +212,21 @@ function getCustomerIdFromToken(): int {
     $tokenType = $payload['type'] ?? '';
     if ($tokenType && $tokenType !== 'customer') return 0;
 
+    // SECURITY: Check token revocation (LGPD delete-account, logout, etc.)
+    $jti = $payload['jti'] ?? '';
+    if ($jti) {
+        try {
+            $db = getDB();
+            $stmt = $db->prepare("SELECT revoked FROM om_auth_tokens WHERE jti = ? LIMIT 1");
+            $stmt->execute([$jti]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($row && $row['revoked']) return 0;
+        } catch (Exception $e) {
+            // DB error should not block auth — log and continue
+            error_log("[Auth] Token revocation check failed: " . $e->getMessage());
+        }
+    }
+
     return (int)($payload['user_id'] ?? $payload['uid'] ?? $payload['customer_id'] ?? 0);
 }
 
