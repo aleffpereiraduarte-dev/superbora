@@ -213,10 +213,11 @@ function buildCustomerContext(PDO $db, int $customerId): array {
     // G) Active orders (pending, aceito, preparando, pronto, em_entrega, out_for_delivery)
     $stmt = $db->prepare("
         SELECT o.order_id, o.order_number, o.status, o.total, o.payment_method,
-               o.date_added, o.partner_name, o.items_count,
+               o.date_added, COALESCE(o.partner_name, p.trade_name, p.name) as partner_name, o.items_count,
                COALESCE(o.driver_name, e.motorista_nome) as driver_name,
                COALESCE(o.driver_phone, e.motorista_telefone) as driver_phone
         FROM om_market_orders o
+        LEFT JOIN om_market_partners p ON p.partner_id = o.partner_id
         LEFT JOIN om_entregas e ON e.referencia_id = o.order_id AND e.origem_sistema = 'mercado'
         WHERE o.customer_id = ?
           AND o.status NOT IN ('entregue', 'retirado', 'cancelado', 'recusado')
@@ -229,8 +230,9 @@ function buildCustomerContext(PDO $db, int $customerId): array {
     // H) Recent completed orders (last 7 days)
     $stmt = $db->prepare("
         SELECT o.order_id, o.order_number, o.status, o.total, o.payment_method,
-               o.date_added, o.partner_name, o.items_count
+               o.date_added, COALESCE(o.partner_name, p.trade_name, p.name) as partner_name, o.items_count
         FROM om_market_orders o
+        LEFT JOIN om_market_partners p ON p.partner_id = o.partner_id
         WHERE o.customer_id = ?
           AND o.status IN ('entregue', 'retirado')
           AND o.date_added > NOW() - INTERVAL '7 days'

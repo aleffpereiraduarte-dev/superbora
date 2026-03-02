@@ -543,8 +543,9 @@ try {
         $installments = max(1, min(12, (int)($input['installments'] ?? 1)));
         $installment_value = $installments > 1 ? round($total / $installments, 2) : $total;
 
+        $partner_name_insert = $parceiro['trade_name'] ?? $parceiro['name'] ?? null;
         $stmt = $db->prepare("INSERT INTO om_market_orders (
-            order_number, partner_id, market_id, customer_id,
+            order_number, partner_id, partner_name, market_id, customer_id,
             customer_name, customer_phone, customer_email,
             status, subtotal, delivery_fee, total, tip_amount,
             delivery_address, shipping_address, shipping_city, shipping_state, shipping_cep,
@@ -558,7 +559,7 @@ try {
             cashback_discount, stripe_payment_intent_id,
             route_id, route_stop_sequence, shipping_lat, shipping_lng,
             date_added
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pendente', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pendente', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
         RETURNING order_id");
 
         // Route sequence: primary=1, secondary=next stop
@@ -576,7 +577,7 @@ try {
         }
 
         $stmt->execute([
-            $order_number_temp, $partner_id, $market_id, $customer_id,
+            $order_number_temp, $partner_id, $partner_name_insert, $market_id, $customer_id,
             $customer_name, $customer_phone, $customer_email,
             $subtotal, $delivery_fee, $total, $tip,
             $address, $address, $shipping_city, $shipping_state, $shipping_cep,

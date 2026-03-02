@@ -46,10 +46,10 @@ try {
         response(false, null, "Pedido nao encontrado", 404);
     }
 
-    // Validate: BoraUm delivery only
-    if ($order['is_pickup'] || $order['delivery_type'] !== 'boraum') {
+    // Block only pickup/retirada
+    if ($order['is_pickup'] || ($order['delivery_type'] ?? '') === 'retirada') {
         $db->rollBack();
-        response(false, null, "Adicionar itens disponivel apenas para entregas BoraUm", 400);
+        response(false, null, "Nao disponivel para pedidos de retirada", 400);
     }
 
     // Validate: can add until order goes out for delivery

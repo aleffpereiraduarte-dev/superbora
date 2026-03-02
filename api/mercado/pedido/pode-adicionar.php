@@ -23,28 +23,14 @@ try {
         response(false, null, "Pedido nao encontrado", 404);
     }
 
-    // Only BoraUm delivery orders can add items
+    // Block only pickup/retirada — delivery orders can add items
     $isPickup = (bool)($order['is_pickup'] ?? false);
     $deliveryType = $order['delivery_type'] ?? '';
 
     if ($isPickup || $deliveryType === 'retirada') {
         response(true, [
             'pode_adicionar' => false,
-            'motivo' => 'Não disponível para pedidos de retirada',
-        ]);
-    }
-
-    if ($deliveryType === 'proprio') {
-        response(true, [
-            'pode_adicionar' => false,
-            'motivo' => 'Disponível apenas para entregas BoraUm',
-        ]);
-    }
-
-    if ($deliveryType !== 'boraum') {
-        response(true, [
-            'pode_adicionar' => false,
-            'motivo' => 'Disponível apenas para entregas BoraUm',
+            'motivo' => 'Nao disponivel para pedidos de retirada',
         ]);
     }
 
