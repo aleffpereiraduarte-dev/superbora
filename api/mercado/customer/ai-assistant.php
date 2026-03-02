@@ -63,13 +63,22 @@ function buildCustomerContext(PDO $db, int $customerId): array {
     $ctx['lat'] = $addr['lat'] ?? null;
     $ctx['lng'] = $addr['lng'] ?? null;
 
-    // B2) Nearby partners (stores that serve this area)
+    // B2) Nearby partners (stores that serve this area) — FULL info for ONE
     $nearbyPartners = [];
+    $partnerFields = "partner_id, name, trade_name, logo, categoria as category,
+                   rating, delivery_fee, delivery_time_min, delivery_time_max, is_open,
+                   horario_abre, horario_fecha, horario_funcionamento, weekly_hours,
+                   open_sunday, sunday_opens_at, sunday_closes_at,
+                   phone, telefone, whatsapp, email,
+                   endereco, neighborhood, city, bairro,
+                   min_order_value, min_order, free_delivery_min, free_delivery_above,
+                   accepts_pix, accepts_card, aceita_retirada, entrega_propria, aceita_boraum,
+                   descricao, description, specialty, store_type,
+                   busy_mode, busy_mode_until, pause_until, pause_reason";
     $addrCep = preg_replace('/\D/', '', $ctx['cep']);
     if (strlen($addrCep) === 8) {
         $stmt = $db->prepare("
-            SELECT partner_id, name, trade_name, logo, categoria as category,
-                   rating, delivery_fee, delivery_time_min, is_open
+            SELECT {$partnerFields}
             FROM om_market_partners
             WHERE status::text = '1'
               AND cep_inicio IS NOT NULL AND cep_fim IS NOT NULL
@@ -80,20 +89,50 @@ function buildCustomerContext(PDO $db, int $customerId): array {
         $stmt->execute([$addrCep]);
         $nearbyPartners = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        // Fallback: prefix match
+        // Fallback 1: prefix match (5 digits)
         if (empty($nearbyPartners)) {
-            $prefixo = substr($addrCep, 0, 3);
+            $prefixo5 = substr($addrCep, 0, 5);
             $stmt = $db->prepare("
-                SELECT partner_id, name, trade_name, logo, categoria as category,
-                       rating, delivery_fee, delivery_time_min, is_open
+                SELECT {$partnerFields}
                 FROM om_market_partners
-                WHERE status::text = '1' AND LEFT(REPLACE(cep, '-', ''), 3) = ?
+                WHERE status::text = '1'
+                  AND cep_inicio IS NOT NULL
+                  AND LEFT(REPLACE(cep_inicio, '-', ''), 5) <= ? AND LEFT(REPLACE(cep_fim, '-', ''), 5) >= LEFT(?, 5)
                 ORDER BY is_open DESC, rating DESC
                 LIMIT 100
             ");
-            $stmt->execute([$prefixo]);
+            $stmt->execute([$prefixo5, $addrCep]);
             $nearbyPartners = $stmt->fetchAll(PDO::FETCH_ASSOC);
         }
+
+        // Fallback 2: prefix match (3 digits)
+        if (empty($nearbyPartners)) {
+            $prefixo3 = substr($addrCep, 0, 3);
+            $stmt = $db->prepare("
+                SELECT {$partnerFields}
+                FROM om_market_partners
+                WHERE status::text = '1'
+                  AND cep_inicio IS NOT NULL
+                  AND LEFT(REPLACE(cep_inicio, '-', ''), 3) <= ? AND LEFT(REPLACE(cep_fim, '-', ''), 3) >= ?
+                ORDER BY is_open DESC, rating DESC
+                LIMIT 100
+            ");
+            $stmt->execute([$prefixo3, $prefixo3]);
+            $nearbyPartners = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        }
+    }
+
+    // Fallback 3: all active partners (small marketplace still)
+    if (empty($nearbyPartners)) {
+        $stmt = $db->prepare("
+            SELECT {$partnerFields}
+            FROM om_market_partners
+            WHERE status::text = '1'
+            ORDER BY is_open DESC, rating DESC
+            LIMIT 50
+        ");
+        $stmt->execute();
+        $nearbyPartners = $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
     $ctx['nearbyPartners'] = $nearbyPartners;
     $ctx['nearbyPartnerIds'] = array_column($nearbyPartners, 'partner_id');
@@ -479,16 +518,80 @@ try {
         'partner_id' => $h['partner_id'] ?? 0,
     ], $searchResults), JSON_UNESCAPED_UNICODE);
 
-    // ── Nearby stores summary for prompt ──
-    $nearbyStoresJson = json_encode(array_map(fn($p) => [
-        'id' => (int)$p['partner_id'],
-        'name' => $p['trade_name'] ?: $p['name'],
-        'category' => $p['category'] ?? '',
-        'rating' => round((float)($p['rating'] ?? 5), 1),
-        'is_open' => (int)($p['is_open'] ?? 0) === 1,
-        'delivery_fee' => round((float)($p['delivery_fee'] ?? 0), 2),
-        'delivery_time' => (int)($p['delivery_time_min'] ?? 60),
-    ], array_slice($ctx['nearbyPartners'], 0, 20)), JSON_UNESCAPED_UNICODE);
+    // ── Nearby stores FULL info for prompt ──
+    $now = date('H:i');
+    $todayDow = (int)date('w'); // 0=Sunday
+    $nearbyStoresJson = json_encode(array_map(function($p) use ($now, $todayDow) {
+        $phone = $p['whatsapp'] ?: $p['telefone'] ?: $p['phone'] ?: '';
+        $desc = $p['descricao'] ?: $p['description'] ?: '';
+        $addr = $p['endereco'] ?: '';
+        $bairro = $p['bairro'] ?: $p['neighborhood'] ?: '';
+        $city = $p['city'] ?: '';
+        $abre = $p['horario_abre'] ? substr($p['horario_abre'], 0, 5) : null;
+        $fecha = $p['horario_fecha'] ? substr($p['horario_fecha'], 0, 5) : null;
+
+        // Weekly hours (JSON or text)
+        $weeklyHours = $p['weekly_hours'] ?? $p['horario_funcionamento'] ?? '';
+
+        // Open status logic
+        $isOpen = (int)($p['is_open'] ?? 0) === 1;
+        if ($isOpen && $abre && $fecha) {
+            if ($abre < $fecha) {
+                $isOpen = ($now >= $abre && $now < $fecha);
+            } else {
+                $isOpen = ($now >= $abre || $now < $fecha);
+            }
+        }
+        // Sunday override
+        if ($todayDow === 0) {
+            if (!$p['open_sunday']) $isOpen = false;
+            elseif ($p['sunday_opens_at'] && $p['sunday_closes_at']) {
+                $sAbre = substr($p['sunday_opens_at'], 0, 5);
+                $sFecha = substr($p['sunday_closes_at'], 0, 5);
+                $isOpen = ($now >= $sAbre && $now < $sFecha);
+            }
+        }
+
+        // Pause/busy status
+        $pauseInfo = null;
+        if ($p['pause_until'] && strtotime($p['pause_until']) > time()) {
+            $pauseInfo = 'Pausado: ' . ($p['pause_reason'] ?: 'sem motivo');
+        } elseif ($p['busy_mode'] && $p['busy_mode_until'] && strtotime($p['busy_mode_until']) > time()) {
+            $pauseInfo = 'Modo ocupado ate ' . date('H:i', strtotime($p['busy_mode_until']));
+        }
+
+        $store = [
+            'id' => (int)$p['partner_id'],
+            'name' => $p['trade_name'] ?: $p['name'],
+            'category' => $p['category'] ?? '',
+            'specialty' => $p['specialty'] ?? '',
+            'store_type' => $p['store_type'] ?? '',
+            'description' => mb_substr($desc, 0, 200),
+            'rating' => round((float)($p['rating'] ?? 5), 1),
+            'is_open' => $isOpen,
+            'hours' => $abre && $fecha ? "{$abre} - {$fecha}" : 'horario nao informado',
+        ];
+        if ($todayDow === 0 && $p['open_sunday'] && $p['sunday_opens_at']) {
+            $store['sunday_hours'] = substr($p['sunday_opens_at'], 0, 5) . ' - ' . substr($p['sunday_closes_at'], 0, 5);
+        }
+        if ($weeklyHours) {
+            $store['weekly_hours'] = is_string($weeklyHours) ? mb_substr($weeklyHours, 0, 300) : $weeklyHours;
+        }
+        if ($pauseInfo) $store['pause'] = $pauseInfo;
+        $store['phone'] = $phone;
+        $store['address'] = trim("{$addr}, {$bairro}" . ($city ? ", {$city}" : ''));
+        $store['delivery_fee'] = round((float)($p['delivery_fee'] ?? 0), 2);
+        $store['delivery_time_min'] = (int)($p['delivery_time_min'] ?? 0);
+        $store['delivery_time_max'] = (int)($p['delivery_time_max'] ?? 0);
+        $store['min_order'] = round((float)($p['min_order_value'] ?: $p['min_order'] ?? 0), 2);
+        $store['free_delivery_above'] = round((float)($p['free_delivery_min'] ?: $p['free_delivery_above'] ?? 0), 2);
+        $store['accepts_pix'] = (bool)($p['accepts_pix'] ?? true);
+        $store['accepts_card'] = (bool)($p['accepts_card'] ?? true);
+        $store['accepts_pickup'] = (bool)($p['aceita_retirada'] ?? false);
+        $store['own_delivery'] = (bool)($p['entrega_propria'] ?? false);
+        $store['boraum_delivery'] = (bool)($p['aceita_boraum'] ?? false);
+        return $store;
+    }, array_slice($ctx['nearbyPartners'], 0, 30)), JSON_UNESCAPED_UNICODE);
 
     // ── Top items summary ──
     $topItemsJson = json_encode(array_map(fn($i) => [
@@ -581,8 +684,20 @@ REGRAS SOBRE PEDIDOS:
 - Para reclamacoes ou problemas com pedido, sugira usar o suporte (quick_action navigate para /ajuda)
 - Voce pode sugerir que o cliente peca mais coisas enquanto espera o pedido atual
 
-LOJAS PROXIMAS DO CLIENTE (supermercados, restaurantes, pizzarias, padarias, etc — sugira produtos de TODAS estas lojas, incluindo restaurantes):
+LOJAS PROXIMAS DO CLIENTE (informacoes COMPLETAS — use para responder sobre horarios, delivery, pagamento, etc):
 {$nearbyStoresJson}
+
+REGRAS SOBRE LOJAS:
+- Quando perguntarem horario de uma loja, use o campo 'hours' e 'weekly_hours'
+- Quando perguntarem se loja esta aberta, use 'is_open' (ja calculado pro momento atual)
+- Se loja esta pausada ou em modo ocupado, informe usando o campo 'pause'
+- Informe taxa de entrega ('delivery_fee'), pedido minimo ('min_order'), e frete gratis acima de ('free_delivery_above')
+- Informe formas de pagamento: PIX ('accepts_pix'), cartao ('accepts_card')
+- Informe se aceita retirada ('accepts_pickup'), entrega propria ('own_delivery'), ou BoraUm ('boraum_delivery')
+- Use telefone/WhatsApp ('phone') quando o cliente quiser contato direto
+- Use endereco ('address') quando perguntarem localizacao
+- Use 'delivery_time_min'/'delivery_time_max' para estimar tempo de entrega
+- Sugira lojas de TODAS as categorias: supermercados, restaurantes, pizzarias, padarias, etc
 
 PRODUTOS ENCONTRADOS NA BUSCA (ja filtrados por lojas proximas):
 {$productContext}
