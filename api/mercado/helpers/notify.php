@@ -81,24 +81,26 @@ function _sendExpoPush(PDO $db, int $user_id, string $user_type, string $title, 
 
 /**
  * Envia Web Push para um tipo de usuario (painel web/browser)
+ * Usa minishlink/web-push para VAPID signing + payload encryption.
  * @return int numero de notificacoes enviadas
  */
 function _sendWebPushToUser(PDO $db, int $user_id, string $user_type, string $title, string $body, string $url, array $extra = []): int {
     if (!$user_id) return 0;
 
     try {
-        // Map user_type to the correct ID column in om_push_subscriptions
-        // SECURITY: Whitelist allowed column names to prevent SQL injection
-        $allowedColumns = ['partner' => 'partner_id', 'customer' => 'customer_id', 'shopper' => 'shopper_id'];
-        $idColumn = $allowedColumns[$user_type] ?? null;
-        if ($idColumn === null) {
+        // Validate user_type
+        $allowedTypes = ['partner', 'customer', 'shopper'];
+        if (!in_array($user_type, $allowedTypes, true)) {
             error_log("[notify] Invalid user_type for web push: " . $user_type);
             return 0;
         }
+
+        // The table uses customer_id as a generic user ID for all user types,
+        // discriminated by user_type column
         $stmt = $db->prepare("
             SELECT id, endpoint, p256dh, auth
             FROM om_push_subscriptions
-            WHERE \"$idColumn\" = ? AND user_type = ? AND is_active = '1'
+            WHERE customer_id = ? AND user_type = ? AND is_active = 1
         ");
         $stmt->execute([$user_id, $user_type]);
         $subscriptions = $stmt->fetchAll();
@@ -108,8 +110,8 @@ function _sendWebPushToUser(PDO $db, int $user_id, string $user_type, string $ti
         $payload = json_encode(array_merge([
             'title' => $title,
             'body' => $body,
-            'icon' => '/mercado/assets/img/icon-192.png',
-            'badge' => '/mercado/assets/img/badge-72.png',
+            'icon' => '/mercado/painel-next/icon-192.png',
+            'badge' => '/mercado/painel-next/icon-192.png',
             'tag' => 'superbora-' . $user_type . '-' . time(),
             'data' => ['url' => $url, 'timestamp' => time()]
         ], $extra));
@@ -118,19 +120,24 @@ function _sendWebPushToUser(PDO $db, int $user_id, string $user_type, string $ti
         $toRemove = [];
 
         foreach ($subscriptions as $sub) {
-            $result = sendWebPush($sub['endpoint'], $sub['p256dh'], $sub['auth'], $payload);
+            if (empty($sub['endpoint']) || empty($sub['p256dh']) || empty($sub['auth'])) {
+                $toRemove[] = $sub['id'];
+                continue;
+            }
+
+            $result = _sendWebPushViaLibrary($sub['endpoint'], $sub['p256dh'], $sub['auth'], $payload);
 
             if ($result['success']) {
                 $sent++;
-                $stmt = $db->prepare("UPDATE om_push_subscriptions SET last_used = NOW() WHERE id = ?");
-                $stmt->execute([$sub['id']]);
+                $updateStmt = $db->prepare("UPDATE om_push_subscriptions SET last_used = NOW() WHERE id = ?");
+                $updateStmt->execute([$sub['id']]);
             } elseif (in_array($result['code'], [401, 403, 404, 410])) {
                 // 401/403 = VAPID issue or expired, 404/410 = endpoint gone
                 $toRemove[] = $sub['id'];
             }
         }
 
-        // Marcar subscriptions invalidas
+        // Mark invalid subscriptions as inactive
         if (!empty($toRemove)) {
             $placeholders = implode(',', array_fill(0, count($toRemove), '?'));
             $stmt = $db->prepare("UPDATE om_push_subscriptions SET is_active = 0 WHERE id IN ($placeholders)");
@@ -146,44 +153,114 @@ function _sendWebPushToUser(PDO $db, int $user_id, string $user_type, string $ti
 }
 
 /**
- * Envia Web Push via cURL
- * Nota: Sem VAPID, a maioria dos endpoints modernos retorna 401/403.
- * Para funcionar com FCM/Mozilla, precisa do pacote web-push-php com VAPID.
- * Mantido como fallback — notificacoes mobile funcionam via Expo Push acima.
+ * Singleton WebPush instance (cached per request to avoid re-parsing VAPID keys)
  */
-function sendWebPush(string $endpoint, string $p256dh, string $auth, string $payload): array {
-    // SECURITY: Validate endpoint against known push service domains to prevent SSRF
-    $allowedDomains = ['fcm.googleapis.com', 'updates.push.services.mozilla.com', 'push.apple.com', 'notify.windows.com', 'web.push.apple.com'];
-    $host = parse_url($endpoint, PHP_URL_HOST);
-    $isAllowed = false;
-    foreach ($allowedDomains as $domain) {
-        if ($host === $domain || str_ends_with($host, '.' . $domain)) { $isAllowed = true; break; }
+function _getWebPushInstance(): ?\Minishlink\WebPush\WebPush {
+    static $webPush = null;
+    static $initialized = false;
+
+    if ($initialized) return $webPush;
+    $initialized = true;
+
+    try {
+        // Load .env VAPID keys
+        $envFile = dirname(__DIR__, 3) . '/.env';
+        $vapidPublic = null;
+        $vapidPrivate = null;
+        $vapidSubject = 'mailto:contato@superbora.com.br';
+
+        if (file_exists($envFile)) {
+            $lines = file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+            foreach ($lines as $line) {
+                if (str_starts_with($line, '#')) continue;
+                if (str_starts_with($line, 'VAPID_PUBLIC_KEY=')) {
+                    $vapidPublic = trim(substr($line, strlen('VAPID_PUBLIC_KEY=')));
+                } elseif (str_starts_with($line, 'VAPID_PRIVATE_KEY=')) {
+                    $vapidPrivate = trim(substr($line, strlen('VAPID_PRIVATE_KEY=')));
+                } elseif (str_starts_with($line, 'VAPID_SUBJECT=')) {
+                    $vapidSubject = trim(substr($line, strlen('VAPID_SUBJECT=')));
+                }
+            }
+        }
+
+        if (!$vapidPublic || !$vapidPrivate || $vapidPublic === 'CHANGE_ME' || $vapidPrivate === 'CHANGE_ME') {
+            error_log("[WebPush] VAPID keys not configured in .env");
+            return null;
+        }
+
+        $auth = [
+            'VAPID' => [
+                'subject' => $vapidSubject,
+                'publicKey' => $vapidPublic,
+                'privateKey' => $vapidPrivate,
+            ],
+        ];
+
+        $defaultOptions = [
+            'topic' => 'superbora',
+            'urgency' => 'high',
+            'TTL' => 86400,
+        ];
+
+        $webPush = new \Minishlink\WebPush\WebPush($auth, $defaultOptions, 30);
+        // Do not automatically flush — we send one at a time
+        return $webPush;
+
+    } catch (Exception $e) {
+        error_log("[WebPush] Failed to initialize: " . $e->getMessage());
+        return null;
     }
-    if (!$isAllowed) {
-        error_log("[WebPush] SECURITY: Blocked SSRF attempt to endpoint: $endpoint");
-        return ['success' => false, 'code' => 0, 'response' => 'Invalid push endpoint domain'];
+}
+
+/**
+ * Envia Web Push usando minishlink/web-push (VAPID + payload encryption)
+ * @return array ['success' => bool, 'code' => int, 'response' => string]
+ */
+function _sendWebPushViaLibrary(string $endpoint, string $p256dh, string $authKey, string $payload): array {
+    try {
+        // Autoload the library
+        $autoload = dirname(__DIR__, 3) . '/vendor/autoload.php';
+        if (!file_exists($autoload)) {
+            error_log("[WebPush] vendor/autoload.php not found");
+            return ['success' => false, 'code' => 0, 'response' => 'Autoloader not found'];
+        }
+        require_once $autoload;
+
+        $webPush = _getWebPushInstance();
+        if (!$webPush) {
+            return ['success' => false, 'code' => 0, 'response' => 'VAPID not configured'];
+        }
+
+        $subscription = \Minishlink\WebPush\Subscription::create([
+            'endpoint' => $endpoint,
+            'publicKey' => $p256dh,
+            'authToken' => $authKey,
+        ]);
+
+        $report = $webPush->sendOneNotification($subscription, $payload);
+
+        $httpCode = 0;
+        $response = '';
+        if ($report) {
+            $httpResponse = $report->getResponse();
+            $httpCode = $httpResponse ? $httpResponse->getStatusCode() : 0;
+            $response = $report->getReason() ?? '';
+        }
+
+        $success = $report && $report->isSuccess();
+
+        if (!$success) {
+            error_log("[WebPush] Send failed to $endpoint: code=$httpCode reason=$response");
+        }
+
+        return [
+            'success' => $success,
+            'code' => $httpCode,
+            'response' => $response,
+        ];
+
+    } catch (Exception $e) {
+        error_log("[WebPush] Exception sending to $endpoint: " . $e->getMessage());
+        return ['success' => false, 'code' => 0, 'response' => $e->getMessage()];
     }
-
-    $ch = curl_init($endpoint);
-    curl_setopt_array($ch, [
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => $payload,
-        CURLOPT_HTTPHEADER => [
-            'Content-Type: application/json',
-            'TTL: 86400',
-            'Urgency: high'
-        ],
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 10
-    ]);
-
-    $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-
-    return [
-        'success' => $httpCode >= 200 && $httpCode < 300,
-        'code' => $httpCode,
-        'response' => $response
-    ];
 }

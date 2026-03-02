@@ -67,7 +67,7 @@ try {
                 // Update existing subscription
                 $stmt = $pdo->prepare("
                     UPDATE om_push_subscriptions
-                    SET p256dh = ?, auth = ?, updated_at = NOW()
+                    SET p256dh = ?, auth = ?, is_active = 1, last_used = NOW()
                     WHERE id = ?
                 ");
                 $stmt->execute([$p256dh, $authKey, $existing['id']]);
@@ -81,8 +81,8 @@ try {
                 // Create new subscription
                 $stmt = $pdo->prepare("
                     INSERT INTO om_push_subscriptions
-                    (customer_id, user_type, endpoint, p256dh, auth, created_at)
-                    VALUES (?, ?, ?, ?, ?, NOW())
+                    (customer_id, user_type, endpoint, p256dh, auth, is_active, created_at)
+                    VALUES (?, ?, ?, ?, ?, 1, NOW())
                 ");
                 $stmt->execute([$partnerId, $userType, $endpoint, $p256dh, $authKey]);
                 $subscriptionId = $pdo->lastInsertId();
