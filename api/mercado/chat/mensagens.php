@@ -47,9 +47,20 @@ try {
     }
 
     // Buscar mensagens (prepared statement)
-    $stmtMsg = $db->prepare("SELECT message_id AS id, order_id, sender_type, sender_id, message, created_at FROM om_order_chat WHERE order_id = ? ORDER BY created_at ASC");
+    $stmtMsg = $db->prepare("SELECT message_id AS id, order_id, sender_type, sender_id, message, message_type, image_url, created_at FROM om_order_chat WHERE order_id = ? ORDER BY created_at ASC");
     $stmtMsg->execute([$order_id]);
     $mensagens = $stmtMsg->fetchAll();
+
+    // Ensure message_type defaults and build full image URLs
+    foreach ($mensagens as &$msg) {
+        $msg['message_type'] = $msg['message_type'] ?: 'text';
+        if (!empty($msg['image_url']) && !str_starts_with($msg['image_url'], 'http')) {
+            $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+            $host = $_SERVER['HTTP_HOST'] ?? 'superbora.com.br';
+            $msg['image_url'] = $scheme . '://' . $host . $msg['image_url'];
+        }
+    }
+    unset($msg);
 
     response(true, ["mensagens" => $mensagens]);
 

@@ -6,6 +6,8 @@
 require_once __DIR__ . "/../config/database.php";
 require_once __DIR__ . "/../config/guards.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
+require_once __DIR__ . '/../helpers/notify.php';
+require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
 
 setCorsHeaders();
 
@@ -308,6 +310,31 @@ try {
             }
 
             $db->commit();
+
+            // Push + WebSocket notification to customer (with rating prompt)
+            try {
+                notifyCustomer($db, (int)$dispute['customer_id'],
+                    'Disputa resolvida',
+                    'Sua disputa sobre o pedido #' . $dispute['order_id'] . ' foi resolvida.',
+                    '/mercado/',
+                    [
+                        'type' => 'dispute_resolved',
+                        'dispute_id' => $disputeId,
+                        'order_id' => (int)$dispute['order_id'],
+                        'show_rating_prompt' => true,
+                    ]
+                );
+                wsBroadcastToCustomer((int)$dispute['customer_id'], 'dispute_update', [
+                    'dispute_id' => $disputeId,
+                    'order_id' => (int)$dispute['order_id'],
+                    'status' => 'resolved',
+                    'resolution_note' => $resolutionNote,
+                    'show_rating_prompt' => true,
+                ]);
+            } catch (\Throwable $e) {
+                error_log("[admin/disputes] Push/WS notification failed on resolve: " . $e->getMessage());
+            }
+
             response(true, ['message' => 'Disputa resolvida!']);
         }
 
@@ -325,6 +352,24 @@ try {
             ")->execute([$disputeId, $adminId, "Escalado por $adminName: $reason"]);
 
             $db->commit();
+
+            // Push + WebSocket notification to customer
+            try {
+                notifyCustomer($db, (int)$dispute['customer_id'],
+                    'Disputa em analise',
+                    'Sua disputa sobre o pedido #' . $dispute['order_id'] . ' foi escalada para analise.',
+                    '/mercado/',
+                    ['type' => 'dispute_escalated', 'dispute_id' => $disputeId, 'order_id' => (int)$dispute['order_id']]
+                );
+                wsBroadcastToCustomer((int)$dispute['customer_id'], 'dispute_update', [
+                    'dispute_id' => $disputeId,
+                    'order_id' => (int)$dispute['order_id'],
+                    'status' => 'escalated',
+                ]);
+            } catch (\Throwable $e) {
+                error_log("[admin/disputes] Push/WS notification failed on escalate: " . $e->getMessage());
+            }
+
             response(true, ['message' => 'Disputa escalada']);
         }
 
@@ -346,6 +391,24 @@ try {
             ")->execute([$disputeId, $adminId, "Atribuido a $assignTo por $adminName"]);
 
             $db->commit();
+
+            // Push + WebSocket notification to customer
+            try {
+                notifyCustomer($db, (int)$dispute['customer_id'],
+                    'Disputa em analise',
+                    'Sua disputa sobre o pedido #' . $dispute['order_id'] . ' esta sendo analisada.',
+                    '/mercado/',
+                    ['type' => 'dispute_assigned', 'dispute_id' => $disputeId, 'order_id' => (int)$dispute['order_id']]
+                );
+                wsBroadcastToCustomer((int)$dispute['customer_id'], 'dispute_update', [
+                    'dispute_id' => $disputeId,
+                    'order_id' => (int)$dispute['order_id'],
+                    'status' => 'in_review',
+                ]);
+            } catch (\Throwable $e) {
+                error_log("[admin/disputes] Push/WS notification failed on assign: " . $e->getMessage());
+            }
+
             response(true, ['message' => "Disputa atribuida a $assignTo"]);
         }
 

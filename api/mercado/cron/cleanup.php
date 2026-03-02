@@ -498,6 +498,124 @@ try {
     $log("Erro ao limpar PIX intents: " . $e->getMessage());
 }
 
+// ═══════════════════════════════════════════════════════════════
+// 7. Auto-resolve disputes past deadline (partner didn't respond in 48h)
+// ═══════════════════════════════════════════════════════════════
+try {
+    $stmt = $db->query("
+        SELECT dispute_id, order_id, customer_id, partner_id
+        FROM om_order_disputes
+        WHERE status IN ('open', 'in_review', 'awaiting_evidence')
+          AND deadline_at IS NOT NULL
+          AND deadline_at < NOW()
+        LIMIT 100
+    ");
+    $expiredDisputes = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    if (!empty($expiredDisputes)) {
+        $autoResolvedIds = [];
+
+        foreach ($expiredDisputes as $dispute) {
+            try {
+                $db->beginTransaction();
+
+                // Lock the row and verify it's still open
+                $stmtLock = $db->prepare("
+                    SELECT dispute_id, order_id, customer_id, partner_id, requested_amount
+                    FROM om_order_disputes
+                    WHERE dispute_id = ?
+                      AND status IN ('open', 'in_review', 'awaiting_evidence')
+                      AND deadline_at IS NOT NULL
+                      AND deadline_at < NOW()
+                    FOR UPDATE
+                ");
+                $stmtLock->execute([$dispute['dispute_id']]);
+                $lockedDispute = $stmtLock->fetch();
+
+                if (!$lockedDispute) {
+                    $db->rollBack();
+                    continue;
+                }
+
+                // Auto-resolve: partner didn't respond in time, customer wins
+                $db->prepare("
+                    UPDATE om_order_disputes
+                    SET status = 'auto_resolved',
+                        auto_resolved = 1,
+                        resolved_at = NOW(),
+                        resolution_type = 'deadline_expired',
+                        resolution_note = 'Resolvido automaticamente - prazo de 48h expirado sem resposta do parceiro',
+                        approved_amount = requested_amount,
+                        updated_at = NOW()
+                    WHERE dispute_id = ?
+                ")->execute([$lockedDispute['dispute_id']]);
+
+                // Insert timeline entry
+                $db->prepare("
+                    INSERT INTO om_dispute_timeline (dispute_id, action, actor_type, actor_id, description, created_at)
+                    VALUES (?, 'auto_resolved', 'system', 0, 'Resolvido automaticamente: prazo de resposta de 48h expirou', NOW())
+                ")->execute([$lockedDispute['dispute_id']]);
+
+                // Insert notification for customer
+                try {
+                    $db->prepare("
+                        INSERT INTO om_market_notifications (customer_id, titulo, mensagem, tipo, referencia_tipo, referencia_id, created_at)
+                        VALUES (?, ?, ?, 'dispute', 'dispute', ?, NOW())
+                    ")->execute([
+                        $lockedDispute['customer_id'],
+                        "Disputa #{$lockedDispute['dispute_id']} resolvida",
+                        "Sua disputa sobre o pedido #{$lockedDispute['order_id']} foi resolvida automaticamente a seu favor.",
+                        $lockedDispute['dispute_id']
+                    ]);
+                } catch (Exception $e) {
+                    error_log("[cron/cleanup] Dispute notification insert failed: " . $e->getMessage());
+                }
+
+                $db->commit();
+                $autoResolvedIds[] = $lockedDispute['dispute_id'];
+
+                // Push notification + WebSocket broadcast (after commit)
+                try {
+                    require_once dirname(__DIR__) . '/helpers/notify.php';
+                    require_once dirname(__DIR__) . '/helpers/ws-customer-broadcast.php';
+
+                    notifyCustomer($db, (int)$lockedDispute['customer_id'],
+                        'Disputa resolvida a seu favor',
+                        'Sua disputa sobre o pedido #' . $lockedDispute['order_id'] . ' foi resolvida automaticamente.',
+                        '/mercado/',
+                        [
+                            'type' => 'dispute_resolved',
+                            'dispute_id' => (int)$lockedDispute['dispute_id'],
+                            'order_id' => (int)$lockedDispute['order_id'],
+                            'show_rating_prompt' => true,
+                        ]
+                    );
+                    wsBroadcastToCustomer((int)$lockedDispute['customer_id'], 'dispute_update', [
+                        'dispute_id' => (int)$lockedDispute['dispute_id'],
+                        'order_id' => (int)$lockedDispute['order_id'],
+                        'status' => 'auto_resolved',
+                        'show_rating_prompt' => true,
+                    ]);
+                } catch (\Throwable $e) {
+                    error_log("[cron/cleanup] Dispute push/WS notification failed: " . $e->getMessage());
+                }
+
+            } catch (Exception $e) {
+                if ($db->inTransaction()) {
+                    $db->rollBack();
+                }
+                $log("  ERRO auto-resolve disputa #{$dispute['dispute_id']}: " . $e->getMessage());
+            }
+        }
+
+        if (!empty($autoResolvedIds)) {
+            $log("Disputas auto-resolvidas (prazo expirado): " . count($autoResolvedIds) . " — IDs: " . implode(', ', $autoResolvedIds));
+        }
+    }
+} catch (Exception $e) {
+    $log("ERRO disputas expiradas: " . $e->getMessage());
+}
+
 $log("=== Cron cleanup finished ===\n");
 
 // Release file lock

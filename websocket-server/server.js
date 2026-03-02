@@ -189,14 +189,18 @@ function handleMessage(clientId, data) {
 
       case 'chat_message':
         if (client.authenticated && msg.order_id) {
+          const chatData = {
+            order_id: msg.order_id,
+            sender_id: client.userId,
+            sender_type: msg.sender_type || 'customer',
+            message: msg.message,
+            message_type: msg.message_type || 'text',
+            timestamp: new Date().toISOString(),
+          };
+          if (msg.image_url) chatData.image_url = msg.image_url;
           broadcast(`order_${msg.order_id}`, {
             type: 'chat_message',
-            data: {
-              order_id: msg.order_id,
-              sender_id: client.userId,
-              message: msg.message,
-              timestamp: new Date().toISOString(),
-            }
+            data: chatData,
           }, clientId);
         }
         break;
@@ -205,7 +209,12 @@ function handleMessage(clientId, data) {
         if (client.authenticated && msg.order_id) {
           broadcast(`order_${msg.order_id}`, {
             type: 'typing',
-            data: { order_id: msg.order_id, sender_id: client.userId, is_typing: msg.is_typing }
+            data: {
+              order_id: msg.order_id,
+              sender_id: client.userId,
+              sender_type: msg.sender_type || 'customer',
+              is_typing: msg.is_typing !== false,
+            }
           }, clientId);
         }
         break;

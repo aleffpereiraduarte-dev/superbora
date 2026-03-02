@@ -85,6 +85,7 @@ try {
                    c.sender_name,
                    c.message,
                    c.message_type,
+                   c.image_url,
                    c.chat_type,
                    c.is_read,
                    c.created_at
@@ -99,7 +100,7 @@ try {
         // Format messages
         $formatted = [];
         foreach ($messages as $msg) {
-            $formatted[] = [
+            $item = [
                 'id' => (int)$msg['message_id'],
                 'order_id' => (int)$msg['order_id'],
                 'sender_type' => $msg['sender_type'],
@@ -111,6 +112,10 @@ try {
                 'is_read' => (bool)$msg['is_read'],
                 'created_at' => $msg['created_at'],
             ];
+            if (!empty($msg['image_url'])) {
+                $item['image_url'] = $msg['image_url'];
+            }
+            $formatted[] = $item;
         }
 
         // Mark messages from others as read
@@ -146,17 +151,74 @@ try {
     if ($method === 'POST') {
         $input = getInput();
         $orderId = (int)($input['order_id'] ?? 0);
-        $rawMessage = $input['message'] ?? '';
-        if (mb_strlen($rawMessage) > 2000) {
-            response(false, null, "Mensagem excede o limite de 2000 caracteres", 400);
-        }
-        $message = strip_tags(trim(substr($rawMessage, 0, 2000)));
+        $messageType = $input['message_type'] ?? 'text';
         $chatType = $input['chat_type'] ?? 'customer';
+        $imageUrl = null;
 
-        if (!$orderId) response(false, null, "order_id obrigatorio", 400);
-        if (empty($message)) response(false, null, "Mensagem obrigatoria", 400);
+        if (!in_array($messageType, ['text', 'image'])) {
+            $messageType = 'text';
+        }
         if (!in_array($chatType, ['customer', 'delivery', 'support'])) {
             $chatType = 'customer';
+        }
+        if (!$orderId) response(false, null, "order_id obrigatorio", 400);
+
+        // Handle image upload
+        if ($messageType === 'image') {
+            if (empty($_FILES['photo']) || $_FILES['photo']['error'] !== UPLOAD_ERR_OK) {
+                response(false, null, "Foto obrigatoria para mensagem de imagem", 400);
+            }
+
+            $file = $_FILES['photo'];
+
+            // Validate file type
+            $allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+            $finfo = new finfo(FILEINFO_MIME_TYPE);
+            $detectedType = $finfo->file($file['tmp_name']);
+            if (!in_array($detectedType, $allowedTypes)) {
+                response(false, null, "Tipo de arquivo nao permitido. Use JPEG, PNG, WebP ou GIF.", 400);
+            }
+
+            // Validate file size (5MB max)
+            if ($file['size'] > 5 * 1024 * 1024) {
+                response(false, null, "Imagem excede o limite de 5MB", 400);
+            }
+
+            // Create upload directory
+            $uploadDir = dirname(__DIR__, 3) . '/uploads/chat/';
+            if (!is_dir($uploadDir)) {
+                mkdir($uploadDir, 0755, true);
+            }
+
+            // Generate unique filename
+            $ext = match($detectedType) {
+                'image/jpeg' => 'jpg',
+                'image/png'  => 'png',
+                'image/webp' => 'webp',
+                'image/gif'  => 'gif',
+                default      => 'jpg',
+            };
+            $filename = sprintf('chat_%d_%d_%s.%s', $orderId, $userId, bin2hex(random_bytes(8)), $ext);
+            $destPath = $uploadDir . $filename;
+
+            if (!move_uploaded_file($file['tmp_name'], $destPath)) {
+                response(false, null, "Erro ao salvar imagem", 500);
+            }
+
+            $imageUrl = '/uploads/chat/' . $filename;
+            $message = $input['message'] ?? '';
+            $message = strip_tags(trim(substr($message, 0, 500)));
+            if (empty($message)) {
+                $message = '[Imagem]';
+            }
+        } else {
+            // Text message
+            $rawMessage = $input['message'] ?? '';
+            if (mb_strlen($rawMessage) > 2000) {
+                response(false, null, "Mensagem excede o limite de 2000 caracteres", 400);
+            }
+            $message = strip_tags(trim(substr($rawMessage, 0, 2000)));
+            if (empty($message)) response(false, null, "Mensagem obrigatoria", 400);
         }
 
         // Verify order access
@@ -181,25 +243,38 @@ try {
 
         // Insert message
         $stmt = $db->prepare("
-            INSERT INTO om_order_chat (order_id, sender_type, sender_id, sender_name, message, message_type, chat_type, is_read, created_at)
-            VALUES (?, ?, ?, ?, ?, 'text', ?, 0, NOW())
+            INSERT INTO om_order_chat (order_id, sender_type, sender_id, sender_name, message, message_type, image_url, chat_type, is_read, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NOW())
         ");
-        $stmt->execute([$orderId, $senderType, $userId, $senderName, $message, $chatType]);
+        $stmt->execute([$orderId, $senderType, $userId, $senderName, $message, $messageType, $imageUrl, $chatType]);
 
         $messageId = (int)$db->lastInsertId();
 
+        // Build full image URL for response
+        $fullImageUrl = $imageUrl;
+        if ($imageUrl && !str_starts_with($imageUrl, 'http')) {
+            $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+            $host = $_SERVER['HTTP_HOST'] ?? 'superbora.com.br';
+            $fullImageUrl = $scheme . '://' . $host . $imageUrl;
+        }
+
         // WebSocket broadcast (never breaks the flow)
         try {
-            wsBroadcastToOrder($orderId, 'chat_message', [
+            $wsData = [
                 'order_id' => $orderId,
                 'message_id' => $messageId,
                 'sender_type' => $senderType,
                 'sender_id' => $userId,
                 'sender_name' => $senderName,
                 'message' => $message,
+                'message_type' => $messageType,
                 'chat_type' => $chatType,
                 'created_at' => date('c'),
-            ]);
+            ];
+            if ($fullImageUrl) {
+                $wsData['image_url'] = $fullImageUrl;
+            }
+            wsBroadcastToOrder($orderId, 'chat_message', $wsData);
         } catch (\Throwable $e) {}
 
         // Fetch inserted message
@@ -207,18 +282,23 @@ try {
         $fetchStmt->execute([$messageId]);
         $newMsg = $fetchStmt->fetch();
 
-        response(true, [
+        $responseData = [
             'id' => $messageId,
             'order_id' => $orderId,
             'sender_type' => $senderType,
             'sender_id' => $userId,
             'sender_name' => $senderName,
             'message' => $message,
-            'message_type' => 'text',
+            'message_type' => $messageType,
             'chat_type' => $chatType,
             'is_read' => false,
             'created_at' => $newMsg['created_at'] ?? date('Y-m-d H:i:s'),
-        ], "Mensagem enviada");
+        ];
+        if ($fullImageUrl) {
+            $responseData['image_url'] = $fullImageUrl;
+        }
+
+        response(true, $responseData, "Mensagem enviada");
     }
 
     // OPTIONS for CORS

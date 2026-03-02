@@ -11,6 +11,8 @@
 require_once __DIR__ . "/../config/database.php";
 require_once __DIR__ . "/../config/guards.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
+require_once __DIR__ . '/../helpers/notify.php';
+require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
 
 setCorsHeaders();
 
@@ -485,6 +487,14 @@ try {
 
         $disputeId = (int)$stmt->fetch()['dispute_id'];
 
+        // Set deadline_at for partner response (48 hours from now)
+        // Only for non-auto-resolved disputes (partner needs to respond)
+        if (!$autoResolved) {
+            $db->prepare("
+                UPDATE om_order_disputes SET deadline_at = NOW() + INTERVAL '48 hours' WHERE dispute_id = ?
+            ")->execute([$disputeId]);
+        }
+
         // Insert evidence
         foreach ($cleanPhotos as $photoUrl) {
             $db->prepare("
@@ -638,6 +648,33 @@ try {
 
         $db->commit();
 
+        // Push notification + WebSocket for auto-resolved disputes
+        if ($autoResolved) {
+            try {
+                $pushParts = [];
+                if ($approvedAmount > 0) $pushParts[] = "reembolso de R$ " . number_format($approvedAmount, 2, ',', '.');
+                if ($creditAmount > 0) $pushParts[] = "R$ " . number_format($creditAmount, 2, ',', '.') . " em creditos";
+                $pushBody = 'Sua disputa sobre o pedido #' . $orderId . ' foi resolvida automaticamente.';
+                if (!empty($pushParts)) $pushBody .= ' Compensacao: ' . implode(' + ', $pushParts) . '.';
+
+                notifyCustomer($db, $customerId,
+                    'Disputa resolvida automaticamente',
+                    $pushBody,
+                    '/mercado/',
+                    ['type' => 'dispute_resolved', 'dispute_id' => $disputeId, 'order_id' => $orderId]
+                );
+                wsBroadcastToCustomer($customerId, 'dispute_update', [
+                    'dispute_id' => $disputeId,
+                    'order_id' => $orderId,
+                    'status' => 'auto_resolved',
+                    'approved_amount' => round($approvedAmount, 2),
+                    'credit_amount' => round($creditAmount, 2),
+                ]);
+            } catch (\Throwable $e) {
+                error_log("[dispute] Push/WS notification failed on auto-resolve: " . $e->getMessage());
+            }
+        }
+
         // Build response
         $responseData = [
             'dispute' => [
@@ -693,6 +730,17 @@ function formatDispute($d) {
         'closed' => 'Fechado',
     ];
 
+    // Compute time remaining for deadline
+    $deadlineAt = $d['deadline_at'] ?? null;
+    $timeRemainingHours = null;
+    if ($deadlineAt) {
+        $deadlineTs = strtotime($deadlineAt);
+        $nowTs = time();
+        $diffSeconds = $deadlineTs - $nowTs;
+        $timeRemainingHours = round($diffSeconds / 3600, 1);
+        if ($timeRemainingHours < 0) $timeRemainingHours = 0;
+    }
+
     return [
         'id' => (int)$d['dispute_id'],
         'order_id' => (int)$d['order_id'],
@@ -716,6 +764,10 @@ function formatDispute($d) {
         'partner_response' => $d['partner_response'] ?? null,
         'created_at' => $d['created_at'] ?? null,
         'resolved_at' => $d['resolved_at'] ?? null,
+        'deadline_at' => $deadlineAt,
+        'time_remaining_hours' => $timeRemainingHours,
+        'rating_after_dispute' => isset($d['rating_after_dispute']) ? (int)$d['rating_after_dispute'] : null,
+        'rating_comment' => $d['rating_comment'] ?? null,
     ];
 }
 

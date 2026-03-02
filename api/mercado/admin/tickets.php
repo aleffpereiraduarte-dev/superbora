@@ -2,6 +2,8 @@
 require_once __DIR__ . "/../config/database.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAudit.php";
+require_once __DIR__ . '/../helpers/notify.php';
+require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
 
 setCorsHeaders();
 
@@ -159,8 +161,41 @@ try {
         $updates[] = "updated_at = NOW()";
         $update_params[] = $ticket_id;
 
+        // Fetch ticket info before update (for notification)
+        $stmtTicket = $db->prepare("SELECT id, entidade_tipo, entidade_id, assunto, status FROM om_support_tickets WHERE id = ?");
+        $stmtTicket->execute([$ticket_id]);
+        $ticket = $stmtTicket->fetch();
+
         $stmt = $db->prepare("UPDATE om_support_tickets SET " . implode(", ", $updates) . " WHERE id = ?");
         $stmt->execute($update_params);
+
+        // Push + WebSocket notification to customer when ticket status changes
+        if ($ticket && $ticket['entidade_tipo'] === 'customer' && $new_status) {
+            try {
+                $statusLabels = [
+                    'resolved' => 'resolvido', 'resolvido' => 'resolvido',
+                    'closed' => 'fechado', 'fechado' => 'fechado',
+                    'em_atendimento' => 'em atendimento',
+                    'aguardando_resposta' => 'aguardando sua resposta',
+                    'waiting' => 'aguardando sua resposta',
+                    'open' => 'reaberto', 'aberto' => 'reaberto',
+                ];
+                $statusLabel = $statusLabels[$new_status] ?? $new_status;
+
+                notifyCustomer($db, (int)$ticket['entidade_id'],
+                    'Atualizacao do ticket',
+                    'Seu ticket "' . $ticket['assunto'] . '" foi ' . $statusLabel . '.',
+                    '/mercado/',
+                    ['type' => 'ticket_update', 'ticket_id' => $ticket_id]
+                );
+                wsBroadcastToCustomer((int)$ticket['entidade_id'], 'ticket_update', [
+                    'ticket_id' => $ticket_id,
+                    'status' => $new_status,
+                ]);
+            } catch (\Throwable $e) {
+                error_log("[admin/tickets] Push/WS notification failed: " . $e->getMessage());
+            }
+        }
 
         response(true, ["ticket_id" => $ticket_id], "Ticket atualizado");
     } else {

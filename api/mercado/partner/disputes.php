@@ -12,6 +12,8 @@
  */
 require_once __DIR__ . "/../config/database.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
+require_once __DIR__ . '/../helpers/notify.php';
+require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
 
 setCorsHeaders();
 
@@ -68,7 +70,7 @@ try {
                        d.photo_urls, d.affected_items, d.status, d.auto_resolved,
                        d.requested_amount, d.approved_amount, d.credit_amount,
                        d.compensation_type, d.partner_response, d.resolution_note,
-                       d.order_total, d.created_at, d.resolved_at,
+                       d.order_total, d.created_at, d.resolved_at, d.deadline_at,
                        o.total as real_order_total,
                        c.name as customer_name, c.phone as customer_phone
                 FROM om_order_disputes d
@@ -120,6 +122,16 @@ try {
                 if (is_array($decoded)) $affectedItems = $decoded;
             }
 
+            // Compute time remaining for deadline
+            $deadlineAt = $dispute['deadline_at'] ?? null;
+            $timeRemainingHours = null;
+            if ($deadlineAt) {
+                $deadlineTs = strtotime($deadlineAt);
+                $diffSeconds = $deadlineTs - time();
+                $timeRemainingHours = round($diffSeconds / 3600, 1);
+                if ($timeRemainingHours < 0) $timeRemainingHours = 0;
+            }
+
             response(true, [
                 'dispute' => [
                     'id' => (int)$dispute['dispute_id'],
@@ -144,6 +156,8 @@ try {
                     'order_total' => (float)($dispute['real_order_total'] ?? $dispute['order_total'] ?? 0),
                     'created_at' => $dispute['created_at'],
                     'resolved_at' => $dispute['resolved_at'],
+                    'deadline_at' => $deadlineAt,
+                    'time_remaining_hours' => $timeRemainingHours,
                 ],
                 'timeline' => array_map(function($t) {
                     return [
@@ -208,6 +222,7 @@ try {
                    d.category, d.subcategory, d.severity, d.description,
                    d.status, d.auto_resolved, d.requested_amount, d.approved_amount,
                    d.partner_response, d.order_total, d.created_at, d.resolved_at,
+                   d.deadline_at,
                    o.total as real_order_total,
                    c.name as customer_name
             FROM om_order_disputes d
@@ -231,6 +246,15 @@ try {
         ];
 
         $formatted = array_map(function($d) use ($statusLabels, $severityLabels) {
+            $deadlineAt = $d['deadline_at'] ?? null;
+            $timeRemainingHours = null;
+            if ($deadlineAt) {
+                $deadlineTs = strtotime($deadlineAt);
+                $diffSeconds = $deadlineTs - time();
+                $timeRemainingHours = round($diffSeconds / 3600, 1);
+                if ($timeRemainingHours < 0) $timeRemainingHours = 0;
+            }
+
             return [
                 'id' => (int)$d['dispute_id'],
                 'order_id' => (int)$d['order_id'],
@@ -249,6 +273,8 @@ try {
                 'order_total' => (float)($d['real_order_total'] ?? $d['order_total'] ?? 0),
                 'created_at' => $d['created_at'],
                 'resolved_at' => $d['resolved_at'],
+                'deadline_at' => $deadlineAt,
+                'time_remaining_hours' => $timeRemainingHours,
             ];
         }, $disputes);
 
@@ -346,7 +372,7 @@ try {
 
             // Verify dispute belongs to partner
             $stmtDispute = $db->prepare("
-                SELECT dispute_id, status, partner_response FROM om_order_disputes WHERE dispute_id = ? AND partner_id = ?
+                SELECT dispute_id, order_id, customer_id, status, partner_response FROM om_order_disputes WHERE dispute_id = ? AND partner_id = ?
             ");
             $stmtDispute->execute([$disputeId, $partnerId]);
             $dispute = $stmtDispute->fetch();
@@ -405,6 +431,37 @@ try {
             }
 
             $db->commit();
+
+            // Push + WebSocket notification to customer
+            try {
+                $customerId = (int)($dispute['customer_id'] ?? 0);
+                $orderId = (int)($dispute['order_id'] ?? 0);
+                if ($customerId > 0) {
+                    if ($responseType === 'accept') {
+                        notifyCustomer($db, $customerId,
+                            'Disputa aceita pelo estabelecimento',
+                            'O estabelecimento aceitou sua disputa sobre o pedido #' . $orderId . '.',
+                            '/mercado/',
+                            ['type' => 'dispute_update', 'dispute_id' => $disputeId, 'order_id' => $orderId]
+                        );
+                    } else {
+                        notifyCustomer($db, $customerId,
+                            'Resposta do estabelecimento',
+                            'O estabelecimento respondeu sua disputa sobre o pedido #' . $orderId . '. A disputa foi escalada para analise.',
+                            '/mercado/',
+                            ['type' => 'dispute_update', 'dispute_id' => $disputeId, 'order_id' => $orderId]
+                        );
+                    }
+                    wsBroadcastToCustomer($customerId, 'dispute_update', [
+                        'dispute_id' => $disputeId,
+                        'order_id' => $orderId,
+                        'status' => $responseType === 'accept' ? 'resolved' : 'escalated',
+                        'partner_response_type' => $responseType,
+                    ]);
+                }
+            } catch (\Throwable $e) {
+                error_log("[partner/disputes] Push/WS notification failed: " . $e->getMessage());
+            }
 
             $statusMsg = $responseType === 'accept' ? 'Disputa aceita com sucesso' : 'Contestacao enviada para analise';
             response(true, ['status' => $responseType === 'accept' ? 'resolved' : 'escalated'], $statusMsg);

@@ -2,6 +2,8 @@
 require_once __DIR__ . "/../config/database.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAudit.php";
+require_once __DIR__ . '/../helpers/notify.php';
+require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
 
 setCorsHeaders();
 
@@ -175,6 +177,29 @@ try {
             WHERE id = ? AND status = 'open'
         ");
         $stmt->execute([$ticket_id]);
+
+        // Push + WebSocket notification to customer when admin replies
+        try {
+            $stmtTicket = $db->prepare("SELECT entidade_tipo, entidade_id, assunto FROM om_support_tickets WHERE id = ?");
+            $stmtTicket->execute([$ticket_id]);
+            $ticket = $stmtTicket->fetch();
+
+            if ($ticket && $ticket['entidade_tipo'] === 'customer') {
+                notifyCustomer($db, (int)$ticket['entidade_id'],
+                    'Nova resposta no ticket',
+                    'Voce recebeu uma resposta no ticket "' . $ticket['assunto'] . '".',
+                    '/mercado/',
+                    ['type' => 'ticket_reply', 'ticket_id' => $ticket_id]
+                );
+                wsBroadcastToCustomer((int)$ticket['entidade_id'], 'ticket_reply', [
+                    'ticket_id' => $ticket_id,
+                    'message_id' => $msg_id,
+                    'message' => mb_substr($message, 0, 200),
+                ]);
+            }
+        } catch (\Throwable $e) {
+            error_log("[admin/chat-central] Push/WS notification failed: " . $e->getMessage());
+        }
 
         response(true, ['message_id' => $msg_id], "Mensagem enviada");
     } else {
