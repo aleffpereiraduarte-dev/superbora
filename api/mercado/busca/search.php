@@ -143,14 +143,15 @@ try {
             }
 
             $searchDb = $db ?? getDB();
+            $sanitizedQ = mb_substr(strip_tags($q), 0, 100);
             // Save to customer history
             if ($searchCustomerId) {
                 $searchDb->prepare("INSERT INTO om_search_history (customer_id, query, results_count, city, created_at) VALUES (?, ?, ?, ?, NOW())")
-                    ->execute([$searchCustomerId, substr($q, 0, 255), $total, $city ?: null]);
+                    ->execute([$searchCustomerId, $sanitizedQ, $total, $city ?: null]);
             }
             // Update trending
             $searchDb->prepare("INSERT INTO om_search_trending (query, city, search_count, period) VALUES (?, ?, 1, CURRENT_DATE) ON CONFLICT (query, city, period) DO UPDATE SET search_count = om_search_trending.search_count + 1")
-                ->execute([strtolower(substr($q, 0, 255)), $city ?: null]);
+                ->execute([strtolower($sanitizedQ), $city ?: null]);
         } catch (Exception $trackErr) {
             // Non-blocking — don't fail the search
             error_log("[busca/search] Track error: " . $trackErr->getMessage());

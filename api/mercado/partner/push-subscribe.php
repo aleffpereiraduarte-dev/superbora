@@ -58,7 +58,7 @@ try {
             // Check if subscription already exists
             $stmt = $pdo->prepare("
                 SELECT id FROM om_push_subscriptions
-                WHERE user_id = ? AND user_type = ? AND endpoint = ?
+                WHERE customer_id = ? AND user_type = ? AND endpoint = ?
             ");
             $stmt->execute([$partnerId, $userType, $endpoint]);
             $existing = $stmt->fetch();
@@ -81,7 +81,7 @@ try {
                 // Create new subscription
                 $stmt = $pdo->prepare("
                     INSERT INTO om_push_subscriptions
-                    (user_id, user_type, endpoint, p256dh, auth, created_at)
+                    (customer_id, user_type, endpoint, p256dh, auth, created_at)
                     VALUES (?, ?, ?, ?, ?, NOW())
                 ");
                 $stmt->execute([$partnerId, $userType, $endpoint, $p256dh, $authKey]);
@@ -103,14 +103,14 @@ try {
                 // Delete specific subscription
                 $stmt = $pdo->prepare("
                     DELETE FROM om_push_subscriptions
-                    WHERE user_id = ? AND user_type = ? AND endpoint = ?
+                    WHERE customer_id = ? AND user_type = ? AND endpoint = ?
                 ");
                 $stmt->execute([$partnerId, $userType, $endpoint]);
             } else {
                 // Delete all subscriptions for this user
                 $stmt = $pdo->prepare("
                     DELETE FROM om_push_subscriptions
-                    WHERE user_id = ? AND user_type = ?
+                    WHERE customer_id = ? AND user_type = ?
                 ");
                 $stmt->execute([$partnerId, $userType]);
             }
@@ -126,7 +126,7 @@ try {
             $stmt = $pdo->prepare("
                 SELECT id, endpoint, created_at
                 FROM om_push_subscriptions
-                WHERE user_id = ? AND user_type = ?
+                WHERE customer_id = ? AND user_type = ?
                 ORDER BY created_at DESC
             ");
             $stmt->execute([$partnerId, $userType]);

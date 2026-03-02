@@ -92,12 +92,12 @@ try {
     // Upsert: INSERT ON CONFLICT (PostgreSQL)
     $stmt = $db->prepare("
         INSERT INTO om_market_products_price
-            (product_id, partner_id, price, promotional_price, stock, status, availability_schedule, created_at, updated_at)
+            (product_id, partner_id, price, price_promo, stock, status, availability_schedule, created_at, updated_at)
         VALUES
             (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
         ON CONFLICT (product_id, partner_id) DO UPDATE SET
             price = EXCLUDED.price,
-            promotional_price = EXCLUDED.promotional_price,
+            price_promo = EXCLUDED.price_promo,
             stock = EXCLUDED.stock,
             status = EXCLUDED.status,
             availability_schedule = EXCLUDED.availability_schedule,

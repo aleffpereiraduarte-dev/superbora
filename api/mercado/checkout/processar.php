@@ -91,7 +91,7 @@ try {
         $stmtCompleted = $db->prepare("
             SELECT COUNT(*) FROM om_market_orders
             WHERE customer_id = ? AND status IN ('entregue','retirado','completed')
-            AND payment_method NOT IN ('dinheiro','cartao_entrega')
+            AND forma_pagamento NOT IN ('dinheiro','cartao_entrega')
         ");
         $stmtCompleted->execute([$customer_id]);
         if ((int)$stmtCompleted->fetchColumn() < 1) {

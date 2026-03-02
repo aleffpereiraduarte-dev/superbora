@@ -55,7 +55,7 @@ try {
     }
 
     // --- Rate limiting ---
-    if (!checkRateLimit($db, "ai_menu_compare_{$partnerId}", 5, 60)) {
+    if (!checkRateLimit("ai_menu_compare_{$partnerId}", 5, 60)) {
         response(false, null, "Muitas comparacoes. Tente novamente em 1 hora.", 429);
     }
 

@@ -217,21 +217,6 @@ try {
                ->execute([$refundId]);
         }
 
-        // Salvar fotos como evidencia na tabela de disputes (se existir)
-        if (!empty($validPhotos)) {
-            try {
-                foreach ($validPhotos as $photoUrl) {
-                    $db->prepare("
-                        INSERT INTO om_dispute_evidence (dispute_id, order_id, customer_id, photo_url, caption, created_at)
-                        VALUES (0, ?, ?, ?, 'Evidencia reembolso', NOW())
-                    ")->execute([$order_id, $customer_id, $photoUrl]);
-                }
-            } catch (Exception $e) {
-                // Table may not exist, not critical
-                error_log("[solicitar-reembolso] Erro salvar fotos: " . $e->getMessage());
-            }
-        }
-
         // Add timeline entry
         try {
             $desc = $status === 'approved'
@@ -247,6 +232,22 @@ try {
         }
 
         $db->commit();
+
+        // Salvar fotos como evidencia na tabela de disputes (se existir)
+        // Done AFTER commit so FK failures don't poison the refund transaction
+        if (!empty($validPhotos)) {
+            foreach ($validPhotos as $photoUrl) {
+                try {
+                    $db->prepare("
+                        INSERT INTO om_dispute_evidence (dispute_id, order_id, customer_id, photo_url, caption, created_at)
+                        VALUES (?, ?, ?, ?, 'Evidencia reembolso', NOW())
+                    ")->execute([$refundId, $order_id, $customer_id, $photoUrl]);
+                } catch (Exception $e) {
+                    // Table may not exist or FK issue, not critical — refund already committed
+                    error_log("[solicitar-reembolso] Erro salvar foto: " . $e->getMessage());
+                }
+            }
+        }
 
         // WebSocket broadcast (non-blocking, after commit)
         try {

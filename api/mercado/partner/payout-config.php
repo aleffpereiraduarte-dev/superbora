@@ -207,13 +207,13 @@ try {
         ]);
 
         // Registrar auditoria
-        om_audit()->log('payout_config', 'update', [
+        om_audit()->log('payout_config', 'update', $partnerId, null, [
             'frequency' => $frequency,
             'payout_day' => $payoutDay,
             'min_payout' => $minPayout,
             'has_bank' => !empty($bankName),
             'has_pix' => !empty($pixKey),
-        ], $partnerId);
+        ]);
 
         $nextPayoutDate = calculateNextPayoutDate($frequency, $payoutDay);
 

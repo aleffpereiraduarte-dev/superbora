@@ -65,8 +65,8 @@ try {
             ms.saldo_devedor
         FROM om_payout_config pc
         INNER JOIN om_mercado_saldo ms ON ms.partner_id = pc.partner_id
-        WHERE pc.auto_payout = 1
-          AND pc.pix_key_validated = 1
+        WHERE pc.auto_payout = TRUE
+          AND pc.pix_key_validated = TRUE
           AND pc.pix_key IS NOT NULL
           AND ms.saldo_disponivel >= pc.min_payout
           AND COALESCE(ms.saldo_devedor, 0) <= 0
