@@ -175,9 +175,10 @@ function buildCustomerContext(PDO $db, int $customerId): array {
     $stmt = $db->prepare("
         SELECT o.order_id, o.order_number, o.status, o.total, o.payment_method,
                o.date_added, o.partner_name, o.items_count,
-               e.driver_name, e.driver_phone
+               COALESCE(o.driver_name, e.motorista_nome) as driver_name,
+               COALESCE(o.driver_phone, e.motorista_telefone) as driver_phone
         FROM om_market_orders o
-        LEFT JOIN om_entregas e ON e.order_id = o.order_id
+        LEFT JOIN om_entregas e ON e.referencia_id = o.order_id AND e.origem_sistema = 'mercado'
         WHERE o.customer_id = ?
           AND o.status NOT IN ('entregue', 'retirado', 'cancelado', 'recusado')
         ORDER BY o.date_added DESC
