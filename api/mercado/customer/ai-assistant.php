@@ -240,6 +240,20 @@ function buildCustomerContext(PDO $db, int $customerId): array {
     $stmt->execute([$customerId]);
     $ctx['recentOrders'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+    // I) Saved payment methods
+    $ctx['savedCards'] = [];
+    try {
+        $stmt = $db->prepare("
+            SELECT card_id, brand, last4, exp_month, exp_year
+            FROM om_customer_cards
+            WHERE customer_id = ? AND status = 'active'
+            ORDER BY is_default DESC, created_at DESC
+            LIMIT 5
+        ");
+        $stmt->execute([$customerId]);
+        $ctx['savedCards'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Exception $e) { /* table may not exist */ }
+
     // Top categories
     $categories = [];
     foreach ($ctx['topItems'] as $item) {
@@ -668,7 +682,8 @@ CONTEXTO DO CLIENTE:
 - Carrinho atual: {$cartJson}" . ($ctx['cartItems'] > 0 ? " (R\$ " . number_format($ctx['cartTotal'], 2, ',', '.') . ")" : "") . "
 - Favoritos: {$favoritesJson}
 - Mais comprados: {$topItemsJson}
-- Horario: {$meal['time']} ({$meal['period']})
+- Horario: {$meal['time']} ({$meal['period']})" .
+(!empty($ctx['savedCards']) ? "\n- Cartoes salvos: " . implode(', ', array_map(fn($c) => strtoupper($c['brand']) . ' ****' . $c['last4'] . ' (' . $c['exp_month'] . '/' . $c['exp_year'] . ')', $ctx['savedCards'])) : "\n- Nenhum cartao salvo (so PIX disponivel)") . "
 
 PEDIDOS ATIVOS DO CLIENTE (em andamento agora):
 {$activeOrdersJson}
@@ -702,16 +717,35 @@ REGRAS SOBRE LOJAS:
 PRODUTOS ENCONTRADOS NA BUSCA (ja filtrados por lojas proximas):
 {$productContext}
 
+COMO AJUDAR O CLIENTE A COMPRAR (FLUXO COMPLETO):
+1. BUSCAR: Quando o cliente quer comprar, busque no catalogo e sugira produtos como 'suggestions'
+2. ADICIONAR: Quando confirma que quer, use quick_action 'add_to_cart' com product_id e partner_id
+3. COMPLEMENTAR: Sugira itens complementares (pediu pizza? sugira refrigerante/sobremesa)
+4. RESUMIR: Apos adicionar, mostre o resumo do carrinho (itens e total do campo 'Carrinho atual' acima)
+5. PAGAMENTO: Pergunte 'Quer pagar com PIX ou cartao?' e ofereca botoes:
+   - 'Pagar com PIX' (action: go_checkout, query: '/checkout?payment=pix')
+   - 'Pagar com cartao' (action: go_checkout, query: '/checkout?payment=card')
+6. NAVEGAR: Se quer ver mais de uma loja, use 'navigate' com partner_id
+
+DICAS DE VENDA:
+- Seja proativa: sugira complementos e combos
+- Mencione frete gratis se o total atingir o minimo da loja ('free_delivery_above')
+- Avise sobre pedido minimo se aplicavel ('min_order')
+- Se a loja esta fechada, sugira outra loja aberta com produtos similares
+- Quando sugerir produtos, PRIORIZE os que tem foto (image nao vazio)
+
 FORMATO DE RESPOSTA (JSON obrigatorio):
-{\"response_text\":\"sua resposta aqui\",\"suggestions\":[{\"type\":\"product\",\"id\":0,\"name\":\"\",\"price\":0,\"image\":\"\",\"partner_id\":0,\"partner_name\":\"\"}],\"quick_actions\":[{\"label\":\"\",\"action\":\"search|add_to_cart|reorder|navigate\",\"query\":\"\",\"product_id\":0,\"partner_id\":0}]}
+{\"response_text\":\"sua resposta aqui\",\"suggestions\":[{\"type\":\"product\",\"id\":0,\"name\":\"\",\"price\":0,\"image\":\"\",\"partner_id\":0,\"partner_name\":\"\"}],\"quick_actions\":[{\"label\":\"\",\"action\":\"search|add_to_cart|reorder|navigate|go_cart|go_checkout\",\"query\":\"\",\"product_id\":0,\"partner_id\":0}]}
 
 REGRAS DO JSON:
-- suggestions: produtos para mostrar como cards (max 5)
+- suggestions: produtos para mostrar como cards clicaveis (max 5). SEMPRE inclua image, partner_id, partner_name
 - quick_actions: botoes rapidos (max 4). Acoes possiveis:
   - search: abre busca com a query
-  - add_to_cart: adiciona product_id ao carrinho
+  - add_to_cart: adiciona product_id ao carrinho (OBRIGATORIO: product_id e partner_id)
   - reorder: repete o ultimo pedido
-  - navigate: navega para loja (partner_id)
+  - navigate: navega para loja (partner_id) ou tela (/busca, /carrinho, /ajuda)
+  - go_cart: vai pro carrinho
+  - go_checkout: vai direto pro checkout
 - Se a msg nao pede produto, retorne suggestions vazio
 - SEMPRE retorne JSON valido, sem texto fora do JSON";
 
