@@ -52,11 +52,11 @@ try {
         response(false, null, "Adicionar itens disponivel apenas para entregas BoraUm", 400);
     }
 
-    // Validate: status must be early
-    $addableStatuses = ['pendente', 'confirmado', 'aceito'];
+    // Validate: can add until order goes out for delivery
+    $addableStatuses = ['pendente', 'confirmado', 'aceito', 'preparando', 'em_preparo', 'pronto'];
     if (!in_array($order['status'], $addableStatuses)) {
         $db->rollBack();
-        response(false, null, "Pedido nao pode ser editado (status: {$order['status']})", 400);
+        response(false, null, "Pedido ja saiu para entrega", 400);
     }
 
     // Validate: 30-minute window

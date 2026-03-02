@@ -48,8 +48,8 @@ try {
         ]);
     }
 
-    // Can only add items if order is in early stages
-    $addableStatuses = ['pendente', 'confirmado', 'aceito'];
+    // Can add items until order goes out for delivery
+    $addableStatuses = ['pendente', 'confirmado', 'aceito', 'preparando', 'em_preparo', 'pronto'];
     $statusOk = in_array($order['status'], $addableStatuses);
 
     // 30-minute time window from order creation
@@ -58,15 +58,14 @@ try {
     $tempoRestante = null;
 
     if (!$statusOk) {
-        $motivo = "Pedido nao pode ser editado (status: {$order['status']})";
+        $motivo = "Pedido ja saiu para entrega";
     } else {
         $createdAt = new DateTime($order['date_added']);
         $now = new DateTime();
         $limitTime = (clone $createdAt)->modify('+30 minutes');
-        $diff = $now->diff($limitTime);
 
         if ($now > $limitTime) {
-            $motivo = "Tempo limite excedido";
+            $motivo = "Tempo limite para adicionar itens excedido";
         } else {
             $canAdd = true;
             $remainingSeconds = $limitTime->getTimestamp() - $now->getTimestamp();
@@ -78,7 +77,16 @@ try {
         }
     }
 
-    $data = ['pode_adicionar' => $canAdd];
+    // Get partner name
+    $partnerName = '';
+    try {
+        $stmtP = $db->prepare("SELECT trade_name, name FROM om_market_partners WHERE partner_id = (SELECT partner_id FROM om_market_orders WHERE order_id = ?)");
+        $stmtP->execute([$order_id]);
+        $p = $stmtP->fetch(PDO::FETCH_ASSOC);
+        $partnerName = $p['trade_name'] ?: $p['name'] ?: '';
+    } catch (Exception $e) {}
+
+    $data = ['pode_adicionar' => $canAdd, 'partner_name' => $partnerName];
     if ($motivo) $data['motivo'] = $motivo;
     if ($tempoRestante) $data['tempo_restante'] = $tempoRestante;
 
