@@ -97,9 +97,13 @@ while ($partner = $stmt->fetch(PDO::FETCH_ASSOC)) {
     $db->prepare("INSERT INTO om_partner_digest_log (partner_id, digest_date, digest_type, metrics, alerts, sent_whatsapp, sent_push) VALUES (?, ?, 'daily', ?::jsonb, ?::jsonb, ?, ?)")
        ->execute([$pid, $yesterday, json_encode($m), json_encode($alerts), $sentWa ? 't' : 'f', $sentPush ? 't' : 'f']);
 
-    // Update metrics cache
+    // Update metrics cache (compute actual 30-day order count, not just yesterday's)
+    $count30d = $db->prepare("SELECT COUNT(*) FROM om_market_orders WHERE partner_id = ? AND created_at > NOW() - INTERVAL '30 days'");
+    $count30d->execute([$pid]);
+    $orderCount30d = (int)$count30d->fetchColumn();
+
     $db->prepare("INSERT INTO om_partner_metrics (partner_id, order_count_30d, avg_ticket, calculated_at) VALUES (?, ?, ?, NOW()) ON CONFLICT (partner_id) DO UPDATE SET order_count_30d = EXCLUDED.order_count_30d, avg_ticket = EXCLUDED.avg_ticket, calculated_at = NOW()")
-       ->execute([$pid, $m['orders'], $m['avg_ticket']]);
+       ->execute([$pid, $orderCount30d, $m['avg_ticket']]);
 
     $processed++;
 }

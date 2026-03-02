@@ -244,52 +244,11 @@ try {
 
 // ═══════════════════════════════════════════════════════════════
 // 3. Liberar repasses em hold apos 2 horas
-//    Usa OmRepasse::liberar() que: decrementa saldo_pendente,
-//    credita saldo_disponivel, desconta saldo_devedor, registra
-//    wallet + log, e seta status 'liberado'.
+//    DISABLED: Duplicate of cron/liberar-repasses.php which is the
+//    dedicated cron for this task. Keeping this commented out to
+//    avoid double-processing repasses.
 // ═══════════════════════════════════════════════════════════════
-try {
-    require_once dirname(__DIR__, 3) . '/includes/classes/OmRepasse.php';
-    $repasse = om_repasse();
-    $repasse->setDb($db);
-
-    // SELECT candidates using hold_until (set by OmRepasse::criar)
-    $stmt = $db->prepare("
-        SELECT id FROM om_repasses
-        WHERE status = 'hold'
-          AND hold_until IS NOT NULL
-          AND hold_until < NOW()
-    ");
-    $stmt->execute();
-    $candidates = $stmt->fetchAll(PDO::FETCH_COLUMN);
-
-    if (!empty($candidates)) {
-        $releasedIds = [];
-
-        foreach ($candidates as $repasseId) {
-            try {
-                $result = $repasse->liberar($repasseId);
-                if ($result['success']) {
-                    $releasedIds[] = $repasseId;
-                    $log("  Repasse #{$repasseId} liberado — R$" . number_format($result['valor'] ?? 0, 2, ',', '.'));
-                } else {
-                    $log("  Repasse #{$repasseId} skip: " . ($result['error'] ?? 'desconhecido'));
-                }
-            } catch (Exception $e) {
-                if ($db->inTransaction()) {
-                    $db->rollBack();
-                }
-                $log("  ERRO liberar repasse #{$repasseId}: " . $e->getMessage());
-            }
-        }
-
-        if (!empty($releasedIds)) {
-            $log("Repasses liberados: " . count($releasedIds) . " — IDs: " . implode(', ', $releasedIds));
-        }
-    }
-} catch (Exception $e) {
-    $log("ERRO repasses: " . $e->getMessage());
-}
+// Task 3 removed — handled by dedicated cron/liberar-repasses.php
 
 // ═══════════════════════════════════════════════════════════════
 // 4. Expirar cashback vencido

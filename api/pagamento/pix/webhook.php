@@ -71,30 +71,17 @@ if (!empty($pixWebhookSecret)) {
         exit;
     }
 } else {
-    // PIX_WEBHOOK_SECRET not configured — log warning but allow (for initial setup)
-    logPix("WARNING: PIX_WEBHOOK_SECRET nao configurado — webhook sem validacao de assinatura");
+    logPix("SECURITY: PIX_WEBHOOK_SECRET nao configurado — rejeitando webhook", [
+        'ip' => $_SERVER['REMOTE_ADDR'] ?? 'unknown',
+    ]);
+    http_response_code(403);
+    echo json_encode(['success' => false, 'message' => 'Webhook secret not configured']);
+    exit;
 }
 
 try {
     $input = json_decode($rawBody, true) ?: [];
     $db = getDB();
-
-    // Criar tabela de log se nao existir
-    $db->exec("
-        CREATE TABLE IF NOT EXISTS om_pix_webhook_log (
-            id SERIAL PRIMARY KEY,
-            txid VARCHAR(100),
-            status VARCHAR(50),
-            payment_id INT DEFAULT NULL,
-            order_id INT DEFAULT NULL,
-            payload JSON,
-            processed SMALLINT DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ");
-
-    $db->exec("CREATE INDEX IF NOT EXISTS idx_pix_log_txid ON om_pix_webhook_log (txid)");
-    $db->exec("CREATE INDEX IF NOT EXISTS idx_pix_log_order ON om_pix_webhook_log (order_id)");
 
     // Pegar dados do webhook (ajustar conforme Pagar.me)
     $txid = $input["data"]["id"] ?? $input["txid"] ?? "";
@@ -224,24 +211,6 @@ try {
                         $cashbackAmount = round($total * $cashbackBase * $multiplier, 2);
 
                         if ($cashbackAmount >= 0.01) {
-                            // Criar tabela se nao existir
-                            $db->exec("
-                                CREATE TABLE IF NOT EXISTS om_cashback (
-                                    id SERIAL PRIMARY KEY,
-                                    customer_id INT NOT NULL,
-                                    order_id INT DEFAULT NULL,
-                                    type VARCHAR(50) NOT NULL CHECK (type IN ('earned','used','expired','bonus')),
-                                    amount DECIMAL(10,2) NOT NULL,
-                                    description VARCHAR(255) DEFAULT '',
-                                    status VARCHAR(50) DEFAULT 'pending' CHECK (status IN ('available','pending','used','expired')),
-                                    expires_at TIMESTAMP DEFAULT NULL,
-                                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                                )
-                            ");
-
-                            $db->exec("CREATE INDEX IF NOT EXISTS idx_om_cashback_customer ON om_cashback (customer_id)");
-                            $db->exec("CREATE INDEX IF NOT EXISTS idx_om_cashback_status ON om_cashback (customer_id, status)");
-
                             $stmt = $db->prepare("
                                 INSERT INTO om_cashback (customer_id, order_id, type, amount, description, status, expires_at)
                                 VALUES (?, ?, 'earned', ?, ?, 'pending', NOW() + INTERVAL '90 days')
@@ -270,20 +239,6 @@ try {
                 // ═══════════════════════════════════════════════════════
                 if ($customer_id && $total > 0) {
                     try {
-                        $db->exec("
-                            CREATE TABLE IF NOT EXISTS om_gamification (
-                                customer_id INT PRIMARY KEY,
-                                points INT DEFAULT 0,
-                                level INT DEFAULT 1,
-                                streak_days INT DEFAULT 0,
-                                last_order_date DATE DEFAULT NULL,
-                                total_orders INT DEFAULT 0,
-                                total_spent DECIMAL(10,2) DEFAULT 0,
-                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                            )
-                        ");
-
                         // Pontos: 100 por pedido + 2x valor gasto
                         $pointsEarned = 100 + (int)($total * 2);
 
@@ -333,21 +288,6 @@ try {
                             "points" => $pointsEarned,
                             "streak" => $streakDays
                         ]);
-
-                        // Auto-grant badges
-                        $db->exec("
-                            CREATE TABLE IF NOT EXISTS om_badges (
-                                id SERIAL PRIMARY KEY,
-                                customer_id INT NOT NULL,
-                                badge_type VARCHAR(50) NOT NULL,
-                                badge_name VARCHAR(100) NOT NULL,
-                                badge_icon VARCHAR(50) DEFAULT 'star',
-                                earned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                                UNIQUE (customer_id, badge_type)
-                            )
-                        ");
-
-                        $db->exec("CREATE INDEX IF NOT EXISTS idx_om_badges_customer ON om_badges (customer_id)");
 
                         // Buscar stats atualizadas
                         $stmt = $db->prepare("SELECT total_orders, total_spent, streak_days FROM om_gamification WHERE customer_id = ?");

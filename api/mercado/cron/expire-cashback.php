@@ -38,8 +38,6 @@ try {
     $db = getDB();
 
     // Buscar creditos de cashback vencidos e nao processados
-    // Use FOR UPDATE SKIP LOCKED to prevent concurrent processing of same rows
-    $db->beginTransaction();
     $stmt = $db->prepare("
         SELECT
             ct.id,
@@ -56,11 +54,9 @@ try {
         AND ct.expires_at < CURRENT_DATE
         ORDER BY ct.expires_at ASC
         LIMIT 1000
-        FOR UPDATE SKIP LOCKED
     ");
     $stmt->execute();
     $expiredCredits = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    $db->commit();
 
     $totalExpired = 0;
     $totalAmount = 0;

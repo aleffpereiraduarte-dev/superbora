@@ -76,10 +76,16 @@ Ultimos 30 dias:
 Top produtos: " . json_encode($topProducts);
 
     $result = $claude->send($systemPrompt, [['role' => 'user', 'content' => $dataMsg]], 1024);
-    if (!$result['success']) continue;
+    if (!$result['success']) {
+        error_log("[proactive-insights] Claude API failed for partner #{$pid}: " . ($result['error'] ?? 'unknown error'));
+        continue;
+    }
 
     $parsed = ClaudeClient::parseJson($result['text']);
-    if (!$parsed) continue;
+    if (!$parsed) {
+        error_log("[proactive-insights] Failed to parse Claude JSON for partner #{$pid}: " . substr($result['text'] ?? '', 0, 200));
+        continue;
+    }
 
     $suggestions = $parsed['suggestions'] ?? [];
     $headline = $parsed['headline'] ?? '';

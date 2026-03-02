@@ -125,7 +125,7 @@ function creditCashback(PDO $db, int $customerId, int $orderId, int $partnerId, 
             INSERT INTO om_cashback_transactions
             (customer_id, order_id, partner_id, type, amount, balance_after, description, expires_at)
             VALUES (?, ?, ?, 'credit', ?, 0, ?, ?)
-            ON CONFLICT DO NOTHING
+            ON CONFLICT (order_id) WHERE type = 'credit' AND expired = 0 DO NOTHING
         ");
         $stmt->execute([$customerId, $orderId, $partnerId, $amount, $description, $expiresAt]);
 
@@ -236,7 +236,7 @@ function debitCashback(PDO $db, int $customerId, int $orderId, int $partnerId, f
             INSERT INTO om_cashback_transactions
             (customer_id, order_id, partner_id, type, amount, balance_after, description)
             VALUES (?, ?, ?, 'debit', ?, 0, ?)
-            ON CONFLICT DO NOTHING
+            ON CONFLICT (order_id) WHERE type = 'debit' AND expired = 0 DO NOTHING
         ");
         $stmt->execute([$customerId, $orderId, $partnerId, $amount, $description]);
 
@@ -318,7 +318,7 @@ function refundCashback(PDO $db, int $orderId): array {
             INSERT INTO om_cashback_transactions
             (customer_id, order_id, type, amount, balance_after, description)
             VALUES (?, ?, 'expired', 0, 0, 'Pedido cancelado - cashback estornado')
-            ON CONFLICT DO NOTHING
+            ON CONFLICT (order_id) WHERE type = 'expired' AND amount = 0 DO NOTHING
         ");
         $stmt->execute([$customerId, $orderId]);
 

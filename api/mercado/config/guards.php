@@ -400,10 +400,12 @@ function guard_coupon_redeem(PDO $db, int $couponId, int $customerId, int $order
         }
 
         // Registrar uso com ON CONFLICT DO NOTHING para prevenir duplicata
+        // REQUIRES unique index: CREATE UNIQUE INDEX IF NOT EXISTS idx_coupon_usage_unique
+        //   ON om_market_coupon_usage (coupon_id, customer_id, order_id);
         $stmtInsert = $db->prepare("
             INSERT INTO om_market_coupon_usage (coupon_id, customer_id, order_id, created_at)
             VALUES (?, ?, ?, NOW())
-            ON CONFLICT DO NOTHING
+            ON CONFLICT (coupon_id, customer_id, order_id) DO NOTHING
         ");
         $stmtInsert->execute([$couponId, $customerId, $orderId]);
 
@@ -749,9 +751,9 @@ function guard_checkout_idempotency(PDO $db, int $customerId, string $cartHash, 
             error_log("[guards] Checkout duplicado bloqueado: cliente#{$customerId} hash={$cartHash}");
             throw $e;
         }
-        // Outros erros de banco: logar e permitir (fail open)
+        // Outros erros de banco: logar e rejeitar (fail closed — safer to reject than allow double-submit)
         error_log("[guards] Erro ao verificar checkout idempotency: " . $e->getMessage());
-        return true;
+        return false;
     }
 }
 

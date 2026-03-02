@@ -23,6 +23,10 @@ if (php_sapi_name() !== 'cli' && (!isset($_SERVER['HTTP_X_CRON_KEY']) || !hash_e
 
 require_once __DIR__ . "/../config/database.php";
 
+$lockFile = '/tmp/superbora_cron_badges.lock';
+$lockFp = fopen($lockFile, 'w');
+if (!flock($lockFp, LOCK_EX | LOCK_NB)) { exit(0); }
+
 echo "=== Iniciando atualizacao de badges: " . date('Y-m-d H:i:s') . " ===\n";
 
 try {
@@ -48,6 +52,7 @@ try {
         SELECT partner_id AS id, name AS nome, email
         FROM om_market_partners
         WHERE status::text = '1'
+        LIMIT 1000
     ");
     $partners = $stmtPartners->fetchAll();
 

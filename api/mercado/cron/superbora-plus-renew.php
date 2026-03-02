@@ -39,6 +39,7 @@ $stmt = $db->prepare("
     LEFT JOIN om_customer c ON c.customer_id = sp.customer_id
     WHERE sp.status = 'active'
     AND sp.expires_at <= NOW()
+    LIMIT 500
 ");
 $stmt->execute();
 $expiradas = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -65,27 +66,36 @@ foreach ($expiradas as $sub) {
     $cbSaldo = (float)$stmtCb->fetchColumn();
 
     if ($cbSaldo >= OmPricing::SUPERBORA_PLUS_PRECO) {
-        // Cobrar do cashback
-        $remaining = OmPricing::SUPERBORA_PLUS_PRECO;
-        $stmtCbList = $db->prepare("SELECT id, amount FROM om_cashback WHERE customer_id = ? AND type IN ('earned','bonus') AND status = 'available' AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY expires_at ASC NULLS LAST");
-        $stmtCbList->execute([$customerId]);
-        foreach ($stmtCbList->fetchAll() as $cb) {
-            if ($remaining <= 0) break;
-            $use = min($remaining, (float)$cb['amount']);
-            if ($use >= (float)$cb['amount']) {
-                $db->prepare("UPDATE om_cashback SET status = 'used' WHERE id = ?")->execute([$cb['id']]);
-            } else {
-                $db->prepare("UPDATE om_cashback SET amount = amount - ? WHERE id = ?")->execute([$use, $cb['id']]);
+        try {
+            $db->beginTransaction();
+
+            // Cobrar do cashback
+            $remaining = OmPricing::SUPERBORA_PLUS_PRECO;
+            $stmtCbList = $db->prepare("SELECT id, amount FROM om_cashback WHERE customer_id = ? AND type IN ('earned','bonus') AND status = 'available' AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY expires_at ASC NULLS LAST FOR UPDATE");
+            $stmtCbList->execute([$customerId]);
+            foreach ($stmtCbList->fetchAll() as $cb) {
+                if ($remaining <= 0) break;
+                $use = min($remaining, (float)$cb['amount']);
+                if ($use >= (float)$cb['amount']) {
+                    $db->prepare("UPDATE om_cashback SET status = 'used' WHERE id = ?")->execute([$cb['id']]);
+                } else {
+                    $db->prepare("UPDATE om_cashback SET amount = amount - ? WHERE id = ?")->execute([$use, $cb['id']]);
+                }
+                $remaining -= $use;
             }
-            $remaining -= $use;
+
+            // Renovar
+            $db->prepare("UPDATE om_superbora_plus SET expires_at = ? WHERE customer_id = ?")
+               ->execute([$novaExpiracao, $customerId]);
+
+            $db->commit();
+
+            echo "  [RENOVADO] Cliente #$customerId via cashback | expira $novaExpiracao\n";
+            $renovadas++;
+        } catch (Exception $e) {
+            $db->rollBack();
+            echo "  [ERRO] Cliente #$customerId: " . $e->getMessage() . "\n";
         }
-
-        // Renovar
-        $db->prepare("UPDATE om_superbora_plus SET expires_at = ? WHERE customer_id = ?")
-           ->execute([$novaExpiracao, $customerId]);
-
-        echo "  [RENOVADO] Cliente #$customerId via cashback | expira $novaExpiracao\n";
-        $renovadas++;
     } else {
         // Sem saldo: marcar como expirado (cliente precisa renovar manualmente)
         $db->prepare("UPDATE om_superbora_plus SET status = 'expired' WHERE customer_id = ?")

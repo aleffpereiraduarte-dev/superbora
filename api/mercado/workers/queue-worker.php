@@ -96,6 +96,14 @@ while ($running) {
         $jobsProcessed++;
         echo "[Worker $workerPid] Job $jobId completed\n";
 
+    } catch (PDOException $e) {
+        $sqlState = $e->getCode();
+        echo "[Worker $workerPid] Job $jobId DB error ($sqlState): " . $e->getMessage() . "\n";
+        error_log("[Queue Worker] Job $jobId ($jobType) DB error: " . $e->getMessage());
+        if (in_array($sqlState, ['08006', 'HY000', '08001', '08003', '08004'])) {
+            $db = null;
+        }
+        $queue->fail($jobId, $e->getMessage());
     } catch (Exception $e) {
         echo "[Worker $workerPid] Job $jobId failed: " . $e->getMessage() . "\n";
         error_log("[Queue Worker] Job $jobId ($jobType) failed: " . $e->getMessage());

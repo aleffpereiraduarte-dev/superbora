@@ -47,13 +47,18 @@ try {
         WHERE cart_id IN (
             SELECT id FROM om_market_cart
             WHERE created_at < NOW() - INTERVAL '7 days'
+            LIMIT 5000
         )
     ");
 
     // Delete abandoned carts older than 7 days
     $stmt = $db->exec("
         DELETE FROM om_market_cart
-        WHERE created_at < NOW() - INTERVAL '7 days'
+        WHERE id IN (
+            SELECT id FROM om_market_cart
+            WHERE created_at < NOW() - INTERVAL '7 days'
+            LIMIT 5000
+        )
     ");
 
     $deleted = $stmt;

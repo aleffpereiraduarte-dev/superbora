@@ -220,23 +220,32 @@ try {
         }
     }
 
-    // Points discount
+    // Points discount (aligned with processar.php)
     $pointsDiscount = 0;
     if ($use_points > 0) {
-        $ptStmt = $db->prepare("SELECT points_balance FROM om_loyalty_points WHERE customer_id = ?");
+        $ptStmt = $db->prepare("SELECT current_points FROM om_market_loyalty_points WHERE customer_id = ?");
         $ptStmt->execute([$customer_id]);
-        $ptBal = (int)($ptStmt->fetchColumn() ?: 0);
-        $pointsToUse = min($use_points, $ptBal);
-        $pointsDiscount = min($pointsToUse * 0.01, $subtotal * 0.5);
+        $currentPoints = (int)($ptStmt->fetchColumn() ?: 0);
+        if ($currentPoints > 0) {
+            $pointsToUse = min($use_points, $currentPoints);
+            $pointsDiscount = round($pointsToUse * OmPricing::PONTO_VALOR, 2);
+            $maxLoyaltyDiscount = round($subtotal * OmPricing::PONTOS_MAX_DESCONTO_PCT, 2);
+            if ($pointsDiscount > $maxLoyaltyDiscount) {
+                $pointsToUse = (int)floor($maxLoyaltyDiscount / OmPricing::PONTO_VALOR);
+                $pointsDiscount = round($pointsToUse * OmPricing::PONTO_VALOR, 2);
+            }
+        }
     }
 
-    // Cashback discount
+    // Cashback discount (aligned with processar.php)
     $cashbackDiscount = 0;
     if ($use_cashback > 0) {
-        $cbStmt = $db->prepare("SELECT balance FROM om_cashback_wallet WHERE customer_id = ?");
+        $cbStmt = $db->prepare("SELECT COALESCE(SUM(amount), 0) FROM om_cashback WHERE customer_id = ? AND type IN ('earned','bonus') AND status = 'available' AND (expires_at IS NULL OR expires_at > NOW())");
         $cbStmt->execute([$customer_id]);
         $cbBal = (float)($cbStmt->fetchColumn() ?: 0);
-        $cashbackDiscount = min($use_cashback, $cbBal);
+        if ($cbBal > 0) {
+            $cashbackDiscount = min($use_cashback, $cbBal);
+        }
     }
 
     // Calculate total

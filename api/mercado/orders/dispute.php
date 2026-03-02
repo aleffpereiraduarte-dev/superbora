@@ -371,7 +371,7 @@ try {
 
         $stmtAutoCount = $db->prepare("
             SELECT COUNT(*) as cnt FROM om_order_disputes
-            WHERE customer_id = ? AND auto_resolved = TRUE AND created_at > NOW() - INTERVAL '30 days'
+            WHERE customer_id = ? AND auto_resolved = 1 AND created_at > NOW() - INTERVAL '30 days'
         ");
         $stmtAutoCount->execute([$customerId]);
         $autoResolvedCount30d = (int)$stmtAutoCount->fetch()['cnt'];
@@ -603,7 +603,7 @@ try {
         if ($partnerId > 0) {
             try {
                 $db->prepare("
-                    UPDATE om_order_disputes SET partner_notified = TRUE WHERE dispute_id = ?
+                    UPDATE om_order_disputes SET partner_notified = 1 WHERE dispute_id = ?
                 ")->execute([$disputeId]);
 
                 $db->prepare("
