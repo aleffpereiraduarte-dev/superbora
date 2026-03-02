@@ -257,9 +257,9 @@ if (stripos($event, 'CHARGE') !== false && strpos($correlationId, 'pix_intent_')
                 }
             }
 
-            // Clear cart
-            $db->prepare("DELETE FROM om_market_cart WHERE customer_id = ? AND partner_id = ?")
-               ->execute([$customer_id, $partner_id]);
+            // Clear cart — all items for this customer (multi-store PIX covers all stores)
+            $db->prepare("DELETE FROM om_market_cart WHERE customer_id = ?")
+               ->execute([$customer_id]);
 
             // Link intent to order
             $db->prepare("UPDATE om_pix_intents SET order_id = ? WHERE intent_id = ?")
