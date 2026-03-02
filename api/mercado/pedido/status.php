@@ -217,6 +217,7 @@ try {
 
     response(true, [
         "order_id" => $pedido["order_id"],
+        "partner_id" => (int)$pedido["partner_id"],
         "status" => $pedido["status"],
         "delivery_type" => $pedido["delivery_type"] ?? null,
         "codigo_entrega" => in_array($pedido["status"], ['em_entrega', 'saiu_entrega', 'entregue', 'retirado']) ? $pedido["codigo_entrega"] : null,
