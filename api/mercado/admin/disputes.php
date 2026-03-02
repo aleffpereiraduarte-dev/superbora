@@ -45,7 +45,7 @@ try {
                     SUM(CASE WHEN status = 'escalated' THEN 1 ELSE 0 END) as escalated,
                     SUM(CASE WHEN status IN ('auto_resolved','resolved','closed') THEN 1 ELSE 0 END) as resolved,
                     SUM(CASE WHEN severity = 'critical' AND status NOT IN ('auto_resolved','resolved','closed') THEN 1 ELSE 0 END) as critical_open,
-                    SUM(CASE WHEN is_suspicious = TRUE THEN 1 ELSE 0 END) as suspicious,
+                    SUM(CASE WHEN is_suspicious = 1 THEN 1 ELSE 0 END) as suspicious,
                     COALESCE(SUM(approved_amount), 0) as total_refunded,
                     COALESCE(SUM(credit_amount), 0) as total_credits
                 FROM om_order_disputes
@@ -70,7 +70,7 @@ try {
             // Last 7 days chart
             $stmtChart = $db->query("
                 SELECT DATE(created_at) as dia, COUNT(*) as total,
-                    SUM(CASE WHEN auto_resolved = TRUE THEN 1 ELSE 0 END) as auto_resolved
+                    SUM(CASE WHEN auto_resolved = 1 THEN 1 ELSE 0 END) as auto_resolved
                 FROM om_order_disputes
                 WHERE created_at > NOW() - INTERVAL '7 days'
                 GROUP BY DATE(created_at)
@@ -111,7 +111,7 @@ try {
 
             // Timeline
             $stmtTl = $db->prepare("
-                SELECT id, dispute_id, action, actor_type, actor_id, description, created_at
+                SELECT timeline_id as id, dispute_id, action, actor_type, actor_id, description, created_at
                 FROM om_dispute_timeline
                 WHERE dispute_id = ? ORDER BY created_at ASC
             ");
@@ -120,7 +120,7 @@ try {
 
             // Evidence
             $stmtEv = $db->prepare("
-                SELECT id, dispute_id, type, file_url, description, created_at
+                SELECT evidence_id as id, dispute_id, photo_url as file_url, caption as description, created_at
                 FROM om_dispute_evidence
                 WHERE dispute_id = ? ORDER BY created_at ASC
             ");
@@ -274,7 +274,7 @@ try {
                     ")->execute([
                         $dispute['order_id'], $approvedAmount,
                         "Disputa #{$disputeId}: " . $resolutionNote,
-                        $adminName
+                        $adminId
                     ]);
                 } catch (Exception $e) {
                     error_log("[admin/disputes] Refund insert failed: " . $e->getMessage());

@@ -1721,8 +1721,8 @@
         <h1>Tudo que voc&ecirc; precisa, <span class="highlight">entregue na sua porta</span></h1>
         <p class="hero-tagline">
           Fa&ccedil;a suas compras de mercado sem sair de casa.
-          Milhares de produtos com pre&ccedil;os justos, entrega r&aacute;pida
-          e cashback em todas as compras.
+          <span id="hero-tagline-produtos">Milhares de</span> produtos com pre&ccedil;os justos, entrega r&aacute;pida
+          e cashback em todas as compras. <span id="hero-tagline-lojas"></span>
         </p>
         <div class="hero-actions">
           <a href="/busca" class="btn-hero-primary">
@@ -1736,15 +1736,15 @@
         </div>
         <div class="hero-stats">
           <div class="hero-stat-item">
-            <div class="hero-stat-number">10k+</div>
+            <div class="hero-stat-number" id="stat-produtos">...</div>
             <div class="hero-stat-label">Produtos</div>
           </div>
           <div class="hero-stat-item">
-            <div class="hero-stat-number">30 min</div>
+            <div class="hero-stat-number" id="stat-entrega">... min</div>
             <div class="hero-stat-label">Entrega m&eacute;dia</div>
           </div>
           <div class="hero-stat-item">
-            <div class="hero-stat-number">4.8</div>
+            <div class="hero-stat-number" id="stat-rating">...</div>
             <div class="hero-stat-label">Avalia&ccedil;&atilde;o</div>
           </div>
         </div>
@@ -1814,27 +1814,8 @@
                 <span class="phone-cat-label">Doces</span>
               </div>
             </div>
-            <div class="phone-products">
-              <div class="phone-product">
-                <div class="phone-product-img" style="background: linear-gradient(135deg, #fef9c3, #fde68a);"></div>
-                <div class="phone-product-name">Banana Prata kg</div>
-                <div class="phone-product-price">R$ 5,99</div>
-              </div>
-              <div class="phone-product">
-                <div class="phone-product-img" style="background: linear-gradient(135deg, #dbeafe, #bfdbfe);"></div>
-                <div class="phone-product-name">Leite Integral 1L</div>
-                <div class="phone-product-price">R$ 6,49</div>
-              </div>
-              <div class="phone-product">
-                <div class="phone-product-img" style="background: linear-gradient(135deg, #fee2e2, #fecaca);"></div>
-                <div class="phone-product-name">Tomate Italiano</div>
-                <div class="phone-product-price">R$ 8,90</div>
-              </div>
-              <div class="phone-product">
-                <div class="phone-product-img" style="background: linear-gradient(135deg, #ecfdf5, #a7f3d0);"></div>
-                <div class="phone-product-name">Alface Crespa</div>
-                <div class="phone-product-price">R$ 3,29</div>
-              </div>
+            <div class="phone-products" id="phone-products">
+              <!-- Preenchido pela API -->
             </div>
           </div>
         </div>
@@ -1850,25 +1831,25 @@
           <div class="social-proof-icon" style="background: #ecfdf5; color: #00A868;">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
           </div>
-          <div><span class="social-proof-number">5.000+</span> clientes ativos</div>
+          <div><span class="social-proof-number" id="sp-clientes">...</span> clientes ativos</div>
         </div>
         <div class="social-proof-item">
           <div class="social-proof-icon" style="background: #fef9c3; color: #f59e0b;">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
           </div>
-          <div><span class="social-proof-number">4.8</span> estrelas na loja</div>
+          <div><span class="social-proof-number" id="sp-rating">...</span> estrelas na loja</div>
         </div>
         <div class="social-proof-item">
           <div class="social-proof-icon" style="background: #eff6ff; color: #3b82f6;">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>
           </div>
-          <div><span class="social-proof-number">50.000+</span> entregas feitas</div>
+          <div><span class="social-proof-number" id="sp-entregas">...</span> entregas feitas</div>
         </div>
         <div class="social-proof-item">
           <div class="social-proof-icon" style="background: #f5f3ff; color: #7c3aed;">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
           </div>
-          <div>Entrega em <span class="social-proof-number">30 min</span></div>
+          <div>Entrega em <span class="social-proof-number" id="sp-tempo">...</span></div>
         </div>
       </div>
     </div>
@@ -1895,7 +1876,7 @@
             <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#00A868" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
           </div>
           <h3>Entrega R&aacute;pida</h3>
-          <p>Receba suas compras em at&eacute; 30 minutos. Rastreie cada etapa em tempo real, do supermercado at&eacute; sua porta.</p>
+          <p>Receba suas compras em minutos. Rastreie cada etapa em tempo real, do supermercado at&eacute; sua porta. Frete a partir de R$ <span id="feat-frete-min">...</span>.</p>
         </div>
 
         <div class="feature-card reveal reveal-delay-2">
@@ -1974,7 +1955,7 @@
         </div>
         <h2 class="section-title">O que nossos clientes dizem</h2>
         <p class="section-subtitle">
-          Milhares de fam&iacute;lias j&aacute; confiam no SuperBora para suas compras do dia a dia.
+          <span id="testimonials-subtitle">Nossos clientes j&aacute; confiam no SuperBora para suas compras do dia a dia.</span>
         </p>
       </div>
 
@@ -1987,12 +1968,13 @@
             <svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
             <svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
           </div>
-          <blockquote>&ldquo;Incr&iacute;vel! Fiz meu pedido e em 25 minutos j&aacute; estava tudo na minha porta. Os produtos chegaram frescos e bem embalados. Virei cliente fiel!&rdquo;</blockquote>
+          <!-- Reviews carregadas da API -->
+          <blockquote id="review-1-text">Carregando...</blockquote>
           <div class="testimonial-author">
-            <div class="testimonial-avatar">MA</div>
+            <div class="testimonial-avatar" id="review-1-avatar">...</div>
             <div class="testimonial-author-info">
-              <strong>Maria Aparecida</strong>
-              <span>Campinas, SP</span>
+              <strong id="review-1-name">...</strong>
+              <span id="review-1-city">...</span>
             </div>
           </div>
         </div>
@@ -2005,12 +1987,12 @@
             <svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
             <svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
           </div>
-          <blockquote>&ldquo;O cashback &eacute; de verdade! J&aacute; acumulei mais de R$80 em poucas semanas. O app &eacute; muito f&aacute;cil de usar e o rastreamento &eacute; perfeito.&rdquo;</blockquote>
+          <blockquote id="review-2-text">Carregando...</blockquote>
           <div class="testimonial-author">
-            <div class="testimonial-avatar">RS</div>
+            <div class="testimonial-avatar" id="review-2-avatar">...</div>
             <div class="testimonial-author-info">
-              <strong>Rafael Santos</strong>
-              <span>Campinas, SP</span>
+              <strong id="review-2-name">...</strong>
+              <span id="review-2-city">...</span>
             </div>
           </div>
         </div>
@@ -2023,12 +2005,12 @@
             <svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
             <svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
           </div>
-          <blockquote>&ldquo;Com dois filhos pequenos, ir ao mercado era um pesadelo. O SuperBora mudou minha rotina. Pe&ccedil;o pelo app e recebo tudo certinho!&rdquo;</blockquote>
+          <blockquote id="review-3-text">Carregando...</blockquote>
           <div class="testimonial-author">
-            <div class="testimonial-avatar">JL</div>
+            <div class="testimonial-avatar" id="review-3-avatar">...</div>
             <div class="testimonial-author-info">
-              <strong>Juliana Lima</strong>
-              <span>Campinas, SP</span>
+              <strong id="review-3-name">...</strong>
+              <span id="review-3-city">...</span>
             </div>
           </div>
         </div>
@@ -2609,6 +2591,226 @@
           window.location.href = '/api/mercado/auth/apple.php';
         }
       };
+    })();
+
+    // ── Landing Page Real Data from API ──
+    (function() {
+      'use strict';
+
+      var API_URL = '/api/mercado/landing/stats.php';
+
+      function fmt(n) {
+        if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1).replace('.', ',') + 'k';
+        return String(n);
+      }
+
+      function fmtMoney(v) {
+        return parseFloat(v).toFixed(2).replace('.', ',');
+      }
+
+      function initials(name) {
+        if (!name) return 'SB';
+        var parts = name.trim().split(/\s+/);
+        if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+        return parts[0].substring(0, 2).toUpperCase();
+      }
+
+      var avatarColors = ['#036B52','#00A868','#3b82f6','#7c3aed','#f59e0b','#ef4444','#ec4899','#06b6d4'];
+      function avatarColor(name) {
+        var hash = 0;
+        for (var i = 0; i < (name || '').length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+        return avatarColors[Math.abs(hash) % avatarColors.length];
+      }
+
+      var productBgs = ['#ecfdf5','#eff6ff','#fef9c3','#fef2f2','#f5f3ff','#fff7ed','#f0fdf4','#fdf4ff'];
+      var productEmojis = {
+        'acai': '\uD83C\uDF47', 'arroz': '\uD83C\uDF5A', 'feijao': '\uD83E\uDED8', 'feijão': '\uD83E\uDED8',
+        'leite': '\uD83E\uDD5B', 'pao': '\uD83C\uDF5E', 'pão': '\uD83C\uDF5E', 'carne': '\uD83E\uDD69',
+        'frango': '\uD83C\uDF57', 'banana': '\uD83C\uDF4C', 'tomate': '\uD83C\uDF45', 'cafe': '\u2615',
+        'café': '\u2615', 'agua': '\uD83D\uDCA7', 'água': '\uD83D\uDCA7', 'cerveja': '\uD83C\uDF7A',
+        'refrigerante': '\uD83E\uDD64', 'coca': '\uD83E\uDD64', 'suco': '\uD83E\uDDC3', 'ovo': '\uD83E\uDD5A',
+        'queijo': '\uD83E\uDDC0', 'manteiga': '\uD83E\uDDC8', 'açúcar': '\uD83C\uDF6C', 'acucar': '\uD83C\uDF6C',
+        'oleo': '\uD83C\uDF76', 'óleo': '\uD83C\uDF76', 'sabao': '\uD83E\uDDF4', 'sabão': '\uD83E\uDDF4',
+        'default': '\uD83D\uDED2'
+      };
+
+      function productEmoji(name) {
+        var lower = (name || '').toLowerCase();
+        for (var key in productEmojis) {
+          if (key !== 'default' && lower.indexOf(key) !== -1) return productEmojis[key];
+        }
+        return productEmojis['default'];
+      }
+
+      function setText(id, text) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = text;
+      }
+
+      function setHtml(id, html) {
+        var el = document.getElementById(id);
+        if (el) el.innerHTML = html;
+      }
+
+      fetch(API_URL)
+        .then(function(res) { return res.json(); })
+        .then(function(json) {
+          if (!json.success || !json.data) return;
+          var d = json.data;
+
+          // ── Hero Stats ──
+          setText('stat-produtos', fmt(d.produtos_ativos) + '+');
+          setText('stat-entrega', d.tempo_entrega_medio + ' min');
+          setText('stat-rating', d.rating_medio + '\u2B50');
+
+          // ── Social Proof Bar ──
+          setText('sp-clientes', fmt(d.clientes) + '+');
+          setText('sp-rating', d.rating_medio);
+          setText('sp-entregas', fmt(d.pedidos_entregues) + '+');
+          setText('sp-tempo', d.tempo_entrega_medio + ' min');
+
+          // ── Feature: Frete Minimo ──
+          setText('feat-frete-min', fmtMoney(d.frete.minimo));
+
+          // ── Hero tagline with real numbers ──
+          setText('hero-tagline-produtos', fmt(d.produtos_ativos) + '+');
+          if (d.lojas_ativas > 0) {
+            setText('hero-tagline-lojas', d.lojas_ativas + '+ lojas parceiras em ' + (d.cidades ? d.cidades.length : '') + ' cidades.');
+          }
+
+          // ── Testimonials subtitle ──
+          if (d.total_avaliacoes > 0) {
+            setText('testimonials-subtitle', fmt(d.total_avaliacoes) + ' avaliacoes com nota media ' + d.rating_medio + '. Veja o que estao dizendo.');
+          }
+
+          // ── Phone Products Mockup ──
+          var phoneEl = document.getElementById('phone-products');
+          if (phoneEl && d.top_produtos && d.top_produtos.length > 0) {
+            var html = '';
+            d.top_produtos.forEach(function(p, i) {
+              var bg = productBgs[i % productBgs.length];
+              var emoji = productEmoji(p.name);
+              var imgHtml;
+              if (p.image && p.image.indexOf('http') === 0) {
+                imgHtml = '<img class="phone-product-img" src="' + p.image + '" alt="' + p.name + '" loading="lazy" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">' +
+                          '<div class="phone-product-img" style="display:none;background:' + bg + ';align-items:center;justify-content:center;font-size:1.5rem;">' + emoji + '</div>';
+              } else {
+                imgHtml = '<div class="phone-product-img" style="background:' + bg + ';display:flex;align-items:center;justify-content:center;font-size:1.5rem;">' + emoji + '</div>';
+              }
+              html += '<div class="phone-product">' +
+                        imgHtml +
+                        '<div class="phone-product-name">' + p.name + '</div>' +
+                        '<div class="phone-product-price">R$ ' + fmtMoney(p.price) + '</div>' +
+                      '</div>';
+            });
+            phoneEl.innerHTML = html;
+          }
+
+          // ── Reviews / Testimonials ──
+          if (d.reviews && d.reviews.length > 0) {
+            for (var i = 0; i < Math.min(d.reviews.length, 3); i++) {
+              var r = d.reviews[i];
+              var idx = i + 1;
+              var comment = r.comment || 'Otimo servico!';
+              if (comment.length > 150) comment = comment.substring(0, 147) + '...';
+              setText('review-' + idx + '-text', '\u201C' + comment + '\u201D');
+              setText('review-' + idx + '-name', r.customer_name);
+              setText('review-' + idx + '-city', r.city || 'SuperBora');
+
+              var avatarEl = document.getElementById('review-' + idx + '-avatar');
+              if (avatarEl) {
+                var ini = initials(r.customer_name);
+                var col = avatarColor(r.customer_name);
+                avatarEl.textContent = ini;
+                avatarEl.style.background = col;
+                avatarEl.style.color = '#fff';
+                avatarEl.style.display = 'flex';
+                avatarEl.style.alignItems = 'center';
+                avatarEl.style.justifyContent = 'center';
+                avatarEl.style.fontWeight = '700';
+                avatarEl.style.fontSize = '0.85rem';
+              }
+            }
+
+            // If fewer than 3 reviews, fill remaining with generated ones
+            if (d.reviews.length < 3) {
+              var fallback = [
+                { comment: 'Muito pratico! Faco todas minhas compras pelo app agora.', customer_name: 'Cliente SuperBora', city: '' },
+                { comment: 'Entrega rapida e produtos sempre frescos. Recomendo!', customer_name: 'Cliente SuperBora', city: '' },
+                { comment: 'Melhor app de mercado que ja usei. Cashback e otimo!', customer_name: 'Cliente SuperBora', city: '' }
+              ];
+              for (var j = d.reviews.length; j < 3; j++) {
+                var fb = fallback[j];
+                var jdx = j + 1;
+                setText('review-' + jdx + '-text', '\u201C' + fb.comment + '\u201D');
+                setText('review-' + jdx + '-name', fb.customer_name);
+                setText('review-' + jdx + '-city', fb.city || 'SuperBora');
+                var fbAvatar = document.getElementById('review-' + jdx + '-avatar');
+                if (fbAvatar) {
+                  fbAvatar.textContent = initials(fb.customer_name);
+                  fbAvatar.style.background = avatarColors[j + 3];
+                  fbAvatar.style.color = '#fff';
+                  fbAvatar.style.display = 'flex';
+                  fbAvatar.style.alignItems = 'center';
+                  fbAvatar.style.justifyContent = 'center';
+                  fbAvatar.style.fontWeight = '700';
+                  fbAvatar.style.fontSize = '0.85rem';
+                }
+              }
+            }
+          }
+
+          // ── Update phone categories from API ──
+          if (d.categorias && d.categorias.length > 0) {
+            var catGrid = document.querySelector('.phone-categories');
+            if (catGrid) {
+              var catEmojis = {
+                'frutas': '\uD83C\uDF4E', 'verduras': '\uD83E\uDD66', 'legumes': '\uD83E\uDD55',
+                'laticinios': '\uD83E\uDD5B', 'laticínios': '\uD83E\uDD5B', 'carnes': '\uD83E\uDD69',
+                'limpeza': '\uD83E\uDDF9', 'doces': '\uD83C\uDF6B', 'padaria': '\uD83C\uDF5E',
+                'bebidas': '\uD83E\uDD64', 'higiene': '\uD83E\uDDF4', 'frios': '\uD83E\uDDC0',
+                'mercearia': '\uD83C\uDF5A', 'hortifruti': '\uD83E\uDD57', 'congelados': '\u2744\uFE0F',
+                'pet': '\uD83D\uDC36', 'bebe': '\uD83D\uDC76', 'bebê': '\uD83D\uDC76'
+              };
+              var catBgs = ['#ecfdf5','#fef9c3','#fef2f2','#eff6ff','#f5f3ff','#fff7ed','#f0fdf4','#fdf4ff'];
+              var catHtml = '';
+              var maxCats = Math.min(d.categorias.length, 5);
+              for (var c = 0; c < maxCats; c++) {
+                var cat = d.categorias[c];
+                var catName = cat.name || 'Geral';
+                var catLower = catName.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+                var catIcon = cat.icon || catEmojis[catLower] || '\uD83D\uDED2';
+                var catBg = catBgs[c % catBgs.length];
+                catHtml += '<div class="phone-cat-item">' +
+                  '<div class="phone-cat-icon" style="background:' + catBg + ';">' + catIcon + '</div>' +
+                  '<span class="phone-cat-label">' + catName + '</span>' +
+                '</div>';
+              }
+              catGrid.innerHTML = catHtml;
+            }
+          }
+
+          // ── Cities in hero badge or subtitle ──
+          if (d.cidades && d.cidades.length > 0) {
+            var cityText = d.cidades.slice(0, 4).join(', ');
+            if (d.cidades.length > 4) cityText += ' e mais ' + (d.cidades.length - 4);
+            var badgeDot = document.querySelector('.hero-badge');
+            if (badgeDot) {
+              badgeDot.innerHTML = '<span class="hero-badge-dot"></span>Entregando em ' + cityText;
+            }
+          }
+        })
+        .catch(function(err) {
+          // Fallback: show static data on API failure
+          setText('stat-produtos', '320+');
+          setText('stat-entrega', '30 min');
+          setText('stat-rating', '4.7\u2B50');
+          setText('sp-clientes', '40+');
+          setText('sp-rating', '4.7');
+          setText('sp-entregas', '160+');
+          setText('sp-tempo', '30 min');
+          setText('feat-frete-min', '3,99');
+        });
     })();
   </script>
 </body>

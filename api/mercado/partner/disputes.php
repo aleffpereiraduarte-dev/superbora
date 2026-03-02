@@ -106,6 +106,8 @@ try {
                 'escalated' => 'Escalado', 'resolved' => 'Resolvido', 'closed' => 'Fechado',
             ];
 
+            $severityLabels = ['low' => 'Baixa', 'medium' => 'Media', 'high' => 'Alta', 'critical' => 'Critica'];
+
             $photoUrls = [];
             if ($dispute['photo_urls']) {
                 $decoded = json_decode($dispute['photo_urls'], true);
@@ -126,6 +128,7 @@ try {
                     'category' => $dispute['category'],
                     'subcategory' => $dispute['subcategory'],
                     'severity' => $dispute['severity'],
+                    'severity_label' => $severityLabels[$dispute['severity']] ?? $dispute['severity'],
                     'description' => $dispute['description'],
                     'photo_urls' => $photoUrls,
                     'affected_items' => $affectedItems,
@@ -270,10 +273,13 @@ try {
 
             if (!$disputeId) response(false, null, "dispute_id obrigatorio", 400);
 
-            // Verify dispute belongs to partner
-            $stmtD = $db->prepare("SELECT dispute_id, status FROM om_order_disputes WHERE dispute_id = ? AND partner_id = ?");
+            // Verify dispute belongs to partner and get order_id/customer_id
+            $stmtD = $db->prepare("SELECT dispute_id, order_id, customer_id, status FROM om_order_disputes WHERE dispute_id = ? AND partner_id = ?");
             $stmtD->execute([$disputeId, $partnerId]);
-            if (!$stmtD->fetch()) response(false, null, "Disputa nao encontrada", 404);
+            $disputeRow = $stmtD->fetch();
+            if (!$disputeRow) response(false, null, "Disputa nao encontrada", 404);
+            $orderId = (int)($disputeRow['order_id'] ?? 0);
+            $customerId = (int)($disputeRow['customer_id'] ?? 0);
 
             if (empty($_FILES['photo']) || $_FILES['photo']['error'] !== UPLOAD_ERR_OK) {
                 response(false, null, "Foto obrigatoria", 400);
@@ -312,8 +318,8 @@ try {
             // Save to evidence table
             $db->prepare("
                 INSERT INTO om_dispute_evidence (dispute_id, order_id, customer_id, photo_url, file_size, caption, created_at)
-                VALUES (?, 0, 0, ?, ?, ?, NOW())
-            ")->execute([$disputeId, $publicUrl, $file['size'], "Evidencia do parceiro"]);
+                VALUES (?, ?, ?, ?, ?, ?, NOW())
+            ")->execute([$disputeId, $orderId, $customerId, $publicUrl, $file['size'], "Evidencia do parceiro"]);
 
             // Add timeline entry
             $db->prepare("

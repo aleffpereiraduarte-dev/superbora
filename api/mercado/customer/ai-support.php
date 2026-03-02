@@ -61,7 +61,7 @@ $orderInfo = '';
 if ($orderId) {
     $stmt = $db->prepare("
         SELECT o.order_id, o.status, o.total, o.created_at, o.payment_method,
-               p.business_name as partner_name
+               p.name as partner_name
         FROM om_market_orders o
         LEFT JOIN om_market_partners p ON p.partner_id = o.partner_id
         WHERE o.order_id = ? AND o.customer_id = ?
