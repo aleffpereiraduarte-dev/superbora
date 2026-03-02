@@ -171,6 +171,35 @@ function buildCustomerContext(PDO $db, int $customerId): array {
     $ctx['cartTotal'] = array_sum(array_map(fn($c) => (float)$c['price'] * (int)$c['quantity'], $ctx['cart']));
     $ctx['cartItems'] = count($ctx['cart']);
 
+    // G) Active orders (pending, aceito, preparando, pronto, em_entrega, out_for_delivery)
+    $stmt = $db->prepare("
+        SELECT o.order_id, o.order_number, o.status, o.total, o.payment_method,
+               o.date_added, o.partner_name, o.items_count,
+               e.driver_name, e.driver_phone
+        FROM om_market_orders o
+        LEFT JOIN om_entregas e ON e.order_id = o.order_id
+        WHERE o.customer_id = ?
+          AND o.status NOT IN ('entregue', 'retirado', 'cancelado', 'recusado')
+        ORDER BY o.date_added DESC
+        LIMIT 5
+    ");
+    $stmt->execute([$customerId]);
+    $ctx['activeOrders'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // H) Recent completed orders (last 7 days)
+    $stmt = $db->prepare("
+        SELECT o.order_id, o.order_number, o.status, o.total, o.payment_method,
+               o.date_added, o.partner_name, o.items_count
+        FROM om_market_orders o
+        WHERE o.customer_id = ?
+          AND o.status IN ('entregue', 'retirado')
+          AND o.date_added > NOW() - INTERVAL '7 days'
+        ORDER BY o.date_added DESC
+        LIMIT 5
+    ");
+    $stmt->execute([$customerId]);
+    $ctx['recentOrders'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
     // Top categories
     $categories = [];
     foreach ($ctx['topItems'] as $item) {
@@ -190,6 +219,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     try {
         $ctx = buildCustomerContext($db, $customerId);
         $meal = getMealPeriod();
+
+        // Resume existing conversation if provided and recent (< 1 hour)
+        $resumeConversationId = trim($_GET['conversation_id'] ?? '');
+        $conversationMessages = [];
+        $activeConversationId = null;
+
+        if ($resumeConversationId) {
+            // Verify ownership + check if recent (last message within 1 hour)
+            $stmt = $db->prepare("
+                SELECT c.conversation_id, MAX(m.created_at) as last_msg_at
+                FROM om_ai_customer_conversations c
+                LEFT JOIN om_ai_customer_messages m ON m.conversation_id = c.conversation_id
+                WHERE c.conversation_id = ? AND c.customer_id = ?
+                GROUP BY c.conversation_id
+                HAVING MAX(m.created_at) > NOW() - INTERVAL '1 hour'
+            ");
+            $stmt->execute([$resumeConversationId, $customerId]);
+            $conv = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if ($conv) {
+                $activeConversationId = $conv['conversation_id'];
+                // Load last 30 messages for display
+                $stmt = $db->prepare("
+                    SELECT role, content, created_at
+                    FROM om_ai_customer_messages
+                    WHERE conversation_id = ?
+                    ORDER BY created_at ASC
+                    LIMIT 30
+                ");
+                $stmt->execute([$activeConversationId]);
+                $conversationMessages = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            }
+        }
 
         // Last delivered order for "reorder" card
         $lastOrder = null;
@@ -277,6 +339,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             'is_open' => (int)($p['is_open'] ?? 0) === 1,
         ], array_slice($ctx['nearbyPartners'], 0, 15));
 
+        // Active orders summary for frontend display
+        $activeOrdersSummary = array_map(fn($o) => [
+            'order_id' => (int)$o['order_id'],
+            'order_number' => $o['order_number'] ?? '',
+            'status' => $o['status'],
+            'partner_name' => $o['partner_name'] ?? '',
+            'total' => round((float)$o['total'], 2),
+            'items_count' => (int)($o['items_count'] ?? 0),
+            'date_added' => $o['date_added'],
+            'driver_name' => $o['driver_name'] ?? null,
+        ], $ctx['activeOrders'] ?? []);
+
         response(true, [
             'customer_name' => $ctx['firstName'],
             'greeting' => $meal['greeting'] . ', ' . $ctx['firstName'] . '!',
@@ -287,11 +361,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             'cart_summary' => $cartSummary,
             'top_categories' => $ctx['topCategories'],
             'nearby_stores' => $nearbyStoresSummary,
+            'active_orders' => $activeOrdersSummary,
             'order_stats' => [
                 'total_orders' => $ctx['orderCount'],
                 'avg_total' => $ctx['avgTotal'],
                 'days_since_last' => $ctx['daysSinceOrder'],
             ],
+            'conversation_id' => $activeConversationId,
+            'conversation_messages' => $conversationMessages,
         ]);
 
     } catch (Exception $e) {
@@ -431,6 +508,38 @@ try {
         ? json_encode(array_map(fn($c) => $c['name'] . ' x' . $c['quantity'], $ctx['cart']), JSON_UNESCAPED_UNICODE)
         : 'vazio';
 
+    // ── Build active orders context ──
+    $activeOrdersJson = 'nenhum pedido ativo';
+    if (!empty($ctx['activeOrders'])) {
+        $statusMap = [
+            'pendente' => 'Aguardando aceite da loja',
+            'aceito' => 'Aceito pela loja',
+            'preparando' => 'Sendo preparado',
+            'pronto' => 'Pronto para entrega/retirada',
+            'em_entrega' => 'Saiu para entrega',
+            'out_for_delivery' => 'A caminho do cliente',
+        ];
+        $orderLines = [];
+        foreach ($ctx['activeOrders'] as $ao) {
+            $statusLabel = $statusMap[$ao['status']] ?? $ao['status'];
+            $line = "Pedido #{$ao['order_number']} - {$ao['partner_name']} - R$ " . number_format((float)$ao['total'], 2, ',', '.') . " - Status: {$statusLabel}";
+            if (!empty($ao['driver_name'])) {
+                $line .= " - Entregador: {$ao['driver_name']}";
+            }
+            $orderLines[] = $line;
+        }
+        $activeOrdersJson = implode("\n", $orderLines);
+    }
+
+    $recentOrdersJson = 'nenhum pedido recente';
+    if (!empty($ctx['recentOrders'])) {
+        $recentLines = [];
+        foreach ($ctx['recentOrders'] as $ro) {
+            $recentLines[] = "Pedido #{$ro['order_number']} - {$ro['partner_name']} - R$ " . number_format((float)$ro['total'], 2, ',', '.') . " - {$ro['status']} em {$ro['date_added']}";
+        }
+        $recentOrdersJson = implode("\n", $recentLines);
+    }
+
     // ── ONE System Prompt ──
     $systemPrompt = "Voce e a ONE, assistente de compras do SuperBora. Como uma amiga que entende tudo de mercado e sabe exatamente o que o cliente precisa.
 
@@ -456,6 +565,20 @@ CONTEXTO DO CLIENTE:
 - Favoritos: {$favoritesJson}
 - Mais comprados: {$topItemsJson}
 - Horario: {$meal['time']} ({$meal['period']})
+
+PEDIDOS ATIVOS DO CLIENTE (em andamento agora):
+{$activeOrdersJson}
+
+PEDIDOS RECENTES (ultimos 7 dias, ja finalizados):
+{$recentOrdersJson}
+
+REGRAS SOBRE PEDIDOS:
+- Quando o cliente perguntar sobre pedido, status, entrega, motorista — RESPONDA com os dados acima
+- Se o pedido esta 'preparando', diga que a loja esta preparando e estime o tempo
+- Se esta 'em_entrega' ou 'out_for_delivery', informe o nome do motorista se disponivel
+- Se nao tem pedido ativo, informe que nao ha pedidos em andamento
+- Para reclamacoes ou problemas com pedido, sugira usar o suporte (quick_action navigate para /ajuda)
+- Voce pode sugerir que o cliente peca mais coisas enquanto espera o pedido atual
 
 LOJAS PROXIMAS DO CLIENTE (supermercados, restaurantes, pizzarias, padarias, etc — sugira produtos de TODAS estas lojas, incluindo restaurantes):
 {$nearbyStoresJson}
