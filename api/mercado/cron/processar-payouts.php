@@ -153,9 +153,10 @@ try {
                 INSERT INTO om_woovi_payouts
                     (partner_id, correlation_id, amount_cents, amount, pix_key, pix_key_type, status, type, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, 'pending', 'auto', NOW())
+                RETURNING id
             ");
             $stmtInsert->execute([$partnerId, $correlationId, $amountCents, $amount, $pixKey, $pixKeyType]);
-            $payoutId = (int)$db->lastInsertId();
+            $payoutId = (int)$stmtInsert->fetchColumn();
 
             // Log no wallet
             $stmtLog = $db->prepare("

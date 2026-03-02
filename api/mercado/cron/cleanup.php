@@ -47,6 +47,7 @@ try {
           AND forma_pagamento = 'pix'
           AND timer_expires IS NOT NULL
           AND timer_expires < NOW()
+        LIMIT 500
     ");
     $stmt->execute();
     $candidates = $stmt->fetchAll(PDO::FETCH_COLUMN);

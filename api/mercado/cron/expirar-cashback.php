@@ -61,7 +61,7 @@ try {
         WHERE expired = 0
         AND expires_at IS NOT NULL
         AND expires_at <= NOW()
-        AND type = 'earned'
+        AND type = 'credit'
         LIMIT 500
     ");
     $stmt->execute();

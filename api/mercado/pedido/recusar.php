@@ -126,14 +126,14 @@ try {
         if ($customer_id_ws) {
             wsBroadcastToCustomer($customer_id_ws, 'order_update', [
                 'order_id' => $order_id,
-                'status' => 'recusado',
+                'status' => 'cancelado',
                 'previous_status' => $pedido['status'],
                 'motivo' => $motivo,
             ]);
         }
         wsBroadcastToOrder($order_id, 'order_update', [
             'order_id' => $order_id,
-            'status' => 'recusado',
+            'status' => 'cancelado',
             'motivo' => $motivo,
         ]);
     } catch (\Throwable $e) {}

@@ -54,26 +54,31 @@ try {
     if (!$payload || $payload['type'] !== 'customer') response(false, null, "Token invalido", 401);
     $customer_id = (int)$payload['uid'];
 
-    // Verify customer owns this order
-    $stmtOwner = $db->prepare("SELECT customer_id, status, updated_at, shopper_id, avaliacao_cliente FROM om_market_orders WHERE order_id = ?");
+    // Verify customer owns this order — use FOR UPDATE to prevent race condition on duplicate ratings
+    $db->beginTransaction();
+    $stmtOwner = $db->prepare("SELECT customer_id, status, updated_at, shopper_id, avaliacao_cliente FROM om_market_orders WHERE order_id = ? FOR UPDATE");
     $stmtOwner->execute([$order_id]);
     $pedido = $stmtOwner->fetch();
 
     if (!$pedido || (int)$pedido['customer_id'] !== (int)$customer_id) {
+        $db->rollBack();
         response(false, null, "Voce nao pode avaliar este pedido", 403);
     }
 
     if (!in_array($pedido["status"], ["entregue", "delivered", "finalizado"])) {
+        $db->rollBack();
         response(false, null, "Pedido ainda nao foi entregue", 400);
     }
 
     // Check 30-day window
     if ($pedido['updated_at'] && strtotime($pedido['updated_at']) < strtotime('-30 days')) {
+        $db->rollBack();
         response(false, null, "Prazo para avaliar este pedido expirou (30 dias)", 400);
     }
 
-    // Verificar se já foi avaliado
+    // Verificar se já foi avaliado (under lock)
     if ($pedido["avaliacao_cliente"]) {
+        $db->rollBack();
         response(false, null, "Este pedido já foi avaliado", 409);
     }
 
@@ -81,6 +86,7 @@ try {
     $stmt = $db->prepare("UPDATE om_market_orders SET avaliacao_cliente = ?, comentario_cliente = ?, avaliado_em = NOW() WHERE order_id = ? AND avaliacao_cliente IS NULL");
     $stmt->execute([$nota, $comentario, $order_id]);
     if ($stmt->rowCount() === 0) {
+        $db->rollBack();
         response(false, null, "Este pedido já foi avaliado", 409);
     }
 
@@ -97,6 +103,8 @@ try {
         $stmt->execute([$media, $shopper_id]);
     }
 
+    $db->commit();
+
     // Log da avaliação
     error_log("Pedido avaliado: #$order_id | Nota: $nota");
 
@@ -107,6 +115,9 @@ try {
     ], "Avaliação enviada! Obrigado.");
 
 } catch (Exception $e) {
+    if (isset($db) && $db->inTransaction()) {
+        $db->rollBack();
+    }
     error_log("Pedido avaliar error: " . $e->getMessage());
     response(false, null, "Erro ao enviar avaliação. Tente novamente.", 500);
 }

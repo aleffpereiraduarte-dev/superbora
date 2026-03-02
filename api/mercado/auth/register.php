@@ -14,6 +14,11 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     response(false, null, "Metodo nao permitido", 405);
 }
 
+require_once dirname(__DIR__, 2) . "/rate-limit/RateLimiter.php";
+if (!RateLimiter::check(5, 60)) { // 5 registrations per minute per IP
+    exit;
+}
+
 function validarCPF(string $cpf): bool {
     $cpf = preg_replace('/[^0-9]/', '', $cpf);
     if (strlen($cpf) !== 11) return false;

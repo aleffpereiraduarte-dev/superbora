@@ -73,10 +73,10 @@ try {
         response(false, null, "Senha incorreta", 401);
     }
 
-    // Upgrade legacy MD5/SHA1 hash to bcrypt (defense-in-depth, login.php also does this)
+    // Upgrade legacy MD5/SHA1 hash to Argon2ID (defense-in-depth, login.php also does this)
     if ($passwordValid && !empty($storedHash) && !password_verify($senha, $storedHash)) {
         try {
-            $newHash = password_hash($senha, PASSWORD_BCRYPT);
+            $newHash = om_auth()->hashPassword($senha);
             $db->prepare("UPDATE om_customers SET password_hash = ? WHERE customer_id = ?")->execute([$newHash, $customerId]);
             error_log("[customer/account] Upgraded legacy password hash to bcrypt for customer #{$customerId}");
         } catch (Exception $hashErr) {

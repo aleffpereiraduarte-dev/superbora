@@ -139,6 +139,11 @@ if (!empty($autoTargets)) {
 
     foreach ($autoTargets as $t) {
         try {
+            // Check if customer has push tokens before sending
+            $hasTokens = $db->prepare("SELECT 1 FROM om_market_push_tokens WHERE user_id = ? AND user_type = 'customer' LIMIT 1");
+            $hasTokens->execute([$t['customer_id']]);
+            if (!$hasTokens->fetchColumn()) continue;
+
             $sender->notifyCustomer(
                 (int)$t['customer_id'],
                 'Sentimos sua falta! 💛',

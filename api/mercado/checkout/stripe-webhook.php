@@ -76,14 +76,17 @@ try {
 
     // Table om_stripe_webhook_events created via migration
 
-    // Idempotency check: skip only if this event was already PROCESSED successfully
+    // BUG 6: Atomic idempotency check using INSERT ON CONFLICT DO NOTHING
     $eventId = $event['id'];
-    try {
-        $db->prepare("
-            INSERT INTO om_stripe_webhook_events (event_id, event_type, status) VALUES (?, ?, 'received')
-        ")->execute([$eventId, $event['type']]);
-    } catch (Exception $dupEx) {
-        // Duplicate event_id — check if it was successfully processed
+    $stmtInsert = $db->prepare("
+        INSERT INTO om_stripe_webhook_events (event_id, event_type, status)
+        VALUES (?, ?, 'received')
+        ON CONFLICT (event_id) DO NOTHING
+    ");
+    $stmtInsert->execute([$eventId, $event['type']]);
+
+    if ($stmtInsert->rowCount() === 0) {
+        // Row already exists — check if it was successfully processed
         $stmtCheck = $db->prepare("SELECT status FROM om_stripe_webhook_events WHERE event_id = ?");
         $stmtCheck->execute([$eventId]);
         $existing = $stmtCheck->fetch();

@@ -71,9 +71,13 @@ try {
             accepted_at = NOW(),
             partner_categoria = ?,
             date_modified = NOW()
-        WHERE order_id = ?
+        WHERE order_id = ? AND status IN ('pendente', 'confirmado')
     ");
     $stmt->execute([$novo_status, $categoria, $order_id]);
+    if ($stmt->rowCount() === 0) {
+        $db->rollBack();
+        response(false, null, "Pedido ja foi aceito por outra sessao (status atual: {$pedido['status']})", 409);
+    }
     $db->commit();
 
     // WebSocket broadcast (never breaks the flow)

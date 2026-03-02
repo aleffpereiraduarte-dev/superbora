@@ -153,7 +153,7 @@ function setCorsHeaders(): void {
     header("X-Frame-Options: DENY");
     header("Referrer-Policy: strict-origin-when-cross-origin");
     header("Content-Security-Policy: default-src 'none'; frame-ancestors 'none'");
-    header("Strict-Transport-Security: max-age=31536000; includeSubDomains");
+    header("Strict-Transport-Security: max-age=63072000; includeSubDomains; preload");
 
     if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
         http_response_code(200);

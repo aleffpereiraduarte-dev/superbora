@@ -77,8 +77,10 @@ try {
         ");
         $stmt->execute([$userId, $userType, $pushToken, $platform]);
 
-        // Clean up: remove old tokens for same user (keep max 5 per user)
-        cleanupOldTokens($db, $userId, $userType, 5);
+        // Only cleanup occasionally to avoid race conditions
+        if (random_int(1, 10) === 1) {
+            cleanupOldTokens($db, $userId, $userType, 5);
+        }
 
         response(true, ['registered' => true], "Token registrado com sucesso");
 

@@ -40,8 +40,8 @@ class NotificationSender
     {
         if (self::$instance === null) {
             self::$instance = new self($db);
-        } else {
-            // Always update PDO to avoid stale connection issues
+        } elseif ($db !== null && self::$instance->db !== $db) {
+            // Only update PDO if a different connection is passed
             self::$instance->db = $db;
             self::$instance->fcm = FCMHelper::getInstance($db);
         }

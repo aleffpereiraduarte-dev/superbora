@@ -50,7 +50,10 @@ try {
         $whereParams = [$session_id];
     }
     $stmtSub = $db->prepare("
-        SELECT COALESCE(SUM(p.price * c.quantity), 0) AS subtotal
+        SELECT COALESCE(SUM(
+            CASE WHEN p.special_price IS NOT NULL AND p.special_price > 0 AND p.special_price < p.price
+                 THEN p.special_price ELSE p.price END
+            * c.quantity), 0) AS subtotal
         FROM om_market_cart c
         INNER JOIN om_market_products p ON c.product_id = p.product_id
         WHERE {$whereClause}

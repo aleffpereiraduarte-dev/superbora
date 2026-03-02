@@ -204,9 +204,10 @@ try {
         // 4. Restaurar pontos de fidelidade usados (proporcional se taxa)
         $pointsUsed = (int)($pedido['loyalty_points_used'] ?? 0);
         if ($pointsUsed > 0) {
-            $pointsToRefund = $cancellationFee > 0 && $orderTotal > 0
-                ? (int)round($pointsUsed * ($refundAmount / $orderTotal))
+            $pointsToRefund = $cancellationFee > 0
+                ? (int)round($pointsUsed * (max(0, $refundAmount) / max(1, $orderTotal)))
                 : $pointsUsed;
+            $pointsToRefund = max(0, min($pointsToRefund, $pointsUsed));
             if ($pointsToRefund > 0) {
                 $db->prepare("UPDATE om_market_loyalty_points SET current_points = current_points + ?, updated_at = NOW() WHERE customer_id = ?")
                    ->execute([$pointsToRefund, $customer_id]);
@@ -299,11 +300,21 @@ try {
 
                 if (!empty($wooviCorrelation)) {
                     $woovi = new WooviClient();
-                    $refundResult = $woovi->refundCharge($wooviCorrelation, "Cancelamento pedido #$order_id");
-                    error_log("[cancelar] PIX refund pedido #$order_id correlation=$wooviCorrelation result=" . json_encode($refundResult['data'] ?? []));
+                    $pixRefundResult = $woovi->refundCharge($wooviCorrelation, "Cancelamento pedido #$order_id");
+                    error_log("[cancelar] PIX refund pedido #$order_id correlation=$wooviCorrelation result=" . json_encode($pixRefundResult['data'] ?? []));
 
-                    // Update transaction status
-                    $db->prepare("UPDATE om_pagarme_transacoes SET status = 'refunded' WHERE pedido_id = ? AND tipo = 'pix'")->execute([$order_id]);
+                    // Validate refund result before marking as refunded
+                    $pixRefundOk = !empty($pixRefundResult['data']['refund']['status'])
+                        || !empty($pixRefundResult['data']['status'])
+                        || (isset($pixRefundResult['success']) && $pixRefundResult['success']);
+
+                    if ($pixRefundOk) {
+                        $db->prepare("UPDATE om_pagarme_transacoes SET status = 'refunded' WHERE pedido_id = ? AND tipo = 'pix'")->execute([$order_id]);
+                    } else {
+                        error_log("[cancelar] PIX refund FAILED pedido #$order_id correlation=$wooviCorrelation — needs manual processing");
+                        $db->prepare("UPDATE om_pagarme_transacoes SET status = 'refund_failed' WHERE pedido_id = ? AND tipo = 'pix'")->execute([$order_id]);
+                        $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ' [PIX REFUND FAILED - MANUAL]' WHERE order_id = ?")->execute([$order_id]);
+                    }
                 }
             } catch (Exception $pixRefErr) {
                 error_log("[cancelar] Erro estorno PIX pedido #$order_id: " . $pixRefErr->getMessage());

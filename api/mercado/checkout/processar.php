@@ -179,13 +179,24 @@ try {
         response(false, null, "Loja fechada no momento. Tente novamente mais tarde.", 400);
     }
 
-    // Calcular valores
+    // Calcular valores — filter invalid items
     $subtotal = 0;
+    $validItens = [];
     foreach ($itens as $item) {
+        $qty = (int)$item['quantity'];
+        if ($qty <= 0) continue; // BUG 5: skip invalid quantities
         $preco = ($item['special_price'] && (float)$item['special_price'] > 0 && (float)$item['special_price'] < (float)$item['price'])
             ? (float)$item['special_price'] : (float)$item['price'];
-        $subtotal += $preco * (int)$item['quantity'];
+        if ($preco <= 0) { // BUG 7: reject zero/negative prices
+            response(false, null, "Preco invalido para {$item['name']}", 400);
+        }
+        $subtotal += $preco * $qty;
+        $validItens[] = $item;
     }
+    if (empty($validItens)) { // BUG 5: all items had invalid qty
+        response(false, null, "Carrinho vazio", 400);
+    }
+    $itens = $validItens;
 
     // ═══════════════════════════════════════════════════════
     // FRETE — calculado via OmPricing (fonte unica de verdade)

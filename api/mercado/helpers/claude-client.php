@@ -44,7 +44,7 @@ class ClaudeClient {
         $lastError = '';
         for ($attempt = 0; $attempt <= $this->maxRetries; $attempt++) {
             if ($attempt > 0) {
-                usleep(1000000 * $attempt); // 1s, 2s backoff
+                sleep(pow(2, $attempt)); // 2s, 4s exponential backoff
             }
 
             $ch = curl_init('https://api.anthropic.com/v1/messages');

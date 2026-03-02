@@ -23,10 +23,10 @@ let dbPool = null;
 async function initDB() {
   try {
     dbPool = mysql.createPool({
-      host: '147.93.12.236',
-      user: 'love1',
-      password: 'Aleff2009@',
-      database: 'love1',
+      host: process.env.DB_HOST || '127.0.0.1',
+      user: process.env.DB_USER || 'love1',
+      password: process.env.DB_PASSWORD || '',
+      database: process.env.DB_NAME || 'love1',
       waitForConnections: true,
       connectionLimit: 5,
     });

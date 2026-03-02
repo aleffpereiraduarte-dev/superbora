@@ -149,12 +149,22 @@ try {
         error_log("[pronto] Pedido #$order_id sem dispatch automatico (propria=$entregaPropria, boraum=$aceitaBoraum)");
     }
 
-    response(true, [
+    $responseData = [
         "order_id" => $order_id,
         "status" => "pronto",
         "ready_at" => date('c'),
-        "entrega" => $entrega
-    ], "Pedido pronto!" . ($entrega && $entrega['success'] ? " Entregador sendo chamado." : ""));
+        "entrega" => $entrega,
+    ];
+    $msg = "Pedido pronto!";
+    if ($entrega && !empty($entrega['success'])) {
+        $msg .= " Entregador sendo chamado.";
+    } elseif ($aceitaBoraum && !$isPickup && !($entregaPropria && !$aceitaBoraum)) {
+        $responseData['delivery_dispatch'] = 'failed';
+        $msg .= " Aviso: falha ao chamar entregador. Tente despachar manualmente.";
+        error_log("[pronto] WARN: BoraUm dispatch failed for order #$order_id");
+    }
+
+    response(true, $responseData, $msg);
 
 } catch (Exception $e) {
     if (isset($db) && $db->inTransaction()) {

@@ -129,12 +129,16 @@ try {
     $orderItems = [];
     foreach ($cartItems as $item) {
         $qty = (int)$item['quantity'];
+        if ($qty <= 0) continue; // BUG 5: skip invalid quantities
         $stock = (int)$item['stock'];
         if ($qty > $stock) {
             response(false, null, "Estoque insuficiente para {$item['product_name']} (disponivel: {$stock})", 400);
         }
         $price = ($item['special_price'] && (float)$item['special_price'] > 0 && (float)$item['special_price'] < (float)$item['price'])
             ? (float)$item['special_price'] : (float)$item['price'];
+        if ($price <= 0) { // BUG 7: reject zero/negative prices
+            response(false, null, "Preco invalido para {$item['product_name']}", 400);
+        }
         $itemTotal = $price * $qty;
         $subtotal += $itemTotal;
         $orderItems[] = [
@@ -146,6 +150,10 @@ try {
             'subtotal' => $itemTotal,
             'notes' => $item['item_notes'] ?? '',
         ];
+    }
+
+    if (empty($orderItems)) { // BUG 5: all items had invalid qty
+        response(false, null, "Carrinho vazio", 400);
     }
 
     // ═══════════════════════════════════════════════════════

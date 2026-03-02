@@ -19,7 +19,7 @@ $db = getDB();
 $processed = 0;
 
 // Clear stale processing markers from previous failed runs
-$db->exec("UPDATE om_market_reviews SET partner_reply = NULL WHERE partner_reply = '__processing__' AND updated_at < NOW() - INTERVAL '10 minutes'");
+$db->exec("UPDATE om_market_reviews SET partner_reply = NULL WHERE id IN (SELECT id FROM om_market_reviews WHERE partner_reply = '__processing__' AND updated_at < NOW() - INTERVAL '10 minutes' LIMIT 50)");
 
 // Select reviews with FOR UPDATE SKIP LOCKED and immediately mark as processing
 // to prevent duplicate AI responses under concurrent execution
