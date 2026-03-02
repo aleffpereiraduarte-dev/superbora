@@ -287,6 +287,22 @@ try {
                 $db->prepare("INSERT INTO om_market_order_events (order_id, event_type, message, created_by, created_at) VALUES (?, ?, ?, ?, NOW())")
                     ->execute([$orderId, 'kds_start_preparing', 'Preparo iniciado via KDS', "partner:$partnerId"]);
 
+                // WebSocket broadcast
+                try {
+                    require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
+                    $stmtCid = $db->prepare("SELECT customer_id FROM om_market_orders WHERE order_id = ?");
+                    $stmtCid->execute([$orderId]);
+                    $cid = (int)$stmtCid->fetchColumn();
+                    if ($cid) {
+                        wsBroadcastToCustomer($cid, 'order_update', [
+                            'order_id' => $orderId, 'status' => 'preparando', 'previous_status' => 'aceito',
+                        ]);
+                    }
+                    wsBroadcastToOrder($orderId, 'order_update', [
+                        'order_id' => $orderId, 'status' => 'preparando',
+                    ]);
+                } catch (\Throwable $e) {}
+
                 response(true, ["order_id" => $orderId, "new_status" => "preparando"], "Preparo iniciado");
                 break;
 
@@ -349,12 +365,46 @@ try {
                     response(false, null, "Pedido precisa estar em preparo para marcar como pronto", 400);
                 }
 
-                $stmt = $db->prepare("
-                    UPDATE om_market_orders
-                    SET status = 'pronto', ready_at = NOW(), updated_at = NOW(), date_modified = NOW()
-                    WHERE order_id = ? AND partner_id = ?
-                ");
-                $stmt->execute([$orderId, $partnerId]);
+                // Fetch full order + partner data for delivery dispatch
+                $stmtFull = $db->prepare("SELECT * FROM om_market_orders WHERE order_id = ? AND partner_id = ? FOR UPDATE");
+                $db->beginTransaction();
+                $stmtFull->execute([$orderId, $partnerId]);
+                $pedido = $stmtFull->fetch();
+
+                $stmtPartner = $db->prepare("SELECT categoria, aceita_boraum, entrega_propria, aceita_retirada FROM om_market_partners WHERE partner_id = ?");
+                $stmtPartner->execute([$partnerId]);
+                $parceiro = $stmtPartner->fetch();
+
+                $isPickup = (bool)($pedido['is_pickup'] ?? false);
+                $aceitaBoraum = (bool)($parceiro['aceita_boraum'] ?? true);
+                $entregaPropria = (bool)($parceiro['entrega_propria'] ?? false);
+
+                // Determine delivery_type (same logic as pronto.php)
+                $deliveryType = null;
+                if ($isPickup) {
+                    $deliveryType = 'retirada';
+                } elseif ($entregaPropria && !$aceitaBoraum) {
+                    $deliveryType = 'proprio';
+                } elseif ($aceitaBoraum) {
+                    $deliveryType = 'boraum';
+                }
+
+                // Update status + delivery_type atomically
+                if ($deliveryType) {
+                    $stmt = $db->prepare("
+                        UPDATE om_market_orders
+                        SET status = 'pronto', ready_at = NOW(), delivery_type = ?, date_modified = NOW()
+                        WHERE order_id = ? AND partner_id = ?
+                    ");
+                    $stmt->execute([$deliveryType, $orderId, $partnerId]);
+                } else {
+                    $stmt = $db->prepare("
+                        UPDATE om_market_orders
+                        SET status = 'pronto', ready_at = NOW(), date_modified = NOW()
+                        WHERE order_id = ? AND partner_id = ?
+                    ");
+                    $stmt->execute([$orderId, $partnerId]);
+                }
 
                 // Mark all items as ready
                 $stmtAllItems = $db->prepare("SELECT id FROM om_market_order_items WHERE order_id = ?");
@@ -372,38 +422,74 @@ try {
                 $db->prepare("INSERT INTO om_market_order_events (order_id, event_type, message, created_by, created_at) VALUES (?, ?, ?, ?, NOW())")
                     ->execute([$orderId, 'kds_order_ready', 'Pedido marcado como pronto via KDS', "partner:$partnerId"]);
 
-                // Notify customer
+                $db->commit();
+
+                // WebSocket broadcast (post-commit, never breaks flow)
                 try {
-                    require_once __DIR__ . '/../config/notify.php';
-                    $stmtCust = $db->prepare("SELECT customer_id, customer_phone, order_number FROM om_market_orders WHERE order_id = ?");
-                    $stmtCust->execute([$orderId]);
-                    $orderData = $stmtCust->fetch();
-                    if ($orderData) {
-                        sendNotification($db, (int)$orderData['customer_id'], 'customer',
-                            'Pedido pronto!',
-                            'Seu pedido #' . $orderData['order_number'] . ' esta pronto para retirada/entrega',
-                            ['order_id' => $orderId, 'status' => 'pronto', 'url' => '/pedidos?id=' . $orderId]
-                        );
+                    require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
+                    $customer_id_ws = (int)($pedido['customer_id'] ?? 0);
+                    if ($customer_id_ws) {
+                        wsBroadcastToCustomer($customer_id_ws, 'order_update', [
+                            'order_id' => $orderId,
+                            'status' => 'pronto',
+                            'previous_status' => $order['status'],
+                            'is_pickup' => $isPickup,
+                        ]);
+                    }
+                    wsBroadcastToOrder($orderId, 'order_update', [
+                        'order_id' => $orderId,
+                        'status' => 'pronto',
+                        'is_pickup' => $isPickup,
+                    ]);
+                } catch (\Throwable $e) {
+                    error_log("[kds] WS broadcast erro: " . $e->getMessage());
+                }
+
+                // Notify customer (different message for pickup vs delivery)
+                try {
+                    require_once __DIR__ . '/../helpers/notify.php';
+                    $customer_id_notify = (int)($pedido['customer_id'] ?? 0);
+                    if ($customer_id_notify) {
+                        if ($isPickup) {
+                            notifyCustomer($db, $customer_id_notify,
+                                'Pedido pronto para retirada!',
+                                "Seu pedido #{$pedido['order_number']} esta pronto! Dirija-se ao estabelecimento para retirar.",
+                                '/mercado/pedido.php?id=' . $orderId
+                            );
+                        } else {
+                            notifyCustomer($db, $customer_id_notify,
+                                'Pedido pronto!',
+                                "Seu pedido #{$pedido['order_number']} esta pronto! Estamos chamando um entregador.",
+                                '/mercado/pedido.php?id=' . $orderId
+                            );
+                        }
                     }
                 } catch (Exception $e) {
                     error_log("[kds] Erro notificacao: " . $e->getMessage());
                 }
 
-                // Pusher notification
-                try {
-                    require_once dirname(__DIR__, 3) . "/includes/classes/PusherService.php";
-                    PusherService::orderUpdate($partnerId, [
-                        'id' => $orderId,
-                        'status' => 'pronto',
-                        'old_status' => $order['status'],
-                        'action' => 'pronto'
-                    ]);
-                    PusherService::orderStatusUpdate($orderId, 'pronto', 'Pedido pronto via KDS');
-                } catch (Exception $e) {
-                    error_log("[kds] Pusher erro: " . $e->getMessage());
+                // Auto-dispatch BoraUm delivery (same logic as pronto.php)
+                $entrega = null;
+                if (!$isPickup && $aceitaBoraum && !($entregaPropria && !$aceitaBoraum)) {
+                    try {
+                        require_once __DIR__ . '/../helpers/delivery.php';
+                        $entrega = dispatchToBoraUm($db, $pedido);
+                        error_log("[kds] Auto-dispatch BoraUm para pedido #$orderId | Resultado: " . json_encode($entrega));
+                    } catch (Exception $e) {
+                        error_log("[kds] BoraUm dispatch erro: " . $e->getMessage());
+                    }
                 }
 
-                response(true, ["order_id" => $orderId, "new_status" => "pronto"], "Pedido marcado como pronto");
+                $msg = "Pedido marcado como pronto";
+                $responseData = ["order_id" => $orderId, "new_status" => "pronto", "entrega" => $entrega];
+                if ($entrega && !empty($entrega['success'])) {
+                    $msg .= ". Entregador sendo chamado.";
+                } elseif ($aceitaBoraum && !$isPickup && !($entregaPropria && !$aceitaBoraum)) {
+                    $responseData['delivery_dispatch'] = 'failed';
+                    $msg .= ". Aviso: falha ao chamar entregador.";
+                }
+
+                response(true, $responseData, $msg);
                 break;
 
             case 'bump':
