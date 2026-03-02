@@ -45,6 +45,8 @@ try {
 
     if (!$statusOk) {
         $motivo = "Pedido ja saiu para entrega";
+    } elseif (empty($order['date_added'])) {
+        $motivo = "Data do pedido nao disponivel";
     } else {
         $createdAt = new DateTime($order['date_added']);
         $now = new DateTime();

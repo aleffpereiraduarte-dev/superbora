@@ -54,10 +54,22 @@ try {
         response(false, null, "Pedido primario nao encontrado", 404);
     }
 
+    // Check if primary is cancelled
+    if (in_array($primary['status'], ['cancelado', 'cancelled', 'refunded'])) {
+        $db->rollBack();
+        response(false, null, "Pedido primario foi cancelado", 400);
+    }
+
     $addableStatuses = ['pendente', 'confirmado', 'aceito', 'preparando', 'em_preparo', 'pronto'];
     if (!in_array($primary['status'], $addableStatuses)) {
         $db->rollBack();
         response(false, null, "Pedido ja saiu para entrega", 400);
+    }
+
+    // Block same partner as primary (use adicionar-item.php instead)
+    if ($partner_id === (int)$primary['partner_id']) {
+        $db->rollBack();
+        response(false, null, "Para adicionar itens da mesma loja, use 'Adicionar itens'", 400);
     }
 
     // 30-minute window
@@ -65,6 +77,17 @@ try {
     if (time() > $createdAt + (30 * 60)) {
         $db->rollBack();
         response(false, null, "Tempo limite para adicionar pedidos excedido", 400);
+    }
+
+    // Block duplicate partner on same route
+    $existingRouteId = (int)($primary['route_id'] ?? 0);
+    if ($existingRouteId) {
+        $stmtDup = $db->prepare("SELECT 1 FROM om_market_orders WHERE route_id = ? AND partner_id = ? AND status NOT IN ('cancelado','cancelled') LIMIT 1");
+        $stmtDup->execute([$existingRouteId, $partner_id]);
+        if ($stmtDup->fetch()) {
+            $db->rollBack();
+            response(false, null, "Voce ja tem um pedido desta loja nesta entrega", 400);
+        }
     }
 
     // 2. Get partner info
