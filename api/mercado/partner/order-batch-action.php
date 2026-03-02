@@ -10,6 +10,7 @@ require_once __DIR__ . "/../config/database.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAudit.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/PusherService.php";
+require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
 
 setCorsHeaders();
 
@@ -169,6 +170,32 @@ try {
         }
     } catch (Exception $pusherErr) {
         error_log("[order-batch-action] Pusher erro: " . $pusherErr->getMessage());
+    }
+
+    // WebSocket: broadcast order updates to customers
+    try {
+        $wsPlaceholders = implode(',', array_fill(0, count($validOrders), '?'));
+        $stmtWs = $db->prepare("SELECT order_id, customer_id FROM om_market_orders WHERE order_id IN ({$wsPlaceholders})");
+        $stmtWs->execute($validOrders);
+        $wsOrders = $stmtWs->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($wsOrders as $order) {
+            $oid = (int)$order['order_id'];
+            $newStatus = $toStatus;
+            try {
+                $cid = (int)($order['customer_id'] ?? 0);
+                if ($cid) {
+                    wsBroadcastToCustomer($cid, 'order_update', [
+                        'order_id' => $oid, 'status' => $newStatus,
+                    ]);
+                }
+                wsBroadcastToOrder($oid, 'order_update', [
+                    'order_id' => $oid, 'status' => $newStatus,
+                ]);
+            } catch (\Throwable $e) {}
+        }
+    } catch (\Throwable $wsErr) {
+        error_log("[order-batch-action] WS broadcast erro: " . $wsErr->getMessage());
     }
 
     response(true, [

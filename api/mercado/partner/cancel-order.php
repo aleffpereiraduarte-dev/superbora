@@ -6,6 +6,7 @@
 require_once __DIR__ . "/../config/database.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/PusherService.php";
+require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
 
 setCorsHeaders();
 
@@ -64,24 +65,31 @@ try {
         if (!$orderId) response(false, null, "ID do pedido obrigatorio", 400);
         if (empty($reason)) response(false, null, "Motivo obrigatorio", 400);
 
-        // Verify order belongs to partner and is cancellable
-        $stmt = $db->prepare("
-            SELECT order_id, status, customer_id, coupon_id, loyalty_points_used, cashback_discount
-            FROM om_market_orders
-            WHERE order_id = ? AND partner_id = ?
-        ");
-        $stmt->execute([$orderId, $partnerId]);
-        $order = $stmt->fetch(PDO::FETCH_ASSOC);
-
-        if (!$order) response(false, null, "Pedido nao encontrado", 404);
-
-        $cancellableStatuses = ['pendente', 'pending', 'confirmado', 'confirmed', 'preparando', 'preparing'];
-        if (!in_array(strtolower($order['status']), $cancellableStatuses)) {
-            response(false, null, "Pedido nao pode ser cancelado neste status", 400);
-        }
-
+        // Wrap read+update in transaction with FOR UPDATE to prevent double cancellation/double refund
         $db->beginTransaction();
         try {
+            // Verify order belongs to partner and is cancellable (locked row)
+            $stmt = $db->prepare("
+                SELECT order_id, status, customer_id, coupon_id, loyalty_points_used, cashback_discount
+                FROM om_market_orders
+                WHERE order_id = ? AND partner_id = ?
+                FOR UPDATE
+            ");
+            $stmt->execute([$orderId, $partnerId]);
+            $order = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$order) {
+                $db->rollBack();
+                response(false, null, "Pedido nao encontrado", 404);
+            }
+
+            $cancellableStatuses = ['pendente', 'pending', 'confirmado', 'confirmed', 'preparando', 'preparing'];
+            $oldStatus = $order['status'];
+            if (!in_array(strtolower($oldStatus), $cancellableStatuses)) {
+                $db->rollBack();
+                response(false, null, "Pedido nao pode ser cancelado neste status", 400);
+            }
+
             // Update order status with cancellation reason
             // Bug 16 fix: Add status condition to prevent TOCTOU race
             $stmt = $db->prepare("
@@ -154,6 +162,23 @@ try {
             } catch (Exception $pusherErr) {
                 error_log("[cancel-order] Pusher erro: " . $pusherErr->getMessage());
             }
+
+            // WebSocket: broadcast cancellation to customer and order channel
+            try {
+                $customer_id_ws = (int)($order['customer_id'] ?? 0);
+                if ($customer_id_ws) {
+                    wsBroadcastToCustomer($customer_id_ws, 'order_update', [
+                        'order_id' => $orderId,
+                        'status' => 'cancelado',
+                        'previous_status' => $oldStatus,
+                        'cancelled_by' => 'partner',
+                    ]);
+                }
+                wsBroadcastToOrder($orderId, 'order_update', [
+                    'order_id' => $orderId,
+                    'status' => 'cancelado',
+                ]);
+            } catch (\Throwable $e) {}
 
             response(true, null, "Pedido cancelado com sucesso");
 

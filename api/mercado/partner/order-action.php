@@ -8,6 +8,7 @@
 require_once __DIR__ . "/../config/database.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/PusherService.php";
+require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
 
 setCorsHeaders();
 
@@ -42,12 +43,14 @@ try {
         response(false, null, "Acao invalida. Use: " . implode(', ', $validActions), 400);
     }
 
-    // Buscar pedido e validar pertence ao parceiro
-    $stmt = $db->prepare("SELECT order_id, status, partner_categoria, is_pickup, customer_id, coupon_id, loyalty_points_used, cashback_discount, subtotal, payment_method, forma_pagamento, stripe_payment_intent_id FROM om_market_orders WHERE order_id = ? AND partner_id = ?");
+    // Buscar pedido com lock para evitar race condition
+    $db->beginTransaction();
+    $stmt = $db->prepare("SELECT order_id, status, partner_categoria, is_pickup, customer_id, coupon_id, loyalty_points_used, cashback_discount, subtotal, payment_method, forma_pagamento, stripe_payment_intent_id FROM om_market_orders WHERE order_id = ? AND partner_id = ? FOR UPDATE");
     $stmt->execute([$orderId, $partnerId]);
     $order = $stmt->fetch();
 
     if (!$order) {
+        $db->rollBack();
         response(false, null, "Pedido nao encontrado", 404);
     }
 
@@ -64,6 +67,7 @@ try {
     $transition = $transitions[$action];
 
     if (!in_array($currentStatus, $transition['from'])) {
+        $db->rollBack();
         response(false, null, "Nao e possivel '$action' um pedido com status '$currentStatus'", 400);
     }
 
@@ -103,6 +107,7 @@ try {
     $stmt->execute($params);
 
     if ($stmt->rowCount() === 0) {
+        $db->rollBack();
         response(false, null, "Pedido ja foi atualizado por outra acao. Atualize a pagina.", 409);
     }
 
@@ -117,54 +122,64 @@ try {
     $stmt = $db->prepare("INSERT INTO om_market_order_events (order_id, event_type, message, created_by, created_at) VALUES (?, ?, ?, ?, NOW())");
     $stmt->execute([$orderId, "partner_$action", $eventMsg[$action], "partner:$partnerId"]);
 
-    // Financial compensation on cancellation — wrapped in a single transaction for atomicity
+    // Financial compensation on cancellation — runs inside the main transaction
     if ($action === 'cancelar') {
         $customerId = (int)($order['customer_id'] ?? 0);
 
-        $db->beginTransaction();
-        try {
-            // 1. Restore coupon usage
-            $couponId = (int)($order['coupon_id'] ?? 0);
-            if ($couponId && $customerId) {
-                $db->prepare("DELETE FROM om_market_coupon_usage WHERE coupon_id = ? AND customer_id = ? AND order_id = ?")
-                   ->execute([$couponId, $customerId, $orderId]);
-                $db->prepare("UPDATE om_market_coupons SET current_uses = GREATEST(0, current_uses - 1) WHERE id = ?")->execute([$couponId]);
-            }
+        // 1. Restore coupon usage
+        $couponId = (int)($order['coupon_id'] ?? 0);
+        if ($couponId && $customerId) {
+            $db->prepare("DELETE FROM om_market_coupon_usage WHERE coupon_id = ? AND customer_id = ? AND order_id = ?")
+               ->execute([$couponId, $customerId, $orderId]);
+            $db->prepare("UPDATE om_market_coupons SET current_uses = GREATEST(0, current_uses - 1) WHERE id = ?")->execute([$couponId]);
+        }
 
-            // 2. Credit back loyalty points
-            $pointsUsed = (int)($order['loyalty_points_used'] ?? 0);
-            if ($pointsUsed > 0 && $customerId) {
-                $db->prepare("UPDATE om_market_loyalty_points SET current_points = current_points + ?, updated_at = NOW() WHERE customer_id = ?")
-                   ->execute([$pointsUsed, $customerId]);
-                $db->prepare("INSERT INTO om_market_loyalty_transactions (customer_id, points, type, source, reference_id, description, created_at) VALUES (?, ?, 'refund', 'order_cancelled', ?, ?, NOW())")
-                   ->execute([$customerId, $pointsUsed, $orderId, "Estorno cancelamento parceiro pedido #{$orderId}"]);
-            }
+        // 2. Credit back loyalty points
+        $pointsUsed = (int)($order['loyalty_points_used'] ?? 0);
+        if ($pointsUsed > 0 && $customerId) {
+            $db->prepare("UPDATE om_market_loyalty_points SET current_points = current_points + ?, updated_at = NOW() WHERE customer_id = ?")
+               ->execute([$pointsUsed, $customerId]);
+            $db->prepare("INSERT INTO om_market_loyalty_transactions (customer_id, points, type, source, reference_id, description, created_at) VALUES (?, ?, 'refund', 'order_cancelled', ?, ?, NOW())")
+               ->execute([$customerId, $pointsUsed, $orderId, "Estorno cancelamento parceiro pedido #{$orderId}"]);
+        }
 
-            // 3. Reverse cashback earned (mark as reversed)
-            $cashbackUsed = (float)($order['cashback_discount'] ?? 0);
-            if ($cashbackUsed > 0) {
-                require_once __DIR__ . '/../helpers/cashback.php';
-                refundCashback($db, $orderId);
-            }
+        // 3. Reverse cashback earned (mark as reversed)
+        $cashbackUsed = (float)($order['cashback_discount'] ?? 0);
+        if ($cashbackUsed > 0) {
+            require_once __DIR__ . '/../helpers/cashback.php';
+            refundCashback($db, $orderId);
+        }
 
-            // 4. Restore stock
-            $stmtItems = $db->prepare("SELECT product_id, quantity FROM om_market_order_items WHERE order_id = ?");
-            $stmtItems->execute([$orderId]);
-            $items = $stmtItems->fetchAll();
-            foreach ($items as $item) {
-                $db->prepare("UPDATE om_market_products SET quantity = quantity + ? WHERE product_id = ?")
-                   ->execute([$item['quantity'], $item['product_id']]);
-            }
-
-            $db->commit();
-        } catch (Exception $compErr) {
-            if ($db->inTransaction()) $db->rollBack();
-            error_log("[order-action] CANCEL COMPENSATION FAILED order #{$orderId}: " . $compErr->getMessage());
+        // 4. Restore stock
+        $stmtItems = $db->prepare("SELECT product_id, quantity FROM om_market_order_items WHERE order_id = ?");
+        $stmtItems->execute([$orderId]);
+        $items = $stmtItems->fetchAll();
+        foreach ($items as $item) {
+            $db->prepare("UPDATE om_market_products SET quantity = quantity + ? WHERE product_id = ?")
+               ->execute([$item['quantity'], $item['product_id']]);
         }
 
         // 5. Log cancellation for financial reconciliation
         error_log("[order-action] CANCEL COMPENSATION order #{$orderId}: coupon={$couponId} points={$pointsUsed} cashback=R\${$cashbackUsed} partner={$partnerId}");
     }
+
+    $db->commit();
+
+    // WebSocket broadcast (never breaks the flow)
+    try {
+        $customer_id_ws = (int)($order['customer_id'] ?? 0);
+        if ($customer_id_ws) {
+            wsBroadcastToCustomer($customer_id_ws, 'order_update', [
+                'order_id' => $orderId,
+                'status' => $newStatus,
+                'previous_status' => $currentStatus,
+            ]);
+        }
+        wsBroadcastToOrder($orderId, 'order_update', [
+            'order_id' => $orderId,
+            'status' => $newStatus,
+        ]);
+    } catch (\Throwable $e) {}
 
     // Despachar entregador quando parceiro marca "pronto"
     // Logica: verificar plano do parceiro (uses_platform_delivery)
@@ -349,6 +364,9 @@ try {
     response(true, $responseData);
 
 } catch (Exception $e) {
+    if (isset($db) && $db->inTransaction()) {
+        $db->rollBack();
+    }
     error_log("[partner/order-action] Erro: " . $e->getMessage());
     response(false, null, "Erro ao processar acao", 500);
 }
