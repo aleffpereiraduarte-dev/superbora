@@ -167,6 +167,45 @@ class SearchService {
             $p['active'] = (bool)$p['active'];
         }
 
+        // Also index from om_market_products (legacy table used by many partners)
+        // Use negative IDs (offset by 1M) to avoid collisions with partner_products IDs
+        $stmt2 = $db->query("
+            SELECT
+                (1000000 + p.product_id) as id,
+                COALESCE(p.name, '') as name,
+                COALESCE(p.description, '') as description,
+                COALESCE(p.price, 0) as price,
+                p.special_price as price_promo,
+                COALESCE(p.image, p.image_url, '') as image,
+                p.category_id,
+                COALESCE(p.category, '') as category_name,
+                p.partner_id,
+                COALESCE(pa.trade_name, pa.name, '') as partner_name,
+                COALESCE(p.brand, '') as brand,
+                COALESCE(p.unit, '') as unit,
+                COALESCE(p.barcode, '') as barcode,
+                CASE WHEN COALESCE(p.in_stock, 1) = 1 THEN true ELSE false END as in_stock,
+                true as active,
+                p.date_added as created_at
+            FROM om_market_products p
+            LEFT JOIN om_market_partners pa ON pa.partner_id = p.partner_id
+            WHERE p.status = 1 AND p.in_stock = 1
+              AND p.partner_id NOT IN (
+                  SELECT DISTINCT pp2.partner_id FROM om_market_partner_products pp2 WHERE pp2.active = 1
+              )
+        ");
+        $legacyProducts = $stmt2->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($legacyProducts as &$lp) {
+            $lp['id'] = (int)$lp['id'];
+            $lp['price'] = (float)$lp['price'];
+            $lp['price_promo'] = $lp['price_promo'] ? (float)$lp['price_promo'] : null;
+            $lp['category_id'] = $lp['category_id'] ? (int)$lp['category_id'] : null;
+            $lp['partner_id'] = $lp['partner_id'] ? (int)$lp['partner_id'] : null;
+            $lp['in_stock'] = (bool)$lp['in_stock'];
+            $lp['active'] = (bool)$lp['active'];
+        }
+        $products = array_merge($products, $legacyProducts);
+
         // Batch index (chunks of 500)
         $total = count($products);
         $indexed = 0;

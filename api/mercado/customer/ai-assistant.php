@@ -492,44 +492,112 @@ try {
     $ctx = buildCustomerContext($db, $customerId);
     $meal = getMealPeriod();
 
-    // ── Search Meilisearch for products (filtered by nearby stores) ──
-    $keywords = implode(' ', array_filter(explode(' ', $message), fn($w) => mb_strlen($w) > 2));
+    // ── Product Search: SQL (live/real-time) + Meilisearch (fuzzy) ──
+    $stopWords = ['quero','queria','gostaria','preciso','pedir','pedido','buscar','busca','procurar',
+        'adicionar','adiciona','coloca','colocar','coloque','manda','mandar','traz','trazer',
+        'uma','umas','uns','para','pra','pro','por','com','sem','que','qual','esse','essa',
+        'esses','essas','meu','minha','aqui','ali','ter','tem','vou','vai','pode','poderia',
+        'favor','obrigado','obrigada','legal','bom','boa','muito','mais','menos','quanto',
+        'custa','preco','valor','barato','caro','melhor','pior','outro','outra','outros',
+        'do','da','dos','das','no','na','nos','nas','de','ao','aos','ele','ela','seu','sua',
+        'voce','como','quer','quais','seria','ser','esta','estou','estamos','nao','sim',
+        'carrinho','cart','checkout','loja','lojas','entrega','delivery','comprar','compra'];
+    $cleanMsg = preg_replace('/[^\p{L}\p{N}\s]/u', '', mb_strtolower($message));
+    $allWords = array_filter(explode(' ', $cleanMsg), fn($w) => mb_strlen($w) >= 3);
+    $productKeywords = array_values(array_filter($allWords, fn($w) => !in_array($w, $stopWords)));
+    $keywords = implode(' ', $productKeywords);
     $searchResults = [];
-    $meiliKey = $_ENV['MEILI_ADMIN_KEY'] ?? getenv('MEILI_ADMIN_KEY') ?: '';
-    try {
-        $meiliPayload = [
-            'q' => $keywords,
-            'limit' => 25,
-            'attributesToRetrieve' => ['id', 'name', 'nome', 'price', 'preco', 'image', 'partner_name', 'partner_id', 'category_name'],
-        ];
 
-        // Filter by nearby partner IDs so ONE only suggests reachable products
-        if (!empty($ctx['nearbyPartnerIds'])) {
-            $meiliPayload['filter'] = 'partner_id IN [' . implode(',', $ctx['nearbyPartnerIds']) . ']';
+    // 1) PRIMARY: Live SQL search (always real-time, new products appear immediately)
+    if (!empty($productKeywords) && !empty($ctx['nearbyPartnerIds'])) {
+        try {
+            $sqlWords = $productKeywords;
+            if (!empty($sqlWords)) {
+                $likeClauses = [];
+                $likeParams = [];
+                foreach ($sqlWords as $w) {
+                    $likeClauses[] = "(LOWER(p.name) LIKE ? OR LOWER(p.category) LIKE ? OR LOWER(p.brand) LIKE ? OR LOWER(p.description) LIKE ?)";
+                    $term = '%' . mb_strtolower($w) . '%';
+                    $likeParams[] = $term;
+                    $likeParams[] = $term;
+                    $likeParams[] = $term;
+                    $likeParams[] = $term;
+                }
+                $partnerPlaceholders = implode(',', array_fill(0, count($ctx['nearbyPartnerIds']), '?'));
+                $params = array_merge($ctx['nearbyPartnerIds'], $likeParams);
+
+                $sqlSearch = $db->prepare("
+                    SELECT p.product_id as id, p.name, p.price,
+                           COALESCE(NULLIF(p.image,''), NULLIF(p.image_url,''), '') as image,
+                           p.category as category_name, p.partner_id,
+                           COALESCE(mp.trade_name, mp.name, '') as partner_name
+                    FROM om_market_products p
+                    LEFT JOIN om_market_partners mp ON mp.partner_id = p.partner_id
+                    WHERE p.status = 1 AND p.in_stock = 1
+                      AND p.partner_id IN ({$partnerPlaceholders})
+                      AND (" . implode(' AND ', $likeClauses) . ")
+                    ORDER BY p.is_featured DESC, p.sort_order ASC
+                    LIMIT 25
+                ");
+                $sqlSearch->execute($params);
+                $searchResults = $sqlSearch->fetchAll(PDO::FETCH_ASSOC);
+            }
+        } catch (Exception $e) {
+            error_log("[ai-assistant] SQL product search error: " . $e->getMessage());
         }
+    }
 
-        $ch = curl_init('http://localhost:7700/indexes/products/search');
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => json_encode($meiliPayload),
-            CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Authorization: Bearer ' . $meiliKey],
-            CURLOPT_TIMEOUT => 5,
-        ]);
-        $res = curl_exec($ch);
-        curl_close($ch);
-        $data = json_decode($res, true);
-        $searchResults = $data['hits'] ?? [];
-    } catch (Exception $e) { /* fallback: no search results */ }
+    // 2) SECONDARY: Meilisearch (typo-tolerant fuzzy matching, catches misspellings)
+    if (count($searchResults) < 10 && mb_strlen($keywords) >= 3) {
+        $meiliKey = $_ENV['MEILI_ADMIN_KEY'] ?? getenv('MEILI_ADMIN_KEY') ?: '';
+        try {
+            $meiliPayload = [
+                'q' => $keywords,
+                'limit' => 15,
+                'attributesToRetrieve' => ['id', 'name', 'price', 'image', 'partner_name', 'partner_id', 'category_name'],
+            ];
+            if (!empty($ctx['nearbyPartnerIds'])) {
+                $meiliPayload['filter'] = 'partner_id IN [' . implode(',', $ctx['nearbyPartnerIds']) . ']';
+            }
+            $ch = curl_init('http://localhost:7700/indexes/products/search');
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => json_encode($meiliPayload),
+                CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Authorization: Bearer ' . $meiliKey],
+                CURLOPT_TIMEOUT => 3,
+            ]);
+            $res = curl_exec($ch);
+            curl_close($ch);
+            $data = json_decode($res, true);
+            $meiliHits = $data['hits'] ?? [];
+
+            // Merge: deduplicate by real product_id + partner_id
+            $existingKeys = [];
+            foreach ($searchResults as $r) {
+                $existingKeys[($r['partner_id'] ?? 0) . '_' . ($r['id'] ?? 0)] = true;
+            }
+            foreach ($meiliHits as $mh) {
+                $realId = (int)($mh['id'] ?? 0) >= 1000000 ? (int)$mh['id'] - 1000000 : (int)($mh['id'] ?? 0);
+                $key = ($mh['partner_id'] ?? 0) . '_' . $realId;
+                if (!isset($existingKeys[$key])) {
+                    $mh['id'] = $realId;
+                    $searchResults[] = $mh;
+                    $existingKeys[$key] = true;
+                }
+            }
+        } catch (Exception $e) { /* Meilisearch optional */ }
+    }
 
     // ── Build product context for prompt ──
     $productContext = json_encode(array_map(fn($h) => [
-        'id' => $h['id'] ?? 0,
+        'id' => (int)($h['id'] ?? 0) >= 1000000 ? (int)($h['id']) - 1000000 : (int)($h['id'] ?? 0),
         'name' => $h['name'] ?? $h['nome'] ?? '',
         'price' => $h['price'] ?? $h['preco'] ?? 0,
         'image' => $h['image'] ?? '',
         'partner_name' => $h['partner_name'] ?? '',
         'partner_id' => $h['partner_id'] ?? 0,
+        'category' => $h['category_name'] ?? '',
     ], $searchResults), JSON_UNESCAPED_UNICODE);
 
     // ── Nearby stores FULL info for prompt ──
