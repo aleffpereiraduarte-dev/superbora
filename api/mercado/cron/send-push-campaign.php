@@ -9,6 +9,25 @@
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../helpers/NotificationSender.php';
 
+// SECURITY: CLI-only or cron key authentication
+if (php_sapi_name() !== 'cli') {
+    header('Content-Type: application/json');
+    $cronKey = $_SERVER['HTTP_X_CRON_KEY'] ?? '';
+    $expectedKey = $_ENV['CRON_SECRET'] ?? getenv('CRON_SECRET') ?: '';
+    if (empty($expectedKey) || empty($cronKey) || !hash_equals($expectedKey, $cronKey)) {
+        http_response_code(403);
+        echo json_encode(['error' => 'Forbidden']);
+        exit;
+    }
+}
+
+// File lock to prevent concurrent execution
+$lockFile = '/tmp/superbora_cron_push_campaign.lock';
+$lockFp = fopen($lockFile, 'w');
+if (!flock($lockFp, LOCK_EX | LOCK_NB)) {
+    exit(0);
+}
+
 $db = getDB();
 $sender = NotificationSender::getInstance($db);
 

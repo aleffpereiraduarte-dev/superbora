@@ -692,6 +692,20 @@ try {
             }
         }
 
+        // Stripe confirmed — update status INSIDE transaction (atomic)
+        $stripe_confirmed = false;
+        if ($stripe_verified && $stripe_pi_id && $stripe_pi_status === 'succeeded') {
+            $db->prepare("UPDATE om_market_orders SET status = 'confirmado' WHERE order_id = ?")
+               ->execute([$order_id]);
+            $stripe_confirmed = true;
+        }
+
+        // Cash payment — save change_for INSIDE transaction
+        if (in_array($payment_method, ['dinheiro', 'cartao_entrega']) && $change_for > 0 && $payment_method === 'dinheiro') {
+            $db->prepare("UPDATE om_market_orders SET change_for = ? WHERE order_id = ?")
+               ->execute([$change_for, $order_id]);
+        }
+
         $db->commit();
 
         // P&L DIARIO — NAO registrar no checkout.
@@ -702,7 +716,7 @@ try {
             "order_id" => $order_id,
             "order_number" => $order_number,
             "codigo_entrega" => $codigo_entrega,
-            "status" => "pendente",
+            "status" => $stripe_confirmed ? "confirmado" : "pendente",
             "subtotal" => round($subtotal, 2),
             "desconto_cupom" => round($coupon_discount, 2),
             "desconto_pontos" => round($loyalty_discount, 2),
@@ -732,29 +746,12 @@ try {
             $responseData["pix"] = $pixData;
         }
 
-        // Para cartao/wallet via Stripe — pagamento JA verificado antes do INSERT, PI already in INSERT
-        // SECURITY: Only confirm if PI status is truly 'succeeded' (not processing/requires_capture)
-        if ($stripe_verified && $stripe_pi_id && $stripe_pi_status === 'succeeded') {
-            try {
-                $db->prepare("UPDATE om_market_orders SET status = 'confirmado' WHERE order_id = ?")
-                   ->execute([$order_id]);
-                $responseData["status"] = "confirmado";
-            } catch (Exception $e) {
-                error_log("[Checkout] stripe status update error: " . $e->getMessage());
-            }
+        if ($stripe_confirmed) {
             $responseData["card_payment"] = ["status" => "paid", "payment_intent_id" => $stripe_pi_id];
         }
 
-        // Para pagamento na entrega (dinheiro/maquininha), salvar troco
+        // Para pagamento na entrega
         if (in_array($payment_method, ['dinheiro', 'cartao_entrega'])) {
-            if ($change_for > 0 && $payment_method === 'dinheiro') {
-                try {
-                    $db->prepare("UPDATE om_market_orders SET change_for = ? WHERE order_id = ?")
-                       ->execute([$change_for, $order_id]);
-                } catch (Exception $e) {
-                    error_log("[Checkout] Erro ao salvar troco: " . $e->getMessage());
-                }
-            }
             $responseData["pagamento_entrega"] = [
                 "tipo" => $payment_method === 'dinheiro' ? 'Dinheiro' : 'Cartao na entrega',
                 "troco_para" => $payment_method === 'dinheiro' && $change_for > 0 ? $change_for : null

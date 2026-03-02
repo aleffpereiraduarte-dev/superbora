@@ -122,6 +122,11 @@ try {
         // Update primary order with route_id
         $db->prepare("UPDATE om_market_orders SET route_id = ?, route_stop_sequence = 1 WHERE order_id = ?")->execute([$route_id, $primary_order_id]);
 
+        // Get primary partner lat/lng for route stop
+        $stmtPrimaryPartner = $db->prepare("SELECT latitude, longitude FROM om_market_partners WHERE partner_id = ?");
+        $stmtPrimaryPartner->execute([(int)$primary['partner_id']]);
+        $primaryPartnerGeo = $stmtPrimaryPartner->fetch(PDO::FETCH_ASSOC);
+
         // Add primary as first stop
         $db->prepare("
             INSERT INTO om_delivery_route_stops
@@ -129,12 +134,12 @@ try {
             VALUES (?, ?, ?, 1, ?, ?, ?, 'pickup', 'pending')
         ")->execute([
             $route_id, $primary_order_id, (int)$primary['partner_id'],
-            null, null, $primary['partner_name'] ?: '',
+            $primaryPartnerGeo['latitude'] ?? null, $primaryPartnerGeo['longitude'] ?? null, $primary['partner_name'] ?: '',
         ]);
     }
 
     // 4. Calculate next stop sequence
-    $stmtSeq = $db->prepare("SELECT COALESCE(MAX(route_stop_sequence), 1) + 1 FROM om_market_orders WHERE route_id = ?");
+    $stmtSeq = $db->prepare("SELECT COALESCE(MAX(route_stop_sequence), 1) + 1 FROM om_market_orders WHERE route_id = ? FOR UPDATE");
     $stmtSeq->execute([$route_id]);
     $stop_sequence = (int)$stmtSeq->fetchColumn();
 
@@ -189,7 +194,7 @@ try {
     $order_number_temp = 'SB_TEMP_' . time();
 
     // 7. Get customer info
-    $stmtCust = $db->prepare("SELECT name, email, phone FROM om_market_customers WHERE customer_id = ?");
+    $stmtCust = $db->prepare("SELECT name, email, phone FROM om_customers WHERE customer_id = ?");
     $stmtCust->execute([$customer_id]);
     $customer = $stmtCust->fetch(PDO::FETCH_ASSOC);
 

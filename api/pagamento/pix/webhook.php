@@ -369,7 +369,7 @@ try {
 
                             foreach ($badgesToCheck as $b) {
                                 try {
-                                    $stmt = $db->prepare("INSERT IGNORE INTO om_badges (customer_id, badge_type, badge_name, badge_icon) VALUES (?, ?, ?, ?)");
+                                    $stmt = $db->prepare("INSERT INTO om_badges (customer_id, badge_type, badge_name, badge_icon) VALUES (?, ?, ?, ?) ON CONFLICT (customer_id, badge_type) DO NOTHING");
                                     $stmt->execute([$customer_id, $b[0], $b[1], $b[2]]);
                                 } catch (Exception $e) {
                                     // Ignore duplicate

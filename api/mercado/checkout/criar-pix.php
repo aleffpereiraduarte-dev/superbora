@@ -55,9 +55,9 @@ try {
     $use_cashback = (float)($input['use_cashback'] ?? 0);
     $use_gift_card = (float)($input['use_gift_card'] ?? 0);
 
-    // Delivery fee & service fee from input (validated server-side)
-    $delivery_fee = max(0, (float)($input["delivery_fee"] ?? 0));
+    // Service fee (server-side, never from client)
     $service_fee = OmPricing::TAXA_SERVICO;
+    // NOTE: delivery_fee is calculated server-side AFTER partner validation (below)
 
     // Multi-store: collect all partner_ids (primary + route partners)
     $allPartnerIds = [];
@@ -70,10 +70,10 @@ try {
         response(false, null, "partner_id obrigatorio", 400);
     }
 
-    // Validate all partners
+    // Validate all partners (buscar SELECT * pra ter lat/lng/delivery_radius/entrega_propria)
     $partners = [];
     $partnerNames = [];
-    $partnerStmt = $db->prepare("SELECT partner_id, name, trade_name, is_open, status FROM om_market_partners WHERE partner_id = ?");
+    $partnerStmt = $db->prepare("SELECT * FROM om_market_partners WHERE partner_id = ?");
     foreach ($allPartnerIds as $pid) {
         $partnerStmt->execute([$pid]);
         $p = $partnerStmt->fetch(PDO::FETCH_ASSOC);
@@ -148,28 +148,73 @@ try {
         ];
     }
 
-    // Coupon discount (validate server-side)
+    // ═══════════════════════════════════════════════════════
+    // FRETE — calculado server-side via OmPricing (nunca confiar no cliente)
+    // ═══════════════════════════════════════════════════════
+    $usaBoraUm = !$is_pickup && !$partner['entrega_propria'];
+    $express_fee_raw = (float)($input['express_fee'] ?? 0);
+    $express_enabled = !empty($partner['delivery_express']) || !empty($partner['express_disponivel']);
+    $express_fee = $express_enabled ? max(0, min(OmPricing::EXPRESS_FEE_MAX, $express_fee_raw)) : 0;
+
+    $distancia_km = 3.0;
+    $lat_cliente = (float)($input['lat'] ?? $input['latitude'] ?? 0);
+    $lng_cliente = (float)($input['lng'] ?? $input['longitude'] ?? 0);
+    $lat_parceiro = (float)($partner['latitude'] ?? $partner['lat'] ?? 0);
+    $lng_parceiro = (float)($partner['longitude'] ?? $partner['lng'] ?? 0);
+    if ($lat_cliente && ($lat_cliente < -90 || $lat_cliente > 90)) $lat_cliente = 0;
+    if ($lng_cliente && ($lng_cliente < -180 || $lng_cliente > 180)) $lng_cliente = 0;
+    if ($usaBoraUm && $lat_parceiro && $lat_cliente) {
+        $distancia_km = OmPricing::calcularDistancia($lat_parceiro, $lng_parceiro, $lat_cliente, $lng_cliente);
+    }
+
+    // Raio de entrega
+    if ($usaBoraUm && $lat_parceiro && $lat_cliente) {
+        $raio_km = (float)($partner['delivery_radius_km'] ?? 0);
+        if ($raio_km > 0 && $distancia_km > $raio_km) {
+            response(false, null, "Voce esta fora da area de entrega (" . number_format($distancia_km, 1, ',', '') . " km, maximo " . number_format($raio_km, 1, ',', '') . " km)", 400);
+        }
+    }
+    // Pedido minimo por distancia
+    if ($usaBoraUm) {
+        $minimoBoraUm = OmPricing::getMinimoBoraUm($distancia_km);
+        if ($subtotal < $minimoBoraUm) {
+            response(false, null, "Pedido minimo R$ " . number_format($minimoBoraUm, 2, ',', '.') . " para esta distancia", 400);
+        }
+    }
+
+    // Calcular frete via OmPricing
+    $freteCalc = OmPricing::calcularFrete($partner, $subtotal, $distancia_km, (bool)$is_pickup, $usaBoraUm, $db, $customer_id);
+    $base_delivery_fee = $freteCalc['frete'];
+    $delivery_fee = $base_delivery_fee + ($express_fee > 0 && !$is_pickup ? $express_fee : 0);
+
+    // Log mismatch anti-fraude
+    $client_delivery_fee = (float)($input['delivery_fee'] ?? -1);
+    if ($client_delivery_fee >= 0 && abs($client_delivery_fee - $delivery_fee) > 0.01) {
+        error_log("[criar-pix] delivery_fee mismatch: client={$client_delivery_fee}, server={$delivery_fee}, partner={$partner_id}, customer={$customer_id}");
+    }
+
+    // Coupon discount (validate server-side — aligned with processar.php)
     $coupon_discount = 0;
     if ($coupon_id > 0) {
-        $coupStmt = $db->prepare("SELECT coupon_id, type, discount, min_order, max_discount, usage_limit, used_count, active, expires_at FROM om_market_coupons WHERE coupon_id = ? AND active = true");
-        $coupStmt->execute([$coupon_id]);
+        $coupStmt = $db->prepare("SELECT id, discount_type, discount_value, min_order_value, max_discount_value, max_uses, current_uses, expires_at FROM om_market_coupons WHERE id = ? AND status = 'active' AND (partner_id IS NULL OR partner_id = 0 OR partner_id = ?)");
+        $coupStmt->execute([$coupon_id, $partner_id]);
         $coupon = $coupStmt->fetch(PDO::FETCH_ASSOC);
         if ($coupon) {
             if ($coupon['expires_at'] && strtotime($coupon['expires_at']) < time()) {
                 $coupon = null;
-            } elseif ($coupon['usage_limit'] > 0 && $coupon['used_count'] >= $coupon['usage_limit']) {
+            } elseif ($coupon['max_uses'] > 0 && $coupon['current_uses'] >= $coupon['max_uses']) {
                 $coupon = null;
-            } elseif ($coupon['min_order'] > 0 && $subtotal < $coupon['min_order']) {
+            } elseif ($coupon['min_order_value'] > 0 && $subtotal < $coupon['min_order_value']) {
                 $coupon = null;
             }
             if ($coupon) {
-                if ($coupon['type'] === 'percentage') {
-                    $coupon_discount = round($subtotal * ($coupon['discount'] / 100), 2);
+                if ($coupon['discount_type'] === 'percentage') {
+                    $coupon_discount = round($subtotal * ($coupon['discount_value'] / 100), 2);
                 } else {
-                    $coupon_discount = (float)$coupon['discount'];
+                    $coupon_discount = (float)$coupon['discount_value'];
                 }
-                if ($coupon['max_discount'] > 0) {
-                    $coupon_discount = min($coupon_discount, (float)$coupon['max_discount']);
+                if ($coupon['max_discount_value'] > 0) {
+                    $coupon_discount = min($coupon_discount, (float)$coupon['max_discount_value']);
                 }
             }
         }

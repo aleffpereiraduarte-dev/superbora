@@ -7,7 +7,7 @@ require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../helpers/claude-client.php';
 
 // Cron auth guard
-$cronKey = $_GET['key'] ?? $_SERVER['HTTP_X_CRON_KEY'] ?? '';
+$cronKey = $_SERVER['HTTP_X_CRON_KEY'] ?? '';
 $expectedKey = $_ENV['CRON_SECRET'] ?? getenv('CRON_SECRET') ?: '';
 if (empty($expectedKey) || !hash_equals($expectedKey, $cronKey)) {
     http_response_code(403);

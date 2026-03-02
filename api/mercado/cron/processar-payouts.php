@@ -31,6 +31,14 @@ if (php_sapi_name() !== 'cli') {
     }
 }
 
+// File lock to prevent concurrent execution (double payouts)
+$lockFile = '/tmp/superbora_cron_payouts.lock';
+$lockFp = fopen($lockFile, 'w');
+if (!flock($lockFp, LOCK_EX | LOCK_NB)) {
+    echo json_encode(['status' => 'skipped', 'reason' => 'Another instance is running']);
+    exit(0);
+}
+
 $startTime = microtime(true);
 $processed = 0;
 $failed = 0;
@@ -244,6 +252,11 @@ try {
 $elapsed = round(microtime(true) - $startTime, 2);
 $summary = "[cron-payouts] Concluido em {$elapsed}s: $processed enviados, $failed falhas, $skipped ignorados";
 error_log($summary);
+
+// Release lock
+flock($lockFp, LOCK_UN);
+fclose($lockFp);
+@unlink($lockFile);
 
 if (php_sapi_name() === 'cli') {
     echo $summary . "\n";

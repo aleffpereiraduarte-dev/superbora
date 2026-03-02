@@ -9,15 +9,35 @@
 
 require_once __DIR__ . '/../config/database.php';
 
+// SECURITY: CLI-only or cron key authentication
+if (php_sapi_name() !== 'cli') {
+    header('Content-Type: application/json');
+    $cronKey = $_SERVER['HTTP_X_CRON_KEY'] ?? '';
+    $expectedKey = $_ENV['CRON_SECRET'] ?? getenv('CRON_SECRET') ?: '';
+    if (empty($expectedKey) || empty($cronKey) || !hash_equals($expectedKey, $cronKey)) {
+        http_response_code(403);
+        echo json_encode(['error' => 'Forbidden']);
+        exit;
+    }
+}
+
+// File lock to prevent concurrent execution
+$lockFile = '/tmp/superbora_cron_churn.lock';
+$lockFp = fopen($lockFile, 'w');
+if (!flock($lockFp, LOCK_EX | LOCK_NB)) {
+    exit(0);
+}
+
 $db = getDB();
 
-// 1. Find all customers with orders in the last 6 months
+// 1. Find all customers with orders in the last 6 months (batched)
 $customers = $db->query("
     SELECT DISTINCT customer_id
     FROM om_market_orders
     WHERE status IN ('entregue', 'delivered', 'finalizado')
     AND created_at > NOW() - INTERVAL '180 days'
     ORDER BY customer_id
+    LIMIT 10000
 ")->fetchAll();
 
 $scored = 0;

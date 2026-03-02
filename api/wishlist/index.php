@@ -128,7 +128,7 @@ try {
         }
 
         // Inserir ou ignorar se já existe
-        $stmt = $pdo->prepare("INSERT IGNORE INTO om_wishlist (customer_id, product_id) VALUES (?, ?) RETURNING id");
+        $stmt = $pdo->prepare("INSERT INTO om_wishlist (customer_id, product_id) VALUES (?, ?) ON CONFLICT (customer_id, product_id) DO NOTHING RETURNING id");
         $stmt->execute([$customer_id, $product_id]);
 
         $added = $stmt->fetchColumn() > 0;
