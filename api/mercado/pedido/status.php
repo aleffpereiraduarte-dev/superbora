@@ -215,6 +215,24 @@ try {
         }
     }
 
+    // Route sibling orders (DoubleDash)
+    $routeId = $pedido['route_id'] ?? null;
+    $routeOrders = [];
+    if ($routeId) {
+        $stmtRoute = $db->prepare("
+            SELECT o.order_id, o.order_number, o.status, o.subtotal, o.total,
+                   o.route_stop_sequence,
+                   COALESCE(o.partner_name, p.trade_name, p.name) as partner_name,
+                   p.logo as partner_logo
+            FROM om_market_orders o
+            LEFT JOIN om_market_partners p ON o.partner_id = p.partner_id
+            WHERE o.route_id = ? AND o.customer_id = ? AND o.status != 'cancelado'
+            ORDER BY o.route_stop_sequence ASC
+        ");
+        $stmtRoute->execute([$routeId, $customer_id]);
+        $routeOrders = $stmtRoute->fetchAll(PDO::FETCH_ASSOC);
+    }
+
     response(true, [
         "order_id" => $pedido["order_id"],
         "partner_id" => (int)$pedido["partner_id"],
@@ -249,7 +267,9 @@ try {
             "coleta_fim" => $pedido["coleta_finalizada_em"],
             "entrega_inicio" => $pedido["entrega_iniciada_em"],
             "entregue" => $pedido["entrega_finalizada_em"]
-        ]
+        ],
+        "route_id" => $routeId ? (int)$routeId : null,
+        "route_orders" => $routeOrders,
     ]);
     
 } catch (Exception $e) {

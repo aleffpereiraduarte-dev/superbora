@@ -139,6 +139,44 @@ try {
         $stmtUpd = $db->prepare("UPDATE om_market_orders SET status = 'cancelado', cancel_reason = ?, cancelled_at = NOW(), notes = COALESCE(notes,'') || ?, date_modified = NOW() WHERE order_id = ?");
         $stmtUpd->execute([$motivo, $notaCancel, $order_id]);
 
+        // 1b. Route cleanup (DoubleDash)
+        $routeId = (int)($pedido['route_id'] ?? 0);
+        $routeSeq = (int)($pedido['route_stop_sequence'] ?? 0);
+        if ($routeId) {
+            // Mark route stop as cancelled
+            $db->prepare("UPDATE om_delivery_route_stops SET status = 'cancelled' WHERE route_id = ? AND order_id = ?")
+               ->execute([$routeId, $order_id]);
+
+            // Decrement total_orders on route
+            $db->prepare("UPDATE om_delivery_routes SET total_orders = GREATEST(0, total_orders - 1) WHERE route_id = ?")
+               ->execute([$routeId]);
+
+            // If primary order (seq 1): cascade cancel all secondary orders in the route
+            if ($routeSeq <= 1) {
+                $stmtSecondaries = $db->prepare("
+                    SELECT order_id FROM om_market_orders
+                    WHERE route_id = ? AND order_id != ? AND status NOT IN ('cancelado', 'cancelled', 'entregue', 'retirado')
+                    FOR UPDATE
+                ");
+                $stmtSecondaries->execute([$routeId, $order_id]);
+                $secondaries = $stmtSecondaries->fetchAll(PDO::FETCH_COLUMN);
+                foreach ($secondaries as $secId) {
+                    $db->prepare("UPDATE om_market_orders SET status = 'cancelado', cancel_reason = 'Pedido primario cancelado', cancelled_at = NOW(), date_modified = NOW() WHERE order_id = ?")->execute([$secId]);
+                    // Restore stock for secondary order items
+                    $stmtSecItems = $db->prepare("SELECT product_id, quantity FROM om_market_order_items WHERE order_id = ?");
+                    $stmtSecItems->execute([$secId]);
+                    foreach ($stmtSecItems->fetchAll() as $si) {
+                        if ($si['product_id']) {
+                            $db->prepare("UPDATE om_market_products SET quantity = quantity + ? WHERE product_id = ?")->execute([$si['quantity'], $si['product_id']]);
+                        }
+                    }
+                    // Mark route stop as cancelled
+                    $db->prepare("UPDATE om_delivery_route_stops SET status = 'cancelled' WHERE route_id = ? AND order_id = ?")->execute([$routeId, $secId]);
+                    error_log("[cancelar] Cascade cancelled secondary order #$secId from route #$routeId");
+                }
+            }
+        }
+
         // 2. Restaurar estoque dos produtos
         $stmtItens = $db->prepare("SELECT product_id, quantity FROM om_market_order_items WHERE order_id = ?");
         $stmtItens->execute([$order_id]);
