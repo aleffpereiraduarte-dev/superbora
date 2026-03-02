@@ -93,7 +93,7 @@ try {
                 'id' => (int)$order['order_id'],
                 'order_number' => $order['order_number'],
                 'order_date' => $order['date_added'],
-                'delivered_date' => $order['date_delivered'],
+                'delivered_date' => $order['delivered_at'],
                 'expected_payment_date' => $paymentDate,
                 'days_until_payment' => $daysUntil,
                 'gross_amount' => round($grossAmount, 2),

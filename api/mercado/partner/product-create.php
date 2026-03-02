@@ -95,7 +95,7 @@ try {
         // We use a safe approach: try with all columns, fall back if needed
         $fullInsertSQL = "
             INSERT INTO om_market_products_base
-                (name, description, category_id, unit, status, created_at)
+                (name, description, category_id, unit, status, date_added)
             VALUES
                 (?, ?, ?, ?, ?, NOW())
             RETURNING product_id
@@ -103,25 +103,21 @@ try {
         $fullValues = [$name, $description, $category_id > 0 ? $category_id : null, $unit, $status];
 
         try {
+            $db->exec('SAVEPOINT sp_base_insert');
             $stmtBase = $db->prepare($fullInsertSQL);
             $stmtBase->execute($fullValues);
+            $db->exec('RELEASE SAVEPOINT sp_base_insert');
         } catch (PDOException $e) {
             // If columns don't exist, try a minimal insert
             if (strpos($e->getMessage(), 'does not exist') !== false) {
-                // Try with just name, category, status
+                $db->exec('ROLLBACK TO SAVEPOINT sp_base_insert');
+                // Try with just name, category_id, status
                 $stmtBase = $db->prepare("
-                    INSERT INTO om_market_products_base (name, category, status, created_at)
+                    INSERT INTO om_market_products_base (name, category_id, status, date_added)
                     VALUES (?, ?, ?, NOW())
                     RETURNING product_id
                 ");
-                $categoryName = '';
-                if ($category_id > 0) {
-                    $stmtCatName = $db->prepare("SELECT name FROM om_market_categories WHERE category_id = ?");
-                    $stmtCatName->execute([$category_id]);
-                    $catRow = $stmtCatName->fetch();
-                    $categoryName = $catRow ? $catRow['name'] : '';
-                }
-                $stmtBase->execute([$name, $categoryName, $status]);
+                $stmtBase->execute([$name, $category_id > 0 ? $category_id : null, $status]);
             } else {
                 throw $e;
             }
@@ -137,21 +133,24 @@ try {
         // Try with price_promo column first (matches CREATE TABLE), fall back to promotional_price
         $priceInsertSQL = "
             INSERT INTO om_market_products_price
-                (product_id, partner_id, price, price_promo, stock, status, availability_schedule, created_at, updated_at)
+                (product_id, partner_id, price, price_promo, stock, status, availability_schedule, date_added, date_modified)
             VALUES
                 (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
         ";
         $priceValues = [$product_id, $partner_id, $price, $promotional_price, $stock, $status, $availability_schedule_json];
 
         try {
+            $db->exec('SAVEPOINT sp_price_insert');
             $stmtPrice = $db->prepare($priceInsertSQL);
             $stmtPrice->execute($priceValues);
+            $db->exec('RELEASE SAVEPOINT sp_price_insert');
         } catch (PDOException $e) {
             if (strpos($e->getMessage(), 'does not exist') !== false) {
+                $db->exec('ROLLBACK TO SAVEPOINT sp_price_insert');
                 // Fall back to promotional_price column name
                 $stmtPrice = $db->prepare("
                     INSERT INTO om_market_products_price
-                        (product_id, partner_id, price, promotional_price, stock, status, availability_schedule, created_at, updated_at)
+                        (product_id, partner_id, price, promotional_price, stock, status, availability_schedule, date_added, date_modified)
                     VALUES
                         (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
                 ");

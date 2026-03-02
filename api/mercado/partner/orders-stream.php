@@ -167,7 +167,7 @@ while (true) {
                     COALESCE(SUM(CASE WHEN status NOT IN ('cancelado','cancelled') THEN total ELSE 0 END), 0) as revenue_today,
                     SUM(CASE WHEN status IN ('pendente','pending') THEN 1 ELSE 0 END) as pending_count,
                     SUM(CASE WHEN status IN ('aceito','confirmed','confirmado','preparando') THEN 1 ELSE 0 END) as preparing_count,
-                    SUM(CASE WHEN status = 'entregue' THEN 1 ELSE 0 END) as delivered_count
+                    SUM(CASE WHEN status IN ('entregue', 'retirado') THEN 1 ELSE 0 END) as delivered_count
                 FROM om_market_orders
                 WHERE partner_id = ? AND DATE(date_added) = ?
             ");

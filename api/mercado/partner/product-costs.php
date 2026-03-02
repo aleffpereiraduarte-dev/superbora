@@ -55,7 +55,7 @@ try {
         $stmtUpsert = $db->prepare("
             INSERT INTO om_market_product_costs (product_id, partner_id, custo, fornecedor, updated_at)
             VALUES (?, ?, ?, ?, NOW())
-            ON CONFLICT (product_id)
+            ON CONFLICT (product_id, partner_id)
             DO UPDATE SET custo = EXCLUDED.custo, fornecedor = EXCLUDED.fornecedor, updated_at = NOW()
         ");
         $stmtUpsert->execute([$productId, $partnerId, $custo, $fornecedor ?: null]);
@@ -89,9 +89,23 @@ try {
             $stmtUpsert = $db->prepare("
                 INSERT INTO om_market_product_costs (product_id, partner_id, custo, fornecedor, updated_at)
                 VALUES (?, ?, ?, ?, NOW())
-                ON CONFLICT (product_id)
+                ON CONFLICT (product_id, partner_id)
                 DO UPDATE SET custo = EXCLUDED.custo, fornecedor = COALESCE(EXCLUDED.fornecedor, om_market_product_costs.fornecedor), updated_at = NOW()
             ");
+
+            // Verify ownership of all product_ids in bulk
+            $allPids = array_filter(array_map(fn($i) => (int)($i['product_id'] ?? 0), $items), fn($p) => $p > 0);
+            $ownedPids = [];
+            if (!empty($allPids)) {
+                $ph = implode(',', array_fill(0, count($allPids), '?'));
+                $stmtOwn = $db->prepare("
+                    SELECT product_id FROM om_market_products WHERE product_id IN ({$ph}) AND partner_id = ?
+                    UNION
+                    SELECT product_id FROM om_market_products_price WHERE product_id IN ({$ph}) AND partner_id = ?
+                ");
+                $stmtOwn->execute(array_merge($allPids, [$partnerId], $allPids, [$partnerId]));
+                $ownedPids = array_column($stmtOwn->fetchAll(PDO::FETCH_ASSOC), 'product_id');
+            }
 
             foreach ($items as $idx => $item) {
                 $pid = (int)($item['product_id'] ?? 0);
@@ -104,6 +118,10 @@ try {
                 }
                 if ($custo < 0) {
                     $errors[] = "Item {$idx}: custo negativo";
+                    continue;
+                }
+                if (!in_array($pid, $ownedPids)) {
+                    $errors[] = "Item {$idx}: produto {$pid} nao pertence a este parceiro";
                     continue;
                 }
 

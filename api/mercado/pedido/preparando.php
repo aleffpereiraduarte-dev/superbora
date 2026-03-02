@@ -54,7 +54,7 @@ try {
         response(false, null, "Pedido nao pode ir para preparando (status atual: {$pedido['status']})", 409);
     }
 
-    $updates = "status = 'preparando', date_modified = NOW()";
+    $updates = "status = 'preparando', preparing_started_at = NOW(), date_modified = NOW()";
     $params = [$order_id];
 
     $stmt = $db->prepare("UPDATE om_market_orders SET $updates WHERE order_id = ?");

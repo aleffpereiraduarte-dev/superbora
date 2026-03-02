@@ -52,8 +52,8 @@ try {
             pp.price_promo,
             pp.stock,
             pp.status,
-            pp.created_at,
-            pp.updated_at,
+            pp.date_added,
+            pp.date_modified,
             cat.name as category_name
         FROM om_market_products_base pb
         LEFT JOIN om_market_products_price pp ON pp.product_id = pb.product_id AND pp.partner_id = ?
@@ -79,8 +79,8 @@ try {
                 pp.price_promo,
                 pp.stock,
                 pp.status as price_status,
-                pp.created_at,
-                pp.updated_at,
+                pp.date_added,
+                pp.date_modified,
                 cat.name as category_name
             FROM om_market_products_base pb
             LEFT JOIN om_market_products_price pp ON pp.product_id = pb.product_id AND pp.partner_id = ?
@@ -105,8 +105,8 @@ try {
                 pp.price_promo,
                 pp.stock,
                 pp.status as price_status,
-                pp.created_at,
-                pp.updated_at,
+                pp.date_added,
+                pp.date_modified,
                 cat.name as category_name
             FROM om_market_products_base pb
             LEFT JOIN om_market_products_price pp ON pp.product_id = pb.product_id AND pp.partner_id = ?
@@ -139,8 +139,8 @@ try {
         "stock" => $product['stock'] !== null ? (int)$product['stock'] : null,
         "status" => $product['price_status'] !== null ? (int)$product['price_status'] : null,
         "has_pricing" => $product['price_id'] !== null,
-        "created_at" => $product['created_at'],
-        "updated_at" => $product['updated_at']
+        "created_at" => $product['date_added'],
+        "updated_at" => $product['date_modified']
     ];
 
     response(true, $data, "Produto encontrado");

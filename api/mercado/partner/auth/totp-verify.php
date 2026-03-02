@@ -57,6 +57,21 @@ try {
     }
 
     try {
+        // Ensure rate limit columns exist (table may have older schema)
+        $db->exec("CREATE TABLE IF NOT EXISTS om_login_attempts (
+            id SERIAL PRIMARY KEY,
+            ip_address VARCHAR(45) NOT NULL,
+            email VARCHAR(255) DEFAULT NULL,
+            user_type VARCHAR(30) DEFAULT 'unknown',
+            attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )");
+        $db->exec("DO $$ BEGIN
+            ALTER TABLE om_login_attempts ADD COLUMN IF NOT EXISTS email VARCHAR(255) DEFAULT NULL;
+            ALTER TABLE om_login_attempts ADD COLUMN IF NOT EXISTS user_type VARCHAR(30) DEFAULT 'unknown';
+            ALTER TABLE om_login_attempts ADD COLUMN IF NOT EXISTS attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+        EXCEPTION WHEN OTHERS THEN NULL;
+        END $$");
+
         $stmtRate = $db->prepare("
             SELECT COUNT(*) FROM om_login_attempts
             WHERE ip_address = ? AND user_type = 'partner_totp'

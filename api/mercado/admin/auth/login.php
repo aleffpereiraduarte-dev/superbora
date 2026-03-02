@@ -51,7 +51,7 @@ try {
     }
 
     try {
-        // Garantir que tabela existe
+        // Garantir que tabela existe com schema correto
         $db->exec("
             CREATE TABLE IF NOT EXISTS om_login_attempts (
                 id SERIAL PRIMARY KEY,
@@ -61,6 +61,13 @@ try {
                 attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ");
+        // Add columns that may be missing if table was created with a different schema
+        $db->exec("DO $$ BEGIN
+            ALTER TABLE om_login_attempts ADD COLUMN IF NOT EXISTS email VARCHAR(255) DEFAULT NULL;
+            ALTER TABLE om_login_attempts ADD COLUMN IF NOT EXISTS user_type VARCHAR(30) DEFAULT 'unknown';
+            ALTER TABLE om_login_attempts ADD COLUMN IF NOT EXISTS attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+        EXCEPTION WHEN OTHERS THEN NULL;
+        END $$");
         $db->exec("CREATE INDEX IF NOT EXISTS idx_om_login_attempts_ip_time ON om_login_attempts (ip_address, attempted_at)");
         $db->exec("CREATE INDEX IF NOT EXISTS idx_om_login_attempts_email_time ON om_login_attempts (email, attempted_at)");
 

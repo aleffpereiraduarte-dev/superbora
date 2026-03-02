@@ -45,9 +45,27 @@ try {
     }
 
     try {
-        // Table om_login_attempts must exist via migration
+        // Ensure om_login_attempts has the columns all login endpoints need.
+        // The table may have been created with a minimal schema (ip_address, success, created_at)
+        // by a different migration. Add missing columns idempotently.
+        $db->exec("CREATE TABLE IF NOT EXISTS om_login_attempts (
+            id SERIAL PRIMARY KEY,
+            ip_address VARCHAR(45) NOT NULL,
+            email VARCHAR(255) DEFAULT NULL,
+            user_type VARCHAR(30) DEFAULT 'partner',
+            attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )");
+        // Add columns that may be missing from an older schema
+        $db->exec("DO $$ BEGIN
+            ALTER TABLE om_login_attempts ADD COLUMN IF NOT EXISTS email VARCHAR(255) DEFAULT NULL;
+            ALTER TABLE om_login_attempts ADD COLUMN IF NOT EXISTS user_type VARCHAR(30) DEFAULT 'unknown';
+            ALTER TABLE om_login_attempts ADD COLUMN IF NOT EXISTS attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+        EXCEPTION WHEN OTHERS THEN NULL;
+        END $$");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_om_login_attempts_ip_time ON om_login_attempts (ip_address, attempted_at)");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_om_login_attempts_email_time ON om_login_attempts (email, attempted_at)");
 
-        // Per-IP rate limiting
+        // Per-IP rate limiting: 10 failed attempts per 15 minutes
         $stmtIp = $db->prepare("
             SELECT COUNT(*) FROM om_login_attempts
             WHERE ip_address = ? AND user_type = 'partner'
@@ -59,7 +77,7 @@ try {
             response(false, null, "Muitas tentativas de login. Aguarde 15 minutos.", 429);
         }
 
-        // Per-email rate limiting (prevents distributed brute force)
+        // Per-email rate limiting (prevents distributed brute force across IPs)
         $stmtEmail = $db->prepare("
             SELECT COUNT(*) FROM om_login_attempts
             WHERE email = ? AND user_type = 'partner'

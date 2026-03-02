@@ -67,6 +67,21 @@ try {
         // Rate limiting: 5 attempts per 5 minutes for TOTP setup verification
         $clientIp = $_SERVER['HTTP_CF_CONNECTING_IP'] ?? $_SERVER['REMOTE_ADDR'];
         try {
+            // Ensure rate limit columns exist (table may have older schema)
+            $db->exec("CREATE TABLE IF NOT EXISTS om_login_attempts (
+                id SERIAL PRIMARY KEY,
+                ip_address VARCHAR(45) NOT NULL,
+                email VARCHAR(255) DEFAULT NULL,
+                user_type VARCHAR(30) DEFAULT 'unknown',
+                attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )");
+            $db->exec("DO $$ BEGIN
+                ALTER TABLE om_login_attempts ADD COLUMN IF NOT EXISTS email VARCHAR(255) DEFAULT NULL;
+                ALTER TABLE om_login_attempts ADD COLUMN IF NOT EXISTS user_type VARCHAR(30) DEFAULT 'unknown';
+                ALTER TABLE om_login_attempts ADD COLUMN IF NOT EXISTS attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+            EXCEPTION WHEN OTHERS THEN NULL;
+            END $$");
+
             $stmtRl = $db->prepare("
                 SELECT COUNT(*) FROM om_login_attempts
                 WHERE ip_address = ? AND user_type = 'totp_setup' AND email = ?
@@ -76,7 +91,7 @@ try {
             if ((int)$stmtRl->fetchColumn() >= 5) {
                 response(false, null, "Muitas tentativas. Aguarde 5 minutos.", 429);
             }
-            $db->prepare("INSERT INTO om_login_attempts (ip_address, email, user_type) VALUES (?, ?, 'totp_setup')")
+            $db->prepare("INSERT INTO om_login_attempts (ip_address, email, user_type, attempted_at) VALUES (?, ?, 'totp_setup', NOW())")
                ->execute([$clientIp, (string)$partnerId]);
         } catch (Exception $rlErr) {
             error_log("[totp-setup] Rate limit check error: " . $rlErr->getMessage());

@@ -34,7 +34,7 @@ try {
     $sort = trim($_GET['sort'] ?? 'newest');
 
     // Validar status
-    $validStatuses = ['pendente', 'confirmado', 'preparando', 'pronto', 'coletado', 'em_entrega', 'entregue', 'cancelado', 'aceito'];
+    $validStatuses = ['pendente', 'confirmado', 'preparando', 'pronto', 'coletado', 'em_entrega', 'entregue', 'retirado', 'cancelado', 'aceito'];
 
     $where = ["o.partner_id = ?"];
     $params = [$partner_id];

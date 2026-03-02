@@ -32,7 +32,7 @@ $foto_entrega = trim($input['foto'] ?? '');
 $confirmado_por = $input['confirmado_por'] ?? 'cliente';
 
 // SECURITY: Whitelist confirmado_por to prevent auth bypass
-$confirmadoresPermitidos = ['cliente', 'motorista'];
+$confirmadoresPermitidos = ['cliente', 'motorista', 'shopper'];
 if (!in_array($confirmado_por, $confirmadoresPermitidos, true)) {
     http_response_code(400);
     echo json_encode(["success" => false, "message" => "confirmado_por invalido"]);

@@ -120,14 +120,16 @@ try {
 
         // Pusher: notificar parceiro sobre atualizacao em lote de produtos
         try {
-            foreach ($productIds as $pid) {
-                PusherService::productUpdate($partnerId, [
-                    'product_id' => $pid,
-                    'action' => 'bulk_' . $action,
-                    'product' => null
-                ]);
+            if (PusherService::isConfigured()) {
+                foreach ($productIds as $pid) {
+                    PusherService::trigger("partner-{$partnerId}", 'product-update', [
+                        'product_id' => $pid,
+                        'action' => 'bulk_' . $action,
+                        'product' => null
+                    ]);
+                }
             }
-        } catch (Exception $pusherErr) {
+        } catch (\Throwable $pusherErr) {
             error_log("[product-bulk] Pusher erro: " . $pusherErr->getMessage());
         }
 

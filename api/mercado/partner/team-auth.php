@@ -66,6 +66,21 @@ try {
         }
 
         try {
+            // Ensure rate limit table and columns exist
+            $db->exec("CREATE TABLE IF NOT EXISTS om_login_attempts (
+                id SERIAL PRIMARY KEY,
+                ip_address VARCHAR(45) NOT NULL,
+                email VARCHAR(255) DEFAULT NULL,
+                user_type VARCHAR(30) DEFAULT 'unknown',
+                attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )");
+            $db->exec("DO $$ BEGIN
+                ALTER TABLE om_login_attempts ADD COLUMN IF NOT EXISTS email VARCHAR(255) DEFAULT NULL;
+                ALTER TABLE om_login_attempts ADD COLUMN IF NOT EXISTS user_type VARCHAR(30) DEFAULT 'unknown';
+                ALTER TABLE om_login_attempts ADD COLUMN IF NOT EXISTS attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+            EXCEPTION WHEN OTHERS THEN NULL;
+            END $$");
+
             // Per-IP rate limiting
             $stmtIp = $db->prepare("
                 SELECT COUNT(*) FROM om_login_attempts
@@ -91,7 +106,7 @@ try {
             }
 
             // Record attempt
-            $db->prepare("INSERT INTO om_login_attempts (ip_address, email, user_type) VALUES (?, ?, 'team')")
+            $db->prepare("INSERT INTO om_login_attempts (ip_address, email, user_type, attempted_at) VALUES (?, ?, 'team', NOW())")
                ->execute([$clientIp, $email]);
         } catch (Exception $rlErr) {
             // If rate limit table doesn't exist, log but don't block login

@@ -164,4 +164,58 @@ class PusherService {
     public static function broadcast(string $event, array $data): bool {
         return self::trigger('all-partners', $event, $data);
     }
+
+    /**
+     * Retorna app key (para frontend Pusher JS client)
+     */
+    public static function getAppKey(): string {
+        self::init();
+        return self::$key;
+    }
+
+    /**
+     * Retorna cluster (para frontend Pusher JS client)
+     */
+    public static function getCluster(): string {
+        self::init();
+        return self::$cluster;
+    }
+
+    /**
+     * Envia mensagem de chat para parceiro
+     */
+    public static function chatMessage(int $partnerId, array $chatData): bool {
+        return self::trigger("partner-{$partnerId}", 'chat-message', $chatData);
+    }
+
+    /**
+     * Envia notificacao generica para parceiro
+     */
+    public static function notify(int $partnerId, string $title, string $message, string $level = 'info'): bool {
+        return self::trigger("partner-{$partnerId}", 'notification', [
+            'title' => $title,
+            'message' => $message,
+            'level' => $level,
+            'timestamp' => date('c')
+        ]);
+    }
+
+    /**
+     * Envia alerta urgente para parceiro
+     */
+    public static function alert(int $partnerId, string $title, string $message): bool {
+        return self::trigger("partner-{$partnerId}", 'alert', [
+            'title' => $title,
+            'message' => $message,
+            'level' => 'error',
+            'timestamp' => date('c')
+        ]);
+    }
+
+    /**
+     * Notifica atualizacao de produto
+     */
+    public static function productUpdate(int $partnerId, array $productData): bool {
+        return self::trigger("partner-{$partnerId}", 'product-update', $productData);
+    }
 }

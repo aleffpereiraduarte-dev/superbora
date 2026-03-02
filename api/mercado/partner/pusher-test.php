@@ -91,7 +91,7 @@ try {
 
     response(false, null, "Metodo nao permitido", 405);
 
-} catch (Exception $e) {
+} catch (\Throwable $e) {
     error_log("[partner/pusher-test] Erro: " . $e->getMessage());
     response(false, null, "Erro interno ao processar requisicao", 500);
 }

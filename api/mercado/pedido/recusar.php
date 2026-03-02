@@ -83,10 +83,11 @@ try {
         $db->prepare("UPDATE om_market_shoppers SET disponivel = 1, pedido_atual_id = NULL WHERE shopper_id = ?")->execute([$pedido['shopper_id']]);
     }
 
-    // Save Stripe info for refund after commit (external call must be outside transaction)
+    // Save payment info for refund after commit (external calls must be outside transaction)
     $paymentMethod = $pedido['forma_pagamento'] ?? $pedido['payment_method'] ?? '';
     $stripePi = $pedido['stripe_payment_intent_id'] ?? $pedido['payment_id'] ?? '';
     $needsStripeRefund = in_array($paymentMethod, ['stripe_card', 'stripe_wallet', 'credito']) && $stripePi;
+    $needsPixRefund = in_array($paymentMethod, ['pix', 'pix_woovi']) && !empty($pedido['pix_correlation_id'] ?? $pedido['correlation_id'] ?? '');
 
     // Restaurar pontos e cashback
     $pointsUsed = (int)($pedido['loyalty_points_used'] ?? 0);
@@ -160,13 +161,14 @@ try {
                     CURLOPT_POST => true,
                     CURLOPT_POSTFIELDS => http_build_query([
                         'payment_intent' => $stripePi,
-                        'reason' => 'requested_by_customer',
+                        'reason' => 'fraudulent',
                         'metadata[order_id]' => $order_id,
                         'metadata[source]' => 'superbora_partner_reject',
                     ]),
                     CURLOPT_HTTPHEADER => [
                         'Authorization: Bearer ' . $STRIPE_SK,
                         'Content-Type: application/x-www-form-urlencoded',
+                        'Stripe-Version: 2023-10-16',
                         'Idempotency-Key: ' . $idempotencyKey,
                     ],
                     CURLOPT_RETURNTRANSFER => true,
@@ -188,6 +190,28 @@ try {
             }
         } catch (Exception $refErr) {
             error_log("[recusar] Erro refund: " . $refErr->getMessage());
+        }
+    }
+
+    // Estornar PIX APOS commit (external call outside transaction)
+    if ($needsPixRefund) {
+        try {
+            require_once dirname(__DIR__, 3) . '/includes/classes/WooviClient.php';
+            $woovi = new WooviClient();
+            $correlationId = $pedido['pix_correlation_id'] ?? $pedido['correlation_id'] ?? '';
+            $pixRefundResult = $woovi->refundCharge($correlationId);
+            $pixRefundOk = !empty($pixRefundResult['data']) || !empty($pixRefundResult['refund']) || (isset($pixRefundResult['status']) && $pixRefundResult['status'] === 'OK');
+            if ($pixRefundOk) {
+                error_log("[recusar] PIX refund OK para pedido #$order_id correlationId=$correlationId");
+                $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ? WHERE order_id = ?")
+                   ->execute([" [PIX REFUND OK]", $order_id]);
+            } else {
+                error_log("[recusar] FALHA PIX refund correlationId=$correlationId resp=" . json_encode($pixRefundResult));
+                $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ' [PIX REFUND FAILED - MANUAL]' WHERE order_id = ?")->execute([$order_id]);
+            }
+        } catch (Exception $pixErr) {
+            error_log("[recusar] Erro PIX refund: " . $pixErr->getMessage());
+            $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ' [PIX REFUND ERROR]' WHERE order_id = ?")->execute([$order_id]);
         }
     }
 
