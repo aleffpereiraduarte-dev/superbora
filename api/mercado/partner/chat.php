@@ -3,7 +3,8 @@
  * GET/POST /api/mercado/partner/chat.php
  * GET  ?mode=list              - Lista pedidos com mensagens
  * GET  ?order_id=123&since=... - Mensagens de um pedido (polling)
- * POST { order_id, message }   - Enviar mensagem como partner
+ * POST { order_id, message }   - Enviar mensagem como partner (JSON)
+ * POST FormData { order_id, message, message_type=image, photo } - Enviar imagem
  */
 
 require_once __DIR__ . "/../config/database.php";
@@ -61,7 +62,8 @@ try {
 
             if ($since) {
                 $stmt = $db->prepare("
-                    SELECT id, order_id, sender_type, sender_name, message, created_at
+                    SELECT id, order_id, sender_type, sender_name, message,
+                           attachment_url, attachment_type, created_at
                     FROM om_market_order_chat
                     WHERE order_id = ? AND created_at > ?
                     ORDER BY created_at ASC
@@ -69,7 +71,8 @@ try {
                 $stmt->execute([$orderId, $since]);
             } else {
                 $stmt = $db->prepare("
-                    SELECT id, order_id, sender_type, sender_name, message, created_at
+                    SELECT id, order_id, sender_type, sender_name, message,
+                           attachment_url, attachment_type, created_at
                     FROM om_market_order_chat
                     WHERE order_id = ?
                     ORDER BY created_at ASC
@@ -79,6 +82,17 @@ try {
             }
 
             $messages = $stmt->fetchAll();
+
+            // Build full URLs for attachments
+            $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+            $host = $_SERVER['HTTP_HOST'] ?? 'superbora.com.br';
+            foreach ($messages as &$msg) {
+                if (!empty($msg['attachment_url']) && !str_starts_with($msg['attachment_url'], 'http')) {
+                    $msg['attachment_url'] = $scheme . '://' . $host . $msg['attachment_url'];
+                }
+            }
+            unset($msg);
+
             response(true, ["messages" => $messages, "order_id" => $orderId]);
         }
 
@@ -87,16 +101,88 @@ try {
     }
 
     if ($_SERVER["REQUEST_METHOD"] === "POST") {
-        $input = getInput();
-        $orderId = (int)($input['order_id'] ?? 0);
-        $message = strip_tags(trim($input['message'] ?? ''));
+        // Support both JSON and multipart FormData (for image uploads)
+        $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+        $isMultipart = str_contains($contentType, 'multipart/form-data');
 
-        if (!$orderId || !$message) {
-            response(false, null, "order_id e message sao obrigatorios", 400);
+        if ($isMultipart) {
+            $input = $_POST;
+        } else {
+            $input = getInput();
         }
 
-        if (strlen($message) > 1000) {
-            response(false, null, "Mensagem muito longa (max 1000 caracteres)", 400);
+        $orderId = (int)($input['order_id'] ?? 0);
+        $messageType = $input['message_type'] ?? 'text';
+        $attachmentUrl = null;
+        $attachmentType = null;
+
+        if (!in_array($messageType, ['text', 'image'])) {
+            $messageType = 'text';
+        }
+
+        if (!$orderId) {
+            response(false, null, "order_id obrigatorio", 400);
+        }
+
+        // Handle image upload
+        if ($messageType === 'image') {
+            if (empty($_FILES['photo']) || $_FILES['photo']['error'] !== UPLOAD_ERR_OK) {
+                response(false, null, "Foto obrigatoria para mensagem de imagem", 400);
+            }
+
+            $file = $_FILES['photo'];
+
+            // Validate file type
+            $allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+            $finfo = new finfo(FILEINFO_MIME_TYPE);
+            $detectedType = $finfo->file($file['tmp_name']);
+            if (!in_array($detectedType, $allowedTypes)) {
+                response(false, null, "Tipo de arquivo nao permitido. Use JPEG, PNG, WebP ou GIF.", 400);
+            }
+
+            // Validate file size (5MB max)
+            if ($file['size'] > 5 * 1024 * 1024) {
+                response(false, null, "Imagem excede o limite de 5MB", 400);
+            }
+
+            // Create upload directory
+            $uploadDir = dirname(__DIR__, 3) . '/uploads/chat/';
+            if (!is_dir($uploadDir)) {
+                mkdir($uploadDir, 0755, true);
+            }
+
+            // Generate unique filename
+            $ext = match($detectedType) {
+                'image/jpeg' => 'jpg',
+                'image/png'  => 'png',
+                'image/webp' => 'webp',
+                'image/gif'  => 'gif',
+                default      => 'jpg',
+            };
+            $filename = sprintf('chat_%d_p%d_%s.%s', $orderId, $partnerId, bin2hex(random_bytes(8)), $ext);
+            $destPath = $uploadDir . $filename;
+
+            if (!move_uploaded_file($file['tmp_name'], $destPath)) {
+                response(false, null, "Erro ao salvar imagem", 500);
+            }
+
+            $attachmentUrl = '/uploads/chat/' . $filename;
+            $attachmentType = 'image';
+            $message = strip_tags(trim($input['message'] ?? ''));
+            if (empty($message)) {
+                $message = '[Imagem]';
+            }
+        } else {
+            // Text message
+            $message = strip_tags(trim($input['message'] ?? ''));
+
+            if (!$message) {
+                response(false, null, "order_id e message sao obrigatorios", 400);
+            }
+
+            if (strlen($message) > 1000) {
+                response(false, null, "Mensagem muito longa (max 1000 caracteres)", 400);
+            }
         }
 
         // Validar que pedido pertence ao parceiro
@@ -113,20 +199,30 @@ try {
         $senderName = $partnerData['trade_name'] ?: $partnerData['name'];
 
         $stmt = $db->prepare("
-            INSERT INTO om_market_order_chat (order_id, sender_type, sender_id, sender_name, recipient_type, message, created_at)
-            VALUES (?, 'partner', ?, ?, 'customer', ?, NOW())
+            INSERT INTO om_market_order_chat (order_id, sender_type, sender_id, sender_name, recipient_type, message, attachment_url, attachment_type, created_at)
+            VALUES (?, 'partner', ?, ?, 'customer', ?, ?, ?, NOW())
             RETURNING id
         ");
-        $stmt->execute([$orderId, $partnerId, $senderName, $message]);
+        $stmt->execute([$orderId, $partnerId, $senderName, $message, $attachmentUrl, $attachmentType]);
 
         $msgId = $stmt->fetchColumn();
 
+        // Build full URL for response
+        $fullAttachmentUrl = $attachmentUrl;
+        if ($attachmentUrl && !str_starts_with($attachmentUrl, 'http')) {
+            $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+            $host = $_SERVER['HTTP_HOST'] ?? 'superbora.com.br';
+            $fullAttachmentUrl = $scheme . '://' . $host . $attachmentUrl;
+        }
+
         // Gravar tambem em om_order_chat (tabela unificada usada pelo app BoraUm)
+        $omMessageType = $messageType === 'image' ? 'image' : 'text';
+        $omImageUrl = $attachmentUrl; // relative path
         try {
             $db->prepare("
-                INSERT INTO om_order_chat (order_id, sender_type, sender_id, sender_name, message, message_type, chat_type, is_read, created_at)
-                VALUES (?, 'partner', ?, ?, ?, 'text', 'customer', 0, NOW())
-            ")->execute([$orderId, $partnerId, $senderName, $message]);
+                INSERT INTO om_order_chat (order_id, sender_type, sender_id, sender_name, message, message_type, image_url, chat_type, is_read, created_at)
+                VALUES (?, 'partner', ?, ?, ?, ?, ?, 'customer', 0, NOW())
+            ")->execute([$orderId, $partnerId, $senderName, $message, $omMessageType, $omImageUrl]);
         } catch (Exception $e) {
             error_log("[partner/chat] Erro ao gravar em om_order_chat: " . $e->getMessage());
         }
@@ -136,7 +232,9 @@ try {
             "order_id" => $orderId,
             "sender_type" => "partner",
             "sender_name" => $senderName,
-            "message" => $message
+            "message" => $message,
+            "attachment_url" => $fullAttachmentUrl,
+            "attachment_type" => $attachmentType,
         ];
 
         // Pusher: notificar parceiro sobre nova mensagem em tempo real

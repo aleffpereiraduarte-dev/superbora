@@ -104,21 +104,81 @@ try {
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // POST - Enviar nova mensagem
+    // POST - Enviar nova mensagem (JSON or multipart/form-data with photo)
     // ═══════════════════════════════════════════════════════════════════
     if ($method === 'POST') {
-        $input = json_decode(file_get_contents('php://input'), true);
-
-        $ticketId = (int)($input['ticket_id'] ?? 0);
-        $message = trim($input['message'] ?? '');
-        $needHuman = (bool)($input['need_human'] ?? false);
+        // Support both JSON and multipart/form-data (when photo is attached)
+        $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+        if (strpos($contentType, 'multipart/form-data') !== false) {
+            // FormData upload
+            $ticketId = (int)($_POST['ticket_id'] ?? 0);
+            $message = trim($_POST['message'] ?? '');
+            $needHuman = (bool)($_POST['need_human'] ?? false);
+        } else {
+            // JSON body
+            $input = json_decode(file_get_contents('php://input'), true);
+            $ticketId = (int)($input['ticket_id'] ?? 0);
+            $message = trim($input['message'] ?? '');
+            $needHuman = (bool)($input['need_human'] ?? false);
+        }
 
         if (!$ticketId) {
             response(false, null, "ticket_id obrigatorio", 400);
         }
 
-        if (empty($message) || strlen($message) < 2) {
+        // Allow empty message if photo is provided
+        $hasPhoto = !empty($_FILES['photo']['tmp_name']);
+        if (empty($message) && !$hasPhoto) {
+            response(false, null, "Mensagem ou foto obrigatoria", 400);
+        }
+        if (!empty($message) && strlen($message) < 2 && !$hasPhoto) {
             response(false, null, "Mensagem muito curta", 400);
+        }
+
+        // Handle photo upload
+        $anexos = null;
+        if ($hasPhoto) {
+            $photo = $_FILES['photo'];
+
+            // Validate file size (max 5MB)
+            if ($photo['size'] > 5 * 1024 * 1024) {
+                response(false, null, "Foto muito grande. Maximo 5MB.", 400);
+            }
+
+            // Validate MIME type
+            $allowedMimes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+            $finfo = new finfo(FILEINFO_MIME_TYPE);
+            $detectedMime = $finfo->file($photo['tmp_name']);
+            if (!in_array($detectedMime, $allowedMimes)) {
+                response(false, null, "Tipo de arquivo nao permitido. Use JPEG, PNG, WebP ou GIF.", 400);
+            }
+
+            // Create upload directory if it doesn't exist
+            $uploadDir = dirname(__DIR__, 3) . '/uploads/support';
+            if (!is_dir($uploadDir)) {
+                mkdir($uploadDir, 0755, true);
+            }
+
+            // Generate unique filename
+            $ext = match ($detectedMime) {
+                'image/jpeg' => 'jpg',
+                'image/png' => 'png',
+                'image/webp' => 'webp',
+                'image/gif' => 'gif',
+                default => 'jpg',
+            };
+            $filename = 'ticket_' . $ticketId . '_' . time() . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
+            $filepath = $uploadDir . '/' . $filename;
+
+            if (!move_uploaded_file($photo['tmp_name'], $filepath)) {
+                response(false, null, "Erro ao salvar a foto. Tente novamente.", 500);
+            }
+
+            // Build attachment URL (relative to web root)
+            $attachmentUrl = '/uploads/support/' . $filename;
+            $anexos = json_encode([
+                ['url' => $attachmentUrl, 'type' => $detectedMime, 'filename' => $filename]
+            ]);
         }
 
         // Verificar ownership e status
@@ -136,12 +196,15 @@ try {
             response(false, null, "Este ticket esta fechado. Abra um novo ticket.", 400);
         }
 
-        // Inserir mensagem do cliente
+        // Use message text, or a placeholder if only photo
+        $messageText = !empty($message) ? $message : '[Foto]';
+
+        // Inserir mensagem do cliente (with optional attachment)
         $stmt = $db->prepare("
-            INSERT INTO om_support_messages (ticket_id, remetente_tipo, remetente_id, remetente_nome, mensagem, lida, created_at)
-            VALUES (?, 'customer', ?, ?, ?, 0, NOW())
+            INSERT INTO om_support_messages (ticket_id, remetente_tipo, remetente_id, remetente_nome, mensagem, anexos, lida, created_at)
+            VALUES (?, 'customer', ?, ?, ?, ?, 0, NOW())
         ");
-        $stmt->execute([$ticketId, $customerId, $customerName, $message]);
+        $stmt->execute([$ticketId, $customerId, $customerName, $messageText, $anexos]);
         $messageId = (int)$db->lastInsertId();
 
         // Se cliente pediu atendimento humano ou disse que bot nao ajudou
@@ -161,12 +224,13 @@ try {
             response(true, [
                 'message_id' => $messageId,
                 'escalated' => true,
-                'bot_response' => $botMessage
+                'bot_response' => $botMessage,
+                'attachment_url' => $anexos ? json_decode($anexos, true)[0]['url'] ?? null : null,
             ]);
         }
 
-        // Tentar resposta do bot
-        $botResponse = getBotResponse($db, $message);
+        // Tentar resposta do bot (skip bot if only photo was sent)
+        $botResponse = !empty($message) ? getBotResponse($db, $message) : null;
 
         if ($botResponse) {
             $stmt = $db->prepare("
@@ -181,7 +245,8 @@ try {
             response(true, [
                 'message_id' => $messageId,
                 'bot_response' => $botResponse['answer'],
-                'faq_matched' => $botResponse['question']
+                'faq_matched' => $botResponse['question'],
+                'attachment_url' => $anexos ? json_decode($anexos, true)[0]['url'] ?? null : null,
             ]);
         }
 
@@ -199,7 +264,8 @@ try {
         response(true, [
             'message_id' => $messageId,
             'escalated' => true,
-            'bot_response' => $escalationMessage
+            'bot_response' => $escalationMessage,
+            'attachment_url' => $anexos ? json_decode($anexos, true)[0]['url'] ?? null : null,
         ]);
     }
 
