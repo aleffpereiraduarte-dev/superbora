@@ -22,9 +22,9 @@ try {
             $stmt = $db->query("
                 SELECT
                     COUNT(*) as total,
-                    SUM(CASE WHEN status IN ('aberto','em_atendimento','aguardando_resposta') THEN 1 ELSE 0 END) as open,
-                    SUM(CASE WHEN status = 'resolvido' THEN 1 ELSE 0 END) as resolved,
-                    SUM(CASE WHEN status = 'fechado' THEN 1 ELSE 0 END) as closed
+                    SUM(CASE WHEN status IN ('open','waiting','aberto','em_atendimento','aguardando_resposta') THEN 1 ELSE 0 END) as open,
+                    SUM(CASE WHEN status IN ('resolved','resolvido') THEN 1 ELSE 0 END) as resolved,
+                    SUM(CASE WHEN status IN ('closed','fechado') THEN 1 ELSE 0 END) as closed
                 FROM om_support_tickets
             ");
             $stats = $stmt->fetch();
@@ -52,7 +52,7 @@ try {
                     COUNT(CASE WHEN EXTRACT(EPOCH FROM (updated_at - created_at)) < 259200 THEN 1 END) as resolved_72h,
                     COUNT(*) as total_resolved
                 FROM om_support_tickets
-                WHERE status IN ('resolvido','fechado')
+                WHERE status IN ('resolved','closed','resolvido','fechado')
                 AND created_at > NOW() - INTERVAL '30 days'
             ");
             $resol = $stmtResol->fetch();
@@ -68,7 +68,7 @@ try {
             // Tickets per day (last 14 days)
             $stmtChart = $db->query("
                 SELECT DATE(created_at) as dia, COUNT(*) as total,
-                    SUM(CASE WHEN status IN ('resolvido','fechado') THEN 1 ELSE 0 END) as resolved
+                    SUM(CASE WHEN status IN ('resolved','closed','resolvido','fechado') THEN 1 ELSE 0 END) as resolved
                 FROM om_support_tickets
                 WHERE created_at > NOW() - INTERVAL '14 days'
                 GROUP BY DATE(created_at)
@@ -145,7 +145,7 @@ try {
         $update_params = [];
 
         if ($new_status) {
-            $valid = ["aberto", "em_atendimento", "aguardando_resposta", "resolvido", "fechado"];
+            $valid = ["open", "waiting", "resolved", "closed", "aberto", "em_atendimento", "aguardando_resposta", "resolvido", "fechado"];
             if (!in_array($new_status, $valid)) response(false, null, "Status invalido", 400);
             $updates[] = "status = ?";
             $update_params[] = $new_status;

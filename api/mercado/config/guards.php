@@ -81,7 +81,15 @@ function guard_wallet_debit(PDO $db, int $customerId, float $amount, string $des
         throw new \Exception("Valor de debito deve ser positivo");
     }
 
-    $db->beginTransaction();
+    // Support being called inside an existing transaction.
+    // PostgreSQL does not support nested BEGIN, so use SAVEPOINT when already in a transaction.
+    $nested = $db->inTransaction();
+    if ($nested) {
+        $db->exec("SAVEPOINT guard_wallet_debit");
+    } else {
+        $db->beginTransaction();
+    }
+
     try {
         // Lock exclusivo na wallet do cliente
         $stmt = $db->prepare("
@@ -125,7 +133,11 @@ function guard_wallet_debit(PDO $db, int $customerId, float $amount, string $des
         ");
         $stmtTx->execute([$amount, $balanceBefore, $balanceAfter, $description, $reference, $customerId]);
 
-        $db->commit();
+        if ($nested) {
+            $db->exec("RELEASE SAVEPOINT guard_wallet_debit");
+        } else {
+            $db->commit();
+        }
 
         error_log("[guards] Wallet debit: customer#{$customerId} valor={$amount} saldo_antes={$balanceBefore} saldo_depois={$balanceAfter}");
 
@@ -137,7 +149,11 @@ function guard_wallet_debit(PDO $db, int $customerId, float $amount, string $des
         ];
 
     } catch (\Exception $e) {
-        $db->rollBack();
+        if ($nested) {
+            $db->exec("ROLLBACK TO SAVEPOINT guard_wallet_debit");
+        } else {
+            $db->rollBack();
+        }
         error_log("[guards] Wallet debit falhou: customer#{$customerId} valor={$amount} erro=" . $e->getMessage());
         throw $e;
     }
@@ -166,7 +182,15 @@ function guard_wallet_credit(PDO $db, int $customerId, float $amount, int $order
         throw new \Exception("Valor de credito deve ser positivo");
     }
 
-    $db->beginTransaction();
+    // Support being called inside an existing transaction (e.g. from admin/disputes.php)
+    // PostgreSQL does not support nested BEGIN, so use SAVEPOINT when already in a transaction.
+    $nested = $db->inTransaction();
+    if ($nested) {
+        $db->exec("SAVEPOINT guard_wallet_credit");
+    } else {
+        $db->beginTransaction();
+    }
+
     try {
         // Tentar obter lock na wallet existente
         $stmt = $db->prepare("
@@ -221,7 +245,11 @@ function guard_wallet_credit(PDO $db, int $customerId, float $amount, int $order
             $reference,
         ]);
 
-        $db->commit();
+        if ($nested) {
+            $db->exec("RELEASE SAVEPOINT guard_wallet_credit");
+        } else {
+            $db->commit();
+        }
 
         error_log("[guards] Wallet credit: customer#{$customerId} valor={$amount} saldo_antes={$balanceBefore} saldo_depois={$balanceAfter}");
 
@@ -233,7 +261,11 @@ function guard_wallet_credit(PDO $db, int $customerId, float $amount, int $order
         ];
 
     } catch (\Exception $e) {
-        $db->rollBack();
+        if ($nested) {
+            $db->exec("ROLLBACK TO SAVEPOINT guard_wallet_credit");
+        } else {
+            $db->rollBack();
+        }
         error_log("[guards] Wallet credit falhou: customer#{$customerId} valor={$amount} erro=" . $e->getMessage());
         throw $e;
     }
@@ -328,7 +360,13 @@ function guard_stock_restore(PDO $db, int $productId, int $quantity): bool {
  * @throws \Exception Se cupom invalido, expirado ou limite excedido
  */
 function guard_coupon_redeem(PDO $db, int $couponId, int $customerId, int $orderId): bool {
-    $db->beginTransaction();
+    // Support being called inside an existing transaction.
+    $nested = $db->inTransaction();
+    if ($nested) {
+        $db->exec("SAVEPOINT guard_coupon_redeem");
+    } else {
+        $db->beginTransaction();
+    }
     try {
         // Lock exclusivo no cupom
         $stmt = $db->prepare("
@@ -414,13 +452,21 @@ function guard_coupon_redeem(PDO $db, int $couponId, int $customerId, int $order
             throw new \Exception("Cupom ja registrado para este pedido");
         }
 
-        $db->commit();
+        if ($nested) {
+            $db->exec("RELEASE SAVEPOINT guard_coupon_redeem");
+        } else {
+            $db->commit();
+        }
 
         error_log("[guards] Coupon redeemed: cupom#{$couponId} cliente#{$customerId} pedido#{$orderId}");
         return true;
 
     } catch (\Exception $e) {
-        $db->rollBack();
+        if ($nested) {
+            $db->exec("ROLLBACK TO SAVEPOINT guard_coupon_redeem");
+        } else {
+            $db->rollBack();
+        }
         error_log("[guards] Coupon redeem falhou: cupom#{$couponId} cliente#{$customerId} erro=" . $e->getMessage());
         throw $e;
     }

@@ -177,10 +177,10 @@ try {
     if ($method === 'POST') {
         $input = json_decode(file_get_contents('php://input'), true);
 
-        $subject = trim($input['subject'] ?? '');
-        $message = trim($input['message'] ?? '');
+        $subject = strip_tags(trim($input['subject'] ?? ''));
+        $message = strip_tags(trim($input['message'] ?? ''));
         $orderId = isset($input['order_id']) ? (int)$input['order_id'] : null;
-        $category = trim($input['category'] ?? 'outro');
+        $category = strip_tags(trim($input['category'] ?? 'outro'));
 
         if (empty($subject) || strlen($subject) < 5) {
             response(false, null, "Assunto deve ter pelo menos 5 caracteres", 400);

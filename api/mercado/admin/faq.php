@@ -32,7 +32,7 @@ try {
         }
 
         $stmt = $db->prepare("
-            SELECT id, categoria, pergunta, resposta, ativo, ordem, created_at
+            SELECT id, categoria, entidade_tipo, pergunta, resposta, ativo, ordem, created_at
             FROM om_support_faq
             WHERE $where
             ORDER BY ordem ASC, id ASC
@@ -58,8 +58,14 @@ try {
         $pergunta = strip_tags(trim($input['pergunta'] ?? $input['question'] ?? ''));
         $resposta = strip_tags(trim($input['resposta'] ?? $input['answer'] ?? ''));
         $categoria = strip_tags(trim($input['categoria'] ?? $input['category'] ?? 'geral'));
+        $entidadeTipo = strip_tags(trim($input['entidade_tipo'] ?? $input['entity_type'] ?? 'customer'));
         $ativo = isset($input['ativo']) ? (bool)$input['ativo'] : true;
         $ordem = (int)($input['ordem'] ?? $input['sort_order'] ?? 0);
+
+        // Validate entidade_tipo
+        if (!in_array($entidadeTipo, ['customer', 'partner', 'general'])) {
+            $entidadeTipo = 'customer';
+        }
 
         if (empty($pergunta) || empty($resposta)) {
             response(false, null, "Pergunta e resposta obrigatorias", 400);
@@ -68,18 +74,18 @@ try {
         if ($faqId > 0) {
             $stmt = $db->prepare("
                 UPDATE om_support_faq
-                SET pergunta = ?, resposta = ?, categoria = ?, ativo = ?, ordem = ?
+                SET pergunta = ?, resposta = ?, categoria = ?, entidade_tipo = ?, ativo = ?, ordem = ?
                 WHERE id = ?
             ");
-            $stmt->execute([$pergunta, $resposta, $categoria, $ativo ? 1 : 0, $ordem, $faqId]);
+            $stmt->execute([$pergunta, $resposta, $categoria, $entidadeTipo, $ativo ? 1 : 0, $ordem, $faqId]);
             response(true, ['id' => $faqId], "FAQ atualizado");
         }
 
         $stmt = $db->prepare("
-            INSERT INTO om_support_faq (pergunta, resposta, categoria, ativo, ordem)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO om_support_faq (pergunta, resposta, categoria, entidade_tipo, ativo, ordem)
+            VALUES (?, ?, ?, ?, ?, ?)
         ");
-        $stmt->execute([$pergunta, $resposta, $categoria, $ativo ? 1 : 0, $ordem]);
+        $stmt->execute([$pergunta, $resposta, $categoria, $entidadeTipo, $ativo ? 1 : 0, $ordem]);
         $newId = (int)$db->lastInsertId();
 
         response(true, ['id' => $newId], "FAQ criado");

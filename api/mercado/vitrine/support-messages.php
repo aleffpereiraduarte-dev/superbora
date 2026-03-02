@@ -256,12 +256,12 @@ function getBotResponse(PDO $db, string $message): ?array {
         return null;
     }
 
-    // Buscar FAQs
+    // Buscar FAQs — table uses Portuguese column names: pergunta, resposta, ativo, ordem
     $stmt = $db->prepare("
-        SELECT id, question, answer, keywords
+        SELECT id, pergunta, resposta, categoria
         FROM om_support_faq
-        WHERE is_active = '1'
-        ORDER BY priority DESC
+        WHERE ativo = 1
+        ORDER BY ordem ASC
     ");
     $stmt->execute();
     $faqs = $stmt->fetchAll();
@@ -270,13 +270,14 @@ function getBotResponse(PDO $db, string $message): ?array {
     $bestScore = 0;
 
     foreach ($faqs as $faq) {
-        $faqKeywords = explode(',', strtolower($faq['keywords']));
+        // Match against pergunta (question) words since there's no keywords column
+        $faqWords = preg_split('/[\s,?!.]+/', mb_strtolower($faq['pergunta']));
         $score = 0;
 
-        foreach ($faqKeywords as $kw) {
+        foreach ($faqWords as $kw) {
             $kw = trim($kw);
-            if ($kw && strpos($message, $kw) !== false) {
-                $score += strlen($kw);
+            if (mb_strlen($kw) >= 4 && strpos($message, $kw) !== false) {
+                $score += mb_strlen($kw);
             }
         }
 
@@ -290,8 +291,8 @@ function getBotResponse(PDO $db, string $message): ?array {
     if ($bestMatch && $bestScore >= 5) {
         return [
             'faq_id' => (int)$bestMatch['id'],
-            'question' => $bestMatch['question'],
-            'answer' => $bestMatch['answer']
+            'question' => $bestMatch['pergunta'],
+            'answer' => $bestMatch['resposta']
         ];
     }
 
