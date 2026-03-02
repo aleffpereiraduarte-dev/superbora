@@ -7,6 +7,7 @@
 require_once __DIR__ . "/../config/database.php";
 require_once __DIR__ . "/../helpers/notify.php";
 require_once __DIR__ . "/../helpers/delivery.php";
+require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
 setCorsHeaders();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -97,6 +98,24 @@ try {
         $stmt->execute([$order_id]);
     }
     $db->commit();
+
+    // WebSocket broadcast (never breaks the flow)
+    try {
+        $customer_id_ws = (int)($pedido['customer_id'] ?? 0);
+        if ($customer_id_ws) {
+            wsBroadcastToCustomer($customer_id_ws, 'order_update', [
+                'order_id' => $order_id,
+                'status' => 'pronto',
+                'previous_status' => $pedido['status'],
+                'is_pickup' => $isPickup,
+            ]);
+        }
+        wsBroadcastToOrder($order_id, 'order_update', [
+            'order_id' => $order_id,
+            'status' => 'pronto',
+            'is_pickup' => $isPickup,
+        ]);
+    } catch (\Throwable $e) {}
 
     // Post-commit: Notificar cliente (mensagem diferente para pickup vs entrega)
     $customer_id = (int)($pedido['customer_id'] ?? 0);

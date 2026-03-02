@@ -9,6 +9,7 @@
  */
 require_once __DIR__ . "/../config/database.php";
 require_once __DIR__ . "/../helpers/notify.php";
+require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
 setCorsHeaders();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -74,6 +75,22 @@ try {
     ");
     $stmt->execute([$novo_status, $categoria, $order_id]);
     $db->commit();
+
+    // WebSocket broadcast (never breaks the flow)
+    try {
+        $customer_id_ws = (int)($pedido['customer_id'] ?? 0);
+        if ($customer_id_ws) {
+            wsBroadcastToCustomer($customer_id_ws, 'order_update', [
+                'order_id' => $order_id,
+                'status' => $novo_status,
+                'previous_status' => $pedido['status'],
+            ]);
+        }
+        wsBroadcastToOrder($order_id, 'order_update', [
+            'order_id' => $order_id,
+            'status' => $novo_status,
+        ]);
+    } catch (\Throwable $e) {}
 
     // Notificar cliente
     $customer_id = (int)($pedido['customer_id'] ?? 0);

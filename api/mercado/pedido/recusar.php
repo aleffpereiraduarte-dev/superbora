@@ -6,6 +6,7 @@
  */
 require_once __DIR__ . "/../config/database.php";
 require_once __DIR__ . "/../helpers/notify.php";
+require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
 setCorsHeaders();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -118,6 +119,24 @@ try {
     }
 
     $db->commit();
+
+    // WebSocket broadcast (never breaks the flow)
+    try {
+        $customer_id_ws = (int)($pedido['customer_id'] ?? 0);
+        if ($customer_id_ws) {
+            wsBroadcastToCustomer($customer_id_ws, 'order_update', [
+                'order_id' => $order_id,
+                'status' => 'recusado',
+                'previous_status' => $pedido['status'],
+                'motivo' => $motivo,
+            ]);
+        }
+        wsBroadcastToOrder($order_id, 'order_update', [
+            'order_id' => $order_id,
+            'status' => 'recusado',
+            'motivo' => $motivo,
+        ]);
+    } catch (\Throwable $e) {}
 
     // Estornar Stripe APOS commit (external call outside transaction)
     if ($needsStripeRefund) {

@@ -14,6 +14,7 @@
  */
 require_once __DIR__ . "/../config/database.php";
 require_once __DIR__ . "/../helpers/rate-limit.php";
+require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
 
 try {
@@ -182,6 +183,20 @@ try {
         $stmt->execute([$orderId, $senderType, $userId, $senderName, $message, $chatType]);
 
         $messageId = (int)$db->lastInsertId();
+
+        // WebSocket broadcast (never breaks the flow)
+        try {
+            wsBroadcastToOrder($orderId, 'chat_message', [
+                'order_id' => $orderId,
+                'message_id' => $messageId,
+                'sender_type' => $senderType,
+                'sender_id' => $userId,
+                'sender_name' => $senderName,
+                'message' => $message,
+                'chat_type' => $chatType,
+                'created_at' => date('c'),
+            ]);
+        } catch (\Throwable $e) {}
 
         // Fetch inserted message
         $fetchStmt = $db->prepare("SELECT * FROM om_order_chat WHERE message_id = ?");

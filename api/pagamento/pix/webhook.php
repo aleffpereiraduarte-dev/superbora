@@ -13,6 +13,7 @@
  * 7. Loga evento para auditoria
  */
 require_once __DIR__ . "/../config/database.php";
+require_once dirname(__DIR__, 2) . '/mercado/helpers/ws-customer-broadcast.php';
 
 // Logging helper
 function logPix($message, $data = null) {
@@ -161,6 +162,22 @@ try {
                 $partner_id = (int)($pedido['partner_id'] ?? 0);
                 $total = (float)($pedido['total'] ?? 0);
                 $mercado_nome = $pedido['mercado_nome'] ?? 'Loja';
+
+                // ═══════════════════════════════════════════════════════
+                // WEBSOCKET BROADCAST
+                // ═══════════════════════════════════════════════════════
+                try {
+                    if ($customer_id) {
+                        wsBroadcastToCustomer($customer_id, 'pix_confirmed', [
+                            'order_id' => $order_id,
+                            'payment_status' => 'paid',
+                        ]);
+                    }
+                    wsBroadcastToOrder($order_id, 'pix_confirmed', [
+                        'order_id' => $order_id,
+                        'payment_status' => 'paid',
+                    ]);
+                } catch (\Throwable $e) {}
 
                 // ═══════════════════════════════════════════════════════
                 // NOTIFICACOES PUSH

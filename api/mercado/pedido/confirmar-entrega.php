@@ -15,6 +15,7 @@
 
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../helpers/notify.php';
+require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
 require_once dirname(__DIR__, 3) . '/includes/classes/OmAuth.php';
 
 setCorsHeaders();
@@ -310,6 +311,22 @@ try {
         }
 
         $db->commit();
+
+        // WebSocket broadcast (never breaks the flow)
+        try {
+            $customer_id_ws = (int)($pedido['customer_id'] ?? 0);
+            if ($customer_id_ws) {
+                wsBroadcastToCustomer($customer_id_ws, 'order_update', [
+                    'order_id' => $order_id,
+                    'status' => $finalStatus,
+                    'previous_status' => $pedido['status'],
+                ]);
+            }
+            wsBroadcastToOrder($order_id, 'order_update', [
+                'order_id' => $order_id,
+                'status' => $finalStatus,
+            ]);
+        } catch (\Throwable $e) {}
 
         // ═══════════════════════════════════════════════════════
         // P&L DIARIO — registrar dados financeiros

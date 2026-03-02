@@ -23,6 +23,7 @@
 require_once __DIR__ . "/../config/database.php";
 setCorsHeaders();
 require_once __DIR__ . "/../helpers/notify.php";
+require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     response(false, null, "Metodo nao permitido", 405);
@@ -236,6 +237,21 @@ try {
         }
 
         $db->commit();
+
+        // WebSocket broadcast (never breaks the flow)
+        try {
+            wsBroadcastToCustomer($customer_id, 'order_update', [
+                'order_id' => $order_id,
+                'status' => 'cancelado',
+                'previous_status' => $status,
+                'cancellation_fee' => $cancellationFee,
+                'refund_amount' => max(0, $refundAmount),
+            ]);
+            wsBroadcastToOrder($order_id, 'order_update', [
+                'order_id' => $order_id,
+                'status' => 'cancelado',
+            ]);
+        } catch (\Throwable $e) {}
 
         // 3b. Cancelar entrega BoraUm se despachada (external API call outside transaction)
         try {
