@@ -180,7 +180,7 @@ try {
             forma_pagamento, delivery_type, is_pickup,
             service_fee, route_id, route_stop_sequence,
             shipping_lat, shipping_lng, date_added
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pendente', ?, 0, ?, 0, ?, ?, ?, ?, ?, ?, ?, false, ?, ?, ?, ?, ?, NOW())
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pendente', ?, 0, ?, 0, ?, ?, ?, ?, ?, ?, ?, 0::smallint, ?, ?, ?, ?, ?, NOW())
         RETURNING order_id
     ");
     $stmtOrder->execute([

@@ -56,7 +56,6 @@ try {
               AND p.latitude IS NOT NULL AND p.longitude IS NOT NULL
               AND p.latitude BETWEEN ? AND ?
               AND p.longitude BETWEEN ? AND ?
-              AND (p.entrega_propria = 0 OR p.entrega_propria IS NULL)
               AND p.partner_id != ?
             ORDER BY p.partner_id";
 
