@@ -7,20 +7,12 @@
  * Requires customer auth.
  */
 require_once __DIR__ . "/../config/database.php";
-require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
 
 setCorsHeaders();
 
 try {
     $db = getDB();
-    OmAuth::getInstance()->setDb($db);
-
-    // Require customer auth
-    $token = om_auth()->getTokenFromRequest();
-    if (!$token) response(false, null, "Autenticacao necessaria", 401);
-    $payload = om_auth()->validateToken($token);
-    if (!$payload || $payload['type'] !== 'customer') response(false, null, "Token invalido", 401);
-    $customerId = (int)$payload['uid'];
+    $customerId = requireCustomerAuth();
 
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
         response(false, null, "Metodo nao permitido", 405);
