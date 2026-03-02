@@ -44,6 +44,74 @@ try {
     $forecastDays = (int)($_GET['days'] ?? 7);
     $forecastDays = max(1, min(30, $forecastDays));
 
+    // ── Cache check: return cached forecast if less than 6 hours old ──
+    try {
+        $stmtCache = $db->prepare("
+            SELECT forecast_date, predicted_orders, predicted_revenue, confidence, day_of_week
+            FROM om_partner_demand_forecast
+            WHERE partner_id = ? AND created_at > NOW() - INTERVAL '6 hours'
+              AND forecast_date >= CURRENT_DATE
+            ORDER BY forecast_date
+            LIMIT ?
+        ");
+        $stmtCache->execute([$partnerId, $forecastDays]);
+        $cachedForecast = $stmtCache->fetchAll(PDO::FETCH_ASSOC);
+
+        if (count($cachedForecast) >= $forecastDays) {
+            $dayNames = ['Domingo', 'Segunda', 'Terca', 'Quarta', 'Quinta', 'Sexta', 'Sabado'];
+            $forecast = [];
+            foreach ($cachedForecast as $cf) {
+                $forecast[] = [
+                    'date' => $cf['forecast_date'],
+                    'day_name' => $dayNames[(int)$cf['day_of_week']] ?? '',
+                    'day_of_week' => (int)$cf['day_of_week'],
+                    'predicted_orders' => (int)$cf['predicted_orders'],
+                    'predicted_revenue' => (float)$cf['predicted_revenue'],
+                    'confidence' => (float)$cf['confidence'],
+                ];
+            }
+
+            // Quick peak hours from cache (still compute as it's fast SQL)
+            $stmtPeak = $db->prepare("
+                SELECT EXTRACT(HOUR FROM date_added)::int as order_hour,
+                       COUNT(*) as order_count
+                FROM om_market_orders
+                WHERE partner_id = ?
+                  AND date_added >= NOW() - INTERVAL '28 days'
+                  AND status NOT IN ('cancelado', 'cancelled')
+                GROUP BY order_hour
+                ORDER BY order_count DESC
+            ");
+            $stmtPeak->execute([$partnerId]);
+            $hourlyData = $stmtPeak->fetchAll(PDO::FETCH_ASSOC);
+            $totalHourlyOrders = array_sum(array_column($hourlyData, 'order_count'));
+
+            $peakHours = [];
+            foreach ($hourlyData as $row) {
+                $pct = $totalHourlyOrders > 0
+                    ? round(((int)$row['order_count'] / $totalHourlyOrders) * 100, 1)
+                    : 0;
+                $peakHours[] = [
+                    'hour' => (int)$row['order_hour'],
+                    'hour_label' => str_pad($row['order_hour'], 2, '0', STR_PAD_LEFT) . ':00',
+                    'avg_orders' => round((int)$row['order_count'] / 4, 1),
+                    'total_orders' => (int)$row['order_count'],
+                    'pct_of_total' => $pct,
+                ];
+            }
+
+            response(true, [
+                'forecast' => $forecast,
+                'peak_hours' => $peakHours,
+                'historical_summary' => null,
+                'source' => 'cache',
+            ], "Previsao de demanda (cache 6h).");
+        }
+    } catch (Exception $e) {
+        // Cache miss or table doesn't exist yet — fall through to compute
+        error_log("[partner/demand-forecast] Cache check failed: " . $e->getMessage());
+    }
+
     // ── Step 1: Get order counts by day-of-week for last 8 weeks ──
     $stmt = $db->prepare("
         SELECT EXTRACT(DOW FROM date_added)::int as dow,

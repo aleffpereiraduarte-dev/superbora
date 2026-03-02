@@ -227,10 +227,13 @@ class OmPricing {
         // Aplicar desconto SuperBora+ (10% no frete BoraUm)
         if ($db && $customerId > 0 && self::isSuperboraPlus($db, $customerId)) {
             $desconto = round($frete * self::PLUS_DESCONTO_FRETE, 2);
-            $result['frete'] = round($frete - $desconto, 2);
+            $result['frete'] = max(0, round($frete - $desconto, 2));
             $result['desconto_plus'] = $desconto;
             $result['margem'] = round($result['frete'] - $custo, 2);
         }
+
+        // Guard: delivery fee must never be negative for the customer
+        $result['frete'] = max(0, $result['frete']);
 
         return $result;
     }
@@ -558,6 +561,9 @@ class OmPricing {
                 $frete['margem'] = round($frete['frete'] - $frete['custo_boraum'], 2);
             }
         }
+
+        // Guard: delivery fee must never be negative after all discounts
+        $frete['frete'] = max(0, $frete['frete']);
 
         // 7. Calcular P&L do pedido
         $expressFee = floatval($params['express_fee'] ?? 0);

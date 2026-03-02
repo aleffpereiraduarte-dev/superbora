@@ -54,7 +54,17 @@ try {
 
     $currentHour = (int)date('G');
 
+    // Check if authenticated user has any purchase history
+    $hasHistory = false;
     if ($customerId) {
+        try {
+            $stmtHist = $db->prepare("SELECT 1 FROM om_market_orders WHERE customer_id = ? AND status = 'entregue' LIMIT 1");
+            $stmtHist->execute([$customerId]);
+            $hasHistory = (bool)$stmtHist->fetch();
+        } catch (Exception $e) { /* skip */ }
+    }
+
+    if ($customerId && $hasHistory) {
         // ═══ PERSONALIZED RECOMMENDATIONS ═══
 
         // 1. Purchase history — get categories this customer bought (40%)
@@ -188,7 +198,8 @@ try {
         }, array_slice($scored, 0, $limit));
 
     } else {
-        // ═══ ANONYMOUS / NEW USER — popularity + time-of-day ═══
+        // ═══ ANONYMOUS / NEW USER / NO HISTORY — popularity + time-of-day ═══
+        // Also handles cold-start: new users with an account but no delivered orders
         $stmt = $db->prepare("
             SELECT p.product_id, p.name, p.price, p.special_price as sale_price, p.image, p.unit,
                    p.partner_id, pa.name as partner_name, pa.logo as partner_logo
@@ -210,6 +221,23 @@ try {
         ");
         $stmt->execute([$limit]);
         $products = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        // Cold-start fallback: if no popular products (new deployment), show newest products
+        if (empty($products)) {
+            $stmtNew = $db->prepare("
+                SELECT p.product_id, p.name, p.price, p.special_price as sale_price, p.image, p.unit,
+                       p.partner_id, pa.name as partner_name, pa.logo as partner_logo
+                FROM om_market_products p
+                LEFT JOIN om_market_partners pa ON p.partner_id = pa.partner_id
+                WHERE p.status = 1 AND (pa.status::text = '1' OR pa.status IS NULL)
+                  AND p.name IS NOT NULL AND TRIM(p.name) != ''
+                  AND p.price > 0
+                ORDER BY p.date_added DESC NULLS LAST
+                LIMIT ?
+            ");
+            $stmtNew->execute([$limit]);
+            $products = $stmtNew->fetchAll(PDO::FETCH_ASSOC);
+        }
     }
 
     // Claude AI reranking — use Haiku for speed, curate display quality

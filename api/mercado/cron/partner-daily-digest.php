@@ -7,16 +7,22 @@ require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../helpers/zapi-whatsapp.php';
 require_once __DIR__ . '/../helpers/NotificationSender.php';
 
-// Cron auth guard
-$cronKey = $_SERVER['HTTP_X_CRON_KEY'] ?? '';
-$expectedKey = $_ENV['CRON_SECRET'] ?? getenv('CRON_SECRET') ?: '';
-if (empty($expectedKey) || !hash_equals($expectedKey, $cronKey)) {
-    http_response_code(403);
-    echo json_encode(['error' => 'Unauthorized']);
-    exit;
+// Cron auth guard — allow CLI, require secret for HTTP
+if (php_sapi_name() !== 'cli') {
+    $cronKey = $_SERVER['HTTP_X_CRON_KEY'] ?? '';
+    $expectedKey = $_ENV['CRON_SECRET'] ?? getenv('CRON_SECRET') ?: '';
+    if (empty($expectedKey) || empty($cronKey) || !hash_equals($expectedKey, $cronKey)) {
+        http_response_code(403);
+        echo json_encode(['error' => 'Unauthorized']);
+        exit;
+    }
 }
 
 $db = getDB();
+
+// IMPORTANT: Use Sao Paulo timezone for date calculations
+// so that orders at night are correctly attributed to the right day
+date_default_timezone_set('America/Sao_Paulo');
 $yesterday = date('Y-m-d', strtotime('-1 day'));
 $lastWeekDay = date('Y-m-d', strtotime('-8 days'));
 $processed = 0;

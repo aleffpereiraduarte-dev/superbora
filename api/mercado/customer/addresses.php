@@ -73,6 +73,13 @@ try {
 
     // ── POST: adicionar endereco ────────────────────────────────────
     elseif ($method === 'POST') {
+        // Limit: max 10 addresses per customer
+        $stmtCount = $db->prepare("SELECT COUNT(*) FROM om_customer_addresses WHERE customer_id = ? AND is_active = '1'");
+        $stmtCount->execute([$customerId]);
+        if ((int)$stmtCount->fetchColumn() >= 10) {
+            response(false, null, "Limite de 10 enderecos atingido. Remova um endereco antes de adicionar outro.", 400);
+        }
+
         $input = getInput();
 
         $label = strip_tags(trim(substr($input['label'] ?? 'Casa', 0, 30)));

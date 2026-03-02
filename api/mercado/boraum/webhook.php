@@ -625,7 +625,11 @@ try {
 
                 logEvent($db, $orderId, 'driver_cancelled', "Motorista cancelou: $reason. Buscando novo entregador.");
 
+                // Notify customer about driver cancellation and reassignment
+                notifyCustomer($db, $pedido, 'Entregador indisponivel', 'Estamos buscando um novo entregador para seu pedido. Voce sera notificado quando um novo motorista aceitar.');
+
                 // Tentar redespachar automaticamente
+                $redispatchOk = false;
                 try {
                     require_once __DIR__ . '/../helpers/delivery.php';
                     $stmtRetry = $db->prepare("SELECT * FROM om_market_orders WHERE order_id = ?");
@@ -634,11 +638,29 @@ try {
                     if ($retryOrder) {
                         // Limpar entrega anterior pra criar nova
                         $db->prepare("DELETE FROM om_entregas WHERE id = ?")->execute([$entrega['id']]);
-                        dispatchToBoraUm($db, $retryOrder);
-                        logEvent($db, $orderId, 'delivery_redispatched', 'Novo entregador solicitado automaticamente');
+                        $dispatchResult = dispatchToBoraUm($db, $retryOrder);
+                        if (!empty($dispatchResult['success'])) {
+                            $redispatchOk = true;
+                            logEvent($db, $orderId, 'delivery_redispatched', 'Novo entregador solicitado automaticamente');
+                        } else {
+                            error_log("[boraum-webhook] Redispatch falhou pedido #$orderId: " . ($dispatchResult['message'] ?? 'unknown'));
+                        }
                     }
                 } catch (Exception $retryErr) {
                     error_log("[boraum-webhook] Erro redispatch: " . $retryErr->getMessage());
+                }
+
+                // Se redispatch falhou E pedido foi criado ha mais de 2 horas, auto-refund
+                if (!$redispatchOk) {
+                    $orderAge = (time() - strtotime($pedido['date_added'])) / 3600;
+                    if ($orderAge > 2) {
+                        error_log("[boraum-webhook] Pedido #$orderId sem entregador ha >2h — iniciando auto-refund");
+                        try {
+                            triggerAutoRefundFromWebhook($db, $pedido, "Entrega cancelada pelo BoraUm e nao foi possivel redespachar. Motivo: $reason");
+                        } catch (Exception $refundErr) {
+                            error_log("[boraum-webhook] Erro auto-refund pedido #$orderId: " . $refundErr->getMessage());
+                        }
+                    }
                 }
                 break;
         }
@@ -658,6 +680,47 @@ try {
         // Commit - handle case where OmRepasse already committed the outer transaction
         if ($db->inTransaction()) {
             $db->commit();
+        }
+
+        // Post-commit: Process pending Stripe/PIX refunds from auto-refund (external API calls outside transaction)
+        if ($event === 'cancelled') {
+            try {
+                $stmtNotes = $db->prepare("SELECT notes, order_id FROM om_market_orders WHERE order_id = ?");
+                $stmtNotes->execute([$orderId]);
+                $notesRow = $stmtNotes->fetch();
+                $orderNotes = $notesRow['notes'] ?? '';
+
+                // Stripe refund
+                if (preg_match('/\[PENDING_STRIPE_REFUND:([^\]]+)\]/', $orderNotes, $m)) {
+                    $pendingPi = $m[1];
+                    try {
+                        processPostCommitStripeRefund($db, $pendingPi, $orderId);
+                        // Clear pending marker
+                        $db->prepare("UPDATE om_market_orders SET notes = REPLACE(notes, ?, ' [AUTO-REFUND STRIPE PROCESSED]') WHERE order_id = ?")
+                           ->execute(["[PENDING_STRIPE_REFUND:$pendingPi]", $orderId]);
+                    } catch (Exception $stripeErr) {
+                        error_log("[boraum-webhook] Post-commit Stripe refund error pedido #$orderId: " . $stripeErr->getMessage());
+                    }
+                }
+
+                // PIX refund
+                if (strpos($orderNotes, '[PENDING_PIX_REFUND]') !== false) {
+                    try {
+                        $txStmt = $db->prepare("SELECT pagarme_order_id FROM om_pagarme_transacoes WHERE pedido_id = ? AND tipo = 'pix' ORDER BY created_at DESC LIMIT 1");
+                        $txStmt->execute([$orderId]);
+                        $txRow = $txStmt->fetch();
+                        if (!empty($txRow['pagarme_order_id'])) {
+                            processPostCommitPixRefund($db, $txRow['pagarme_order_id'], $orderId);
+                            $db->prepare("UPDATE om_market_orders SET notes = REPLACE(notes, '[PENDING_PIX_REFUND]', '[AUTO-REFUND PIX PROCESSED]') WHERE order_id = ?")
+                               ->execute([$orderId]);
+                        }
+                    } catch (Exception $pixErr) {
+                        error_log("[boraum-webhook] Post-commit PIX refund error pedido #$orderId: " . $pixErr->getMessage());
+                    }
+                }
+            } catch (Exception $postErr) {
+                error_log("[boraum-webhook] Post-commit refund processing error: " . $postErr->getMessage());
+            }
         }
 
         echo json_encode(['success' => true, 'message' => "Event $event processed", 'order_id' => $orderId]);
@@ -729,6 +792,107 @@ function sendPhotoToCustomer(array $pedido, string $photoUrl, string $caption): 
     }
 }
 
+/**
+ * Trigger automatic refund when BoraUm delivery is cancelled and redispatch fails.
+ * Called inside the webhook transaction — must NOT start a new transaction.
+ */
+function triggerAutoRefundFromWebhook(PDO $db, array $pedido, string $cancelReason): void {
+    $orderId = (int)$pedido['order_id'];
+    $customerId = (int)($pedido['customer_id'] ?? 0);
+    $orderTotal = (float)($pedido['total'] ?? $pedido['final_total'] ?? 0);
+
+    // Cancel the order (already inside transaction with FOR UPDATE lock)
+    $notaCancel = " | Auto-refund (BoraUm cancelamento): $cancelReason";
+    $db->prepare("
+        UPDATE om_market_orders
+        SET status = 'cancelado',
+            cancel_reason = ?,
+            cancelled_at = NOW(),
+            notes = COALESCE(notes, '') || ?,
+            date_modified = NOW()
+        WHERE order_id = ?
+    ")->execute([$cancelReason, $notaCancel, $orderId]);
+
+    // Restore stock
+    $stmtItens = $db->prepare("SELECT product_id, quantity FROM om_market_order_items WHERE order_id = ?");
+    $stmtItens->execute([$orderId]);
+    foreach ($stmtItens->fetchAll() as $item) {
+        if ($item['product_id']) {
+            $db->prepare("UPDATE om_market_products SET quantity = quantity + ? WHERE product_id = ?")
+               ->execute([$item['quantity'], $item['product_id']]);
+        }
+    }
+
+    // Restore cashback
+    $cashbackUsed = (float)($pedido['cashback_discount'] ?? 0);
+    if ($cashbackUsed > 0) {
+        require_once __DIR__ . '/../helpers/cashback.php';
+        refundCashback($db, $orderId);
+    }
+
+    // Restore loyalty points
+    $pointsUsed = (int)($pedido['loyalty_points_used'] ?? 0);
+    if ($pointsUsed > 0) {
+        $db->prepare("UPDATE om_market_loyalty_points SET current_points = current_points + ?, updated_at = NOW() WHERE customer_id = ?")
+           ->execute([$pointsUsed, $customerId]);
+    }
+
+    // Restore coupon
+    $couponId = (int)($pedido['coupon_id'] ?? 0);
+    if ($couponId) {
+        $db->prepare("DELETE FROM om_market_coupon_usage WHERE coupon_id = ? AND customer_id = ? AND order_id = ?")
+           ->execute([$couponId, $customerId, $orderId]);
+        $db->prepare("UPDATE om_market_coupons SET current_uses = GREATEST(0, current_uses - 1) WHERE id = ?")
+           ->execute([$couponId]);
+    }
+
+    // Release shopper
+    if (!empty($pedido['shopper_id'])) {
+        $db->prepare("UPDATE om_market_shoppers SET disponivel = 1, pedido_atual_id = NULL WHERE shopper_id = ?")
+           ->execute([$pedido['shopper_id']]);
+    }
+
+    // Log event
+    logEvent($db, $orderId, 'auto_refund', "Auto-refund: $cancelReason");
+
+    // Register refund record
+    try {
+        $db->prepare("
+            INSERT INTO om_market_refunds (order_id, customer_id, amount, reason, status, admin_note, reviewed_at, created_at)
+            VALUES (?, ?, ?, ?, 'approved', 'Auto-refund (entrega BoraUm cancelada sem redespacho)', NOW(), NOW())
+        ")->execute([$orderId, $customerId, $orderTotal, $cancelReason]);
+    } catch (Exception $e) {
+        error_log("[boraum-webhook] Erro registrar refund pedido #$orderId: " . $e->getMessage());
+    }
+
+    // Notify customer
+    notifyCustomer($db, $pedido, 'Pedido cancelado — reembolso automatico',
+        "Seu pedido #{$pedido['order_number']} foi cancelado porque nao foi possivel encontrar um entregador. "
+        . "O reembolso de R$ " . number_format($orderTotal, 2, ',', '.') . " sera processado automaticamente.");
+
+    // Queue Stripe/PIX refund to be processed after transaction commit
+    // Store in order notes for the auto-refund cron to pick up if needed
+    $paymentMethod = $pedido['forma_pagamento'] ?? $pedido['payment_method'] ?? '';
+    $stripePi = $pedido['stripe_payment_intent_id'] ?? $pedido['payment_id'] ?? '';
+
+    if (in_array($paymentMethod, ['stripe_card', 'stripe_wallet', 'credito']) && $stripePi) {
+        $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes, '') || ? WHERE order_id = ?")
+           ->execute([" [PENDING_STRIPE_REFUND:$stripePi]", $orderId]);
+    }
+
+    $needsPixRefund = ($paymentMethod === 'pix') && (
+        ($pedido['pagamento_status'] ?? '') === 'pago' ||
+        ($pedido['payment_status'] ?? '') === 'paid' ||
+        ($pedido['pix_paid'] ?? false)
+    );
+    if ($needsPixRefund) {
+        $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes, '') || ' [PENDING_PIX_REFUND]' WHERE order_id = ?")
+           ->execute([$orderId]);
+    }
+
+    error_log("[boraum-webhook] Auto-refund pedido #$orderId total=R$" . number_format($orderTotal, 2, ',', '.') . " payment=$paymentMethod");
+}
+
 function processPayments(PDO $db, int $orderId, array $entrega): void {
     // Processar pagamentos via API interna
     $ch = curl_init();
@@ -759,5 +923,86 @@ function processPayments(PDO $db, int $orderId, array $entrega): void {
         if (!$data || !($data['success'] ?? false)) {
             error_log("[boraum-webhook] Pagamento falhou: " . ($data['message'] ?? 'unknown'));
         }
+    }
+}
+
+/**
+ * Process Stripe refund after transaction commit (auto-refund from BoraUm cancellation)
+ */
+function processPostCommitStripeRefund(PDO $db, string $paymentIntentId, int $orderId): void {
+    $stripeEnv = dirname(__DIR__, 3) . '/.env.stripe';
+    $STRIPE_SK = '';
+    if (file_exists($stripeEnv)) {
+        foreach (file($stripeEnv, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+            if (strpos(trim($line), '#') === 0) continue;
+            if (strpos($line, '=') !== false) {
+                [$key, $value] = explode('=', $line, 2);
+                if (trim($key) === 'STRIPE_SECRET_KEY') $STRIPE_SK = trim($value);
+            }
+        }
+    }
+    if (empty($STRIPE_SK)) return;
+
+    $idempotencyKey = "refund_boraum_cancel_{$orderId}_{$paymentIntentId}";
+    $ch = curl_init("https://api.stripe.com/v1/refunds");
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => http_build_query([
+            'payment_intent' => $paymentIntentId,
+            'reason' => 'requested_by_customer',
+            'metadata[order_id]' => $orderId,
+            'metadata[source]' => 'superbora_boraum_cancel_refund',
+        ]),
+        CURLOPT_HTTPHEADER => [
+            'Authorization: Bearer ' . $STRIPE_SK,
+            'Content-Type: application/x-www-form-urlencoded',
+            'Stripe-Version: 2023-10-16',
+            'Idempotency-Key: ' . $idempotencyKey,
+        ],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 15,
+        CURLOPT_CONNECTTIMEOUT => 5,
+    ]);
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    $refundData = json_decode($response, true);
+    $refundOk = $httpCode >= 200 && $httpCode < 300 && !empty($refundData['id']);
+
+    if ($refundOk) {
+        error_log("[boraum-webhook] Stripe refund OK pedido #$orderId PI=$paymentIntentId refund_id={$refundData['id']}");
+        $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes, '') || ? WHERE order_id = ?")
+           ->execute([" [STRIPE REFUND OK: {$refundData['id']}]", $orderId]);
+    } else {
+        error_log("[boraum-webhook] Stripe refund FAILED pedido #$orderId PI=$paymentIntentId HTTP=$httpCode");
+        $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes, '') || ? WHERE order_id = ?")
+           ->execute([" [STRIPE REFUND FAILED: HTTP $httpCode]", $orderId]);
+    }
+}
+
+/**
+ * Process PIX refund after transaction commit (auto-refund from BoraUm cancellation)
+ */
+function processPostCommitPixRefund(PDO $db, string $correlationId, int $orderId): void {
+    try {
+        require_once dirname(__DIR__, 3) . '/includes/classes/WooviClient.php';
+        $woovi = new WooviClient();
+        $pixResult = $woovi->refundCharge($correlationId, "Auto-refund BoraUm cancelamento pedido #$orderId");
+
+        $pixRefundOk = !empty($pixResult['data']['refund']['status'])
+            || !empty($pixResult['data']['status'])
+            || (isset($pixResult['success']) && $pixResult['success']);
+
+        if ($pixRefundOk) {
+            $db->prepare("UPDATE om_pagarme_transacoes SET status = 'refunded' WHERE pedido_id = ? AND tipo = 'pix'")->execute([$orderId]);
+            error_log("[boraum-webhook] PIX refund OK pedido #$orderId correlation=$correlationId");
+        } else {
+            error_log("[boraum-webhook] PIX refund FAILED pedido #$orderId correlation=$correlationId");
+            $db->prepare("UPDATE om_pagarme_transacoes SET status = 'refund_failed' WHERE pedido_id = ? AND tipo = 'pix'")->execute([$orderId]);
+            $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes, '') || ' [PIX REFUND FAILED - MANUAL]' WHERE order_id = ?")->execute([$orderId]);
+        }
+    } catch (Exception $e) {
+        error_log("[boraum-webhook] PIX refund error pedido #$orderId: " . $e->getMessage());
     }
 }

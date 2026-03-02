@@ -34,6 +34,9 @@ try {
     if ($rawQuantity <= 0) {
         response(false, null, "Quantidade deve ser maior que zero", 400);
     }
+    if ($rawQuantity > 99) {
+        response(false, null, "Quantidade maxima por item e 99 unidades", 400);
+    }
     $quantity = $rawQuantity;
     $notes = mb_substr(trim($input["notes"] ?? ""), 0, 500);
 
@@ -108,6 +111,10 @@ try {
 
         if ($existe) {
             $nova_qtd = $setQuantity ? $quantity : ($existe["quantity"] + $quantity);
+            if ($nova_qtd > 99) {
+                $db->rollBack();
+                response(false, null, "Quantidade maxima por item e 99 unidades", 400);
+            }
             $stmtUpd = $db->prepare("UPDATE om_market_cart SET quantity = ?, price = ? WHERE cart_id = ?");
             $stmtUpd->execute([$nova_qtd, $produto["price"], $existe["cart_id"]]);
             $msg = "Quantidade atualizada";

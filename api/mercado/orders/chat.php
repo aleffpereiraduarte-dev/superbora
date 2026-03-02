@@ -146,7 +146,11 @@ try {
     if ($method === 'POST') {
         $input = getInput();
         $orderId = (int)($input['order_id'] ?? 0);
-        $message = strip_tags(trim(substr($input['message'] ?? '', 0, 1000)));
+        $rawMessage = $input['message'] ?? '';
+        if (mb_strlen($rawMessage) > 2000) {
+            response(false, null, "Mensagem excede o limite de 2000 caracteres", 400);
+        }
+        $message = strip_tags(trim(substr($rawMessage, 0, 2000)));
         $chatType = $input['chat_type'] ?? 'customer';
 
         if (!$orderId) response(false, null, "order_id obrigatorio", 400);

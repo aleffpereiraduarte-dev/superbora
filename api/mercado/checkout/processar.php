@@ -297,13 +297,29 @@ try {
         }
     }
 
-    // Validar agendamento no futuro
-    if ($schedule_date && $schedule_time) {
-        $scheduleDT = strtotime("$schedule_date $schedule_time");
-        if ($scheduleDT && $scheduleDT < time()) {
-            // Agendamento no passado - limpar (pedido vira imediato)
-            $schedule_date = "";
-            $schedule_time = "";
+    // Validar agendamento
+    if ($schedule_date) {
+        // Validate date format YYYY-MM-DD
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $schedule_date)) {
+            response(false, null, "Formato de data invalido. Use YYYY-MM-DD.", 400);
+        }
+        $dateParts = explode('-', $schedule_date);
+        if (!checkdate((int)$dateParts[1], (int)$dateParts[2], (int)$dateParts[0])) {
+            response(false, null, "Data de agendamento invalida", 400);
+        }
+        // Validate time format HH:MM
+        if ($schedule_time && !preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $schedule_time)) {
+            response(false, null, "Formato de horario invalido. Use HH:MM.", 400);
+        }
+        // Validate schedule is in the future
+        $scheduleTimeStr = $schedule_time ?: '00:00';
+        $scheduleDT = strtotime("$schedule_date $scheduleTimeStr");
+        if (!$scheduleDT || $scheduleDT < time()) {
+            response(false, null, "Data de agendamento deve ser no futuro", 400);
+        }
+        // Validate schedule is not too far in the future (max 30 days)
+        if ($scheduleDT > strtotime('+30 days')) {
+            response(false, null, "Agendamento maximo de 30 dias", 400);
         }
     }
 

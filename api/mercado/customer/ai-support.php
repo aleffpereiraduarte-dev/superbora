@@ -34,6 +34,14 @@ if ($orderId) {
 
 // Get or create ticket
 if (!$ticketId) {
+    // Limit: max 5 open tickets per customer to prevent abuse
+    $stmtCount = $db->prepare("SELECT COUNT(*) FROM om_ai_support_tickets WHERE customer_id = ? AND status IN ('open', 'escalated')");
+    $stmtCount->execute([$customerId]);
+    $openTickets = (int)$stmtCount->fetchColumn();
+    if ($openTickets >= 5) {
+        response(false, null, 'Voce ja tem 5 tickets abertos. Feche ou resolva os existentes antes de abrir novos.', 429);
+    }
+
     $stmt = $db->prepare("INSERT INTO om_ai_support_tickets (customer_id, order_id, status, category) VALUES (?, ?, 'open', 'general') RETURNING ticket_id");
     $stmt->execute([$customerId, $orderId ?: null]);
     $ticketId = $stmt->fetchColumn();
@@ -87,9 +95,30 @@ POLITICAS:
 
 " . ($orderInfo ?: "Nenhum pedido especifico vinculado.");
 
+// Build message history with token limit guard
+// Cap total history to ~8000 chars (~2000 tokens) to avoid exceeding API limits
 $messages = [];
+$totalChars = 0;
+$maxHistoryChars = 8000;
 foreach ($history as $h) {
-    $messages[] = ['role' => $h['role'], 'content' => $h['content']];
+    $content = $h['content'];
+    $totalChars += strlen($content);
+    if ($totalChars > $maxHistoryChars) {
+        // Trim oldest messages if history is too long — keep most recent ones
+        break;
+    }
+    $messages[] = ['role' => $h['role'], 'content' => $content];
+}
+// If history was truncated, reverse to keep most recent messages
+if ($totalChars > $maxHistoryChars) {
+    $messages = [];
+    $totalChars = 0;
+    foreach (array_reverse($history) as $h) {
+        $content = $h['content'];
+        $totalChars += strlen($content);
+        if ($totalChars > $maxHistoryChars) break;
+        array_unshift($messages, ['role' => $h['role'], 'content' => $content]);
+    }
 }
 $messages[] = ['role' => 'user', 'content' => $message];
 

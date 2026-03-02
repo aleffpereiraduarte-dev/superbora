@@ -252,6 +252,161 @@ try {
 // Task 3 removed — handled by dedicated cron/liberar-repasses.php
 
 // ═══════════════════════════════════════════════════════════════
+// 2b. Auto-cancel PIX orders PAID but not accepted by partner in 30 min
+//     (PIX paid orders move to 'confirmado' but partner never accepted)
+// ═══════════════════════════════════════════════════════════════
+try {
+    $stmt = $db->prepare("
+        SELECT order_id FROM om_market_orders
+        WHERE status = 'confirmado'
+          AND forma_pagamento = 'pix'
+          AND date_added < NOW() - INTERVAL '30 minutes'
+        LIMIT 500
+    ");
+    $stmt->execute();
+    $candidates = $stmt->fetchAll(PDO::FETCH_COLUMN);
+
+    if (!empty($candidates)) {
+        $cancelledIds = [];
+
+        foreach ($candidates as $orderId) {
+            try {
+                $db->beginTransaction();
+
+                $stmtLock = $db->prepare("
+                    SELECT order_id, customer_id, loyalty_points_used, coupon_id,
+                           stripe_payment_intent_id, payment_id
+                    FROM om_market_orders
+                    WHERE order_id = ?
+                      AND status = 'confirmado'
+                      AND forma_pagamento = 'pix'
+                      AND date_added < NOW() - INTERVAL '30 minutes'
+                    FOR UPDATE
+                ");
+                $stmtLock->execute([$orderId]);
+                $orderData = $stmtLock->fetch();
+
+                if (!$orderData) {
+                    $db->rollBack();
+                    continue;
+                }
+
+                $db->prepare("
+                    UPDATE om_market_orders
+                    SET status = 'cancelado',
+                        cancel_reason = 'Auto-cancelado: parceiro nao aceitou em 30min',
+                        cancelled_at = NOW(),
+                        date_modified = NOW()
+                    WHERE order_id = ?
+                ")->execute([$orderId]);
+
+                // Restaurar estoque
+                $stmtItens = $db->prepare("SELECT product_id, quantity FROM om_market_order_items WHERE order_id = ?");
+                $stmtItens->execute([$orderId]);
+                foreach ($stmtItens->fetchAll() as $item) {
+                    $db->prepare("UPDATE om_market_products SET quantity = quantity + ? WHERE product_id = ?")
+                       ->execute([$item['quantity'], $item['product_id']]);
+                }
+
+                // Restaurar cashback usado
+                $db->prepare("UPDATE om_cashback SET status = 'available', order_id = NULL WHERE order_id = ? AND status = 'used'")
+                   ->execute([$orderId]);
+
+                // Restaurar pontos
+                if ((int)$orderData['loyalty_points_used'] > 0) {
+                    $db->prepare("UPDATE om_market_loyalty_points SET current_points = current_points + ? WHERE customer_id = ?")
+                       ->execute([$orderData['loyalty_points_used'], $orderData['customer_id']]);
+                }
+
+                // Restaurar cupom
+                if ((int)$orderData['coupon_id'] > 0) {
+                    $db->prepare("DELETE FROM om_market_coupon_usage WHERE coupon_id = ? AND customer_id = ? AND order_id = ?")
+                       ->execute([$orderData['coupon_id'], $orderData['customer_id'], $orderId]);
+                    $db->prepare("UPDATE om_market_coupons SET current_uses = GREATEST(0, current_uses - 1) WHERE id = ?")->execute([$orderData['coupon_id']]);
+                }
+
+                $db->commit();
+                $cancelledIds[] = $orderId;
+
+                // PIX refund: PIX refunds are handled via the payment provider webhook,
+                // but log it for audit trail
+                try {
+                    $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ? WHERE order_id = ?")
+                       ->execute([' [CRON: PIX pago mas parceiro nao aceitou 30min — reembolso necessario]', $orderId]);
+                } catch (Exception $e) { /* skip */ }
+
+            } catch (Exception $e) {
+                if ($db->inTransaction()) {
+                    $db->rollBack();
+                }
+                $log("  ERRO PIX-confirmado pedido #{$orderId}: " . $e->getMessage());
+            }
+        }
+
+        if (!empty($cancelledIds)) {
+            $log("PIX confirmados nao aceitos (30min): " . count($cancelledIds) . " pedidos — IDs: " . implode(', ', $cancelledIds));
+        }
+    }
+} catch (Exception $e) {
+    $log("ERRO PIX-confirmados: " . $e->getMessage());
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 2c. Flag em_preparo orders stuck for 2+ hours — needs_attention
+//     These orders might be abandoned by the partner mid-preparation.
+// ═══════════════════════════════════════════════════════════════
+try {
+    // Flag orders stuck in em_preparo/preparando/aceito for 2+ hours
+    $stmt = $db->prepare("
+        SELECT order_id, partner_id, customer_id FROM om_market_orders
+        WHERE status IN ('em_preparo', 'preparando', 'aceito')
+          AND date_modified < NOW() - INTERVAL '2 hours'
+          AND (notes IS NULL OR notes NOT LIKE '%needs_attention%')
+        LIMIT 100
+    ");
+    $stmt->execute();
+    $stuckOrders = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    if (!empty($stuckOrders)) {
+        $flaggedIds = [];
+
+        foreach ($stuckOrders as $stuck) {
+            try {
+                $db->prepare("
+                    UPDATE om_market_orders
+                    SET notes = COALESCE(notes,'') || ?,
+                        date_modified = NOW()
+                    WHERE order_id = ?
+                ")->execute([' [needs_attention: em_preparo > 2h desde ' . date('H:i') . ']', $stuck['order_id']]);
+
+                $flaggedIds[] = $stuck['order_id'];
+
+                // Notify partner about the stuck order
+                try {
+                    require_once dirname(__DIR__) . '/helpers/NotificationSender.php';
+                    $sender = NotificationSender::getInstance($db);
+                    $sender->notifyPartner(
+                        (int)$stuck['partner_id'],
+                        'Pedido em preparo ha muito tempo',
+                        "Pedido #{$stuck['order_id']} esta em preparo ha mais de 2 horas. Por favor atualize o status.",
+                        ['type' => 'stuck_order', 'order_id' => $stuck['order_id']]
+                    );
+                } catch (Exception $e) { /* skip notification errors */ }
+
+            } catch (Exception $e) {
+                $log("  ERRO flag em_preparo #{$stuck['order_id']}: " . $e->getMessage());
+            }
+        }
+
+        if (!empty($flaggedIds)) {
+            $log("Em_preparo flagged (>2h): " . count($flaggedIds) . " pedidos — IDs: " . implode(', ', $flaggedIds));
+        }
+    }
+} catch (Exception $e) {
+    $log("ERRO em_preparo stuck: " . $e->getMessage());
+}
+
+// ═══════════════════════════════════════════════════════════════
 // 4. Expirar cashback vencido
 // ═══════════════════════════════════════════════════════════════
 try {

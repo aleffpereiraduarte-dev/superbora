@@ -122,7 +122,8 @@ function getAvgPrepTime(PDO $db, int $partnerId): float {
         $result = $stmt->fetch();
 
         if ($result && $result['avg_prep'] !== null && (float)$result['avg_prep'] > 0) {
-            return round((float)$result['avg_prep'], 1);
+            // Guard: clamp to reasonable range (1-120 min) to avoid bad data propagation
+            return max(1.0, min(120.0, round((float)$result['avg_prep'], 1)));
         }
     } catch (Exception $e) {
         error_log("[eta-calculator] Error getting avg prep time for partner {$partnerId}: " . $e->getMessage());
@@ -165,14 +166,15 @@ function getAvgDeliveryTime(PDO $db, float $distanceKm): float {
         $result = $stmt->fetch();
 
         if ($result && $result['avg_delivery'] !== null && (float)$result['avg_delivery'] > 0) {
-            return round((float)$result['avg_delivery'], 1);
+            // Guard: clamp to reasonable range (1-180 min) to avoid bad data propagation
+            return max(1.0, min(180.0, round((float)$result['avg_delivery'], 1)));
         }
     } catch (Exception $e) {
         error_log("[eta-calculator] Error getting avg delivery time: " . $e->getMessage());
     }
 
-    // Fallback: distance * 4 minutes per km
-    return round($distanceKm * 4, 1);
+    // Fallback: distance * 4 minutes per km, minimum 5 minutes
+    return max(5.0, round($distanceKm * 4, 1));
 }
 
 /**

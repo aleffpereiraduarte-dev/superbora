@@ -54,16 +54,35 @@ try {
     $sql = "SELECT c.cart_id, c.product_id, c.partner_id, c.quantity, p.price, c.notes,
                    p.name, p.image, p.unit, p.special_price, p.quantity as estoque,
                    pr.name as parceiro_nome, pr.delivery_fee, pr.free_delivery_above, pr.entrega_propria,
-                   pr.is_open, pr.pause_until
+                   pr.is_open, pr.pause_until,
+                   p.product_id AS product_exists, p.status AS product_status
             FROM om_market_cart c
-            INNER JOIN om_market_products p ON c.product_id = p.product_id
-            INNER JOIN om_market_partners pr ON c.partner_id = pr.partner_id
+            LEFT JOIN om_market_products p ON c.product_id = p.product_id
+            LEFT JOIN om_market_partners pr ON c.partner_id = pr.partner_id
             WHERE {$whereClause}
             ORDER BY c.cart_id ASC";
 
     $stmt = $db->prepare($sql);
     $stmt->execute($whereParams);
-    $itens = $stmt->fetchAll();
+    $allCartItems = $stmt->fetchAll();
+
+    // Remove cart items whose products have been deleted or deactivated
+    $removedIds = [];
+    $itens = [];
+    foreach ($allCartItems as $item) {
+        if (empty($item['product_exists']) || empty($item['name'])
+            || (isset($item['product_status']) && (string)$item['product_status'] === '0')) {
+            $removedIds[] = $item['cart_id'];
+        } else {
+            $itens[] = $item;
+        }
+    }
+
+    // Clean up cart entries for deleted/inactive products
+    if (!empty($removedIds)) {
+        $placeholders = implode(',', array_fill(0, count($removedIds), '?'));
+        $db->prepare("DELETE FROM om_market_cart WHERE cart_id IN ($placeholders)")->execute($removedIds);
+    }
 
     if (empty($itens)) {
         response(true, ["itens" => [], "subtotal" => 0, "taxa_entrega" => 0, "total" => 0]);
