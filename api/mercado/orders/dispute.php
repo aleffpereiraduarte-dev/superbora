@@ -18,133 +18,183 @@ setCorsHeaders();
 
 // =================== DISPUTE RULES ===================
 // category => subcategory => rules
+// 150+ subcategories covering every real-life food delivery marketplace scenario
 $DISPUTE_RULES = [
     'food' => [
         // --- Itens errados/faltando ---
-        'wrong_items'         => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'item_refund+credit', 'credit_amount' => 5.00,  'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Itens errados'],
-        'missing_items'       => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'item_refund',         'credit_amount' => 0,     'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Itens faltando'],
-        'wrong_order'         => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'full_refund+credit',  'credit_amount' => 5.00,  'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Pedido trocado inteiro'],
-        'missing_drinks'      => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'item_refund',         'credit_amount' => 0,     'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Bebida faltando'],
-        'missing_condiments'  => ['severity' => 'low',      'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 3.00,  'refund_pct' => 0,   'sla_hours' => 72, 'label' => 'Faltou molho/talheres/guardanapo'],
-        'missing_sides'       => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'item_refund',         'credit_amount' => 0,     'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Acompanhamento faltando'],
+        'wrong_items'           => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'item_refund+credit', 'credit_amount' => 5.00,  'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Itens errados'],
+        'missing_items'         => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'item_refund',         'credit_amount' => 0,     'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Itens faltando'],
+        'wrong_order'           => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'full_refund+credit',  'credit_amount' => 5.00,  'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Pedido trocado inteiro'],
+        'someone_elses_order'   => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'full_refund+credit',  'credit_amount' => 5.00,  'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Recebi pedido de outra pessoa'],
+        'incomplete_order'      => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'item_refund',         'credit_amount' => 0,     'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Pedido incompleto'],
+        'missing_drinks'        => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'item_refund',         'credit_amount' => 0,     'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Bebida faltando'],
+        'missing_condiments'    => ['severity' => 'low',      'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 3.00,  'refund_pct' => 0,   'sla_hours' => 72, 'label' => 'Faltou molho/talheres/guardanapo'],
+        'missing_sides'         => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'item_refund',         'credit_amount' => 0,     'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Acompanhamento faltando'],
+        'missing_ingredient'    => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'partial_refund',      'credit_amount' => 0,     'refund_pct' => 30,  'sla_hours' => 48, 'label' => 'Ingrediente faltando no prato'],
         // --- Qualidade/estado ---
-        'damaged'             => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'item_refund',         'credit_amount' => 0,     'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Danificado/derramado'],
-        'cold'                => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'partial_refund+credit','credit_amount' => 10.00, 'refund_pct' => 50,  'sla_hours' => 48, 'label' => 'Comida fria'],
-        'raw'                 => ['severity' => 'critical', 'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'full_refund+credit',  'credit_amount' => 15.00, 'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Comida crua/mal passada'],
-        'overcooked'          => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'partial_refund',      'credit_amount' => 0,     'refund_pct' => 50,  'sla_hours' => 48, 'label' => 'Comida queimada/passada demais'],
-        'expired'             => ['severity' => 'critical', 'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'full_refund+credit',  'credit_amount' => 20.00, 'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Produto vencido'],
-        'quality'             => ['severity' => 'low',      'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00,  'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Qualidade ruim'],
-        'quantity'            => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'partial_refund',      'credit_amount' => 0,     'refund_pct' => 30,  'sla_hours' => 48, 'label' => 'Porcao pequena'],
-        'taste'               => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00,  'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Gosto estranho'],
-        'photo_mismatch'      => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'partial_refund+credit','credit_amount' => 5.00, 'refund_pct' => 50,  'sla_hours' => 48, 'label' => 'Produto diferente da foto'],
+        'damaged'               => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'item_refund',         'credit_amount' => 0,     'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Danificado/derramado'],
+        'cold'                  => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'partial_refund+credit','credit_amount' => 10.00, 'refund_pct' => 50,  'sla_hours' => 48, 'label' => 'Comida fria/gelada'],
+        'raw'                   => ['severity' => 'critical', 'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'full_refund+credit',  'credit_amount' => 15.00, 'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Comida crua/mal cozida'],
+        'overcooked'            => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'partial_refund',      'credit_amount' => 0,     'refund_pct' => 50,  'sla_hours' => 48, 'label' => 'Comida queimada/passada demais'],
+        'expired'               => ['severity' => 'critical', 'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'full_refund+credit',  'credit_amount' => 20.00, 'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Alimento vencido/estragado'],
+        'quality'               => ['severity' => 'low',      'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00,  'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Qualidade ruim'],
+        'quantity'              => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'partial_refund',      'credit_amount' => 0,     'refund_pct' => 30,  'sla_hours' => 48, 'label' => 'Porcao menor que o anunciado'],
+        'taste'                 => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00,  'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Sabor diferente do esperado'],
+        'seasoning'             => ['severity' => 'low',      'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 3.00,  'refund_pct' => 0,   'sla_hours' => 72, 'label' => 'Tempero excessivo ou insuficiente'],
+        'photo_mismatch'        => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'partial_refund+credit','credit_amount' => 5.00, 'refund_pct' => 50,  'sla_hours' => 48, 'label' => 'Produto diferente da foto'],
+        'wrong_temperature'     => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'partial_refund',      'credit_amount' => 0,     'refund_pct' => 50,  'sla_hours' => 48, 'label' => 'Temperatura errada (quente/gelado)'],
+        'melted'                => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'item_refund',         'credit_amount' => 0,     'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Sorvete/gelado derretido'],
+        'spilled_drink'         => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'item_refund',         'credit_amount' => 0,     'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Bebida derramada'],
         // --- Seguranca alimentar ---
-        'tampered'            => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => true,  'compensation' => 'full_refund',         'credit_amount' => 0,     'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Embalagem violada'],
-        'foreign_object'      => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => true,  'compensation' => 'full_refund+credit',  'credit_amount' => 30.00, 'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Corpo estranho na comida'],
-        'allergy'             => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,     'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Reacao alergica'],
-        'food_poisoning'      => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund+credit',  'credit_amount' => 30.00, 'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Intoxicacao alimentar'],
-        'wrong_temperature'   => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'partial_refund',      'credit_amount' => 0,     'refund_pct' => 50,  'sla_hours' => 48, 'label' => 'Temperatura errada (quente/gelado)'],
+        'tampered'              => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => true,  'compensation' => 'full_refund',         'credit_amount' => 0,     'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Embalagem violada'],
+        'foreign_object'        => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => true,  'compensation' => 'full_refund+credit',  'credit_amount' => 30.00, 'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Corpo estranho na comida'],
+        'allergy'               => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,     'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Reacao alergica'],
+        'food_poisoning'        => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund+credit',  'credit_amount' => 30.00, 'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Intoxicacao alimentar'],
+        'allergen_not_listed'   => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund+credit',  'credit_amount' => 20.00, 'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Alergeno nao informado no cardapio'],
+        'dietary_not_respected' => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund+credit',  'credit_amount' => 15.00, 'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Restricao alimentar nao respeitada'],
         // --- Instrucoes ---
-        'instructions_ignored'=> ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00,  'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Instrucoes especiais ignoradas'],
+        'instructions_ignored'  => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00,  'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Instrucoes especiais ignoradas'],
         // --- Embalagem ---
-        'bad_packaging'       => ['severity' => 'low',      'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'credit',              'credit_amount' => 3.00,  'refund_pct' => 0,   'sla_hours' => 72, 'label' => 'Embalagem ruim/inadequada'],
-        'leaked'              => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'item_refund',         'credit_amount' => 0,     'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Vazou/derramou na embalagem'],
-        'mixed_items'         => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'partial_refund',      'credit_amount' => 0,     'refund_pct' => 50,  'sla_hours' => 48, 'label' => 'Itens misturados na embalagem'],
+        'bad_packaging'         => ['severity' => 'low',      'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'credit',              'credit_amount' => 3.00,  'refund_pct' => 0,   'sla_hours' => 72, 'label' => 'Embalagem ruim/inadequada'],
+        'leaked'                => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'item_refund',         'credit_amount' => 0,     'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Embalagem vazando'],
+        'crushed_packaging'     => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'item_refund',         'credit_amount' => 0,     'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Embalagem amassada/destruida'],
+        'mixed_items'           => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'partial_refund',      'credit_amount' => 0,     'refund_pct' => 50,  'sla_hours' => 48, 'label' => 'Itens misturados na embalagem'],
         // --- Mercado/Supermercado ---
-        'grocery_substitution'=> ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'item_refund',         'credit_amount' => 0,     'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Item substituido sem autorizacao'],
-        'grocery_wrong_weight'=> ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'difference_refund',   'credit_amount' => 0,     'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Peso/quantidade diferente do cobrado'],
-        // --- Alergenos ---
-        'allergen_not_listed' => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund+credit',  'credit_amount' => 20.00, 'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Alergeno nao informado no cardapio'],
+        'grocery_substitution'  => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'item_refund',         'credit_amount' => 0,     'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Substituicao sem consentimento'],
+        'grocery_wrong_weight'  => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'difference_refund',   'credit_amount' => 0,     'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Peso/quantidade diferente do cobrado'],
     ],
     'delivery' => [
         // --- Nao chegou / atraso ---
-        'never_arrived'       => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Pedido nao chegou'],
-        'very_late'           => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Muito atrasado (>30min)'],
-        'late'                => ['severity' => 'low',      'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 3.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Atrasado (15-30min)'],
-        'scheduled_wrong'     => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Agendado no horario errado'],
+        'never_arrived'          => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Pedido nao chegou'],
+        'marked_delivered'       => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund+credit',  'credit_amount' => 10.00,'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Marcado entregue mas nao recebido'],
+        'very_late'              => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Muito atrasado (>30min)'],
+        'late'                   => ['severity' => 'low',      'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 3.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Atrasado (15-30min)'],
+        'weather_delay'          => ['severity' => 'low',      'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 3.00, 'refund_pct' => 0,   'sla_hours' => 72, 'label' => 'Atraso por chuva/clima'],
+        'traffic_delay'          => ['severity' => 'low',      'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 3.00, 'refund_pct' => 0,   'sla_hours' => 72, 'label' => 'Atraso por transito'],
+        'scheduled_wrong'        => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Agendamento nao respeitado'],
+        'wrong_delivery_time'    => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Entregue em horario errado'],
         // --- Endereco / local ---
-        'wrong_address'       => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Entregou no endereco errado'],
-        'left_wrong_spot'     => ['severity' => 'medium',   'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Deixou em local errado'],
-        'building_access'     => ['severity' => 'medium',   'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Problema de acesso ao predio'],
-        'left_no_notice'      => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Deixou sem avisar'],
-        // --- Motorista ---
-        'rude_driver'         => ['severity' => 'low',      'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 72, 'label' => 'Motorista grosseiro'],
-        'driver_ate'          => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => true,  'compensation' => 'full_refund+credit',  'credit_amount' => 10.00,'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Motorista mexeu no pedido'],
-        'driver_cancelled'    => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Motorista cancelou apos pegar'],
-        'driver_detour'       => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Motorista fez desvio longo'],
-        'driver_asked_money'  => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 10.00,'refund_pct' => 0,   'sla_hours' => 12, 'label' => 'Motorista pediu dinheiro extra'],
-        'driver_unsafe'       => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 12, 'label' => 'Preocupacao com seguranca'],
-        'driver_contact'      => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Motorista contactou indevidamente'],
-        'no_contact_driver'   => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 3.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Nao consigo contatar motorista'],
+        'wrong_address'          => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Entregou no endereco errado'],
+        'wrong_gate'             => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 3.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Deixou na portaria/predio errado'],
+        'delivered_to_neighbor'  => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Entregou para vizinho'],
+        'left_wrong_spot'        => ['severity' => 'medium',   'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Deixou em local errado'],
+        'left_on_ground'         => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Pedido deixado no chao'],
+        'building_access'        => ['severity' => 'medium',   'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Problema de acesso ao predio'],
+        'left_no_notice'         => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Deixou sem avisar'],
+        'cant_find_address'      => ['severity' => 'medium',   'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 3.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Entregador nao encontrou endereco'],
+        'didnt_wait'             => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Entregador nao esperou no local'],
+        'order_abandoned'        => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund+credit',  'credit_amount' => 5.00, 'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Pedido abandonado pelo entregador'],
+        // --- Motorista - comportamento ---
+        'rude_driver'            => ['severity' => 'low',      'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 72, 'label' => 'Motorista rude/agressivo'],
+        'driver_no_communication'=> ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 3.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Motorista sem comunicacao'],
+        'driver_ate'             => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => true,  'compensation' => 'full_refund+credit',  'credit_amount' => 10.00,'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Motorista comeu/abriu pedido'],
+        'driver_cancelled'       => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Motorista cancelou sem motivo'],
+        'driver_detour'          => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Motorista fez desvio longo'],
+        'driver_asked_money'     => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 10.00,'refund_pct' => 0,   'sla_hours' => 12, 'label' => 'Motorista pediu dinheiro extra'],
+        'driver_unsafe'          => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 12, 'label' => 'Preocupacao com seguranca'],
+        'driver_contact'         => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Motorista contactou indevidamente'],
+        'no_contact_driver'      => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 3.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Nao consigo contatar motorista'],
+        'bad_vehicle'            => ['severity' => 'low',      'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 72, 'label' => 'Veiculo em mas condicoes'],
+        'dirty_bag'              => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Bag/mochila suja do entregador'],
         // --- Dano no transporte ---
-        'damaged_transport'   => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'item_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Danificado no transporte'],
-        'no_thermal_bag'      => ['severity' => 'low',      'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 3.00, 'refund_pct' => 0,   'sla_hours' => 72, 'label' => 'Sem bag termica'],
+        'damaged_transport'      => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'item_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Danificado no transporte'],
+        'no_thermal_bag'         => ['severity' => 'low',      'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 3.00, 'refund_pct' => 0,   'sla_hours' => 72, 'label' => 'Sem bag termica'],
         // --- Golpes / Fraude do entregador ---
-        'driver_fake_delivery'=> ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund+credit',  'credit_amount' => 10.00,'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Confirmou entrega mas nao entregou'],
-        'delivered_wrong_person'=>['severity' => 'high',    'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Entregou para pessoa errada'],
-        'driver_code_scam'    => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund+credit',  'credit_amount' => 15.00,'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Pediu codigo por chat/ligacao'],
-        'driver_extra_charge' => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund+credit',  'credit_amount' => 20.00,'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Golpe da maquininha/cobrou a mais'],
+        'driver_fake_delivery'   => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund+credit',  'credit_amount' => 10.00,'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Confirmou entrega mas nao entregou'],
+        'delivered_wrong_person' => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Entregou para pessoa errada'],
+        'driver_code_scam'       => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund+credit',  'credit_amount' => 15.00,'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Pediu codigo por chat/ligacao'],
+        'driver_extra_charge'    => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund+credit',  'credit_amount' => 20.00,'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Golpe da maquininha/cobrou a mais'],
     ],
     'payment' => [
-        'overcharged'         => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'difference_refund',   'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Cobrou a mais'],
-        'double_charge'       => ['severity' => 'critical', 'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Cobranca duplicada'],
-        'coupon_not_applied'  => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Cupom nao aplicado'],
-        'points_missing'      => ['severity' => 'low',      'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'points',              'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 72, 'label' => 'Pontos nao computados'],
-        'price_changed'       => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => true,  'compensation' => 'difference_refund',   'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Preco mudou apos o pedido'],
-        'wrong_payment'       => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Cobrou no cartao/metodo errado'],
-        'cashback_missing'    => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Cashback nao veio'],
-        'referral_missing'    => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Bonus de indicacao nao veio'],
-        'refund_not_received' => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Reembolso aprovado mas nao chegou'],
-        'promo_not_honored'   => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'credit',              'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Promocao nao foi honrada'],
-        'delivery_fee_wrong'  => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'difference_refund',   'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Taxa de entrega errada'],
+        'overcharged'              => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'difference_refund',   'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Valor diferente do app'],
+        'double_charge'            => ['severity' => 'critical', 'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Cobranca em duplicata'],
+        'charged_after_cancel'     => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Cobranca apos cancelamento'],
+        'change_not_returned'      => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'difference_refund',   'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Troco nao devolvido (dinheiro)'],
+        'pix_not_confirmed'        => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => true,  'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'PIX debitado mas nao confirmado'],
+        'card_wrongly_declined'    => ['severity' => 'medium',   'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Cartao recusado indevidamente'],
+        'cashback_missing'         => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Cashback nao creditado'],
+        'coupon_not_applied'       => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Cupom nao aplicado'],
+        'coupon_expired_during'    => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Cupom expirou durante pedido'],
+        'delivery_fee_wrong'       => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'difference_refund',   'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Taxa de entrega diferente'],
+        'service_fee_undisclosed'  => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Taxa de servico nao informada'],
+        'tip_unauthorized'         => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'difference_refund',   'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Gorjeta cobrada sem autorizar'],
+        'refund_not_received'      => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Reembolso nao recebido'],
+        'refund_partial_wrong'     => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'difference_refund',   'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Reembolso parcial incorreto'],
+        'card_refund_slow'         => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 72, 'label' => 'Estorno no cartao demorando'],
+        'price_changed'            => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => true,  'compensation' => 'difference_refund',   'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Preco mudou apos o pedido'],
+        'wrong_payment'            => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Cobrou no cartao/metodo errado'],
+        'promo_not_honored'        => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'credit',              'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Promocao nao aplicada'],
+        'points_missing'           => ['severity' => 'low',      'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'points',              'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 72, 'label' => 'Pontos nao computados'],
+        'referral_missing'         => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Bonus de indicacao nao veio'],
         // --- Assinatura / Clube ---
-        'subscription_charged'   => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',      'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Cobranca de assinatura nao autorizada'],
-        'subscription_cancel'    => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'none',              'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Nao consigo cancelar assinatura'],
-        'subscription_benefits'  => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',            'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Beneficios da assinatura nao aplicados'],
+        'subscription_charged'     => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Cobranca de assinatura nao autorizada'],
+        'subscription_cancel'      => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Nao consigo cancelar assinatura'],
+        'subscription_benefits'    => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Beneficios da assinatura nao aplicados'],
         // --- Propaganda ---
-        'false_advertising'      => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => true,  'compensation' => 'credit',            'credit_amount' => 10.00,'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Propaganda enganosa'],
+        'false_advertising'        => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => true,  'compensation' => 'credit',              'credit_amount' => 10.00,'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Propaganda enganosa'],
         // --- Gorjeta ---
-        'tip_not_delivered'      => ['severity' => 'medium',   'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'none',              'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Gorjeta nao repassada ao motorista'],
+        'tip_not_delivered'        => ['severity' => 'medium',   'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Gorjeta nao repassada ao motorista'],
     ],
     'store' => [
-        'closed'              => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Loja fechada'],
-        'slow_prep'           => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Preparo muito demorado'],
-        'refused'             => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Loja recusou pedido'],
-        'partial_items'       => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'item_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 48, 'label' => 'Itens indisponiveis'],
-        'hygiene'             => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => true,  'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Higiene duvidosa'],
-        'rude_staff'          => ['severity' => 'low',      'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 72, 'label' => 'Atendimento grosseiro'],
-        'wrong_hours'         => ['severity' => 'low',      'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 3.00, 'refund_pct' => 0,   'sla_hours' => 72, 'label' => 'Horario de funcionamento errado'],
-        'cancelled_no_notice' => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'full_refund+credit',  'credit_amount' => 5.00, 'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Cancelaram sem aviso'],
-        'long_wait_pickup'    => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 3.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Longa espera na retirada'],
-        'menu_outdated'       => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Cardapio desatualizado no app'],
-        'store_different_price'=>['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => true,  'compensation' => 'difference_refund',   'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Preco na loja diferente do app'],
+        'closed'                   => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Loja fechada mas aparece aberta'],
+        'slow_prep'                => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Tempo de preparo muito longo'],
+        'refused'                  => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Loja recusou pedido'],
+        'store_cancelled'          => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'full_refund+credit',  'credit_amount' => 5.00, 'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Loja cancelou sem motivo'],
+        'partial_items'            => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'item_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 48, 'label' => 'Item indisponivel apos pedido'],
+        'substitution_no_consent'  => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'item_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Substituicao sem consentimento'],
+        'store_different_price'    => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => true,  'compensation' => 'difference_refund',   'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Preco diferente do cardapio'],
+        'misleading_description'   => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'partial_refund+credit','credit_amount' => 5.00,'refund_pct' => 50,  'sla_hours' => 48, 'label' => 'Descricao enganosa do produto'],
+        'photo_doesnt_match'       => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'partial_refund+credit','credit_amount' => 5.00,'refund_pct' => 50,  'sla_hours' => 48, 'label' => 'Foto do produto diferente da realidade'],
+        'hygiene'                  => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => true,  'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Higiene duvidosa'],
+        'rude_staff'               => ['severity' => 'low',      'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 72, 'label' => 'Atendimento grosseiro da loja'],
+        'wrong_hours'              => ['severity' => 'low',      'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 3.00, 'refund_pct' => 0,   'sla_hours' => 72, 'label' => 'Horario de funcionamento errado'],
+        'cancelled_no_notice'      => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'full_refund+credit',  'credit_amount' => 5.00, 'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Cancelaram sem aviso'],
+        'long_wait_pickup'         => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 3.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Longa espera na retirada'],
+        'menu_outdated'            => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Cardapio desatualizado no app'],
+        'store_no_reply'           => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 3.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Loja nao respondeu mensagem'],
     ],
     'order' => [
-        'duplicate_order'     => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Pedido duplicado acidental'],
-        'order_stuck'         => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 12, 'label' => 'Pedido travou no status'],
-        'cant_cancel'         => ['severity' => 'medium',   'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Nao consigo cancelar'],
-        'cant_track'          => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 3.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Nao consigo rastrear'],
-        'cancelled_charged'   => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Cancelaram mas cobraram'],
-        'wrong_status'        => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Status do pedido errado'],
-        'no_notification'     => ['severity' => 'low',      'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 72, 'label' => 'Nao recebi notificacao'],
-        'app_error'           => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Erro no app durante pedido'],
-        'gps_wrong'           => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 3.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'GPS/localizacao errada'],
-        'receipt_missing'     => ['severity' => 'low',      'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 72, 'label' => 'Nao recebi comprovante/nota'],
-        'support_no_response' => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 12, 'label' => 'Suporte nao responde'],
-        'support_closed'      => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 12, 'label' => 'Chamado fechado sem resolver'],
-        'refund_denied'       => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Reembolso negado injustamente'],
-        'payment_failed_order'=> ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Pagamento falhou mas pedido feito'],
+        'duplicate_order'          => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Pedido duplicado acidental'],
+        'wrong_store'              => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Pedido feito na loja errada'],
+        'order_stuck'              => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 12, 'label' => 'Pedido preso em processamento'],
+        'cant_cancel'              => ['severity' => 'medium',   'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Nao consegui cancelar a tempo'],
+        'want_change_address'      => ['severity' => 'medium',   'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Quero mudar endereco de entrega'],
+        'want_add_items'           => ['severity' => 'low',      'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Quero adicionar itens ao pedido'],
+        'want_remove_items'        => ['severity' => 'low',      'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Quero remover itens do pedido'],
+        'cant_track'               => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 3.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Nao consigo rastrear'],
+        'cancelled_charged'        => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Cancelaram mas cobraram'],
+        'wrong_status'             => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Status do pedido errado'],
+        'no_notification'          => ['severity' => 'low',      'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 72, 'label' => 'Nao recebi notificacao'],
+        'app_error'                => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'App travou durante checkout'],
+        'checkout_error'           => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => true,  'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Erro ao finalizar pedido'],
+        'gps_wrong'                => ['severity' => 'medium',   'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 3.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'GPS/localizacao errada'],
+        'qr_code_broken'           => ['severity' => 'medium',   'auto_resolve' => false, 'needs_photo' => true,  'compensation' => 'credit',              'credit_amount' => 3.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'QR code da mesa nao funciona'],
+        'receipt_missing'          => ['severity' => 'low',      'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 72, 'label' => 'Nao recebi comprovante/nota'],
+        'receipt_wrong'            => ['severity' => 'medium',   'auto_resolve' => false, 'needs_photo' => true,  'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Nota fiscal errada'],
+        'support_no_response'      => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 12, 'label' => 'Suporte nao responde'],
+        'support_closed'           => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 12, 'label' => 'Chamado fechado sem resolver'],
+        'refund_denied'            => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Reembolso negado injustamente'],
+        'payment_failed_order'     => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 12, 'label' => 'Pagamento falhou mas pedido feito'],
+        // --- Grupo / Especial ---
+        'group_wrong_item'         => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => true,  'compensation' => 'item_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 24, 'label' => 'Pedido grupo: item de participante errado'],
+        'gift_recipient_absent'    => ['severity' => 'medium',   'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Pedido presente: destinatario ausente'],
+        'scheduled_wrong_time'     => ['severity' => 'high',     'auto_resolve' => true,  'needs_photo' => false, 'compensation' => 'credit',              'credit_amount' => 5.00, 'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Agendado: entregue no horario errado'],
+        'corporate_wrong_invoice'  => ['severity' => 'medium',   'auto_resolve' => false, 'needs_photo' => true,  'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 48, 'label' => 'Pedido corporativo: nota fiscal errada'],
     ],
     'safety' => [
-        'got_sick'            => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund+credit',  'credit_amount' => 30.00,'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Passei mal apos comer'],
-        'harassment'          => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Assedio do motorista/loja'],
-        'discrimination'      => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund+credit',  'credit_amount' => 20.00,'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Discriminacao'],
-        'threat'              => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 2,  'label' => 'Ameaca ou intimidacao'],
-        'privacy_breach'      => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 4,  'label' => 'Violacao de privacidade'],
-        'account_hacked'      => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Conta hackeada/invadida'],
-        'unauthorized_order'  => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Pedido nao autorizado'],
-        'suspicious_charge'   => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Cobranca suspeita'],
-        'data_concern'        => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Preocupacao com meus dados'],
-        'accident'            => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 2,  'label' => 'Acidente durante entrega'],
+        'got_sick'                 => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund+credit',  'credit_amount' => 30.00,'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Passei mal apos comer'],
+        'harassment'               => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Assedio do motorista/loja'],
+        'driver_threat'            => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 2,  'label' => 'Ameaca do entregador'],
+        'discrimination'           => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund+credit',  'credit_amount' => 20.00,'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Discriminacao'],
+        'threat'                   => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 2,  'label' => 'Ameaca ou intimidacao'],
+        'privacy_breach'           => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 4,  'label' => 'Dados pessoais expostos'],
+        'driver_photographed'      => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 4,  'label' => 'Entregador fotografou endereco'],
+        'account_hacked'           => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Conta hackeada/invadida'],
+        'unauthorized_order'       => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Pedido nao autorizado'],
+        'suspicious_charge'        => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Cobranca suspeita'],
+        'data_concern'             => ['severity' => 'high',     'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'none',                'credit_amount' => 0,    'refund_pct' => 0,   'sla_hours' => 24, 'label' => 'Preocupacao com meus dados'],
+        'accident'                 => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 2,  'label' => 'Acidente durante entrega'],
+        'animal_attack'            => ['severity' => 'critical', 'auto_resolve' => false, 'needs_photo' => false, 'compensation' => 'full_refund',         'credit_amount' => 0,    'refund_pct' => 100, 'sla_hours' => 4,  'label' => 'Animal atacou entregador'],
     ],
 ];
 
@@ -253,6 +303,13 @@ try {
         $description = strip_tags(trim(substr($input['description'] ?? '', 0, 2000)));
         $affectedItems = $input['affected_items'] ?? [];
         $photoUrls   = $input['photo_urls'] ?? [];
+        $preferredResolution = trim($input['preferred_resolution'] ?? '');
+
+        // Validate preferred_resolution if provided
+        $validResolutions = ['full_refund', 'partial_refund', 'credit', 'redelivery', 'talk_to_support'];
+        if ($preferredResolution && !in_array($preferredResolution, $validResolutions)) {
+            $preferredResolution = '';
+        }
 
         if (!$orderId) response(false, null, "order_id obrigatorio", 400);
         if (!$category || !$subcategory) response(false, null, "Categoria e subcategoria obrigatorias", 400);
@@ -425,7 +482,9 @@ try {
         $creditAmount = $rule['credit_amount'];
 
         // ---- Determine status ----
-        $canAutoResolve = $rule['auto_resolve'] && !$isSuspicious;
+        // Customer requesting to talk to support forces manual review
+        $wantsHumanSupport = ($preferredResolution === 'talk_to_support');
+        $canAutoResolve = $rule['auto_resolve'] && !$isSuspicious && !$wantsHumanSupport;
         $needsPhoto = $rule['needs_photo'];
 
         if ($canAutoResolve && $needsPhoto && empty($cleanPhotos)) {
@@ -455,7 +514,7 @@ try {
                 category, subcategory, severity, description,
                 photo_urls, affected_items,
                 order_total, requested_amount, approved_amount, credit_amount,
-                compensation_type, status,
+                compensation_type, preferred_resolution, status,
                 auto_resolved, auto_resolution_rule,
                 sla_target_hours,
                 customer_dispute_count_30d, is_suspicious, suspicious_reason,
@@ -465,7 +524,7 @@ try {
                 ?, ?, ?, ?,
                 ?, ?,
                 ?, ?, ?, ?,
-                ?, ?,
+                ?, ?, ?,
                 ?, ?,
                 ?,
                 ?, ?, ?,
@@ -479,7 +538,7 @@ try {
             $category, $subcategory, $rule['severity'], $description,
             json_encode($cleanPhotos, JSON_UNESCAPED_UNICODE), json_encode($cleanItems, JSON_UNESCAPED_UNICODE),
             $orderTotal, $requestedAmount, $approvedAmount, $creditAmount,
-            $compensationType, $status,
+            $compensationType, $preferredResolution ?: null, $status,
             $autoResolved ? 1 : 0, $subcategory,
             $rule['sla_hours'],
             $disputeCount30d + 1, $isSuspicious ? 1 : 0, $suspiciousReason,
@@ -691,6 +750,7 @@ try {
                 'compensation_type' => $compensationType,
                 'sla_hours' => $rule['sla_hours'],
                 'label' => $rule['label'] ?? $subcategory,
+                'preferred_resolution' => $preferredResolution ?: null,
             ],
         ];
 
@@ -761,6 +821,7 @@ function formatDispute($d) {
         'auto_resolved' => (bool)($d['auto_resolved'] ?? false),
         'resolution_note' => $d['resolution_note'] ?? null,
         'sla_target_hours' => (int)($d['sla_target_hours'] ?? 0),
+        'preferred_resolution' => $d['preferred_resolution'] ?? null,
         'partner_response' => $d['partner_response'] ?? null,
         'created_at' => $d['created_at'] ?? null,
         'resolved_at' => $d['resolved_at'] ?? null,
@@ -773,5 +834,11 @@ function formatDispute($d) {
 
 function ensureDisputeTables($db) {
     // Tables om_order_disputes, om_dispute_evidence, om_dispute_timeline created via migration
+    // Add preferred_resolution column if not present
+    try {
+        $db->exec("ALTER TABLE om_order_disputes ADD COLUMN IF NOT EXISTS preferred_resolution VARCHAR(50) DEFAULT NULL");
+    } catch (Exception $e) {
+        // Column may already exist or table uses different DDL syntax
+    }
     return;
 }
