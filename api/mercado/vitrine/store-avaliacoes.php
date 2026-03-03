@@ -2,7 +2,6 @@
 /**
  * Store Reviews & Ratings API - Public endpoint for viewing store reviews
  * GET /vitrine/store-avaliacoes.php?store_id=X - Reviews for a store with stats
- * GET /vitrine/store-avaliacoes.php?store_id=X&product_id=Y - Product-specific reviews
  */
 
 require_once __DIR__ . '/../config/database.php';
@@ -14,9 +13,8 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
 
 $db = getDB();
 $storeId = (int)($_GET['store_id'] ?? 0);
-$productId = (int)($_GET['product_id'] ?? 0);
 $rating = (int)($_GET['rating'] ?? 0); // filter by specific star rating
-$sort = $_GET['sort'] ?? 'recent'; // recent, highest, lowest, helpful
+$sort = $_GET['sort'] ?? 'recent'; // recent, highest, lowest
 $limit = min((int)($_GET['limit'] ?? 20), 50);
 $offset = (int)($_GET['offset'] ?? 0);
 
@@ -34,10 +32,9 @@ $stmt = $db->prepare("
         COUNT(CASE WHEN rating = 3 THEN 1 END) as stars_3,
         COUNT(CASE WHEN rating = 2 THEN 1 END) as stars_2,
         COUNT(CASE WHEN rating = 1 THEN 1 END) as stars_1,
-        COUNT(CASE WHEN comment IS NOT NULL AND comment != '' THEN 1 END) as with_comments,
-        COUNT(CASE WHEN photo_url IS NOT NULL THEN 1 END) as with_photos
+        COUNT(CASE WHEN comment IS NOT NULL AND comment != '' THEN 1 END) as with_comments
     FROM om_market_reviews
-    WHERE store_id = ?
+    WHERE partner_id = ?
 ");
 $stmt->execute([$storeId]);
 $stats = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -54,13 +51,8 @@ $stats['distribution'] = [
 ];
 
 // Build review query
-$conditions = ["r.store_id = ?"];
+$conditions = ["r.partner_id = ?"];
 $params = [$storeId];
-
-if ($productId) {
-    $conditions[] = "r.product_id = ?";
-    $params[] = $productId;
-}
 
 if ($rating >= 1 && $rating <= 5) {
     $conditions[] = "r.rating = ?";
@@ -72,22 +64,16 @@ $where = implode(' AND ', $conditions);
 $orderBy = match($sort) {
     'highest' => 'r.rating DESC, r.created_at DESC',
     'lowest' => 'r.rating ASC, r.created_at DESC',
-    'helpful' => 'r.helpful_count DESC NULLS LAST, r.created_at DESC',
     default => 'r.created_at DESC',
 };
 
 $stmt = $db->prepare("
-    SELECT r.id, r.order_id, r.rating, r.comment, r.photo_url,
-           r.partner_response, r.partner_response_at,
-           r.helpful_count, r.created_at,
-           c.name as customer_name,
-           CASE WHEN r.is_anonymous THEN 'Anônimo' ELSE
-               CONCAT(SPLIT_PART(c.name, ' ', 1), ' ', LEFT(SPLIT_PART(c.name, ' ', 2), 1), '.')
-           END as display_name,
-           p.name as product_name
+    SELECT r.id, r.order_id, r.rating, r.comment,
+           r.partner_reply, r.partner_reply_at,
+           r.created_at,
+           r.customer_name,
+           CONCAT(SPLIT_PART(r.customer_name, ' ', 1), ' ', LEFT(SPLIT_PART(r.customer_name, ' ', 2), 1), '.') as display_name
     FROM om_market_reviews r
-    LEFT JOIN om_market_customers c ON c.id = r.customer_id
-    LEFT JOIN om_market_products p ON p.id = r.product_id
     WHERE {$where}
     ORDER BY {$orderBy}
     LIMIT ? OFFSET ?
@@ -100,10 +86,9 @@ $reviews = $stmt->fetchAll(PDO::FETCH_ASSOC);
 // Get review highlights (most common positive/negative phrases)
 $highlights = [];
 if ((int)$stats['total_reviews'] >= 5) {
-    // Positive highlights from 4-5 star reviews
     $stmt = $db->prepare("
         SELECT comment FROM om_market_reviews
-        WHERE store_id = ? AND rating >= 4 AND comment IS NOT NULL AND comment != ''
+        WHERE partner_id = ? AND rating >= 4 AND comment IS NOT NULL AND comment != ''
         ORDER BY created_at DESC LIMIT 20
     ");
     $stmt->execute([$storeId]);

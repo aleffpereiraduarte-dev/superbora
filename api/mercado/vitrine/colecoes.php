@@ -49,14 +49,14 @@ if ($collectionId || $slug) {
     if ($collection['tipo'] === 'produtos') {
         $stmt = $db->prepare("
             SELECT ci.posicao,
-                   p.id as product_id, p.name, p.description, p.price, p.price_promo,
-                   p.image_url, p.stock_quantity, p.is_active,
-                   s.id as store_id, s.name as store_name
+                   pp.id as product_id, pp.price, pp.price_promo,
+                   pp.stock, pp.active as is_active,
+                   s.partner_id as store_id, s.name as store_name
             FROM om_market_colecao_items ci
-            JOIN om_market_products p ON p.id = ci.item_id
-            JOIN om_market_stores s ON s.id = p.store_id
+            JOIN om_market_partner_products pp ON pp.id = ci.item_id
+            JOIN om_market_partners s ON s.partner_id = pp.partner_id
             WHERE ci.colecao_id = ? AND ci.tipo = 'produto'
-              AND p.is_active = true AND s.is_active = true
+              AND pp.active = 1
             ORDER BY ci.posicao ASC
             LIMIT ? OFFSET ?
         ");
@@ -65,13 +65,12 @@ if ($collectionId || $slug) {
     } elseif ($collection['tipo'] === 'lojas') {
         $stmt = $db->prepare("
             SELECT ci.posicao,
-                   s.id as store_id, s.name, s.description, s.logo_url, s.banner_url,
-                   s.category, s.rating, s.delivery_fee, s.delivery_time_min,
-                   s.is_open, s.address_city
+                   s.partner_id as store_id, s.name, s.description, s.logo as logo_url, s.banner as banner_url,
+                   s.categoria as category, s.rating, s.delivery_fee, s.delivery_time_min,
+                   s.is_open, s.city as address_city
             FROM om_market_colecao_items ci
-            JOIN om_market_stores s ON s.id = ci.item_id
+            JOIN om_market_partners s ON s.partner_id = ci.item_id
             WHERE ci.colecao_id = ? AND ci.tipo = 'loja'
-              AND s.is_active = true
             ORDER BY ci.posicao ASC
             LIMIT ? OFFSET ?
         ");
@@ -125,12 +124,12 @@ $collections = $stmt->fetchAll(PDO::FETCH_ASSOC);
 foreach ($collections as &$col) {
     if ($col['tipo'] === 'produtos') {
         $stmt = $db->prepare("
-            SELECT p.id, p.name, p.price, p.price_promo, p.image_url, s.name as store_name
+            SELECT pp.id, pp.price, pp.price_promo, s.name as store_name
             FROM om_market_colecao_items ci
-            JOIN om_market_products p ON p.id = ci.item_id
-            JOIN om_market_stores s ON s.id = p.store_id
+            JOIN om_market_partner_products pp ON pp.id = ci.item_id
+            JOIN om_market_partners s ON s.partner_id = pp.partner_id
             WHERE ci.colecao_id = ? AND ci.tipo = 'produto'
-              AND p.is_active = true AND s.is_active = true
+              AND pp.active = 1
             ORDER BY ci.posicao ASC
             LIMIT 4
         ");
@@ -138,11 +137,10 @@ foreach ($collections as &$col) {
         $col['preview_items'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
     } elseif ($col['tipo'] === 'lojas') {
         $stmt = $db->prepare("
-            SELECT s.id, s.name, s.logo_url, s.rating, s.delivery_fee, s.delivery_time_min
+            SELECT s.partner_id as id, s.name, s.logo as logo_url, s.rating, s.delivery_fee, s.delivery_time_min
             FROM om_market_colecao_items ci
-            JOIN om_market_stores s ON s.id = ci.item_id
+            JOIN om_market_partners s ON s.partner_id = ci.item_id
             WHERE ci.colecao_id = ? AND ci.tipo = 'loja'
-              AND s.is_active = true
             ORDER BY ci.posicao ASC
             LIMIT 4
         ");
