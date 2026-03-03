@@ -67,14 +67,129 @@ try {
     $canc = $stmt->fetch();
     $cancellation_rate = $canc['total'] > 0 ? round(($canc['cancelled'] / $canc['total']) * 100, 1) : 0;
 
+    // GMV (Gross Merchandise Value)
+    $stmt = $db->prepare("
+        SELECT COALESCE(SUM(total), 0) as gmv, COUNT(*) as total_orders
+        FROM om_market_orders
+        WHERE created_at >= CURRENT_DATE - CAST(? AS INTERVAL) AND status NOT IN ('cancelled','refunded')
+    ");
+    $stmt->execute([$interval_param]);
+    $gmv_row = $stmt->fetch();
+    $gmv = round((float)$gmv_row['gmv'], 2);
+    $total_orders = (int)$gmv_row['total_orders'];
+
+    // Today's GMV + orders
+    $stmt = $db->query("
+        SELECT COALESCE(SUM(total), 0) as gmv_today, COUNT(*) as orders_today
+        FROM om_market_orders
+        WHERE created_at >= CURRENT_DATE AND status NOT IN ('cancelled','refunded')
+    ");
+    $today = $stmt->fetch();
+
+    // Active customers (ordered in period)
+    $stmt = $db->prepare("
+        SELECT COUNT(DISTINCT customer_id) as active_customers
+        FROM om_market_orders
+        WHERE created_at >= CURRENT_DATE - CAST(? AS INTERVAL)
+    ");
+    $stmt->execute([$interval_param]);
+    $active_customers = (int)$stmt->fetch()['active_customers'];
+
+    // Top 10 stores by GMV
+    $stmt = $db->prepare("
+        SELECT m.mercado_id, m.nome,
+               COUNT(o.order_id) as total_orders,
+               COALESCE(SUM(o.total), 0) as gmv,
+               COALESCE(AVG(o.total), 0) as avg_ticket
+        FROM om_market_orders o
+        JOIN om_mercados m ON m.mercado_id = o.mercado_id
+        WHERE o.created_at >= CURRENT_DATE - CAST(? AS INTERVAL) AND o.status NOT IN ('cancelled','refunded')
+        GROUP BY m.mercado_id, m.nome
+        ORDER BY gmv DESC
+        LIMIT 10
+    ");
+    $stmt->execute([$interval_param]);
+    $top_stores = $stmt->fetchAll();
+
+    // Top 10 products by volume
+    $stmt = $db->prepare("
+        SELECT p.product_id, p.name, p.category_id,
+               COALESCE(SUM(oi.quantity), 0) as total_sold,
+               COALESCE(SUM(oi.quantity * oi.price), 0) as revenue
+        FROM om_market_order_items oi
+        JOIN om_market_products p ON p.product_id = oi.product_id
+        JOIN om_market_orders o ON o.order_id = oi.order_id
+        WHERE o.created_at >= CURRENT_DATE - CAST(? AS INTERVAL) AND o.status NOT IN ('cancelled','refunded')
+        GROUP BY p.product_id, p.name, p.category_id
+        ORDER BY total_sold DESC
+        LIMIT 10
+    ");
+    $stmt->execute([$interval_param]);
+    $top_products = $stmt->fetchAll();
+
+    // Daily trend (last N days)
+    $trend_days = min($days, 30);
+    $trend_interval = $trend_days . ' days';
+    $stmt = $db->prepare("
+        SELECT DATE(created_at) as date,
+               COUNT(*) as orders,
+               COALESCE(SUM(total), 0) as gmv,
+               COUNT(DISTINCT customer_id) as customers
+        FROM om_market_orders
+        WHERE created_at >= CURRENT_DATE - CAST(? AS INTERVAL) AND status NOT IN ('cancelled','refunded')
+        GROUP BY DATE(created_at)
+        ORDER BY date ASC
+    ");
+    $stmt->execute([$trend_interval]);
+    $daily_trend = $stmt->fetchAll();
+
+    // Previous period comparison
+    $prev_start = $days * 2 . ' days';
+    $prev_end = $days . ' days';
+    $stmt = $db->prepare("
+        SELECT COALESCE(SUM(total), 0) as gmv, COUNT(*) as orders
+        FROM om_market_orders
+        WHERE created_at >= CURRENT_DATE - CAST(? AS INTERVAL)
+          AND created_at < CURRENT_DATE - CAST(? AS INTERVAL)
+          AND status NOT IN ('cancelled','refunded')
+    ");
+    $stmt->execute([$prev_start, $prev_end]);
+    $prev = $stmt->fetch();
+    $gmv_change = $prev['gmv'] > 0 ? round((($gmv - $prev['gmv']) / $prev['gmv']) * 100, 1) : 0;
+    $orders_change = $prev['orders'] > 0 ? round((($total_orders - $prev['orders']) / $prev['orders']) * 100, 1) : 0;
+
+    // Payment method distribution
+    $stmt = $db->prepare("
+        SELECT payment_method, COUNT(*) as count, COALESCE(SUM(total), 0) as total
+        FROM om_market_orders
+        WHERE created_at >= CURRENT_DATE - CAST(? AS INTERVAL) AND status NOT IN ('cancelled','refunded')
+        GROUP BY payment_method
+        ORDER BY count DESC
+    ");
+    $stmt->execute([$interval_param]);
+    $payment_methods = $stmt->fetchAll();
+
     response(true, [
         'period' => $period,
+        'gmv' => $gmv,
+        'gmv_today' => round((float)$today['gmv_today'], 2),
+        'orders_today' => (int)$today['orders_today'],
+        'total_orders' => $total_orders,
+        'active_customers' => $active_customers,
         'delivery_time_avg' => $delivery_time_avg,
         'order_accuracy' => $order_accuracy,
         'customer_satisfaction' => $customer_satisfaction,
         'shopper_utilization' => $shopper_utilization,
         'revenue_per_order' => $revenue_per_order,
-        'cancellation_rate' => $cancellation_rate
+        'cancellation_rate' => $cancellation_rate,
+        'comparison' => [
+            'gmv_change' => $gmv_change,
+            'orders_change' => $orders_change
+        ],
+        'top_stores' => $top_stores,
+        'top_products' => $top_products,
+        'daily_trend' => $daily_trend,
+        'payment_methods' => $payment_methods
     ], "KPIs carregados");
 } catch (Exception $e) {
     error_log("[admin/kpis] Erro: " . $e->getMessage());

@@ -72,7 +72,54 @@ try {
 
     $total_results = array_sum(array_map('count', $results));
 
-    response(true, ['query' => $q, 'total' => $total_results, 'results' => $results], "Busca global");
+    // If analytics=1, also return search analytics
+    $analytics = [];
+    if (!empty($_GET['analytics'])) {
+        // Top search terms (from om_search_queries if exists)
+        try {
+            $stmt = $db->query("
+                SELECT query, COUNT(*) as count, MAX(created_at) as last_searched
+                FROM om_search_queries
+                WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'
+                GROUP BY query
+                ORDER BY count DESC
+                LIMIT 20
+            ");
+            $analytics['top_terms'] = $stmt->fetchAll();
+
+            // Zero-result searches
+            $stmt = $db->query("
+                SELECT query, COUNT(*) as count
+                FROM om_search_queries
+                WHERE results_count = 0 AND created_at >= CURRENT_DATE - INTERVAL '7 days'
+                GROUP BY query
+                ORDER BY count DESC
+                LIMIT 20
+            ");
+            $analytics['zero_results'] = $stmt->fetchAll();
+
+            // Daily search volume
+            $stmt = $db->query("
+                SELECT DATE(created_at) as date, COUNT(*) as searches,
+                       SUM(CASE WHEN results_count = 0 THEN 1 ELSE 0 END) as zero_results
+                FROM om_search_queries
+                WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'
+                GROUP BY DATE(created_at)
+                ORDER BY date ASC
+            ");
+            $analytics['daily_volume'] = $stmt->fetchAll();
+        } catch (Exception $e) {
+            // Table may not exist
+            $analytics['top_terms'] = [];
+            $analytics['zero_results'] = [];
+            $analytics['daily_volume'] = [];
+        }
+    }
+
+    $resp = ['query' => $q, 'total' => $total_results, 'results' => $results];
+    if (!empty($analytics)) $resp['analytics'] = $analytics;
+
+    response(true, $resp, "Busca global");
 } catch (Exception $e) {
     error_log("[admin/busca] Erro: " . $e->getMessage());
     response(false, null, "Erro interno", 500);
