@@ -1,4 +1,17 @@
 <?php
+/**
+ * /api/mercado/admin/cupons.php
+ *
+ * iFood-level coupon management endpoint.
+ *
+ * GET: List coupons with pagination and usage stats.
+ *   Params: status (active/expired/disabled), partner_id, page, limit
+ *   Returns: coupon list + stats summary
+ *
+ * POST (action=create): Create new coupon with optional auto-generated code.
+ * POST (action=update): Update existing coupon.
+ * POST (action=delete): Soft-delete (disable) coupon.
+ */
 require_once __DIR__ . "/../config/database.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAudit.php";
@@ -11,141 +24,346 @@ try {
     OmAudit::getInstance()->setDb($db);
 
     $payload = om_auth()->requireAdmin();
-    $admin_id = $payload['uid'];
+    $admin_id = (int)$payload['uid'];
 
-    if ($_SERVER["REQUEST_METHOD"] === "GET") {
-        $status = $_GET['status'] ?? null;
+    // =================== GET ===================
+    if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+
+        $status = trim($_GET['status'] ?? '');
+        $partner_id = isset($_GET['partner_id']) ? (int)$_GET['partner_id'] : null;
         $page = max(1, (int)($_GET['page'] ?? 1));
-        $limit = 20;
+        $limit = min(100, max(1, (int)($_GET['limit'] ?? 20)));
         $offset = ($page - 1) * $limit;
 
         $where = ["1=1"];
         $params = [];
-        if ($status !== null) {
-            $where[] = "status = ?";
-            $params[] = $status;
+
+        // Filter by status
+        if ($status !== '') {
+            $allowed_statuses = ['active', 'expired', 'disabled', '0', '1'];
+            if (in_array($status, $allowed_statuses, true)) {
+                if ($status === 'active') {
+                    $where[] = "(c.status = 'active' OR c.status = '1')";
+                    $where[] = "(c.valid_until IS NULL OR c.valid_until >= CURRENT_DATE)";
+                } elseif ($status === 'expired') {
+                    $where[] = "c.valid_until < CURRENT_DATE";
+                } elseif ($status === 'disabled') {
+                    $where[] = "(c.status = '0' OR c.status = 'disabled' OR c.status = 'inactive')";
+                } else {
+                    $where[] = "c.status = ?";
+                    $params[] = $status;
+                }
+            }
         }
+
+        // Filter by partner
+        if ($partner_id !== null && $partner_id > 0) {
+            $where[] = "c.partner_id = ?";
+            $params[] = $partner_id;
+        }
+
         $where_sql = implode(' AND ', $where);
 
-        $stmt = $db->prepare("SELECT COUNT(*) as total FROM om_market_coupons WHERE {$where_sql}");
+        // Count
+        $stmt = $db->prepare("SELECT COUNT(*) as total FROM om_market_coupons c WHERE {$where_sql}");
         $stmt->execute($params);
         $total = (int)$stmt->fetch()['total'];
 
+        // Fetch coupons with usage stats
         $stmt = $db->prepare("
-            SELECT * FROM om_market_coupons
+            SELECT c.*,
+                   COALESCE(c.current_uses, 0) as times_used,
+                   COALESCE(us.total_discount, 0) as total_discount_given,
+                   p.name as partner_name
+            FROM om_market_coupons c
+            LEFT JOIN om_market_partners p ON c.partner_id = p.partner_id
+            LEFT JOIN LATERAL (
+                SELECT COALESCE(SUM(CASE
+                    WHEN c.discount_type = 'percent' THEN o.total * (c.discount_value / 100)
+                    ELSE c.discount_value
+                END), 0) as total_discount
+                FROM om_market_orders o
+                WHERE o.coupon_id = c.id
+                  AND o.status NOT IN ('cancelled','refunded')
+            ) us ON TRUE
             WHERE {$where_sql}
-            ORDER BY created_at DESC
+            ORDER BY c.created_at DESC
             LIMIT ? OFFSET ?
         ");
-        $params[] = (int)$limit;
-        $params[] = (int)$offset;
+        $params[] = $limit;
+        $params[] = $offset;
         $stmt->execute($params);
-        $cupons = $stmt->fetchAll();
+        $coupons = $stmt->fetchAll();
+
+        // Format numeric fields
+        foreach ($coupons as &$cp) {
+            $cp['times_used'] = (int)$cp['times_used'];
+            $cp['total_discount_given'] = round((float)$cp['total_discount_given'], 2);
+        }
+        unset($cp);
+
+        // Stats summary
+        $stmt = $db->query("SELECT COUNT(*) as cnt FROM om_market_coupons");
+        $total_coupons = (int)$stmt->fetch()['cnt'];
+
+        $stmt = $db->query("
+            SELECT COUNT(*) as cnt FROM om_market_coupons
+            WHERE (status = 'active' OR status = '1')
+              AND (valid_until IS NULL OR valid_until >= CURRENT_DATE)
+        ");
+        $active_coupons = (int)$stmt->fetch()['cnt'];
+
+        $stmt = $db->query("
+            SELECT COUNT(*) as cnt FROM om_market_coupons
+            WHERE valid_until IS NOT NULL AND valid_until < CURRENT_DATE
+        ");
+        $expired_coupons = (int)$stmt->fetch()['cnt'];
 
         response(true, [
-            'cupons' => $cupons,
-            'pagination' => ['page' => $page, 'limit' => $limit, 'total' => $total, 'pages' => ceil($total / $limit)]
+            'coupons' => $coupons,
+            'pagination' => [
+                'page' => $page,
+                'limit' => $limit,
+                'total' => $total,
+                'pages' => (int)ceil($total / $limit),
+            ],
+            'stats' => [
+                'total_coupons' => $total_coupons,
+                'active' => $active_coupons,
+                'expired' => $expired_coupons,
+            ],
         ], "Cupons listados");
+    }
 
-    } elseif ($_SERVER["REQUEST_METHOD"] === "POST") {
+    // =================== POST ===================
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $input = getInput();
-        $code = strtoupper(trim($input['code'] ?? ''));
-        $discount_type = $input['discount_type'] ?? 'percent';
-        $discount_value = (float)($input['discount_value'] ?? 0);
-        $min_order = (float)($input['min_order'] ?? 0);
-        $max_uses = (int)($input['max_uses'] ?? 0);
-        $start_date = $input['start_date'] ?? date('Y-m-d');
-        $end_date = $input['end_date'] ?? date('Y-m-d', strtotime('+30 days'));
-        $coupon_id = (int)($input['id'] ?? 0);
+        $action = trim($input['action'] ?? '');
 
-        if (!$code) {
-            response(false, null, "code obrigatorio", 400);
-        }
+        if (!$action) response(false, null, "Campo 'action' obrigatorio", 400);
 
-        // Validate discount_type
-        $allowed_discount_types = ['percent', 'fixed'];
-        if (!in_array($discount_type, $allowed_discount_types, true)) {
-            response(false, null, "discount_type invalido. Permitidos: percent, fixed", 400);
-        }
+        // ── Create coupon ──
+        if ($action === 'create') {
+            $code = strtoupper(trim($input['code'] ?? ''));
+            $type = trim($input['type'] ?? 'percent');
+            $value = isset($input['value']) ? (float)$input['value'] : 0;
+            $min_order = (float)($input['min_order'] ?? 0);
+            $max_uses = (int)($input['max_uses'] ?? 0);
+            $expires_at = trim($input['expires_at'] ?? '');
+            $partner_id = isset($input['partner_id']) ? (int)$input['partner_id'] : null;
+            $max_discount_value = isset($input['max_discount_value']) ? (float)$input['max_discount_value'] : null;
 
-        // Validate discount_value is numeric and > 0
-        if (!is_numeric($input['discount_value'] ?? '') || $discount_value <= 0) {
-            response(false, null, "discount_value deve ser numerico e maior que zero", 400);
-        }
-
-        // Validate dates if provided
-        if (!empty($input['start_date'])) {
-            $d = DateTime::createFromFormat('Y-m-d', $input['start_date']);
-            if (!$d || $d->format('Y-m-d') !== $input['start_date']) {
-                response(false, null, "start_date invalido. Use formato YYYY-MM-DD", 400);
+            // Auto-generate code if not provided
+            if ($code === '') {
+                $code = 'SB' . strtoupper(bin2hex(random_bytes(4)));
             }
-        }
-        if (!empty($input['end_date'])) {
-            $d = DateTime::createFromFormat('Y-m-d', $input['end_date']);
-            if (!$d || $d->format('Y-m-d') !== $input['end_date']) {
-                response(false, null, "end_date invalido. Use formato YYYY-MM-DD", 400);
+
+            // Validate type
+            $allowed_types = ['percent', 'fixed'];
+            if (!in_array($type, $allowed_types, true)) {
+                response(false, null, "type invalido. Permitidos: percent, fixed", 400);
             }
-        }
 
-        // Validate max_uses if provided (must be numeric and > 0, or 0 for unlimited)
-        if (isset($input['max_uses']) && $input['max_uses'] !== '' && $input['max_uses'] !== 0 && $input['max_uses'] !== '0') {
-            if (!is_numeric($input['max_uses']) || (int)$input['max_uses'] < 0) {
-                response(false, null, "max_uses deve ser numerico e >= 0", 400);
+            // Validate value
+            if ($value <= 0) {
+                response(false, null, "value deve ser maior que zero", 400);
             }
-        }
 
-        if ($coupon_id > 0) {
-            // Update existing
-            $stmt = $db->prepare("
-                UPDATE om_market_coupons
-                SET code=?, discount_type=?, discount_value=?, min_order_value=?,
-                    max_uses=?, valid_from=?, valid_until=?, status='1'
-                WHERE id=?
-            ");
-            $stmt->execute([$code, $discount_type, $discount_value, $min_order, $max_uses, $start_date, $end_date, $coupon_id]);
+            if ($type === 'percent' && $value > 100) {
+                response(false, null, "Desconto percentual nao pode ser maior que 100", 400);
+            }
 
-            om_audit()->log('update', 'coupon', $coupon_id, null, ['code' => $code]);
-            response(true, ['id' => $coupon_id], "Cupom atualizado");
-        } else {
-            // SECURITY: Check for duplicate active coupon code before creating
-            $stmtDup = $db->prepare("SELECT id FROM om_market_coupons WHERE code = ? AND status = '1' LIMIT 1");
+            // Validate expires_at format if provided
+            if ($expires_at !== '') {
+                $d = DateTime::createFromFormat('Y-m-d', $expires_at);
+                if (!$d || $d->format('Y-m-d') !== $expires_at) {
+                    response(false, null, "expires_at invalido. Use formato YYYY-MM-DD", 400);
+                }
+            }
+
+            // Check for duplicate active code
+            $stmtDup = $db->prepare("SELECT id FROM om_market_coupons WHERE code = ? AND (status = 'active' OR status = '1') LIMIT 1");
             $stmtDup->execute([$code]);
             if ($stmtDup->fetch()) {
-                response(false, null, "Ja existe um cupom ativo com este codigo", 400);
+                response(false, null, "Ja existe um cupom ativo com o codigo '{$code}'", 400);
             }
 
-            // Create new
             $stmt = $db->prepare("
-                INSERT INTO om_market_coupons (code, discount_type, discount_value, min_order_value, max_uses, current_uses, valid_from, valid_until, status)
-                VALUES (?, ?, ?, ?, ?, 0, ?, ?, '1')
+                INSERT INTO om_market_coupons
+                    (code, discount_type, discount_value, min_order_value, max_discount_value,
+                     max_uses, current_uses, valid_until, partner_id, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, 'active', NOW())
             ");
-            $stmt->execute([$code, $discount_type, $discount_value, $min_order, $max_uses, $start_date, $end_date]);
+            $stmt->execute([
+                $code,
+                $type,
+                $value,
+                $min_order,
+                $max_discount_value,
+                $max_uses,
+                $expires_at !== '' ? $expires_at : null,
+                $partner_id && $partner_id > 0 ? $partner_id : null,
+            ]);
             $new_id = (int)$db->lastInsertId();
 
-            om_audit()->log('create', 'coupon', $new_id, null, ['code' => $code]);
-            response(true, ['id' => $new_id], "Cupom criado");
+            om_audit()->log(
+                OmAudit::ACTION_CREATE,
+                'coupon',
+                $new_id,
+                null,
+                ['code' => $code, 'type' => $type, 'value' => $value],
+                "Cupom '{$code}' criado"
+            );
+
+            response(true, [
+                'id' => $new_id,
+                'code' => $code,
+                'admin_id' => $admin_id,
+            ], "Cupom criado com sucesso");
         }
 
-    } elseif ($_SERVER["REQUEST_METHOD"] === "DELETE") {
-        // SECURITY: Only manager/rh can delete coupons
-        $admin_role = $payload['data']['role'] ?? $payload['type'] ?? '';
-        if (!in_array($admin_role, ['manager', 'rh', 'superadmin'])) {
-            http_response_code(403);
-            response(false, null, "Apenas manager ou RH podem remover cupons", 403);
+        // ── Update coupon ──
+        if ($action === 'update') {
+            $coupon_id = (int)($input['coupon_id'] ?? $input['id'] ?? 0);
+            if (!$coupon_id) response(false, null, "coupon_id obrigatorio", 400);
+
+            // Fetch existing coupon
+            $stmt = $db->prepare("SELECT * FROM om_market_coupons WHERE id = ?");
+            $stmt->execute([$coupon_id]);
+            $existing = $stmt->fetch();
+            if (!$existing) response(false, null, "Cupom nao encontrado", 404);
+
+            // Build update fields dynamically (only update provided fields)
+            $updates = [];
+            $update_params = [];
+
+            if (isset($input['code'])) {
+                $new_code = strtoupper(trim($input['code']));
+                if ($new_code !== '') {
+                    // Check duplicate (exclude self)
+                    $stmtDup = $db->prepare("SELECT id FROM om_market_coupons WHERE code = ? AND id != ? AND (status = 'active' OR status = '1') LIMIT 1");
+                    $stmtDup->execute([$new_code, $coupon_id]);
+                    if ($stmtDup->fetch()) {
+                        response(false, null, "Ja existe outro cupom ativo com o codigo '{$new_code}'", 400);
+                    }
+                    $updates[] = "code = ?";
+                    $update_params[] = $new_code;
+                }
+            }
+
+            if (isset($input['type'])) {
+                $allowed_types = ['percent', 'fixed'];
+                if (!in_array($input['type'], $allowed_types, true)) {
+                    response(false, null, "type invalido", 400);
+                }
+                $updates[] = "discount_type = ?";
+                $update_params[] = $input['type'];
+            }
+
+            if (isset($input['value'])) {
+                $val = (float)$input['value'];
+                if ($val <= 0) response(false, null, "value deve ser maior que zero", 400);
+                $updates[] = "discount_value = ?";
+                $update_params[] = $val;
+            }
+
+            if (isset($input['min_order'])) {
+                $updates[] = "min_order_value = ?";
+                $update_params[] = (float)$input['min_order'];
+            }
+
+            if (isset($input['max_uses'])) {
+                $updates[] = "max_uses = ?";
+                $update_params[] = (int)$input['max_uses'];
+            }
+
+            if (isset($input['expires_at'])) {
+                $exp = trim($input['expires_at']);
+                if ($exp !== '') {
+                    $d = DateTime::createFromFormat('Y-m-d', $exp);
+                    if (!$d || $d->format('Y-m-d') !== $exp) {
+                        response(false, null, "expires_at invalido. Use formato YYYY-MM-DD", 400);
+                    }
+                    $updates[] = "valid_until = ?";
+                    $update_params[] = $exp;
+                } else {
+                    $updates[] = "valid_until = NULL";
+                }
+            }
+
+            if (isset($input['status'])) {
+                $allowed = ['active', 'disabled', '0', '1'];
+                if (in_array($input['status'], $allowed, true)) {
+                    $updates[] = "status = ?";
+                    $update_params[] = $input['status'];
+                }
+            }
+
+            if (isset($input['max_discount_value'])) {
+                $updates[] = "max_discount_value = ?";
+                $update_params[] = (float)$input['max_discount_value'];
+            }
+
+            if (empty($updates)) {
+                response(false, null, "Nenhum campo para atualizar", 400);
+            }
+
+            $update_sql = implode(', ', $updates);
+            $update_params[] = $coupon_id;
+
+            $stmt = $db->prepare("UPDATE om_market_coupons SET {$update_sql} WHERE id = ?");
+            $stmt->execute($update_params);
+
+            om_audit()->log(
+                OmAudit::ACTION_UPDATE,
+                'coupon',
+                $coupon_id,
+                ['code' => $existing['code']],
+                $input,
+                "Cupom #{$coupon_id} atualizado"
+            );
+
+            response(true, [
+                'coupon_id' => $coupon_id,
+                'admin_id' => $admin_id,
+            ], "Cupom atualizado com sucesso");
         }
 
-        $id = (int)($_GET['id'] ?? 0);
-        if (!$id) response(false, null, "ID obrigatorio", 400);
+        // ── Delete (soft-delete) coupon ──
+        if ($action === 'delete') {
+            $coupon_id = (int)($input['coupon_id'] ?? $input['id'] ?? 0);
+            if (!$coupon_id) response(false, null, "coupon_id obrigatorio", 400);
 
-        // Soft delete instead of hard delete
-        $stmt = $db->prepare("UPDATE om_market_coupons SET status = '0' WHERE id = ?");
-        $stmt->execute([$id]);
+            // Verify coupon exists
+            $stmt = $db->prepare("SELECT id, code, status FROM om_market_coupons WHERE id = ?");
+            $stmt->execute([$coupon_id]);
+            $existing = $stmt->fetch();
+            if (!$existing) response(false, null, "Cupom nao encontrado", 404);
 
-        om_audit()->log('delete', 'coupon', $id, null, ['action' => 'soft_delete']);
-        response(true, null, "Cupom desativado");
-    } else {
-        response(false, null, "Metodo nao permitido", 405);
+            // Soft-delete: set status to disabled
+            $stmt = $db->prepare("UPDATE om_market_coupons SET status = '0' WHERE id = ?");
+            $stmt->execute([$coupon_id]);
+
+            om_audit()->log(
+                OmAudit::ACTION_DELETE,
+                'coupon',
+                $coupon_id,
+                ['status' => $existing['status']],
+                ['status' => '0', 'action' => 'soft_delete'],
+                "Cupom '{$existing['code']}' desativado"
+            );
+
+            response(true, [
+                'coupon_id' => $coupon_id,
+                'admin_id' => $admin_id,
+            ], "Cupom desativado com sucesso");
+        }
+
+        response(false, null, "Acao invalida: {$action}", 400);
     }
+
+    response(false, null, "Metodo nao permitido", 405);
+
 } catch (Exception $e) {
     error_log("[admin/cupons] Erro: " . $e->getMessage());
     response(false, null, "Erro interno", 500);
