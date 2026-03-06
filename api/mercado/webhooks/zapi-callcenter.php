@@ -306,14 +306,26 @@ function handleBotConversation(PDO $db, int $conversationId, string $userMessage
             }
         }
 
-        // Check for cancel
-        if (in_array($lowerMsg, ['cancelar', 'cancela', 'desistir', 'nao quero mais', 'esquece'])) {
+        // Check for abandon current order (only when actively building)
+        if (in_array($lowerMsg, ['desistir', 'nao quero mais', 'esquece']) && !empty($context['items'])) {
             $context = ['step' => 'greeting', 'items' => [], 'history' => [], 'message_count' => 0];
             return [
                 'response' => "Tudo bem, pedido cancelado! Se quiser fazer um novo pedido depois, e so me mandar uma mensagem. 😊",
                 'follow_up' => null,
                 'context' => $context,
             ];
+        }
+
+        // Detect support intents — redirect to AI support mode instead of raw cancel
+        $supportKeywords = ['status', 'cancelar', 'cancela', 'rastrear', 'rastreio', 'cadê meu pedido', 'cade meu pedido', 'onde ta', 'onde está', 'meu pedido', 'reclamação', 'reclamacao', 'problema', 'reembolso', 'devolver'];
+        if ($step !== 'support') {
+            foreach ($supportKeywords as $sk) {
+                if (mb_strpos($lowerMsg, $sk) !== false) {
+                    $context['step'] = 'support';
+                    $step = 'support';
+                    break;
+                }
+            }
         }
 
         // Smart: Auto-detect CEP in user message (8 digits that look like a CEP)
@@ -402,6 +414,38 @@ function handleBotConversation(PDO $db, int $conversationId, string $userMessage
             $lastOrderItems = $lastStmt->fetchAll();
         }
 
+        // Fetch customer orders for support mode
+        if ($step === 'support') {
+            $supportOrders = [];
+            $phoneSuffix = substr($phone, -11);
+            $orderStmt = $db->prepare("
+                SELECT o.order_id, o.order_number, o.status, o.total, o.date_added,
+                       o.forma_pagamento, o.delivery_address, p.name AS partner_name
+                FROM om_market_orders o
+                JOIN om_market_partners p ON p.partner_id = o.partner_id
+                WHERE (o.customer_id = ? OR REPLACE(REPLACE(o.customer_phone, '+', ''), '-', '') LIKE ?)
+                ORDER BY o.date_added DESC LIMIT 10
+            ");
+            $orderStmt->execute([$customerId ?? 0, '%' . $phoneSuffix]);
+            while ($ord = $orderStmt->fetch()) {
+                $itemsStmt = $db->prepare("SELECT name, quantity FROM om_market_order_items WHERE order_id = ? LIMIT 5");
+                $itemsStmt->execute([$ord['order_id']]);
+                $orderItems = $itemsStmt->fetchAll();
+                $itemsSummary = implode(', ', array_map(fn($i) => $i['quantity'] . 'x ' . $i['name'], $orderItems));
+
+                $supportOrders[] = [
+                    'order_id' => $ord['order_id'],
+                    'order_number' => $ord['order_number'],
+                    'status' => $ord['status'],
+                    'total' => $ord['total'],
+                    'date_added' => $ord['date_added'],
+                    'partner_name' => $ord['partner_name'],
+                    'items_summary' => $itemsSummary,
+                ];
+            }
+            $context['support_orders'] = $supportOrders;
+        }
+
         $savedAddresses = [];
         if ($customerId && in_array($step, ['get_address', 'confirm_order'])) {
             $addrStmt = $db->prepare("
@@ -414,7 +458,7 @@ function handleBotConversation(PDO $db, int $conversationId, string $userMessage
         }
 
         // Build system prompt
-        $systemPrompt = buildWASystemPrompt($step, $storeName, $menuText, $items, $address, $payment, $customerName, $savedAddresses, $storeNames, $customerId, $lastOrderItems ?? []);
+        $systemPrompt = buildWASystemPrompt($step, $storeName, $menuText, $items, $address, $payment, $customerName, $savedAddresses, $storeNames, $customerId, $lastOrderItems ?? [], $context);
 
         // Keep history manageable
         $recentHistory = array_slice($history, -16);
@@ -513,7 +557,8 @@ function handleBotConversation(PDO $db, int $conversationId, string $userMessage
 function buildWASystemPrompt(
     string $step, ?string $storeName, string $menuText, array $items,
     ?array $address, ?string $payment, ?string $customerName,
-    array $savedAddresses, array $storeNames, ?int $customerId, array $lastOrderItems = []
+    array $savedAddresses, array $storeNames, ?int $customerId,
+    array $lastOrderItems = [], array $context = []
 ): string {
     $hora = (int)date('H');
     $periodo = $hora < 12 ? 'bom dia' : ($hora < 18 ? 'boa tarde' : 'boa noite');
@@ -648,6 +693,46 @@ function buildWASystemPrompt(
             $prompt .= "- Se confirmar (sim, pode, confirma, isso, correto, ok): [CONFIRMED]\n";
             $prompt .= "- Se quiser mudar algo, volte para a etapa adequada\n";
             break;
+
+        case 'support':
+            $prompt .= "ETAPA: Suporte ao cliente\n";
+            $prompt .= "O cliente quer ajuda com um pedido existente (status, cancelamento, problema, etc).\n\n";
+            $prompt .= "Voce pode ajudar com:\n";
+            $prompt .= "- Ver status de um pedido\n";
+            $prompt .= "- Cancelar um pedido (apenas se status for 'confirmado' ou 'pendente')\n";
+            $prompt .= "- Informar tempo estimado\n";
+            $prompt .= "- Responder perguntas sobre pedidos\n";
+            $prompt .= "- Se o problema for complexo, oferecer falar com atendente\n\n";
+            if (!empty($context['support_orders'])) {
+                $prompt .= "PEDIDOS RECENTES DO CLIENTE:\n";
+                foreach ($context['support_orders'] as $ord) {
+                    $statusMap = [
+                        'pendente' => 'Pendente',
+                        'confirmado' => 'Confirmado (aguardando preparo)',
+                        'preparando' => 'Em preparo',
+                        'pronto' => 'Pronto para entrega',
+                        'saiu_entrega' => 'Saiu para entrega',
+                        'entregue' => 'Entregue',
+                        'cancelled' => 'Cancelado',
+                        'refunded' => 'Reembolsado',
+                    ];
+                    $statusLabel = $statusMap[$ord['status']] ?? $ord['status'];
+                    $prompt .= "- Pedido *#{$ord['order_number']}* | {$ord['partner_name']} | Status: {$statusLabel} | Total: R$" . number_format((float)$ord['total'], 2, ',', '.') . " | Data: {$ord['date_added']}\n";
+                    if (!empty($ord['items_summary'])) {
+                        $prompt .= "  Itens: {$ord['items_summary']}\n";
+                    }
+                }
+                $prompt .= "\n";
+            } else {
+                $prompt .= "NENHUM PEDIDO ENCONTRADO para este numero.\n";
+                $prompt .= "- Informe que nao encontrou pedidos\n";
+                $prompt .= "- Pergunte se quer fazer um novo pedido ou falar com atendente\n\n";
+            }
+            $prompt .= "MARCADORES:\n";
+            $prompt .= "- Para cancelar pedido: [CANCEL_ORDER:SB00123]\n";
+            $prompt .= "  SOMENTE se status for 'confirmado' ou 'pendente'\n";
+            $prompt .= "- Para voltar a fazer pedido: [SWITCH_TO_ORDER]\n";
+            break;
     }
 
     return $prompt;
@@ -745,6 +830,35 @@ function parseWAResponse(string $response, array $context, PDO $db): array {
         $newContext['confirmed'] = true;
         $newContext['step'] = 'submit_order';
         $cleaned = str_replace('[CONFIRMED]', '', $cleaned);
+    }
+
+    // Parse [CANCEL_ORDER:SB00123]
+    if (preg_match('/\[CANCEL_ORDER:([^\]]+)\]/', $response, $m)) {
+        $orderNumber = trim($m[1]);
+        $cancelResult = cancelOrderByNumberWA($db, $orderNumber);
+        if ($cancelResult['success']) {
+            $cleaned = preg_replace('/\[CANCEL_ORDER:[^\]]+\]/', '', $cleaned);
+            $cleaned .= "\n\n✅ Pedido {$orderNumber} cancelado com sucesso!";
+        } else {
+            $cleaned = preg_replace('/\[CANCEL_ORDER:[^\]]+\]/', '', $cleaned);
+            $cleaned .= "\n\n❌ " . $cancelResult['error'];
+        }
+    }
+
+    // Parse [ORDER_STATUS:...]
+    if (preg_match('/\[ORDER_STATUS:[^\]]+\]/', $response)) {
+        $cleaned = preg_replace('/\[ORDER_STATUS:[^\]]+\]/', '', $cleaned);
+    }
+
+    // Parse [SWITCH_TO_ORDER]
+    if (strpos($response, '[SWITCH_TO_ORDER]') !== false) {
+        $newContext['step'] = 'greeting';
+        $newContext['items'] = [];
+        $newContext['store_id'] = null;
+        $newContext['store_name'] = null;
+        $newContext['address'] = null;
+        $newContext['payment_method'] = null;
+        $cleaned = str_replace('[SWITCH_TO_ORDER]', '', $cleaned);
     }
 
     // Clean up whitespace
@@ -1056,5 +1170,45 @@ function submitWAOrder(PDO $db, int $conversationId, ?int $customerId, ?string $
         if (isset($db) && $db->inTransaction()) $db->rollBack();
         error_log("[zapi-callcenter] Submit error: " . $e->getMessage());
         return ['success' => false, 'error' => $e->getMessage()];
+    }
+}
+
+function cancelOrderByNumberWA(PDO $db, string $orderNumber): array {
+    try {
+        $stmt = $db->prepare("SELECT order_id, status FROM om_market_orders WHERE order_number = ? LIMIT 1");
+        $stmt->execute([$orderNumber]);
+        $order = $stmt->fetch();
+
+        if (!$order) {
+            return ['success' => false, 'error' => "Pedido {$orderNumber} nao encontrado."];
+        }
+
+        $cancellable = ['pendente', 'confirmado'];
+        if (!in_array($order['status'], $cancellable)) {
+            $statusLabels = [
+                'preparando' => 'ja esta sendo preparado',
+                'pronto' => 'ja esta pronto',
+                'saiu_entrega' => 'ja saiu para entrega',
+                'entregue' => 'ja foi entregue',
+                'cancelled' => 'ja esta cancelado',
+            ];
+            $reason = $statusLabels[$order['status']] ?? 'nao pode ser cancelado no status atual';
+            return ['success' => false, 'error' => "Nao foi possivel cancelar {$orderNumber} porque {$reason}."];
+        }
+
+        $db->beginTransaction();
+        $db->prepare("UPDATE om_market_orders SET status = 'cancelled' WHERE order_id = ?")->execute([$order['order_id']]);
+        $db->prepare("
+            INSERT INTO om_order_timeline (order_id, status, description, actor_type, created_at)
+            VALUES (?, 'cancelled', 'Cancelado pelo cliente via WhatsApp IA', 'system', NOW())
+        ")->execute([$order['order_id']]);
+        $db->commit();
+
+        error_log("[zapi-callcenter] Order {$orderNumber} cancelled via WhatsApp support");
+        return ['success' => true];
+    } catch (Exception $e) {
+        if ($db->inTransaction()) $db->rollBack();
+        error_log("[zapi-callcenter] Cancel error: " . $e->getMessage());
+        return ['success' => false, 'error' => 'Erro ao cancelar: ' . $e->getMessage()];
     }
 }

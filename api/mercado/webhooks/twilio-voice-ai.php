@@ -113,15 +113,24 @@ try {
     // Track user input
     $userInput = $speechResult ?: ($digits ?: '');
 
-    // Check for transfer to agent keywords
+    // Check for transfer to agent keywords (only direct "I want a human" requests)
     if (!empty($userInput)) {
         $lowerInput = mb_strtolower($userInput, 'UTF-8');
-        $transferKeywords = ['atendente', 'agente', 'pessoa', 'humano', 'operador', 'cancelar'];
+        $transferKeywords = ['atendente', 'agente', 'pessoa', 'humano', 'operador'];
         foreach ($transferKeywords as $kw) {
             if (mb_strpos($lowerInput, $kw) !== false) {
-                // Transfer to agent
                 transferToAgent($db, $callId, $callerPhone, $customerName, $customerId, $routeUrl);
                 exit;
+            }
+        }
+
+        // Detect support intents (order status, cancel, help) — redirect to AI support mode
+        $supportKeywords = ['status', 'cancelar', 'cancela', 'rastrear', 'rastreio', 'cadê meu pedido', 'cade meu pedido', 'onde ta', 'onde está', 'meu pedido', 'reclamação', 'reclamacao', 'problema', 'reembolso', 'devolver'];
+        foreach ($supportKeywords as $sk) {
+            if (mb_strpos($lowerInput, $sk) !== false) {
+                $aiContext['step'] = 'support';
+                $step = 'support';
+                break;
             }
         }
     }
@@ -193,6 +202,40 @@ try {
         $lastOrderItems = $lastStmt->fetchAll();
     }
 
+    // Fetch customer's recent orders for support mode
+    if ($step === 'support') {
+        $supportOrders = [];
+        $phoneClean = preg_replace('/\D/', '', $callerPhone);
+        $phoneSuffix = substr($phoneClean, -11);
+        $orderStmt = $db->prepare("
+            SELECT o.order_id, o.order_number, o.status, o.total, o.date_added,
+                   o.forma_pagamento, o.delivery_address, p.name AS partner_name
+            FROM om_market_orders o
+            JOIN om_market_partners p ON p.partner_id = o.partner_id
+            WHERE (o.customer_id = ? OR REPLACE(REPLACE(o.customer_phone, '+', ''), '-', '') LIKE ?)
+            ORDER BY o.date_added DESC LIMIT 10
+        ");
+        $orderStmt->execute([$customerId ?? 0, '%' . $phoneSuffix]);
+        while ($ord = $orderStmt->fetch()) {
+            // Get items summary for each order
+            $itemsStmt = $db->prepare("SELECT name, quantity FROM om_market_order_items WHERE order_id = ? LIMIT 5");
+            $itemsStmt->execute([$ord['order_id']]);
+            $orderItems = $itemsStmt->fetchAll();
+            $itemsSummary = implode(', ', array_map(fn($i) => $i['quantity'] . 'x ' . $i['name'], $orderItems));
+
+            $supportOrders[] = [
+                'order_id' => $ord['order_id'],
+                'order_number' => $ord['order_number'],
+                'status' => $ord['status'],
+                'total' => $ord['total'],
+                'date_added' => $ord['date_added'],
+                'partner_name' => $ord['partner_name'],
+                'items_summary' => $itemsSummary,
+            ];
+        }
+        $aiContext['support_orders'] = $supportOrders;
+    }
+
     // Fetch customer addresses if we have a customer
     $savedAddresses = [];
     if ($customerId && ($step === 'get_address' || $step === 'confirm_order')) {
@@ -206,7 +249,7 @@ try {
     }
 
     // -- Build system prompt --
-    $systemPrompt = buildSystemPrompt($step, $storeName, $menuText, $draftItems, $address, $paymentMethod, $customerName, $savedAddresses, $storeNames, $lastOrderItems ?? []);
+    $systemPrompt = buildSystemPrompt($step, $storeName, $menuText, $draftItems, $address, $paymentMethod, $customerName, $savedAddresses, $storeNames, $lastOrderItems ?? [], $aiContext);
 
     // -- Call Claude --
     // Keep conversation history manageable (last 8 turns)
@@ -330,24 +373,65 @@ function respondTwiml(string $message, bool $transferToAgent = false): void {
 function transferToAgent(PDO $db, int $callId, string $phone, ?string $name, ?int $customerId, string $routeUrl): void {
     $db->prepare("UPDATE om_callcenter_calls SET status = 'queued' WHERE id = ?")->execute([$callId]);
 
+    // Check how many agents are online
+    $agentsOnline = 0;
+    try {
+        $agStmt = $db->query("SELECT COUNT(*) as cnt FROM om_callcenter_agents WHERE status = 'online'");
+        $agentsOnline = (int)$agStmt->fetch()['cnt'];
+    } catch (Exception $e) {}
+
+    // Get current queue depth
+    $queueDepth = 0;
+    try {
+        $qStmt = $db->query("SELECT COUNT(*) as cnt FROM om_callcenter_queue WHERE picked_at IS NULL AND abandoned_at IS NULL");
+        $queueDepth = (int)$qStmt->fetch()['cnt'];
+    } catch (Exception $e) {}
+
+    // VIP priority for returning customers with many orders
+    $priority = 5;
+    if ($customerId) {
+        try {
+            $ordCount = $db->prepare("SELECT COUNT(*) as cnt FROM om_market_orders WHERE customer_id = ?");
+            $ordCount->execute([$customerId]);
+            $orderCount = (int)$ordCount->fetch()['cnt'];
+            if ($orderCount >= 20) $priority = 1;
+            elseif ($orderCount >= 10) $priority = 2;
+            elseif ($orderCount >= 5) $priority = 3;
+        } catch (Exception $e) {}
+    }
+
     // Insert into queue
     $db->prepare("
         INSERT INTO om_callcenter_queue (call_id, customer_phone, customer_name, customer_id, priority, queued_at)
-        VALUES (?, ?, ?, ?, 3, NOW())
+        VALUES (?, ?, ?, ?, ?, NOW())
         ON CONFLICT DO NOTHING
-    ")->execute([$callId, $phone, $name, $customerId]);
+    ")->execute([$callId, $phone, $name, $customerId, $priority]);
 
     ccBroadcastDashboard('queue_updated', [
         'call_id' => $callId,
         'customer_phone' => $phone,
         'customer_name' => $name,
         'action' => 'transfer_from_ai',
+        'queue_depth' => $queueDepth + 1,
+        'agents_online' => $agentsOnline,
     ]);
+
+    // Build queue message
+    $queueMsg = "Sem problema! Vou transferir voce para um atendente agora.";
+    if ($agentsOnline === 0) {
+        $queueMsg .= " No momento nao temos atendentes disponiveis, mas sua ligacao e muito importante. Aguarde na linha ou, se preferir, podemos ligar de volta. Pressione 1 para solicitar retorno.";
+    } elseif ($queueDepth > 0) {
+        $estimatedWait = $queueDepth * 2; // ~2 min per call estimate
+        $queueMsg .= " Voce e o numero " . ($queueDepth + 1) . " na fila. Tempo estimado de espera: cerca de {$estimatedWait} minutos.";
+    } else {
+        $queueMsg .= " Aguarde um momento que ja vamos te atender.";
+    }
 
     echo '<?xml version="1.0" encoding="UTF-8"?>';
     echo '<Response>';
-    echo '<Say voice="Polly.Camila" language="pt-BR">Sem problema! Vou transferir voce para um atendente agora. Aguarde um momento.</Say>';
-    echo '<Play loop="0">http://com.twilio.music.classical.s3.amazonaws.com/ith_brahms-702702.mp3</Play>';
+    echo '<Say voice="Polly.Camila" language="pt-BR">' . escXml($queueMsg) . '</Say>';
+    // Professional hold music — Twilio's built-in classical music
+    echo '<Play loop="0">http://com.twilio.music.classical.s3.amazonaws.com/MARminimum_-_Pachelbels_Canon.mp3</Play>';
     echo '</Response>';
 }
 
@@ -470,7 +554,8 @@ function findStoresByCep(PDO $db, string $cep): array {
 function buildSystemPrompt(
     string $step, ?string $storeName, string $menuText, array $items,
     ?array $address, ?string $payment, ?string $customerName,
-    array $savedAddresses, array $storeNames, array $lastOrderItems = []
+    array $savedAddresses, array $storeNames, array $lastOrderItems = [],
+    array $context = []
 ): string {
     $hora = (int)date('H');
     $periodo = $hora < 12 ? 'bom dia' : ($hora < 18 ? 'boa tarde' : 'boa noite');
@@ -613,6 +698,49 @@ function buildSystemPrompt(
             $prompt .= "- Se o cliente confirmar (sim, pode, confirma, isso, correto), inclua [CONFIRMED] na resposta\n";
             $prompt .= "- Se quiser mudar algo, volte para a etapa adequada\n";
             break;
+
+        case 'support':
+            $prompt .= "ETAPA ATUAL: Suporte ao cliente\n";
+            $prompt .= "O cliente quer ajuda com um pedido existente (status, cancelamento, problema, etc).\n\n";
+            $prompt .= "Voce pode ajudar com:\n";
+            $prompt .= "- Ver status de um pedido\n";
+            $prompt .= "- Cancelar um pedido (apenas se status for 'confirmado' ou 'pendente')\n";
+            $prompt .= "- Informar tempo estimado de entrega\n";
+            $prompt .= "- Responder perguntas sobre pedidos anteriores\n";
+            $prompt .= "- Se o problema for complexo demais, oferecer transferir para atendente humano\n\n";
+            // Inject customer's recent orders
+            if (!empty($context['support_orders'])) {
+                $prompt .= "PEDIDOS RECENTES DO CLIENTE:\n";
+                foreach ($context['support_orders'] as $ord) {
+                    $statusMap = [
+                        'pendente' => 'Pendente',
+                        'confirmado' => 'Confirmado (aguardando preparo)',
+                        'preparando' => 'Em preparo',
+                        'pronto' => 'Pronto para entrega',
+                        'saiu_entrega' => 'Saiu para entrega',
+                        'entregue' => 'Entregue',
+                        'cancelled' => 'Cancelado',
+                        'refunded' => 'Reembolsado',
+                    ];
+                    $statusLabel = $statusMap[$ord['status']] ?? $ord['status'];
+                    $prompt .= "- Pedido #{$ord['order_number']} | {$ord['partner_name']} | Status: {$statusLabel} | Total: R$" . number_format((float)$ord['total'], 2, ',', '.') . " | Data: {$ord['date_added']}\n";
+                    if (!empty($ord['items_summary'])) {
+                        $prompt .= "  Itens: {$ord['items_summary']}\n";
+                    }
+                }
+                $prompt .= "\n";
+            } else {
+                $prompt .= "NENHUM PEDIDO ENCONTRADO para este telefone.\n";
+                $prompt .= "- Informe que nao encontrou pedidos vinculados a este numero\n";
+                $prompt .= "- Pergunte se quer fazer um novo pedido ou falar com atendente\n\n";
+            }
+            $prompt .= "MARCADORES ESPECIAIS:\n";
+            $prompt .= "- Para cancelar pedido: [CANCEL_ORDER:order_number] (ex: [CANCEL_ORDER:SB00123])\n";
+            $prompt .= "  SOMENTE se o status for 'confirmado' ou 'pendente'. Se ja estiver preparando ou saiu, diga que nao pode mais cancelar.\n";
+            $prompt .= "- Para consultar status: [ORDER_STATUS:order_number]\n";
+            $prompt .= "- Se o cliente quiser voltar a fazer pedido: [SWITCH_TO_ORDER]\n";
+            $prompt .= "- Se precisar de atendente humano: diga que vai transferir (o sistema detecta automaticamente)\n";
+            break;
     }
 
     return $prompt;
@@ -713,6 +841,35 @@ function parseAiResponse(string $response, array $context, PDO $db): array {
         $newContext['confirmed'] = true;
         $newContext['step'] = 'submit_order';
         $cleaned = str_replace('[CONFIRMED]', '', $cleaned);
+    }
+
+    // Parse [CANCEL_ORDER:SB00123]
+    if (preg_match('/\[CANCEL_ORDER:([^\]]+)\]/', $response, $m)) {
+        $orderNumber = trim($m[1]);
+        $cancelResult = cancelOrderByNumber($db, $orderNumber);
+        if ($cancelResult['success']) {
+            $cleaned = preg_replace('/\[CANCEL_ORDER:[^\]]+\]/', '', $cleaned);
+            $cleaned .= ' Pedido ' . $orderNumber . ' foi cancelado com sucesso.';
+        } else {
+            $cleaned = preg_replace('/\[CANCEL_ORDER:[^\]]+\]/', '', $cleaned);
+            $cleaned .= ' ' . $cancelResult['error'];
+        }
+    }
+
+    // Parse [ORDER_STATUS:SB00123] — just a signal, info already in prompt
+    if (preg_match('/\[ORDER_STATUS:[^\]]+\]/', $response)) {
+        $cleaned = preg_replace('/\[ORDER_STATUS:[^\]]+\]/', '', $cleaned);
+    }
+
+    // Parse [SWITCH_TO_ORDER] — customer wants to go back to ordering
+    if (strpos($response, '[SWITCH_TO_ORDER]') !== false) {
+        $newContext['step'] = 'identify_store';
+        $newContext['items'] = [];
+        $newContext['store_id'] = null;
+        $newContext['store_name'] = null;
+        $newContext['address'] = null;
+        $newContext['payment_method'] = null;
+        $cleaned = str_replace('[SWITCH_TO_ORDER]', '', $cleaned);
     }
 
     $newContext['cleaned_response'] = trim(preg_replace('/\s+/', ' ', $cleaned));
@@ -904,5 +1061,45 @@ function submitAiOrder(PDO $db, int $callId, ?int $customerId, ?string $customer
         if (isset($db) && $db->inTransaction()) $db->rollBack();
         error_log("[twilio-voice-ai] Submit error: " . $e->getMessage());
         return ['success' => false, 'error' => $e->getMessage()];
+    }
+}
+
+function cancelOrderByNumber(PDO $db, string $orderNumber): array {
+    try {
+        $stmt = $db->prepare("SELECT order_id, status FROM om_market_orders WHERE order_number = ? LIMIT 1");
+        $stmt->execute([$orderNumber]);
+        $order = $stmt->fetch();
+
+        if (!$order) {
+            return ['success' => false, 'error' => "Pedido {$orderNumber} nao encontrado."];
+        }
+
+        $cancellable = ['pendente', 'confirmado'];
+        if (!in_array($order['status'], $cancellable)) {
+            $statusLabels = [
+                'preparando' => 'ja esta sendo preparado',
+                'pronto' => 'ja esta pronto',
+                'saiu_entrega' => 'ja saiu para entrega',
+                'entregue' => 'ja foi entregue',
+                'cancelled' => 'ja esta cancelado',
+            ];
+            $reason = $statusLabels[$order['status']] ?? 'nao pode ser cancelado no status atual';
+            return ['success' => false, 'error' => "Nao foi possivel cancelar o pedido {$orderNumber} porque ele {$reason}. Se precisar, posso transferir para um atendente."];
+        }
+
+        $db->beginTransaction();
+        $db->prepare("UPDATE om_market_orders SET status = 'cancelled' WHERE order_id = ?")->execute([$order['order_id']]);
+        $db->prepare("
+            INSERT INTO om_order_timeline (order_id, status, description, actor_type, created_at)
+            VALUES (?, 'cancelled', 'Cancelado pelo cliente via IA por telefone', 'system', NOW())
+        ")->execute([$order['order_id']]);
+        $db->commit();
+
+        error_log("[twilio-voice-ai] Order {$orderNumber} cancelled via AI support");
+        return ['success' => true];
+    } catch (Exception $e) {
+        if ($db->inTransaction()) $db->rollBack();
+        error_log("[twilio-voice-ai] Cancel error: " . $e->getMessage());
+        return ['success' => false, 'error' => 'Erro ao cancelar: ' . $e->getMessage()];
     }
 }

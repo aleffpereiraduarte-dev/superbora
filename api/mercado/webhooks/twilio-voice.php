@@ -84,12 +84,59 @@ $routeUrl = str_replace('twilio-voice.php', 'twilio-voice-route.php', $fullUrl);
 // Status callback URL
 $statusUrl = str_replace('twilio-voice.php', 'twilio-status.php', $fullUrl);
 
+// Look up customer for personalized greeting
+require_once __DIR__ . '/../config/database.php';
+$db = getDB();
+$greeting = '';
+$phoneSuffix = substr(preg_replace('/\D/', '', $callerPhone), -11);
+$custStmt = $db->prepare("
+    SELECT c.customer_id, c.name FROM om_customers c
+    WHERE REPLACE(REPLACE(c.phone, '+', ''), '-', '') LIKE ? LIMIT 1
+");
+$custStmt->execute(['%' . $phoneSuffix]);
+$cust = $custStmt->fetch();
+
+$hora = (int)date('H');
+$periodo = $hora < 12 ? 'Bom dia' : ($hora < 18 ? 'Boa tarde' : 'Boa noite');
+
+if ($cust && $cust['name']) {
+    $firstName = explode(' ', trim($cust['name']))[0];
+    $greeting = "{$periodo}, {$firstName}! Bem-vindo de volta ao SuperBora. ";
+} else {
+    $greeting = "{$periodo}! Bem-vindo ao SuperBora. ";
+}
+
+$greeting .= "Para fazer um pedido, diga o nome do restaurante. ";
+$greeting .= "Para ver o status do seu pedido, diga status. ";
+$greeting .= "Para falar com um atendente, pressione zero.";
+
+// Create call record early for tracking
+$db->prepare("
+    INSERT INTO om_callcenter_calls (twilio_call_sid, customer_phone, customer_id, customer_name, direction, status, started_at)
+    VALUES (?, ?, ?, ?, 'inbound', 'ai_handling', NOW())
+    ON CONFLICT (twilio_call_sid) DO NOTHING
+")->execute([$callSid, $callerPhone, $cust['customer_id'] ?? null, $cust['name'] ?? null]);
+
+// Broadcast incoming call
+try {
+    require_once __DIR__ . '/../helpers/ws-callcenter-broadcast.php';
+    ccBroadcastDashboard('call_incoming', [
+        'call_sid' => $callSid,
+        'customer_phone' => $callerPhone,
+        'customer_name' => $cust['name'] ?? null,
+        'customer_id' => $cust['customer_id'] ?? null,
+    ]);
+} catch (Exception $e) {}
+
 echo '<?xml version="1.0" encoding="UTF-8"?>';
 ?>
 <Response>
-    <Gather input="speech dtmf" timeout="5" numDigits="1" language="pt-BR" action="<?= htmlspecialchars($routeUrl) ?>" method="POST" speechTimeout="auto">
-        <Say voice="Polly.Camila" language="pt-BR">Ola! Bem-vindo ao SuperBora. Para fazer um pedido, diga o nome do restaurante ou produto desejado. Para falar com um atendente, pressione zero ou diga atendente.</Say>
+    <Gather input="speech dtmf" timeout="6" numDigits="1" language="pt-BR" action="<?= htmlspecialchars($routeUrl) ?>" method="POST" speechTimeout="auto">
+        <Say voice="Polly.Camila" language="pt-BR"><?= htmlspecialchars($greeting) ?></Say>
     </Gather>
-    <!-- No input fallback: route to agent -->
+    <!-- No input fallback: try again once -->
+    <Gather input="speech dtmf" timeout="5" numDigits="1" language="pt-BR" action="<?= htmlspecialchars($routeUrl) ?>" method="POST" speechTimeout="auto">
+        <Say voice="Polly.Camila" language="pt-BR">Nao consegui ouvir. Pode dizer o nome do restaurante que deseja pedir? Ou pressione zero para falar com um atendente.</Say>
+    </Gather>
     <Redirect method="POST"><?= htmlspecialchars($routeUrl) ?>?Digits=0&amp;noInput=1</Redirect>
 </Response>

@@ -135,10 +135,23 @@ try {
     $stmt->execute([$callSid, $callerPhone, $customerId, $customerName, $initialStatus]);
     $callId = (int)$stmt->fetch()['id'];
 
+    // -- Detect support intent (status, cancel, etc) --
+    $wantsSupport = false;
+    if (!$wantsAgent && !empty($speechResult)) {
+        $speechLower = mb_strtolower($speechResult, 'UTF-8');
+        $supportKeywords = ['status', 'cancelar', 'cancela', 'rastrear', 'rastreio', 'cadê meu pedido', 'cade meu pedido', 'onde ta', 'onde está', 'meu pedido', 'reclamação', 'reclamacao', 'problema', 'reembolso'];
+        foreach ($supportKeywords as $sk) {
+            if (mb_strpos($speechLower, $sk) !== false) {
+                $wantsSupport = true;
+                break;
+            }
+        }
+    }
+
     // -- Try to identify store from speech --
     $storeIdentified = null;
     $storeId = null;
-    if (!$wantsAgent && !empty($speechResult)) {
+    if (!$wantsAgent && !$wantsSupport && !empty($speechResult)) {
         $speechLower = mb_strtolower($speechResult, 'UTF-8');
         $storeStmt = $db->prepare("
             SELECT partner_id, name FROM om_market_partners
@@ -196,10 +209,18 @@ try {
 
     } else {
         // -- AI Handling -- Route to the AI conversation handler
+        // Determine initial step
+        $initialStep = 'identify_store';
+        if ($wantsSupport) {
+            $initialStep = 'support';
+        } elseif ($storeId) {
+            $initialStep = 'take_order';
+        }
+
         // Save initial context with store info if found
         $aiContext = [
             '_ai_context' => [
-                'step' => $storeId ? 'take_order' : 'identify_store',
+                'step' => $initialStep,
                 'store_id' => $storeId,
                 'store_name' => $storeIdentified,
                 'items' => [],
@@ -225,13 +246,16 @@ try {
             'customer_name' => $customerName,
             'speech' => $speechResult,
             'store_identified' => $storeIdentified,
+            'support_mode' => $wantsSupport,
         ]);
 
-        error_log("[twilio-voice-route] AI handling: call_id={$callId} store={$storeIdentified}");
+        error_log("[twilio-voice-route] AI handling: call_id={$callId} store={$storeIdentified} support={$wantsSupport}");
 
         // Build greeting
         $greeting = $customerName ? "Ola, {$customerName}!" : "Ola!";
-        if ($storeIdentified) {
+        if ($wantsSupport) {
+            $greeting .= " Entendi, voce precisa de ajuda com um pedido. Vou verificar seus pedidos agora. Me diga o que precisa: ver o status, cancelar, ou alguma outra questao?";
+        } elseif ($storeIdentified) {
             $greeting .= " Encontrei o restaurante {$storeIdentified} para voce. O que voce gostaria de pedir?";
         } else {
             $greeting .= " Sou a assistente virtual do SuperBora e vou te ajudar a fazer seu pedido. De qual restaurante voce gostaria de pedir?";
