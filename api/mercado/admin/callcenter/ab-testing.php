@@ -52,7 +52,7 @@ function getActiveABConfig(PDO $db, string $phone, string $channel): ?array
 
         // Check existing assignment
         $assignStmt = $db->prepare("
-            SELECT variant_id FROM om_ab_assignments
+            SELECT variant_name FROM om_ab_assignments
             WHERE test_id = ? AND customer_phone = ?
             ORDER BY assigned_at DESC LIMIT 1
         ");
@@ -137,7 +137,7 @@ try {
             $stmt = $db->prepare("
                 SELECT t.*,
                        (SELECT COUNT(*) FROM om_ab_assignments a WHERE a.test_id = t.id) AS total_assignments,
-                       (SELECT COUNT(*) FROM om_ab_assignments a WHERE a.test_id = t.id AND a.converted = TRUE) AS total_conversions
+                       (SELECT COUNT(*) FROM om_ab_assignments a WHERE a.test_id = t.id AND a.conversion = TRUE) AS total_conversions
                 FROM om_ab_tests t
                 {$where}
                 ORDER BY t.created_at DESC
@@ -147,7 +147,7 @@ try {
 
             foreach ($tests as &$test) {
                 $test['id'] = (int)$test['id'];
-                $test['min_sample_size'] = (int)$test['min_sample_size'];
+                $test['sample_size'] = (int)$test['sample_size'];
                 $test['variants'] = json_decode($test['variants'], true) ?: [];
                 $test['metrics'] = json_decode($test['metrics'], true) ?: [];
                 $test['total_assignments'] = (int)$test['total_assignments'];
@@ -155,7 +155,7 @@ try {
                 $test['conversion_rate'] = $test['total_assignments'] > 0
                     ? round(($test['total_conversions'] / $test['total_assignments']) * 100, 2)
                     : 0;
-                $test['confidence_level'] = $test['confidence_level'] !== null ? (float)$test['confidence_level'] : null;
+                $test['confidence'] = $test['confidence'] !== null ? (float)$test['confidence'] : null;
             }
             unset($test);
 
@@ -180,8 +180,8 @@ try {
             $test['id'] = (int)$test['id'];
             $test['variants'] = json_decode($test['variants'], true) ?: [];
             $test['metrics'] = json_decode($test['metrics'], true) ?: [];
-            $test['min_sample_size'] = (int)$test['min_sample_size'];
-            $test['confidence_level'] = $test['confidence_level'] !== null ? (float)$test['confidence_level'] : null;
+            $test['sample_size'] = (int)$test['sample_size'];
+            $test['confidence'] = $test['confidence'] !== null ? (float)$test['confidence'] : null;
 
             // Per-variant stats
             $variantStats = [];
@@ -189,12 +189,12 @@ try {
                 $vStmt = $db->prepare("
                     SELECT
                         COUNT(*) AS assignments,
-                        COUNT(*) FILTER (WHERE converted = TRUE) AS conversions,
-                        COALESCE(SUM(order_value) FILTER (WHERE converted = TRUE), 0) AS revenue,
+                        COUNT(*) FILTER (WHERE conversion = TRUE) AS conversions,
+                        COALESCE(SUM(order_value) FILTER (WHERE conversion = TRUE), 0) AS revenue,
                         COALESCE(AVG(quality_score) FILTER (WHERE quality_score > 0), 0) AS avg_quality,
-                        COALESCE(AVG(order_value) FILTER (WHERE converted = TRUE), 0) AS avg_order_value
+                        COALESCE(AVG(order_value) FILTER (WHERE conversion = TRUE), 0) AS avg_order_value
                     FROM om_ab_assignments
-                    WHERE test_id = ? AND variant_id = ?
+                    WHERE test_id = ? AND variant_name = ?
                 ");
                 $vStmt->execute([$id, $v['id']]);
                 $stats = $vStmt->fetch();
@@ -215,7 +215,7 @@ try {
 
             // Recent assignments
             $recentStmt = $db->prepare("
-                SELECT variant_id, customer_phone, converted, order_value, quality_score, assigned_at
+                SELECT variant_name, customer_phone, conversion, order_value, quality_score, assigned_at
                 FROM om_ab_assignments
                 WHERE test_id = ?
                 ORDER BY assigned_at DESC
@@ -225,7 +225,7 @@ try {
             $recent = $recentStmt->fetchAll();
 
             foreach ($recent as &$r) {
-                $r['converted'] = (bool)$r['converted'];
+                $r['converted'] = (bool)$r['conversion'];
                 $r['order_value'] = round((float)$r['order_value'], 2);
                 $r['quality_score'] = (int)$r['quality_score'];
             }
@@ -262,11 +262,11 @@ try {
                 $vStmt = $db->prepare("
                     SELECT
                         COUNT(*) AS n,
-                        COUNT(*) FILTER (WHERE converted = TRUE) AS conversions,
-                        COALESCE(SUM(order_value) FILTER (WHERE converted = TRUE), 0) AS revenue,
+                        COUNT(*) FILTER (WHERE conversion = TRUE) AS conversions,
+                        COALESCE(SUM(order_value) FILTER (WHERE conversion = TRUE), 0) AS revenue,
                         COALESCE(AVG(quality_score) FILTER (WHERE quality_score > 0), 0) AS avg_quality
                     FROM om_ab_assignments
-                    WHERE test_id = ? AND variant_id = ?
+                    WHERE test_id = ? AND variant_name = ?
                 ");
                 $vStmt->execute([$id, $v['id']]);
                 $s = $vStmt->fetch();
@@ -299,10 +299,10 @@ try {
                     'ci_upper'         => round($ciUpper * 100, 2),
                     'revenue'          => round((float)$s['revenue'], 2),
                     'avg_quality'      => round((float)$s['avg_quality'], 1),
-                    'sufficient_data'  => $n >= (int)$test['min_sample_size'],
+                    'sufficient_data'  => $n >= (int)$test['sample_size'],
                 ];
 
-                if ($rate > $bestRate && $n >= (int)$test['min_sample_size']) {
+                if ($rate > $bestRate && $n >= (int)$test['sample_size']) {
                     $bestRate = $rate;
                     $bestVariant = $v['id'];
                 }
@@ -338,7 +338,7 @@ try {
                 'variants'   => $results,
                 'winner'     => $bestVariant,
                 'confidence' => $confidence,
-                'min_sample' => (int)$test['min_sample_size'],
+                'min_sample' => (int)$test['sample_size'],
             ]);
         }
 
@@ -363,7 +363,7 @@ try {
             $testType = trim($input['test_type'] ?? '');
             $channel = trim($input['channel'] ?? '');
             $variants = $input['variants'] ?? [];
-            $minSample = (int)($input['min_sample_size'] ?? 100);
+            $minSample = (int)($input['sample_size'] ?? 100);
 
             if ($name === '') {
                 response(false, null, "Nome do teste e obrigatorio", 400);
@@ -406,7 +406,7 @@ try {
             }
 
             $stmt = $db->prepare("
-                INSERT INTO om_ab_tests (name, description, test_type, channel, variants, min_sample_size, created_by)
+                INSERT INTO om_ab_tests (name, description, test_type, channel, variants, sample_size, created_by)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 RETURNING id
             ");
@@ -505,11 +505,11 @@ try {
                 $vStmt = $db->prepare("
                     SELECT
                         COUNT(*) AS n,
-                        COUNT(*) FILTER (WHERE converted = TRUE) AS conversions,
-                        COALESCE(SUM(order_value) FILTER (WHERE converted = TRUE), 0) AS revenue,
+                        COUNT(*) FILTER (WHERE conversion = TRUE) AS conversions,
+                        COALESCE(SUM(order_value) FILTER (WHERE conversion = TRUE), 0) AS revenue,
                         COALESCE(AVG(quality_score) FILTER (WHERE quality_score > 0), 0) AS avg_quality
                     FROM om_ab_assignments
-                    WHERE test_id = ? AND variant_id = ?
+                    WHERE test_id = ? AND variant_name = ?
                 ");
                 $vStmt->execute([$id, $v['id']]);
                 $s = $vStmt->fetch();
@@ -561,16 +561,16 @@ try {
 
             $stmt = $db->prepare("
                 UPDATE om_ab_tests
-                SET status = 'completed', ended_at = NOW(),
-                    winner_variant = ?, confidence_level = ?, metrics = ?
+                SET status = 'completed', completed_at = NOW(),
+                    winner = ?, confidence = ?, metrics = ?
                 WHERE id = ?
             ");
             $stmt->execute([$winnerVariant, $confidence, json_encode($metricsData), $id]);
 
             response(true, [
                 'message'          => 'Teste completado',
-                'winner_variant'   => $winnerVariant,
-                'confidence_level' => $confidence,
+                'winner'   => $winnerVariant,
+                'confidence' => $confidence,
                 'metrics'          => $metricsData,
             ]);
         }
@@ -607,7 +607,7 @@ try {
             }
 
             $stmt = $db->prepare("
-                INSERT INTO om_ab_assignments (test_id, customer_phone, customer_id, variant_id, conversation_type, conversation_id)
+                INSERT INTO om_ab_assignments (test_id, customer_phone, customer_id, variant_name, conversation_type, conversation_id)
                 VALUES (?, ?, ?, ?, ?, ?)
                 RETURNING id
             ");
@@ -635,7 +635,7 @@ try {
             // Update most recent assignment for this phone+test
             $stmt = $db->prepare("
                 UPDATE om_ab_assignments
-                SET converted = ?, order_value = ?, quality_score = ?
+                SET conversion = ?, order_value = ?, quality_score = ?
                 WHERE id = (
                     SELECT id FROM om_ab_assignments
                     WHERE test_id = ? AND customer_phone = ?

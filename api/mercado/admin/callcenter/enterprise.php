@@ -226,12 +226,12 @@ try {
 
             // Tier distribution
             $tierStmt = $db->query("
-                SELECT clv_tier, COUNT(*) AS count,
-                       COALESCE(AVG(predicted_annual_value), 0) AS avg_annual_value,
+                SELECT tier, COUNT(*) AS count,
+                       COALESCE(AVG(predicted_yearly_value), 0) AS avg_annual_value,
                        COALESCE(SUM(total_spent), 0) AS total_revenue
                 FROM om_customer_clv
-                GROUP BY clv_tier
-                ORDER BY CASE clv_tier
+                GROUP BY tier
+                ORDER BY CASE tier
                     WHEN 'vip' THEN 1
                     WHEN 'stable' THEN 2
                     WHEN 'growing' THEN 3
@@ -253,13 +253,12 @@ try {
             // Top VIPs
             $vipStmt = $db->query("
                 SELECT c.customer_id, c.phone, c.total_orders, c.total_spent,
-                       c.avg_order_value, c.clv_score, c.clv_tier,
-                       c.predicted_annual_value, c.days_since_last_order,
-                       c.preferred_channel, c.favorite_category,
-                       cu.firstname, cu.lastname
+                       c.avg_order_value, c.clv_score, c.tier,
+                       c.predicted_yearly_value, c.days_since_last_order,
+                       cu.name AS customer_name
                 FROM om_customer_clv c
-                LEFT JOIN om_market_customers cu ON cu.id = c.customer_id
-                WHERE c.clv_tier = 'vip'
+                LEFT JOIN om_customers cu ON cu.customer_id = c.customer_id
+                WHERE c.tier = 'vip'
                 ORDER BY c.clv_score DESC
                 LIMIT 20
             ");
@@ -271,10 +270,10 @@ try {
                 $v['total_spent'] = round((float)$v['total_spent'], 2);
                 $v['avg_order_value'] = round((float)$v['avg_order_value'], 2);
                 $v['clv_score'] = (int)$v['clv_score'];
-                $v['predicted_annual_value'] = round((float)$v['predicted_annual_value'], 2);
+                $v['predicted_yearly_value'] = round((float)$v['predicted_yearly_value'], 2);
                 $v['days_since_last_order'] = (int)$v['days_since_last_order'];
-                $v['name'] = trim(($v['firstname'] ?? '') . ' ' . ($v['lastname'] ?? ''));
-                unset($v['firstname'], $v['lastname']);
+                $v['name'] = $v['customer_name'] ?? '';
+                unset($v['customer_name']);
             }
             unset($v);
 
@@ -282,11 +281,11 @@ try {
             $atRiskStmt = $db->query("
                 SELECT c.customer_id, c.phone, c.total_orders, c.total_spent,
                        c.churn_risk, c.days_since_last_order, c.clv_score,
-                       c.predicted_annual_value,
-                       cu.firstname, cu.lastname
+                       c.predicted_yearly_value,
+                       cu.name AS customer_name
                 FROM om_customer_clv c
-                LEFT JOIN om_market_customers cu ON cu.id = c.customer_id
-                WHERE c.clv_tier = 'at_risk'
+                LEFT JOIN om_customers cu ON cu.customer_id = c.customer_id
+                WHERE c.tier = 'at_risk'
                 ORDER BY c.churn_risk DESC
                 LIMIT 20
             ");
@@ -299,16 +298,16 @@ try {
                 $r['churn_risk'] = round((float)$r['churn_risk'], 1);
                 $r['days_since_last_order'] = (int)$r['days_since_last_order'];
                 $r['clv_score'] = (int)$r['clv_score'];
-                $r['predicted_annual_value'] = round((float)$r['predicted_annual_value'], 2);
-                $r['name'] = trim(($r['firstname'] ?? '') . ' ' . ($r['lastname'] ?? ''));
-                unset($r['firstname'], $r['lastname']);
+                $r['predicted_yearly_value'] = round((float)$r['predicted_yearly_value'], 2);
+                $r['name'] = $r['customer_name'] ?? '';
+                unset($r['customer_name']);
             }
             unset($r);
 
             // Revenue projections: total predicted annual value by tier
             $projStmt = $db->query("
                 SELECT
-                    COALESCE(SUM(predicted_annual_value), 0) AS projected_annual,
+                    COALESCE(SUM(predicted_yearly_value), 0) AS projected_annual,
                     COALESCE(SUM(predicted_monthly_value), 0) AS projected_monthly,
                     COUNT(*) AS total_customers
                 FROM om_customer_clv
@@ -335,9 +334,9 @@ try {
             }
 
             $stmt = $db->prepare("
-                SELECT c.*, cu.firstname, cu.lastname, cu.email
+                SELECT c.*, cu.name AS customer_name, cu.email
                 FROM om_customer_clv c
-                LEFT JOIN om_market_customers cu ON cu.id = c.customer_id
+                LEFT JOIN om_customers cu ON cu.customer_id = c.customer_id
                 WHERE c.customer_id = ?
             ");
             $stmt->execute([$customerId]);
@@ -352,18 +351,17 @@ try {
             $clv['total_spent'] = round((float)$clv['total_spent'], 2);
             $clv['avg_order_value'] = round((float)$clv['avg_order_value'], 2);
             $clv['predicted_monthly_value'] = round((float)$clv['predicted_monthly_value'], 2);
-            $clv['predicted_annual_value'] = round((float)$clv['predicted_annual_value'], 2);
+            $clv['predicted_yearly_value'] = round((float)$clv['predicted_yearly_value'], 2);
             $clv['clv_score'] = (int)$clv['clv_score'];
             $clv['churn_risk'] = round((float)$clv['churn_risk'], 1);
             $clv['days_since_last_order'] = (int)$clv['days_since_last_order'];
             $clv['days_as_customer'] = (int)$clv['days_as_customer'];
             $clv['order_frequency_days'] = round((float)$clv['order_frequency_days'], 1);
-            $clv['name'] = trim(($clv['firstname'] ?? '') . ' ' . ($clv['lastname'] ?? ''));
-            unset($clv['firstname'], $clv['lastname']);
+            $clv['name'] = $clv['customer_name'] ?? '';
 
             // Recent orders
             $ordersStmt = $db->prepare("
-                SELECT id, total, status, source, date_added
+                SELECT order_id, total, status, source, date_added
                 FROM om_market_orders
                 WHERE customer_id = ?
                 ORDER BY date_added DESC
@@ -373,7 +371,7 @@ try {
             $orders = $ordersStmt->fetchAll();
 
             foreach ($orders as &$o) {
-                $o['id'] = (int)$o['id'];
+                $o['id'] = (int)$o['order_id'];
                 $o['total'] = round((float)$o['total'], 2);
             }
             unset($o);
@@ -468,8 +466,8 @@ try {
                     COUNT(pa.id) AS alert_count,
                     COALESCE(AVG(pa.actual_delay_minutes), 0)::int AS avg_delay
                 FROM om_proactive_alerts pa
-                JOIN om_market_orders o ON o.id = pa.order_id
-                LEFT JOIN om_market_partners p ON p.id = o.partner_id
+                JOIN om_market_orders o ON o.order_id = pa.order_id
+                LEFT JOIN om_market_partners p ON p.partner_id = o.partner_id
                 WHERE pa.created_at >= NOW() - INTERVAL '{$interval}'
                 GROUP BY o.partner_id, p.company
                 ORDER BY alert_count DESC
@@ -491,7 +489,7 @@ try {
                        pa.actual_delay_minutes, pa.detected_at,
                        o.customer_id
                 FROM om_proactive_alerts pa
-                LEFT JOIN om_market_orders o ON o.id = pa.order_id
+                LEFT JOIN om_market_orders o ON o.order_id = pa.order_id
                 WHERE pa.resolved = FALSE
                 ORDER BY CASE pa.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, pa.detected_at ASC
                 LIMIT 20
@@ -599,7 +597,7 @@ try {
             // Recent audit trail
             $recentStmt = $db->prepare("
                 SELECT id, event_type, actor_type, actor_id, customer_phone,
-                       resource_type, action, pii_fields_accessed, created_at
+                       entity_type, action, pii_fields_accessed, created_at
                 FROM om_audit_log
                 WHERE created_at >= NOW() - INTERVAL '{$interval}'
                 ORDER BY created_at DESC
@@ -645,9 +643,9 @@ try {
 
             // Find customer
             $custStmt = $db->prepare("
-                SELECT id, firstname, lastname, email, telephone, created_at
-                FROM om_market_customers
-                WHERE telephone = ? OR telephone LIKE ?
+                SELECT customer_id AS id, name, email, phone, created_at
+                FROM om_customers
+                WHERE phone = ? OR phone LIKE ?
                 LIMIT 5
             ");
             $custStmt->execute([$phone, '%' . $phone]);
@@ -677,7 +675,7 @@ try {
 
             // Audit trail
             $auditStmt = $db->prepare("
-                SELECT event_type, action, resource_type, pii_fields_accessed, created_at
+                SELECT event_type, action, entity_type, pii_fields_accessed, created_at
                 FROM om_audit_log
                 WHERE customer_phone = ?
                 ORDER BY created_at DESC
@@ -688,7 +686,7 @@ try {
 
             // Deletion requests
             $delReqStmt = $db->prepare("
-                SELECT id, status, request_source, tables_affected, completed_at, created_at
+                SELECT id, status, source, tables_affected, completed_at, created_at
                 FROM om_data_deletion_requests
                 WHERE customer_phone = ?
                 ORDER BY created_at DESC
@@ -903,8 +901,8 @@ try {
                         first_order_at, last_order_at, days_as_customer, days_since_last_order, last_calculated_at)
                     SELECT
                         o.customer_id,
-                        c.telephone,
-                        COUNT(o.id),
+                        c.phone,
+                        COUNT(o.order_id),
                         COALESCE(SUM(o.total), 0),
                         COALESCE(AVG(o.total), 0),
                         MIN(o.date_added),
@@ -913,9 +911,9 @@ try {
                         GREATEST(EXTRACT(DAY FROM (NOW() - MAX(o.date_added)))::int, 0),
                         NOW()
                     FROM om_market_orders o
-                    JOIN om_market_customers c ON c.id = o.customer_id
+                    JOIN om_customers c ON c.customer_id = o.customer_id
                     WHERE o.customer_id IS NOT NULL AND o.status NOT IN ('cancelado', 'recusado')
-                    GROUP BY o.customer_id, c.telephone
+                    GROUP BY o.customer_id, c.phone
                     ON CONFLICT (customer_id) DO UPDATE SET
                         total_orders = EXCLUDED.total_orders,
                         total_spent = EXCLUDED.total_spent,
@@ -947,7 +945,7 @@ try {
                         THEN ROUND((total_spent / GREATEST(days_as_customer, 1)) * 30, 2)
                         ELSE avg_order_value
                     END,
-                    predicted_annual_value = CASE
+                    predicted_yearly_value = CASE
                         WHEN order_frequency_days > 0
                         THEN ROUND((365.0 / order_frequency_days) * avg_order_value, 2)
                         WHEN days_as_customer > 0
@@ -989,7 +987,7 @@ try {
                 // Set tiers
                 $db->exec("
                     UPDATE om_customer_clv
-                    SET clv_tier = CASE
+                    SET tier = CASE
                         WHEN days_since_last_order > 90 THEN 'churned'
                         WHEN churn_risk >= 60 THEN 'at_risk'
                         WHEN clv_score >= 80 THEN 'vip'
@@ -1081,7 +1079,7 @@ try {
                 // Create deletion request record
                 $stmt = $db->prepare("
                     INSERT INTO om_data_deletion_requests
-                        (customer_id, customer_phone, request_source, status, tables_affected, completed_at, requested_by)
+                        (customer_id, customer_phone, source, status, tables_affected, completed_at, requested_by)
                     VALUES (?, ?, 'admin', 'completed', ?, NOW(), ?)
                     RETURNING id
                 ");
@@ -1131,8 +1129,8 @@ try {
             // Customer profile
             if ($customerId) {
                 $stmt = $db->prepare("
-                    SELECT id, firstname, lastname, email, telephone, created_at
-                    FROM om_market_customers WHERE id = ?
+                    SELECT customer_id AS id, name, email, phone, created_at
+                    FROM om_customers WHERE customer_id = ?
                 ");
                 $stmt->execute([$customerId]);
                 $exportData['customer_profile'] = $stmt->fetch() ?: null;
@@ -1140,10 +1138,10 @@ try {
 
             // Orders
             $orderStmt = $db->prepare("
-                SELECT id, total, status, source, date_added
+                SELECT order_id AS id, total, status, source, date_added
                 FROM om_market_orders
                 WHERE customer_id = ? OR customer_id IN (
-                    SELECT id FROM om_market_customers WHERE telephone = ?
+                    SELECT customer_id FROM om_customers WHERE phone = ?
                 )
                 ORDER BY date_added DESC
             ");
