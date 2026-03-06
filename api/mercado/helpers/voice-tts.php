@@ -426,6 +426,258 @@ function ttsCommonPhraseUrl(string $key): ?string {
     return $scheme . '://' . $host . '/api/mercado/webhooks/audio/common_' . $key . '_' . TTS_CACHE_VERSION . '.mp3';
 }
 
+// ─── SSML Helpers for Natural PT-BR Voice ───────────────────────────────────
+
+/**
+ * Format a price for natural speech in PT-BR.
+ * 35.90 → "trinta e cinco reais e noventa centavos"
+ * 10.00 → "dez reais"
+ * 0.50  → "cinquenta centavos"
+ * 120.05 → "cento e vinte reais e cinco centavos"
+ *
+ * @param float $value Price in BRL
+ * @return string Spoken price text
+ */
+function ttsFormatPrice(float $value): string {
+    $value = round($value, 2);
+    if ($value <= 0) return 'grátis';
+
+    $reais = (int)floor($value);
+    $centavos = (int)round(($value - $reais) * 100);
+
+    $parts = [];
+    if ($reais > 0) {
+        $reaisText = ttsNumberToWords($reais);
+        $parts[] = $reaisText . ($reais === 1 ? ' real' : ' reais');
+    }
+    if ($centavos > 0) {
+        $centText = ttsNumberToWords($centavos);
+        $parts[] = $centText . ($centavos === 1 ? ' centavo' : ' centavos');
+    }
+
+    if (empty($parts)) return 'grátis';
+    return implode(' e ', $parts);
+}
+
+/**
+ * Format an order number for clear speech.
+ * "SB00123" → "S B zero zero um dois três"
+ * Digits are spoken individually for clarity on phone.
+ *
+ * @param string $orderNumber Order number (e.g., "SB00123")
+ * @return string Spoken order number
+ */
+function ttsFormatOrderNumber(string $orderNumber): string {
+    $digitWords = [
+        '0' => 'zero', '1' => 'um', '2' => 'dois', '3' => 'três',
+        '4' => 'quatro', '5' => 'cinco', '6' => 'seis', '7' => 'sete',
+        '8' => 'oito', '9' => 'nove',
+    ];
+
+    $parts = [];
+    $chars = mb_str_split($orderNumber);
+    foreach ($chars as $ch) {
+        if (isset($digitWords[$ch])) {
+            $parts[] = $digitWords[$ch];
+        } else {
+            // Letter — spell out uppercase
+            $parts[] = mb_strtoupper($ch, 'UTF-8');
+        }
+    }
+
+    return implode(' ', $parts);
+}
+
+/**
+ * Format a phone number for speech.
+ * "+5519999887766" → "dezenove, nove nove nove, oito oito, sete sete, seis seis"
+ *
+ * @param string $phone Phone number
+ * @return string Spoken phone
+ */
+function ttsFormatPhone(string $phone): string {
+    $digits = preg_replace('/\D/', '', $phone);
+    // Take last 11 digits (BR format)
+    $digits = substr($digits, -11);
+    if (strlen($digits) < 10) {
+        // Fallback: spell digit by digit
+        return ttsFormatOrderNumber($digits);
+    }
+
+    $ddd = substr($digits, 0, 2);
+    $rest = substr($digits, 2);
+
+    $digitWords = [
+        '0' => 'zero', '1' => 'um', '2' => 'dois', '3' => 'três',
+        '4' => 'quatro', '5' => 'cinco', '6' => 'seis', '7' => 'sete',
+        '8' => 'oito', '9' => 'nove',
+    ];
+
+    $parts = [];
+    // DDD as number
+    $parts[] = ttsNumberToWords((int)$ddd);
+
+    // Rest in pairs
+    $pairs = str_split($rest, 2);
+    foreach ($pairs as $pair) {
+        if (strlen($pair) === 2 && $pair[0] === $pair[1]) {
+            // Same digits: "double sete" sounds better
+            $parts[] = $digitWords[$pair[0]] . ' ' . $digitWords[$pair[1]];
+        } elseif (strlen($pair) === 2) {
+            $parts[] = $digitWords[$pair[0]] . ' ' . $digitWords[$pair[1]];
+        } else {
+            $parts[] = $digitWords[$pair[0]] ?? $pair[0];
+        }
+    }
+
+    return implode(', ', $parts);
+}
+
+/**
+ * Convert an integer (0-9999) to Portuguese words.
+ *
+ * @param int $n Number to convert
+ * @return string Word representation
+ */
+function ttsNumberToWords(int $n): string {
+    if ($n < 0) return 'menos ' . ttsNumberToWords(abs($n));
+    if ($n === 0) return 'zero';
+
+    $units = ['', 'um', 'dois', 'três', 'quatro', 'cinco', 'seis', 'sete', 'oito', 'nove',
+              'dez', 'onze', 'doze', 'treze', 'quatorze', 'quinze', 'dezesseis', 'dezessete', 'dezoito', 'dezenove'];
+    $tens = ['', '', 'vinte', 'trinta', 'quarenta', 'cinquenta', 'sessenta', 'setenta', 'oitenta', 'noventa'];
+    $hundreds = ['', 'cento', 'duzentos', 'trezentos', 'quatrocentos', 'quinhentos',
+                 'seiscentos', 'setecentos', 'oitocentos', 'novecentos'];
+
+    if ($n === 100) return 'cem';
+
+    if ($n >= 1000) {
+        $mil = (int)floor($n / 1000);
+        $rest = $n % 1000;
+        $milText = $mil === 1 ? 'mil' : ttsNumberToWords($mil) . ' mil';
+        if ($rest === 0) return $milText;
+        return $milText . ' e ' . ttsNumberToWords($rest);
+    }
+
+    if ($n >= 100) {
+        $h = (int)floor($n / 100);
+        $rest = $n % 100;
+        if ($rest === 0) return $n === 100 ? 'cem' : $hundreds[$h];
+        return $hundreds[$h] . ' e ' . ttsNumberToWords($rest);
+    }
+
+    if ($n >= 20) {
+        $t = (int)floor($n / 10);
+        $u = $n % 10;
+        if ($u === 0) return $tens[$t];
+        return $tens[$t] . ' e ' . $units[$u];
+    }
+
+    return $units[$n];
+}
+
+/**
+ * Wrap text with SSML emphasis.
+ *
+ * @param string $text Text to emphasize
+ * @param string $level One of: strong, moderate, reduced
+ * @return string SSML emphasis tag
+ */
+function ttsEmphasis(string $text, string $level = 'moderate'): string {
+    $esc = htmlspecialchars($text, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+    return '<emphasis level="' . $level . '">' . $esc . '</emphasis>';
+}
+
+/**
+ * Insert an SSML pause/break.
+ *
+ * @param string $duration Duration (e.g., "300ms", "1s")
+ * @return string SSML break tag
+ */
+function ttsPause(string $duration = '300ms'): string {
+    return '<break time="' . $duration . '"/>';
+}
+
+/**
+ * Wrap text with SSML prosody for slower speech (useful for numbers, addresses).
+ *
+ * @param string $text Text to slow down
+ * @param string $rate Speech rate: x-slow, slow, medium, fast, x-fast, or percentage
+ * @return string SSML prosody tag
+ */
+function ttsSlow(string $text, string $rate = 'slow'): string {
+    $esc = htmlspecialchars($text, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+    return '<prosody rate="' . $rate . '">' . $esc . '</prosody>';
+}
+
+/**
+ * Build a natural voice confirmation of an order for speech.
+ * Reads back items, total, address, and payment clearly.
+ *
+ * @param array  $items        Order items with name, quantity, price
+ * @param float  $total        Total price
+ * @param string $storeName    Store name
+ * @param string $address      Delivery address summary
+ * @param string $payment      Payment method label
+ * @param int    $eta          Estimated delivery time in minutes
+ * @return string Natural spoken order confirmation
+ */
+function ttsBuildOrderConfirmation(array $items, float $total, string $storeName, string $address = '', string $payment = '', int $eta = 0): string {
+    $parts = [];
+
+    // Items summary (keep it concise for voice)
+    $itemParts = [];
+    foreach ($items as $item) {
+        $qty = (int)($item['quantity'] ?? 1);
+        $name = $item['name'] ?? 'item';
+        if ($qty === 1) {
+            $itemParts[] = $name;
+        } else {
+            $itemParts[] = $qty . ' ' . $name;
+        }
+    }
+
+    if (count($itemParts) === 1) {
+        $parts[] = 'Então fica: ' . $itemParts[0] . '.';
+    } elseif (count($itemParts) <= 4) {
+        $last = array_pop($itemParts);
+        $parts[] = 'Então fica: ' . implode(', ', $itemParts) . ' e ' . $last . '.';
+    } else {
+        // Too many items — summarize
+        $first3 = array_slice($itemParts, 0, 3);
+        $remaining = count($itemParts) - 3;
+        $parts[] = 'Então fica: ' . implode(', ', $first3) . ' e mais ' . $remaining . ' itens.';
+    }
+
+    // Total
+    $parts[] = 'Total de ' . ttsFormatPrice($total) . '.';
+
+    // Address (keep short)
+    if (!empty($address)) {
+        $parts[] = 'Entrega no ' . $address . '.';
+    }
+
+    // Payment
+    if (!empty($payment)) {
+        $payLabels = [
+            'dinheiro' => 'em dinheiro', 'pix' => 'no PIX',
+            'credit_card' => 'no cartão de crédito', 'debit_card' => 'no cartão de débito',
+            'credito' => 'no cartão de crédito', 'debito' => 'no cartão de débito',
+        ];
+        $payText = $payLabels[$payment] ?? $payment;
+        $parts[] = 'Pagamento ' . $payText . '.';
+    }
+
+    // ETA
+    if ($eta > 0) {
+        $parts[] = 'Chega em uns ' . $eta . ' minutinhos.';
+    }
+
+    $parts[] = 'Posso mandar?';
+
+    return implode(' ', $parts);
+}
+
 // ─── Cache Maintenance ──────────────────────────────────────────────────────
 
 /**

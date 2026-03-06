@@ -35,6 +35,7 @@ require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../helpers/claude-client.php';
 require_once __DIR__ . '/../helpers/ws-callcenter-broadcast.php';
 require_once __DIR__ . '/../helpers/voice-tts.php';
+require_once __DIR__ . '/../helpers/ai-safeguards.php';
 if (file_exists(__DIR__ . '/../helpers/ai-memory.php')) {
     require_once __DIR__ . '/../helpers/ai-memory.php';
 }
@@ -141,6 +142,13 @@ try {
     $step = $aiContext['step'] ?? 'identify_store';
     $conversationHistory = $aiContext['history'] ?? [];
 
+    // Handle DTMF shortcuts: 1=order, 2=status
+    if ($digits === '1' && empty($speechResult)) {
+        $speechResult = 'quero fazer um pedido';
+    } elseif ($digits === '2' && empty($speechResult)) {
+        $speechResult = 'quero ver meu pedido';
+    }
+
     // If digits look like a CEP (5-8 digits), treat as speech
     if (strlen($digits) >= 5 && ctype_digit($digits) && empty($speechResult)) {
         $speechResult = $digits;
@@ -149,6 +157,39 @@ try {
     // Track user input + speech confidence
     $userInput = $speechResult ?: ($digits ?: '');
     $speechConfidence = isset($_POST['Confidence']) ? (float)$_POST['Confidence'] : 1.0;
+
+    // -- Anti-abuse & safeguards check --
+    $safeguards = runSafeguards($db, $callerPhone, $callSid, $userInput, $aiContext);
+    if (!$safeguards['allowed']) {
+        logCallMetrics($db, $callId, [
+            'turn_number' => $aiContext['turn_count'] ?? 0,
+            'step' => $step,
+            'error_type' => 'abuse_blocked',
+            'error_message' => $safeguards['abuse']['reason'] ?? 'blocked',
+        ]);
+        echo '<?xml version="1.0" encoding="UTF-8"?>';
+        echo '<Response>';
+        echo $safeguards['twiml'] ?: buildTwilioSay('Desculpe, não foi possível processar sua ligação.');
+        echo '<Hangup/>';
+        echo '</Response>';
+        exit;
+    }
+    // Use sanitized context from safeguards
+    $aiContext = $safeguards['context'];
+    $step = $aiContext['step'] ?? 'identify_store';
+    $conversationHistory = $aiContext['history'] ?? [];
+
+    // Log health warnings (don't block, just track)
+    if (!$safeguards['health']['healthy']) {
+        $healthAction = $safeguards['health']['recommended_action'];
+        error_log("[twilio-voice-ai] Health issues: " . implode('; ', $safeguards['health']['issues']) . " | action={$healthAction}");
+        logCallMetrics($db, $callId, [
+            'turn_number' => $aiContext['turn_count'] ?? 0,
+            'step' => $step,
+            'error_type' => 'health_warning',
+            'error_message' => $healthAction . ': ' . implode('; ', $safeguards['health']['issues']),
+        ]);
+    }
 
     // -- Smart intent detection --
     if (!empty($userInput)) {
@@ -723,26 +764,178 @@ try {
     ];
     $systemPrompt = buildSystemPrompt($step, $storeName, $menuText, $draftItems, $address, $paymentMethod, $customerName, $savedAddresses, $storeNames, $lastOrderItems ?? [], $aiContext, $extraData);
 
-    // -- Call Claude --
+    // -- Build conversation summary for memory across Gather loops --
+    $conversationSummary = '';
+    if ($turnCount > 1 && !empty($conversationHistory)) {
+        $summaryParts = [];
+        if (!empty($aiContext['store_name'])) $summaryParts[] = 'Loja: ' . $aiContext['store_name'];
+        if (!empty($aiContext['items'])) {
+            $itemNames = array_map(fn($i) => ($i['quantity'] ?? 1) . 'x ' . ($i['name'] ?? '?'), $aiContext['items']);
+            $summaryParts[] = 'Itens: ' . implode(', ', $itemNames);
+        }
+        if (!empty($aiContext['address'])) $summaryParts[] = 'Endereço: definido';
+        if (!empty($aiContext['payment_method'])) $summaryParts[] = 'Pagamento: ' . $aiContext['payment_method'];
+        if (!empty($summaryParts)) {
+            $conversationSummary = "\n\n## RESUMO DA CONVERSA ATÉ AGORA\n" . implode(' | ', $summaryParts) . "\n";
+        }
+    }
+
+    // -- Call Claude (with optimization + metrics + retry) --
     // Keep conversation history manageable (last 8 turns)
     $recentHistory = array_slice($conversationHistory, -16);
 
     // Ensure alternating roles
     $cleanHistory = cleanConversationHistory($recentHistory);
 
-    $result = $claude->send($systemPrompt, $cleanHistory, 600);
+    // Optimize request: trim prompt/history, set max_tokens by step
+    $optimized = optimizeClaudeRequest($systemPrompt, $cleanHistory, $aiContext);
 
+    // Inject conversation summary for memory continuity
+    if (!empty($conversationSummary)) {
+        $optimized['prompt'] .= $conversationSummary;
+    }
+
+    // Inject conversation health hint into prompt if issues detected
+    if (!$safeguards['health']['healthy']) {
+        $healthAction = $safeguards['health']['recommended_action'];
+        $healthHint = "\n\n## ALERTA DE SAUDE DA CONVERSA\n";
+        switch ($healthAction) {
+            case 'clarify_or_transfer':
+                $healthHint .= "O cliente está repetindo a mesma coisa. Reformule sua resposta de forma diferente ou ofereça transferir pra atendente.\n";
+                break;
+            case 'offer_help_or_transfer':
+                $healthHint .= "A conversa está travada. Tente abordar de um ângulo diferente ou ofereça: 'Quer que eu te passe pra um atendente?'\n";
+                break;
+            case 'simplify_and_offer_transfer':
+            case 'empathize_and_offer_transfer':
+                $healthHint .= "O cliente parece frustrado. Seja empático, simplifique e ofereça: 'Desculpa pela dificuldade. Quer falar com um atendente?'\n";
+                break;
+            case 'wrap_up_or_transfer':
+                $healthHint .= "A conversa está muito longa. Tente concluir rapidamente ou ofereça um atendente.\n";
+                break;
+        }
+        $optimized['prompt'] .= $healthHint;
+    }
+
+    // Voice-specific instruction: keep responses SHORT
+    $optimized['prompt'] .= "\n\n## LEMBRETE CRITICO PARA VOZ\nIsso é uma LIGACAO TELEFONICA. Responda em NO MAXIMO 2 frases curtas. Ninguem quer ouvir texto longo no telefone.\n";
+
+    $claudeStart = hrtime(true);
+    $result = $claude->send($optimized['prompt'], $optimized['history'], $optimized['max_tokens']);
+    $claudeLatencyMs = (int)((hrtime(true) - $claudeStart) / 1_000_000);
+
+    $previousStep = $step;
+
+    // -- Retry logic for Claude failures --
     if (!$result['success']) {
-        error_log("[twilio-voice-ai] Claude error: " . ($result['error'] ?? 'unknown'));
-        respondTwiml("Desculpe, tô com dificuldade pra processar. Vou transferir pra um atendente.", true);
+        $claudeError = $result['error'] ?? 'unknown';
+        error_log("[twilio-voice-ai] Claude error ({$claudeLatencyMs}ms): {$claudeError} — attempting retry");
+
+        // Retry once with a shorter prompt and smaller max_tokens
+        $retryStart = hrtime(true);
+        $retryResult = $claude->send(
+            "Você é a Bora do SuperBora (delivery). Ligação telefônica, PT-BR informal. Max 2 frases.\n"
+            . "Etapa: {$step}. " . (!empty($storeName) ? "Loja: {$storeName}. " : "")
+            . "Responda ao cliente de forma natural e curta.",
+            array_slice($cleanHistory, -4), // Minimal history
+            200
+        );
+        $retryLatencyMs = (int)((hrtime(true) - $retryStart) / 1_000_000);
+
+        if ($retryResult['success']) {
+            error_log("[twilio-voice-ai] Retry succeeded ({$retryLatencyMs}ms)");
+            $result = $retryResult;
+            $claudeLatencyMs += $retryLatencyMs;
+        } else {
+            error_log("[twilio-voice-ai] Retry also failed ({$retryLatencyMs}ms): " . ($retryResult['error'] ?? 'unknown'));
+
+            // Log the failure metric
+            logCallMetrics($db, $callId, [
+                'turn_number' => $turnCount,
+                'step' => $step,
+                'claude_latency_ms' => $claudeLatencyMs + $retryLatencyMs,
+                'error_type' => 'claude_error_after_retry',
+                'error_message' => $claudeError,
+                'speech_confidence' => $speechConfidence,
+            ]);
+
+            // Try graceful degradation instead of immediately transferring
+            $degradedResponse = handleDegradedMode('claude', $claudeError, [
+                'step' => $step,
+                'last_input' => $userInput,
+                'items' => $draftItems,
+                'store_name' => $storeName,
+                'nearby_stores' => $aiContext['nearby_stores'] ?? [],
+            ]);
+
+            $aiContext['history'] = $conversationHistory;
+            $aiContext['history'][] = ['role' => 'assistant', 'content' => strip_tags($degradedResponse)];
+            saveAiContext($db, $callId, $aiContext);
+
+            echo '<?xml version="1.0" encoding="UTF-8"?>';
+            echo '<Response>';
+            echo '<Gather input="speech dtmf" timeout="10" language="pt-BR" action="' . escXml($selfUrl) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
+            echo $degradedResponse;
+            echo '</Gather>';
+            echo buildTwilioSay('Aperta zero se quiser falar com alguém.');
+            echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
+            echo '</Response>';
+            exit;
+        }
     }
 
     $aiResponse = trim($result['text'] ?? '');
-    error_log("[twilio-voice-ai] AI response: " . mb_substr($aiResponse, 0, 200));
+    $tokensUsed = (int)($result['total_tokens'] ?? 0);
+    error_log("[twilio-voice-ai] AI response ({$claudeLatencyMs}ms, {$tokensUsed}tok): " . mb_substr($aiResponse, 0, 200));
 
     // -- Parse AI response for state transitions --
     $newContext = parseAiResponse($aiResponse, $aiContext, $db);
     $aiResponse = $newContext['cleaned_response'];
+
+    // -- Validate AI response (language, length, content safety) --
+    $validationContext = array_merge($aiContext, [
+        'menu_prices' => [], // populated from menu if needed
+        'items' => $newContext['items'] ?? $draftItems,
+    ]);
+    $validation = validateAiResponse($aiResponse, $validationContext);
+
+    if (!$validation['valid'] && empty($validation['cleaned'])) {
+        // Response is completely invalid — use smart fallback
+        error_log("[twilio-voice-ai] Response validation FAILED: " . implode('; ', $validation['issues']));
+        $aiResponse = getSmartFallback($step, $aiContext, 'validation_failed');
+
+        logCallMetrics($db, $callId, [
+            'turn_number' => $turnCount,
+            'step' => $step,
+            'claude_latency_ms' => $claudeLatencyMs,
+            'error_type' => 'validation_fail',
+            'error_message' => implode('; ', $validation['issues']),
+            'tokens_used' => $tokensUsed,
+            'speech_confidence' => $speechConfidence,
+            'response_length' => mb_strlen($aiResponse, 'UTF-8'),
+        ]);
+    } else {
+        // Use the cleaned response (may have had minor fixes)
+        if (!empty($validation['issues'])) {
+            error_log("[twilio-voice-ai] Response cleaned: " . implode('; ', $validation['issues']));
+        }
+        $aiResponse = $validation['cleaned'];
+
+        // Log successful turn metrics
+        $stepTransition = ($previousStep !== ($newContext['step'] ?? $step))
+            ? "{$previousStep}>{$newContext['step']}"
+            : '';
+
+        logCallMetrics($db, $callId, [
+            'turn_number' => $turnCount,
+            'step' => $newContext['step'] ?? $step,
+            'claude_latency_ms' => $claudeLatencyMs,
+            'step_transition' => $stepTransition,
+            'tokens_used' => $tokensUsed,
+            'speech_confidence' => $speechConfidence,
+            'response_length' => mb_strlen($aiResponse, 'UTF-8'),
+        ]);
+    }
 
     // Track if AI did an upsell (detect "bebida", "sobremesa", "quer adicionar" in response)
     $upsellPhrases = ['bebida', 'sobremesa', 'quer adicionar', 'quer incluir', 'combinar com', 'acompanha'];
@@ -765,16 +958,18 @@ try {
         $orderResult = submitAiOrder($db, $callId, $customerId, $customerName, $callerPhone, $newContext);
         if ($orderResult['success']) {
             $orderNumber = $orderResult['order_number'];
-            $total = number_format($orderResult['total'], 2, ',', '.');
+            // Use natural price formatting for voice
+            $totalSpoken = ttsFormatPrice($orderResult['total']);
+            $orderNumSpoken = ttsFormatOrderNumber($orderNumber);
             if (!empty($newContext['scheduled_date'])) {
                 $schedMsg = $newContext['scheduled_date'] . ' às ' . ($newContext['scheduled_time'] ?? '12:00');
-                $finalMsg = "Show, tá feito! Seu pedido {$orderNumber} tá agendado pra {$schedMsg}. "
-                    . "Total de {$total} reais. "
-                    . "Vou te mandar um SMS com tudo certinho. "
+                $finalMsg = "Show, tá feito! Seu pedido número {$orderNumSpoken} tá agendado pra {$schedMsg}. "
+                    . "Total de {$totalSpoken}. "
+                    . "Mandei um SMS com o resumo. "
                     . "Valeu por pedir pelo SuperBora! Até lá!";
             } else {
-                $finalMsg = "Pronto, pedido feito! Número {$orderNumber}, total de {$total} reais. "
-                    . "Já já você recebe um SMS com os detalhes. "
+                $finalMsg = "Pronto, pedido feito! Número {$orderNumSpoken}, total de {$totalSpoken}. "
+                    . "Mandei um SMS com os detalhes. "
                     . "Valeu por pedir pelo SuperBora! Bom apetite!";
             }
 
@@ -847,14 +1042,48 @@ try {
     }
 
 } catch (Exception $e) {
-    error_log("[twilio-voice-ai] Error: " . $e->getMessage() . " | Trace: " . $e->getTraceAsString());
-    // On error, re-prompt instead of auto-transferring to agent
+    $errorMsg = $e->getMessage();
+    $errorMasked = maskPiiForLog($errorMsg);
+    error_log("[twilio-voice-ai] Error: {$errorMasked} | Trace: " . $e->getTraceAsString());
+
+    // Log the error metric if we have a call ID
+    if (isset($callId) && isset($db)) {
+        try {
+            logCallMetrics($db, $callId, [
+                'turn_number' => $aiContext['turn_count'] ?? 0,
+                'step' => $step ?? 'unknown',
+                'error_type' => 'exception',
+                'error_message' => $errorMasked,
+            ]);
+        } catch (Exception $metricEx) {
+            // Don't let metrics logging break the error handler
+        }
+    }
+
+    // Determine error component for graceful degradation
+    $component = 'claude'; // default
+    $errLower = mb_strtolower($errorMsg, 'UTF-8');
+    if (str_contains($errLower, 'pdo') || str_contains($errLower, 'sql') || str_contains($errLower, 'database') || str_contains($errLower, 'connection refused')) {
+        $component = 'database';
+    } elseif (str_contains($errLower, 'curl') || str_contains($errLower, 'timeout') || str_contains($errLower, 'resolve host')) {
+        $component = 'network';
+    }
+
+    // Use degraded mode for the response
+    $degradedTwiml = handleDegradedMode($component, $errorMsg, [
+        'step' => $step ?? 'identify_store',
+        'last_input' => $userInput ?? '',
+        'items' => $aiContext['items'] ?? [],
+        'store_name' => $aiContext['store_name'] ?? null,
+        'nearby_stores' => $aiContext['nearby_stores'] ?? [],
+    ]);
+
     echo '<?xml version="1.0" encoding="UTF-8"?>';
     echo '<Response>';
     echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . escXml($selfUrl) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
-    echo ttsSayOrPlay("Desculpa, deu um probleminha aqui. Pode repetir o que você precisa?");
+    echo $degradedTwiml;
     echo '</Gather>';
-    echo ttsSayOrPlay("Aperta zero se quiser falar com alguém.");
+    echo buildTwilioSay('Aperta zero se quiser falar com alguém.');
     echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
     echo '</Response>';
 }
@@ -1195,7 +1424,7 @@ function buildSystemPrompt(
     $prompt .= "Você genuinamente se importa com o cliente: quer que ele coma bem, pague justo, receba rápido.\n\n";
 
     $prompt .= "## COMO FALAR — REGRAS ABSOLUTAS\n";
-    $prompt .= "1. MÁXIMO 2 frases curtas por resposta. Isso vira áudio de voz — ninguém aguenta ouvir textão.\n";
+    $prompt .= "1. MÁXIMO 2 frases curtas por resposta (exceto confirmação de pedido). Isso vira AUDIO DE VOZ no telefone — textão = cliente desliga.\n";
     $prompt .= "2. Contrações OBRIGATÓRIAS: 'tô', 'tá', 'pra', 'pro', 'né', 'cê', 'num' (em um), 'dum' (de um)\n";
     $prompt .= "3. NUNCA repita informação que já disse na conversa. Zero redundância.\n";
     $prompt .= "4. NUNCA diga: 'Como posso te ajudar?', 'Estou aqui para ajudar', 'como assistente', 'como IA'\n";
@@ -1651,8 +1880,9 @@ function buildSystemPrompt(
                 }
             }
 
-            $prompt .= "\nResuma de forma NATURAL e rápida. Ex:\n";
-            $prompt .= "'Então fica: 1 pizza margherita grande e 2 cocas. Total de R$58 com entrega. Mando pro seu endereço na rua tal. Pagamento em PIX. Chega em uns 40 minutinhos. Posso mandar?'\n\n";
+            $prompt .= "\nResuma de forma NATURAL e CURTA (max 3 frases). Leia os itens, total e pergunte se confirma.\n";
+            $prompt .= "FALE O PRECO POR EXTENSO: 'cinquenta e oito reais' (nunca diga 'R\$ 58,00' — isso é pra texto).\n";
+            $prompt .= "Ex: 'Então fica: uma pizza margherita grande e duas cocas. Total de cinquenta e oito reais com entrega. Posso mandar?'\n\n";
             $prompt .= "Se confirmar (sim, pode, manda, isso, bora, confirma) → [CONFIRMED]\n";
             $prompt .= "Se quiser mudar algo → volte pra etapa certa\n";
             break;
@@ -2103,21 +2333,26 @@ function submitAiOrder(PDO $db, int $callId, ?int $customerId, ?string $customer
 
         $db->commit();
 
-        // Send SMS
+        // Send SMS confirmation — try custom helper first, fall back to Twilio API
         try {
-            require_once __DIR__ . '/../helpers/callcenter-sms.php';
-            sendOrderSummary($customerPhone, [
-                'partner_name' => $store['name'],
-                'items' => $items,
-                'subtotal' => $subtotal,
-                'delivery_fee' => $deliveryFee,
-                'service_fee' => $serviceFee,
-                'discount' => 0,
-                'total' => $total,
-                'payment_method' => $paymentMethod,
-                'payment_change' => $paymentChange,
-                'submitted_order_id' => $orderId,
-            ]);
+            if (file_exists(__DIR__ . '/../helpers/callcenter-sms.php')) {
+                require_once __DIR__ . '/../helpers/callcenter-sms.php';
+                sendOrderSummary($customerPhone, [
+                    'partner_name' => $store['name'],
+                    'items' => $items,
+                    'subtotal' => $subtotal,
+                    'delivery_fee' => $deliveryFee,
+                    'service_fee' => $serviceFee,
+                    'discount' => 0,
+                    'total' => $total,
+                    'payment_method' => $paymentMethod,
+                    'payment_change' => $paymentChange,
+                    'submitted_order_id' => $orderId,
+                ]);
+            } else {
+                // Fallback: send SMS via Twilio API directly
+                sendTwilioSms($customerPhone, $orderNumber, $store['name'], $items, $total, $paymentMethod);
+            }
         } catch (Exception $e) {
             error_log("[twilio-voice-ai] SMS error: " . $e->getMessage());
         }
@@ -2207,6 +2442,62 @@ function fetchLastOrderItems(PDO $db, int $customerId, int $storeId): array {
         ];
     }
     return $items;
+}
+
+/**
+ * Send SMS order confirmation via Twilio API (fallback if callcenter-sms.php not available).
+ */
+function sendTwilioSms(string $to, string $orderNumber, string $storeName, array $items, float $total, string $paymentMethod): void {
+    $twilioSid = $_ENV['TWILIO_SID'] ?? getenv('TWILIO_SID') ?: '';
+    $twilioToken = $_ENV['TWILIO_TOKEN'] ?? getenv('TWILIO_TOKEN') ?: '';
+    $twilioFrom = $_ENV['TWILIO_PHONE'] ?? getenv('TWILIO_PHONE') ?: '';
+
+    if (empty($twilioSid) || empty($twilioToken) || empty($twilioFrom)) {
+        error_log("[twilio-voice-ai] SMS skipped: Twilio credentials not configured");
+        return;
+    }
+
+    // Build concise SMS body
+    $itemLines = [];
+    foreach ($items as $item) {
+        $qty = (int)($item['quantity'] ?? 1);
+        $name = $item['name'] ?? 'Item';
+        $price = ($item['price'] ?? 0) * $qty;
+        $itemLines[] = "{$qty}x {$name} R$" . number_format($price, 2, ',', '.');
+    }
+
+    $payLabels = ['dinheiro' => 'Dinheiro', 'pix' => 'PIX', 'credit_card' => 'Cartão crédito', 'debit_card' => 'Cartão débito'];
+    $payLabel = $payLabels[$paymentMethod] ?? $paymentMethod;
+
+    $body = "SuperBora - Pedido {$orderNumber}\n"
+        . "Loja: {$storeName}\n"
+        . implode("\n", $itemLines) . "\n"
+        . "Total: R$" . number_format($total, 2, ',', '.') . "\n"
+        . "Pagamento: {$payLabel}\n"
+        . "Acompanhe pelo app SuperBora!";
+
+    $url = "https://api.twilio.com/2010-04-01/Accounts/{$twilioSid}/Messages.json";
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => http_build_query([
+            'To' => $to,
+            'From' => $twilioFrom,
+            'Body' => $body,
+        ]),
+        CURLOPT_USERPWD => "{$twilioSid}:{$twilioToken}",
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 10,
+    ]);
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($httpCode >= 200 && $httpCode < 300) {
+        error_log("[twilio-voice-ai] SMS sent to {$to} for order {$orderNumber}");
+    } else {
+        error_log("[twilio-voice-ai] SMS failed HTTP {$httpCode}: " . substr($response, 0, 200));
+    }
 }
 
 function cancelOrderByNumber(PDO $db, string $orderNumber): array {

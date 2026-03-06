@@ -121,8 +121,8 @@ if ($cust && $cust['customer_id']) {
     } catch (Exception $e) {}
 }
 
-// Build SSML greeting — natural, warm, conversational
-$ssml = '';
+// Build greeting — natural, warm, conversational, SHORT (max ~12 seconds)
+$greetText = '';
 
 if ($cust && $cust['name']) {
     $firstName = explode(' ', trim($cust['name']))[0];
@@ -153,45 +153,32 @@ if ($cust && $cust['name']) {
     } catch (Exception $e) {}
 
     if ($activeOrder) {
-        // Customer has an active order — proactively mention it
+        // Customer has an active order — skip menu, go straight to status
         $statusLabels = ['pending' => 'esperando confirmação', 'accepted' => 'foi aceito', 'preparing' => 'tá sendo preparado', 'em_preparo' => 'tá sendo preparado', 'ready' => 'tá pronto', 'delivering' => 'tá a caminho', 'saiu_entrega' => 'tá a caminho'];
         $statusText = $statusLabels[$activeOrder['status']] ?? 'em andamento';
-        $ssml .= "{$periodo}, {$firstName}! Aqui é a Bora, do SuperBora. ";
-        $ssml .= "Vi aqui que seu pedido da {$activeOrder['partner_name']} {$statusText}. ";
-        $ssml .= "É sobre esse pedido que você tá ligando, ou quer fazer um pedido novo?";
+        $greetText = "Oi, {$firstName}! Seu pedido da {$activeOrder['partner_name']} {$statusText}. Quer saber mais ou fazer outro pedido?";
     } elseif ($recentOrder && $daysSinceOrder < 3) {
-        $ssml .= "{$periodo}, {$firstName}! ";
-        $ssml .= "Que bom te ouvir de novo! ";
-        $ssml .= "Da última vez você pediu da {$recentOrder['partner_name']}. ";
-        $ssml .= "Quer repetir o pedido, pedir algo diferente, ou tem alguma dúvida?";
-    } elseif ($recentOrder && $orderCount >= 5) {
-        $ssml .= "{$periodo}, {$firstName}! ";
-        $ssml .= "Que bom falar com você! Aqui é a Bora, do SuperBora. ";
-        $ssml .= "Me conta, o que vai ser hoje?";
+        $greetText = "{$periodo}, {$firstName}! Bem-vinda de volta ao SuperBora. Quer repetir da {$recentOrder['partner_name']} ou pedir algo diferente?";
+    } elseif ($orderCount >= 5) {
+        $greetText = "{$periodo}, {$firstName}! Bem-vinda de volta ao SuperBora. O que vai ser hoje?";
     } elseif ($recentOrder) {
-        $ssml .= "{$periodo}, {$firstName}! ";
-        $ssml .= "Aqui é a Bora, do SuperBora. ";
-        $ssml .= "Me fala, o que você tá precisando?";
+        $greetText = "{$periodo}, {$firstName}! Aqui é a Bora, do SuperBora. Me fala, o que você tá precisando?";
     } else {
-        $ssml .= "{$periodo}, {$firstName}! ";
-        $ssml .= "Aqui é a Bora, do SuperBora. ";
+        // Known customer but no orders
+        $greetText = "{$periodo}, {$firstName}! Aqui é a Bora, do SuperBora. ";
         if (!$hasAddress) {
-            $ssml .= "Posso te ajudar a fazer um pedido, tirar uma dúvida, o que você precisar! ";
-            $ssml .= "Se quiser pedir, me fala seu CEP ou bairro que eu vejo os restaurantes pra você.";
+            $greetText .= "Me fala seu CEP ou o que você quer pedir!";
         } else {
-            $ssml .= "Me fala, o que você tá precisando?";
+            $greetText .= "Me fala, o que você tá precisando?";
         }
     }
 } else {
-    $ssml .= "{$periodo}! ";
-    $ssml .= "Aqui é a Bora, do SuperBora. ";
-    $ssml .= "Posso te ajudar a fazer um pedido, tirar uma dúvida, o que você precisar! ";
-    $ssml .= "Se quiser pedir, me fala seu CEP ou bairro que eu acho os restaurantes pra você.";
+    // New/unknown customer — concise welcome
+    $greetText = "{$periodo}! Aqui é a Bora, do SuperBora. Me fala o que você quer pedir, ou seu CEP pra eu ver os restaurantes perto de você.";
 }
 
-$ssml .= '<break time="500ms"/>';
-$ssml .= 'Ou se preferir falar com uma pessoa, é só dizer atendente ou apertar zero.';
-// end of ssml (no </speak> - Twilio doesn't use it inside <Say>)
+// Append the agent option as a short suffix
+$agentHint = " Ou aperta zero pra falar com uma pessoa.";
 
 // Create call record early — wrapped in try/catch to not break greeting on DB issues
 try {
@@ -215,20 +202,19 @@ try {
     ]);
 } catch (Exception $e) {}
 
-// Strip SSML tags for OpenAI TTS (it uses plain text)
-$plainText = preg_replace('/<[^>]+>/', ' ', $ssml);
-$plainText = preg_replace('/\s+/', ' ', trim($plainText));
+// Build the full greeting with agent hint
+$fullGreeting = $greetText . $agentHint;
 
-$routeEsc = htmlspecialchars($routeUrl);
+$routeEsc = htmlspecialchars($routeUrl, ENT_XML1 | ENT_QUOTES, 'UTF-8');
 
 echo '<?xml version="1.0" encoding="UTF-8"?>';
 echo '<Response>';
 echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . $routeEsc . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
-echo ttsSayOrPlay($plainText);
+echo ttsSayOrPlay($fullGreeting);
 echo '</Gather>';
-// Fallback re-prompt
+// Fallback re-prompt — shorter and friendlier
 echo '<Gather input="speech dtmf" timeout="6" language="pt-BR" action="' . $routeEsc . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
-echo ttsSayOrPlay("Oi, tô aqui! Me fala o que você precisa. Pode ser um pedido, uma dúvida, o que for! Ou aperta zero pra falar com alguém.");
+echo ttsSayOrPlay("Oi, tô aqui! Me fala o que você precisa, ou aperta zero pra falar com alguém.");
 echo '</Gather>';
 echo '<Redirect method="POST">' . $routeEsc . '?Digits=0&amp;noInput=1</Redirect>';
 echo '</Response>';

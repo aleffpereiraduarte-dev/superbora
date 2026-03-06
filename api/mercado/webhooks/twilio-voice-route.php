@@ -76,6 +76,15 @@ $aiUrl = str_replace('twilio-voice-route.php', 'twilio-voice-ai.php', $selfUrl);
 $wantsAgent = false;
 if ($digits === '0') $wantsAgent = true;
 
+// Handle DTMF shortcuts: 1=order, 2=status
+if ($digits === '1' && empty($speechResult)) {
+    $speechResult = 'quero fazer um pedido';
+    $wantsAgent = false;
+} elseif ($digits === '2' && empty($speechResult)) {
+    $speechResult = 'quero ver meu pedido';
+    $wantsAgent = false;
+}
+
 // If digits look like a CEP (8 digits), treat as speech for CEP detection
 if (strlen($digits) >= 5 && strlen($digits) <= 8 && ctype_digit($digits) && $digits !== '0') {
     // User typed a CEP or partial CEP on keypad — inject as speech
@@ -155,26 +164,77 @@ try {
         exit;
     }
 
-    // -- Analyze speech for intent --
+    // -- Check for active orders early (needed for intent routing) --
+    $hasActiveOrders = false;
+    $activeOrderInfo = null;
+    if ($customerId) {
+        try {
+            $activeStmt = $db->prepare("
+                SELECT o.order_number, o.status, p.name as partner_name
+                FROM om_market_orders o
+                JOIN om_market_partners p ON p.partner_id = o.partner_id
+                WHERE o.customer_id = ? AND o.status IN ('pending','accepted','preparing','ready','delivering','em_preparo','saiu_entrega')
+                ORDER BY o.date_added DESC LIMIT 1
+            ");
+            $activeStmt->execute([$customerId]);
+            $activeOrder = $activeStmt->fetch();
+            if ($activeOrder) {
+                $hasActiveOrders = true;
+                $activeOrderInfo = $activeOrder;
+            }
+        } catch (Exception $e) {}
+    }
+
+    // -- Analyze speech for intent (structured keyword detection BEFORE Claude) --
     $speechLower = mb_strtolower($speechResult ?? '', 'UTF-8');
 
-    // Detect support/question intent
+    // Detect intents via keyword matching — fast path, no AI needed
     $wantsSupport = false;
     $wantsQuestion = false;
+    $wantsOrder = false;
+    $wantsComplaint = false;
+
     if (!empty($speechResult)) {
-        $supportKeywords = ['status', 'cancelar', 'cancela', 'rastrear', 'rastreio', 'cadê meu pedido', 'cade meu pedido', 'onde ta', 'onde está', 'meu pedido', 'reclamação', 'reclamacao', 'problema', 'reembolso'];
-        foreach ($supportKeywords as $sk) {
+        // 1. Order status / tracking — "status"/"pedido"/"onde está"
+        $statusKeywords = ['status', 'rastrear', 'rastreio', 'cadê meu pedido', 'cade meu pedido',
+                           'onde ta meu', 'onde está meu', 'onde esta meu', 'meu pedido', 'acompanhar'];
+        foreach ($statusKeywords as $sk) {
             if (mb_strpos($speechLower, $sk) !== false) { $wantsSupport = true; break; }
         }
-        $questionKeywords = ['duvida', 'dúvida', 'pergunta', 'saber', 'informação', 'informacao', 'horario', 'horário', 'funciona', 'entrega', 'taxa', 'preco', 'preço', 'quanto custa', 'como funciona', 'ajuda'];
+
+        // 2. Cancellation — "cancelar"/"cancela"
         if (!$wantsSupport) {
+            $cancelKeywords = ['cancelar', 'cancela', 'cancelamento', 'cancele'];
+            foreach ($cancelKeywords as $ck) {
+                if (mb_strpos($speechLower, $ck) !== false) { $wantsSupport = true; break; }
+            }
+        }
+
+        // 3. Complaint — "reclamar"/"problema"/"errado" → complaint flow → transfer hint
+        if (!$wantsSupport) {
+            $complaintKeywords = ['reclamar', 'reclamação', 'reclamacao', 'problema', 'errado',
+                                   'veio errado', 'faltou', 'cobraram errado', 'estorno', 'reembolso',
+                                   'devolver', 'nao chegou', 'não chegou', 'comida fria', 'atrasado',
+                                   'pedido atrasado', 'nunca chegou'];
+            foreach ($complaintKeywords as $ck) {
+                if (mb_strpos($speechLower, $ck) !== false) { $wantsComplaint = true; $wantsSupport = true; break; }
+            }
+        }
+
+        // 4. Questions / info
+        if (!$wantsSupport) {
+            $questionKeywords = ['duvida', 'dúvida', 'pergunta', 'saber', 'informação', 'informacao',
+                                  'horario', 'horário', 'funciona', 'entrega', 'taxa', 'preco', 'preço',
+                                  'quanto custa', 'como funciona', 'ajuda', 'como faz'];
             foreach ($questionKeywords as $qk) {
                 if (mb_strpos($speechLower, $qk) !== false) { $wantsQuestion = true; break; }
             }
         }
-        // Detect explicit "quero pedir" / "fazer pedido"
-        $wantsOrder = false;
-        $orderKeywords = ['quero pedir', 'fazer pedido', 'fazer um pedido', 'pedir comida', 'quero comer', 'to com fome', 'tô com fome'];
+
+        // 5. Explicit ordering intent
+        $orderKeywords = ['quero pedir', 'fazer pedido', 'fazer um pedido', 'pedir comida',
+                           'quero comer', 'to com fome', 'tô com fome', 'faz um pedido',
+                           'quero encomendar', 'bora pedir'];
         foreach ($orderKeywords as $ok) {
             if (mb_strpos($speechLower, $ok) !== false) { $wantsOrder = true; break; }
         }
@@ -374,7 +434,9 @@ try {
 
     // -- Build AI Context --
     $initialStep = 'identify_store';
-    if ($wantsSupport) {
+    if ($wantsComplaint) {
+        $initialStep = 'support'; // complaint → support mode with transfer hint
+    } elseif ($wantsSupport) {
         $initialStep = 'support';
     } elseif ($wantsQuestion) {
         $initialStep = 'question';
@@ -399,6 +461,7 @@ try {
             'detected_cuisine' => $detectedCuisine,
             'wants_order' => !empty($wantsOrder),
             'wants_question' => $wantsQuestion,
+            'wants_complaint' => $wantsComplaint,
             'has_active_orders' => $hasActiveOrders,
             'active_order' => $activeOrderInfo ? [
                 'order_number' => $activeOrderInfo['order_number'],
@@ -431,37 +494,19 @@ try {
         'support_mode' => $wantsSupport,
     ]);
 
-    error_log("[twilio-voice-route] AI: call_id={$callId} store={$storeIdentified} cep={$detectedCep} cuisine={$detectedCuisine} support={$wantsSupport}");
-
-    // -- Check for active orders (for returning customers) --
-    $hasActiveOrders = false;
-    $activeOrderInfo = null;
-    if ($customerId) {
-        try {
-            $activeStmt = $db->prepare("
-                SELECT o.order_number, o.status, p.name as partner_name
-                FROM om_market_orders o
-                JOIN om_market_partners p ON p.partner_id = o.partner_id
-                WHERE o.customer_id = ? AND o.status IN ('pending','accepted','preparing','ready','delivering','em_preparo','saiu_entrega')
-                ORDER BY o.date_added DESC LIMIT 1
-            ");
-            $activeStmt->execute([$customerId]);
-            $activeOrder = $activeStmt->fetch();
-            if ($activeOrder) {
-                $hasActiveOrders = true;
-                $activeOrderInfo = $activeOrder;
-            }
-        } catch (Exception $e) {}
-    }
+    error_log("[twilio-voice-route] AI: call_id={$callId} store={$storeIdentified} cep={$detectedCep} cuisine={$detectedCuisine} support={$wantsSupport} complaint={$wantsComplaint}");
 
     // -- Build Response --
     $firstName = $customerName ? explode(' ', trim($customerName))[0] : null;
     $ssml = '';
 
-    if ($wantsSupport) {
+    if ($wantsComplaint) {
+        // Complaint flow — empathetic response + offer transfer
+        $ssml .= "Putz" . ($firstName ? ", {$firstName}" : "") . ", sinto muito por isso. ";
+        $ssml .= "Vou resolver pra você. Me conta o que aconteceu, ou se preferir, posso te passar pra um atendente agora.";
+    } elseif ($wantsSupport) {
         $ssml .= "Entendi" . ($firstName ? ", {$firstName}" : "") . ". ";
-        $ssml .= '<break time="200ms"/>';
-        $ssml .= "Vou dar uma olhada nos seus pedidos. Me conta o que precisa: ver o status, cancelar, ou alguma outra coisa?";
+        $ssml .= "Vou dar uma olhada nos seus pedidos. Me conta o que precisa: ver o status, cancelar, ou outra coisa?";
     } elseif ($wantsQuestion) {
         $ssml .= "Claro" . ($firstName ? ", {$firstName}" : "") . "! ";
         $ssml .= '<break time="200ms"/>';
@@ -540,56 +585,60 @@ try {
             $ssml .= "Vou procurar as melhores opções de {$label} pra você. Me fala seu CEP ou o nome do restaurante que você gosta!";
         }
     } else {
-        // No clear match — be helpful, not negative
+        // No clear match — smart retry with more specific prompts
         $ssml .= ($firstName ? "{$firstName}, " : "");
         if ($hasActiveOrders && $activeOrderInfo && !empty($speechResult)) {
             // Has active order — maybe they're asking about it
             $statusLabels = ['pending' => 'esperando confirmação', 'accepted' => 'foi aceito', 'preparing' => 'tá sendo preparado', 'em_preparo' => 'tá sendo preparado', 'ready' => 'tá pronto', 'delivering' => 'tá a caminho', 'saiu_entrega' => 'tá a caminho'];
             $statusText = $statusLabels[$activeOrderInfo['status']] ?? 'em andamento';
             $ssml .= "vi que você tem um pedido da {$activeOrderInfo['partner_name']} que {$statusText}. ";
-            $ssml .= '<break time="200ms"/>';
-            $ssml .= "É sobre esse pedido que você tá ligando, ou quer fazer um pedido novo?";
+            $ssml .= "É sobre esse pedido, ou quer fazer um novo?";
         } elseif (!empty($speechResult) && mb_strlen($speechResult) > 3) {
+            // Speech wasn't understood as a known intent — ask again more specifically
             $ssml .= "Hmm, não encontrei um restaurante com esse nome. ";
-            $ssml .= '<break time="200ms"/>';
-            $ssml .= "Pode me falar o nome do restaurante, o tipo de comida que você quer, ou seu CEP pra eu ver as opções?";
+            $ssml .= "Pode repetir o nome do restaurante, ou me diz o tipo de comida?";
+        } elseif (empty($speechResult) && !empty($noInput)) {
+            // Timeout — customer didn't speak, offer DTMF options
+            $ssml .= "Não te ouvi. Se quiser, aperta 1 pra fazer um pedido, 2 pra ver seu pedido, ou zero pra falar com alguém.";
         } else {
-            $ssml .= "Não consegui entender direito. ";
-            $ssml .= '<break time="200ms"/>';
-            $ssml .= "Pode me falar o nome do restaurante, o tipo de comida que você quer, ou seu CEP pra eu ver as opções?";
+            // Very short/empty speech — retry with clarity
+            $ssml .= "Não peguei direito. Pode falar o nome do restaurante ou o que você quer comer?";
         }
     }
 
     // end ssml
 
-    // Strip SSML tags for OpenAI TTS
+    // Strip SSML tags for TTS
     $plainSsml = preg_replace('/<[^>]+>/', ' ', $ssml);
     $plainSsml = preg_replace('/\s+/', ' ', trim($plainSsml));
+
+    $aiUrlEsc = htmlspecialchars($aiUrl, ENT_XML1 | ENT_QUOTES, 'UTF-8');
 
     // Respond
     echo '<?xml version="1.0" encoding="UTF-8"?>';
     echo '<Response>';
-    echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . htmlspecialchars($aiUrl) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
+    echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . $aiUrlEsc . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
     echo ttsSayOrPlay($plainSsml);
     echo '</Gather>';
-    // Fallback re-prompt if first Gather times out (user didn't speak)
-    echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . htmlspecialchars($aiUrl) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
-    echo ttsSayOrPlay("Oi, tô aqui ainda! Pode falar o nome do restaurante ou o que você quer comer.");
+    // Fallback re-prompt with DTMF option for timeout
+    echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . $aiUrlEsc . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
+    echo ttsSayOrPlay("Oi, tô aqui! Aperta 1 pra pedir, 2 pra ver pedido, ou fala o que você precisa.");
     echo '</Gather>';
     // If both Gathers time out, go to AI anyway (it will re-prompt naturally)
-    echo '<Redirect method="POST">' . htmlspecialchars($aiUrl) . '</Redirect>';
+    echo '<Redirect method="POST">' . $aiUrlEsc . '</Redirect>';
     echo '</Response>';
 
 } catch (Exception $e) {
     error_log("[twilio-voice-route] Error: " . $e->getMessage() . " | Trace: " . $e->getTraceAsString());
     // On error, redirect to AI handler which will re-prompt — don't hang up
     $aiUrlFallback = str_replace('twilio-voice-route.php', 'twilio-voice-ai.php', $scheme . '://' . $host . strtok($_SERVER['REQUEST_URI'] ?? '', '?'));
+    $aiUrlFbEsc = htmlspecialchars($aiUrlFallback, ENT_XML1 | ENT_QUOTES, 'UTF-8');
     echo '<?xml version="1.0" encoding="UTF-8"?>';
     echo '<Response>';
-    echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . htmlspecialchars($aiUrlFallback) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
+    echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . $aiUrlFbEsc . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
     echo ttsSayOrPlay("Desculpa, deu um probleminha. Me fala de novo, o que você precisa?");
     echo '</Gather>';
     echo ttsSayOrPlay("Aperta zero se quiser falar com alguém.");
-    echo '<Redirect method="POST">' . htmlspecialchars($aiUrlFallback) . '</Redirect>';
+    echo '<Redirect method="POST">' . $aiUrlFbEsc . '</Redirect>';
     echo '</Response>';
 }
