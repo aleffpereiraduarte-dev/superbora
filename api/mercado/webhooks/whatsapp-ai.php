@@ -38,6 +38,7 @@
  *   [MODIFY_PAYMENT:method]     — change payment method on existing pendente order
  *   [MODIFY_CANCEL]             — cancel the existing pendente order
  *   [MODIFY_CONFIRM]            — confirm modifications are done
+ *   [GROUP_MEMBER:name]         — switch active group member in group order mode
  */
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -248,6 +249,15 @@ function getDefaultContext(): array
         'dietary_restrictions' => null,
         'delivery_instructions' => '',
         'tip'                => 0,
+        'group_order'        => false,
+        'group_members'      => [],
+        'current_group_member' => null,
+        'learned_preferences' => null,
+        'sentiment'          => null,
+        'sentiment_history'  => [],
+        'price_alternatives' => [],
+        'loyalty_tier'       => null,
+        'cart_optimizations'  => [],
     ];
 }
 
@@ -450,6 +460,269 @@ function getOrderItems(PDO $db, int $orderId): array
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// SMART REORDER PREDICTION
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Analyze customer's order patterns to predict and suggest reorders.
+ * Looks at day of week, time of day, store, and items to find strong patterns.
+ *
+ * @return array|null Returns suggestion array or null if no strong pattern found
+ */
+function getSmartReorderSuggestion(PDO $db, int $customerId): ?array
+{
+    $tz = new DateTimeZone('America/Sao_Paulo');
+    $now = new DateTime('now', $tz);
+    $currentDow = (int)$now->format('w'); // 0=Sunday, 6=Saturday
+    $currentHour = (int)$now->format('G');
+
+    try {
+        // Fetch last 20 completed orders with items
+        $stmt = $db->prepare("
+            SELECT o.order_id, o.partner_id, o.partner_name, o.total,
+                   o.date_added, o.created_at
+            FROM om_market_orders o
+            WHERE o.customer_id = ?
+              AND o.status IN ('entregue', 'delivered', 'retirado')
+            ORDER BY o.date_added DESC
+            LIMIT 20
+        ");
+        $stmt->execute([$customerId]);
+        $orders = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        if (count($orders) < 3) {
+            return null;
+        }
+
+        // Analyze patterns
+        $dowCounts = array_fill(0, 7, 0);
+        $hourCounts = array_fill(0, 24, 0);
+        $storeCounts = []; // partner_id => [count, name, items[]]
+        $totalOrders = count($orders);
+
+        foreach ($orders as $order) {
+            $orderDate = new DateTime($order['date_added'] ?? $order['created_at'], $tz);
+            $dow = (int)$orderDate->format('w');
+            $hour = (int)$orderDate->format('G');
+            $pid = (int)$order['partner_id'];
+
+            $dowCounts[$dow]++;
+            $hourCounts[$hour]++;
+
+            if (!isset($storeCounts[$pid])) {
+                $storeCounts[$pid] = [
+                    'count' => 0,
+                    'name'  => $order['partner_name'],
+                    'items' => [],
+                ];
+            }
+            $storeCounts[$pid]['count']++;
+
+            // Fetch items for this order (lightweight)
+            try {
+                $itemStmt = $db->prepare("
+                    SELECT oi.name, oi.quantity
+                    FROM om_market_order_items oi
+                    WHERE oi.order_id = ?
+                    ORDER BY oi.quantity DESC
+                    LIMIT 5
+                ");
+                $itemStmt->execute([$order['order_id']]);
+                $items = $itemStmt->fetchAll(PDO::FETCH_ASSOC);
+                foreach ($items as $it) {
+                    $itemKey = mb_strtolower(trim($it['name']));
+                    if (!isset($storeCounts[$pid]['items'][$itemKey])) {
+                        $storeCounts[$pid]['items'][$itemKey] = [
+                            'name' => $it['name'],
+                            'count' => 0,
+                        ];
+                    }
+                    $storeCounts[$pid]['items'][$itemKey]['count'] += (int)$it['quantity'];
+                }
+            } catch (\Exception $e) {
+                // Non-critical
+            }
+        }
+
+        // Find most frequent store
+        uasort($storeCounts, fn($a, $b) => $b['count'] - $a['count']);
+        $topStore = reset($storeCounts);
+        $topStoreId = key($storeCounts);
+
+        if (!$topStore || $topStore['count'] < 2) {
+            return null;
+        }
+
+        // Calculate day-of-week match score
+        $dowScore = $dowCounts[$currentDow] / $totalOrders;
+
+        // Calculate hour match score (within +/- 2 hour window)
+        $hourScore = 0;
+        for ($h = $currentHour - 2; $h <= $currentHour + 2; $h++) {
+            $normalizedHour = (($h % 24) + 24) % 24;
+            $hourScore += $hourCounts[$normalizedHour];
+        }
+        $hourScore = $hourScore / $totalOrders;
+
+        // Store frequency score
+        $storeScore = $topStore['count'] / $totalOrders;
+
+        // Overall confidence (weighted)
+        $confidence = ($dowScore * 0.35) + ($hourScore * 0.35) + ($storeScore * 0.30);
+
+        if ($confidence < 0.15) {
+            return null;
+        }
+
+        // Get top items from this store
+        $storeItems = $topStore['items'];
+        uasort($storeItems, fn($a, $b) => $b['count'] - $a['count']);
+        $topItems = array_slice(array_values($storeItems), 0, 4);
+        $itemNames = array_map(fn($i) => $i['name'], $topItems);
+
+        // Build pattern description
+        $dayNames = ['domingo', 'segunda', 'terca', 'quarta', 'quinta', 'sexta', 'sabado'];
+        $currentDayName = $dayNames[$currentDow];
+
+        if ($currentHour >= 6 && $currentHour < 12) {
+            $periodName = 'de manha';
+        } elseif ($currentHour >= 12 && $currentHour < 18) {
+            $periodName = 'na hora do almoco';
+        } elseif ($currentHour >= 18 && $currentHour < 23) {
+            $periodName = 'a noite';
+        } else {
+            $periodName = 'de madrugada';
+        }
+
+        $pattern = "Voce costuma pedir da {$topStore['name']} toda {$currentDayName} {$periodName}";
+
+        return [
+            'store_name'          => $topStore['name'],
+            'partner_id'          => $topStoreId,
+            'items'               => $itemNames,
+            'pattern_description' => $pattern,
+            'confidence'          => round($confidence, 2),
+            'dow_score'           => round($dowScore, 2),
+            'hour_score'          => round($hourScore, 2),
+            'store_score'         => round($storeScore, 2),
+        ];
+
+    } catch (\Exception $e) {
+        error_log(WABOT_LOG_PREFIX . " Smart reorder prediction error: " . $e->getMessage());
+        return null;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CONVERSATION MEMORY SUMMARY
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Get a summary of the customer's last N WhatsApp conversations for continuity.
+ * Returns a formatted string for injection into the system prompt.
+ *
+ * @param int $limit Number of past conversations to summarize (default 3)
+ */
+function getConversationHistory(PDO $db, string $phone, int $limit = 3): string
+{
+    $normalizedPhone = preg_replace('/\D/', '', $phone);
+
+    try {
+        // Get last N conversations (excluding the current active one)
+        $convStmt = $db->prepare("
+            SELECT c.id, c.ai_context, c.created_at, c.last_message_at, c.status
+            FROM om_callcenter_whatsapp c
+            WHERE c.phone = ?
+            ORDER BY c.last_message_at DESC
+            LIMIT ?
+        ");
+        $convStmt->execute([$normalizedPhone, $limit + 1]); // +1 because current may be included
+        $conversations = $convStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        if (empty($conversations)) {
+            return '';
+        }
+
+        // Skip the most recent (current) conversation
+        $pastConversations = array_slice($conversations, 1, $limit);
+
+        if (empty($pastConversations)) {
+            return '';
+        }
+
+        $tz = new DateTimeZone('America/Sao_Paulo');
+        $lines = [];
+
+        foreach ($pastConversations as $conv) {
+            $convId = (int)$conv['id'];
+            $convDate = new DateTime($conv['last_message_at'] ?? $conv['created_at'], $tz);
+            $dateStr = $convDate->format('d/m H:i');
+
+            // Try to extract info from ai_context JSON
+            $ctx = json_decode($conv['ai_context'] ?? '{}', true) ?: [];
+            $summary = '';
+
+            $step = $ctx['step'] ?? '';
+            $partnerName = $ctx['partner_name'] ?? '';
+            $items = $ctx['items'] ?? [];
+            $mode = $ctx['mode'] ?? 'ordering';
+
+            if (!empty($items) && !empty($partnerName)) {
+                // Had an order in progress or completed
+                $itemNames = array_map(fn($i) => ($i['qty'] ?? 1) . 'x ' . ($i['name'] ?? '?'), array_slice($items, 0, 4));
+                $itemStr = implode(', ', $itemNames);
+
+                if (in_array($step, [STEP_COMPLETED, STEP_SUBMIT_ORDER])) {
+                    $summary = "Pediu da {$partnerName}: {$itemStr}";
+                } elseif ($step === STEP_CONFIRM_ORDER) {
+                    $summary = "Quase pediu da {$partnerName} ({$itemStr}) mas nao confirmou";
+                } else {
+                    $summary = "Conversou sobre pedido da {$partnerName}";
+                }
+            } elseif ($mode === 'support') {
+                $summary = "Pediu suporte/ajuda";
+            } elseif (!empty($partnerName)) {
+                $summary = "Perguntou sobre {$partnerName}";
+            } else {
+                // Get a snippet from the last few messages
+                $msgStmt = $db->prepare("
+                    SELECT message, direction
+                    FROM om_callcenter_wa_messages
+                    WHERE conversation_id = ? AND direction = 'inbound'
+                    ORDER BY created_at DESC
+                    LIMIT 3
+                ");
+                $msgStmt->execute([$convId]);
+                $msgs = $msgStmt->fetchAll(PDO::FETCH_ASSOC);
+
+                if (!empty($msgs)) {
+                    $firstMsg = mb_substr(trim($msgs[count($msgs) - 1]['message'] ?? ''), 0, 60);
+                    if (!empty($firstMsg)) {
+                        $summary = "Disse: \"{$firstMsg}\"";
+                    } else {
+                        $summary = "Conversa breve";
+                    }
+                } else {
+                    $summary = "Conversa breve";
+                }
+            }
+
+            $lines[] = "- {$dateStr}: {$summary}";
+        }
+
+        if (empty($lines)) {
+            return '';
+        }
+
+        return "HISTORICO DE CONVERSAS RECENTES (WhatsApp):\n" . implode("\n", array_slice($lines, 0, 5));
+
+    } catch (\Exception $e) {
+        error_log(WABOT_LOG_PREFIX . " Conversation history error: " . $e->getMessage());
+        return '';
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 /**
  * Get customer's favorite stores.
  * Uses om_market_favorites (explicit favorites) UNION with stores they've ordered from.
@@ -482,6 +755,206 @@ function getCustomerFavoriteStores(PDO $db, int $customerId, int $limit = 10): a
         error_log(WABOT_LOG_PREFIX . " Error fetching favorite stores: " . $e->getMessage());
         return [];
     }
+}
+
+/**
+ * Analyze customer preferences from order history.
+ * Single efficient query with GROUP BY, returns learned patterns.
+ */
+function analyzeCustomerPreferences(PDO $db, int $customerId): array
+{
+    $prefs = [
+        'payment_preference' => null,
+        'payment_confidence' => 0,
+        'common_customizations' => [],
+        'avg_order_value' => 0,
+        'budget_range' => 'desconhecido',
+        'favorite_categories' => [],
+        'top_store_loyalty' => null,
+        'avg_tip' => 0,
+        'preferred_time' => null,
+        'order_frequency' => 'desconhecido',
+    ];
+
+    try {
+        // Main query: last 20 orders with aggregated stats
+        $stmt = $db->prepare("
+            SELECT
+                o.order_id, o.forma_pagamento, o.total, o.tip_amount,
+                o.date_added, o.partner_id,
+                COALESCE(p.trade_name, p.name) as partner_name,
+                p.categoria as partner_category
+            FROM om_market_orders o
+            JOIN om_market_partners p ON p.partner_id = o.partner_id
+            WHERE o.customer_id = ?
+              AND o.status IN ('entregue', 'retirado', 'pendente', 'confirmado', 'aceito', 'preparando', 'pronto', 'em_entrega')
+            ORDER BY o.date_added DESC
+            LIMIT 20
+        ");
+        $stmt->execute([$customerId]);
+        $orders = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        if (empty($orders)) {
+            return $prefs;
+        }
+
+        $totalOrders = count($orders);
+        $paymentCounts = [];
+        $totalValues = [];
+        $tipValues = [];
+        $hourBuckets = ['manha' => 0, 'tarde' => 0, 'noite' => 0, 'madrugada' => 0];
+        $categoryCounts = [];
+        $storeCounts = [];
+        $storeNames = [];
+        $orderDates = [];
+
+        foreach ($orders as $ord) {
+            // Payment preference
+            $pm = $ord['forma_pagamento'] ?? 'pix';
+            $paymentCounts[$pm] = ($paymentCounts[$pm] ?? 0) + 1;
+
+            // Order values
+            $totalValues[] = (float)$ord['total'];
+
+            // Tips
+            $tip = (float)($ord['tip_amount'] ?? 0);
+            if ($tip > 0) {
+                $tipValues[] = $tip;
+            }
+
+            // Time-of-day pattern
+            $hour = (int)date('G', strtotime($ord['date_added']));
+            if ($hour >= 6 && $hour < 12) {
+                $hourBuckets['manha']++;
+            } elseif ($hour >= 12 && $hour < 18) {
+                $hourBuckets['tarde']++;
+            } elseif ($hour >= 18 && $hour < 24) {
+                $hourBuckets['noite']++;
+            } else {
+                $hourBuckets['madrugada']++;
+            }
+
+            // Category counts
+            $cat = $ord['partner_category'] ?? 'outros';
+            $categoryCounts[$cat] = ($categoryCounts[$cat] ?? 0) + 1;
+
+            // Store loyalty
+            $pid = (int)$ord['partner_id'];
+            $storeCounts[$pid] = ($storeCounts[$pid] ?? 0) + 1;
+            $storeNames[$pid] = $ord['partner_name'];
+
+            // Order dates for frequency
+            $orderDates[] = strtotime($ord['date_added']);
+        }
+
+        // Payment preference
+        arsort($paymentCounts);
+        $topPayment = array_key_first($paymentCounts);
+        $topPaymentCount = $paymentCounts[$topPayment];
+        $prefs['payment_preference'] = $topPayment;
+        $prefs['payment_confidence'] = round(($topPaymentCount / $totalOrders) * 100);
+
+        // Average order value + budget range
+        $avgValue = array_sum($totalValues) / count($totalValues);
+        $prefs['avg_order_value'] = round($avgValue, 2);
+        if ($avgValue < 25) {
+            $prefs['budget_range'] = 'economico';
+        } elseif ($avgValue < 60) {
+            $prefs['budget_range'] = 'medio';
+        } elseif ($avgValue < 120) {
+            $prefs['budget_range'] = 'premium';
+        } else {
+            $prefs['budget_range'] = 'alto';
+        }
+
+        // Average tip
+        if (!empty($tipValues)) {
+            $prefs['avg_tip'] = round(array_sum($tipValues) / count($tipValues), 2);
+        }
+
+        // Preferred time
+        arsort($hourBuckets);
+        $prefs['preferred_time'] = array_key_first($hourBuckets);
+
+        // Favorite categories (top 3)
+        arsort($categoryCounts);
+        $prefs['favorite_categories'] = array_slice(array_keys($categoryCounts), 0, 3);
+
+        // Store loyalty
+        arsort($storeCounts);
+        $topStoreId = array_key_first($storeCounts);
+        $topStorePct = round(($storeCounts[$topStoreId] / $totalOrders) * 100);
+        $prefs['top_store_loyalty'] = [
+            'partner_id' => $topStoreId,
+            'name' => $storeNames[$topStoreId] ?? 'Loja',
+            'pct' => $topStorePct,
+        ];
+
+        // Order frequency
+        if (count($orderDates) >= 2) {
+            sort($orderDates);
+            $firstDate = $orderDates[0];
+            $lastDate = end($orderDates);
+            $daySpan = max(1, ($lastDate - $firstDate) / 86400);
+            $ordersPerWeek = ($totalOrders / $daySpan) * 7;
+
+            if ($ordersPerWeek >= 5) {
+                $prefs['order_frequency'] = 'diario';
+            } elseif ($ordersPerWeek >= 2) {
+                $prefs['order_frequency'] = 'frequente';
+            } elseif ($ordersPerWeek >= 0.8) {
+                $prefs['order_frequency'] = 'semanal';
+            } elseif ($ordersPerWeek >= 0.3) {
+                $prefs['order_frequency'] = 'quinzenal';
+            } else {
+                $prefs['order_frequency'] = 'esporadico';
+            }
+        }
+
+        // Common customizations from order item notes
+        $customStmt = $db->prepare("
+            SELECT oi.observacao
+            FROM om_market_order_items oi
+            JOIN om_market_orders o ON o.order_id = oi.order_id
+            WHERE o.customer_id = ?
+              AND oi.observacao IS NOT NULL
+              AND oi.observacao != ''
+            ORDER BY o.date_added DESC
+            LIMIT 50
+        ");
+        $customStmt->execute([$customerId]);
+        $customRows = $customStmt->fetchAll(PDO::FETCH_COLUMN);
+
+        if (!empty($customRows)) {
+            // Count recurring notes/phrases
+            $noteCounts = [];
+            foreach ($customRows as $note) {
+                $normalizedNote = mb_strtolower(trim($note));
+                // Split by common separators
+                $parts = preg_split('/[;,|]+/', $normalizedNote);
+                foreach ($parts as $part) {
+                    $part = trim($part);
+                    if (mb_strlen($part) >= 3 && mb_strlen($part) <= 80) {
+                        $noteCounts[$part] = ($noteCounts[$part] ?? 0) + 1;
+                    }
+                }
+            }
+            arsort($noteCounts);
+            // Keep customizations that appear 2+ times
+            $commonCustom = [];
+            foreach ($noteCounts as $note => $count) {
+                if ($count >= 2 && count($commonCustom) < 5) {
+                    $commonCustom[] = $note;
+                }
+            }
+            $prefs['common_customizations'] = $commonCustom;
+        }
+
+    } catch (\Exception $e) {
+        error_log(WABOT_LOG_PREFIX . " analyzeCustomerPreferences error: " . $e->getMessage());
+    }
+
+    return $prefs;
 }
 
 // STORE & MENU
@@ -1073,6 +1546,417 @@ function getComplementaryItems(PDO $db, int $partnerId, array $cartItems, int $l
     } catch (\Exception $e) {
         error_log(WABOT_LOG_PREFIX . " getComplementaryItems error: " . $e->getMessage());
         return [];
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PERSONALIZED RECOMMENDATIONS (collaborative filtering)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Get personalized product recommendations for a customer using multi-signal scoring.
+ * Adapted from intelligence/recomendacoes.php for internal WhatsApp bot use.
+ *
+ * Scoring weights:
+ *   - Purchase history (40%): categories the customer bought before
+ *   - Collaborative filtering (25%): "customers who bought X also bought Y"
+ *   - Time-of-day (15%): breakfast in morning, lunch at noon, etc.
+ *   - Popularity (10%): sales_count
+ *   - Novelty (10%): recently added products
+ *
+ * @param int|null $partnerId Filter to a specific store's products
+ * @param int $limit Max recommendations to return
+ * @return array [['product_id', 'name', 'price', 'score', 'reason'], ...]
+ */
+function getPersonalizedRecommendations(PDO $db, int $customerId, ?int $partnerId = null, int $limit = 5): array
+{
+    try {
+        $currentHour = (int)date('G');
+
+        // Check if customer has any purchase history
+        $stmtHist = $db->prepare("SELECT 1 FROM om_market_orders WHERE customer_id = ? AND status = 'entregue' LIMIT 1");
+        $stmtHist->execute([$customerId]);
+        $hasHistory = (bool)$stmtHist->fetch();
+
+        if (!$hasHistory) {
+            return getPopularRecommendationsFallback($db, $partnerId, $limit);
+        }
+
+        // 1. Purchase history — categories and specific products this customer bought (40%)
+        $stmt = $db->prepare("
+            SELECT pb.category_id, COUNT(*) as freq
+            FROM om_market_order_items oi
+            JOIN om_market_products pb ON pb.product_id = oi.product_id
+            JOIN om_market_orders o ON o.order_id = oi.order_id
+            WHERE o.customer_id = ? AND o.status = 'entregue'
+            AND o.date_added > NOW() - INTERVAL '90 days'
+            GROUP BY pb.category_id
+            ORDER BY freq DESC
+            LIMIT 10
+        ");
+        $stmt->execute([$customerId]);
+        $favCategories = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
+
+        // Specific products purchased with counts
+        $stmt = $db->prepare("
+            SELECT oi.product_id, COUNT(*) as purchase_count
+            FROM om_market_order_items oi
+            JOIN om_market_orders o ON o.order_id = oi.order_id
+            WHERE o.customer_id = ? AND o.status = 'entregue'
+            AND o.date_added > NOW() - INTERVAL '90 days'
+            GROUP BY oi.product_id
+            ORDER BY purchase_count DESC
+            LIMIT 20
+        ");
+        $stmt->execute([$customerId]);
+        $purchasedProducts = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
+
+        // 2. Collaborative filtering — products bought by similar customers (25%)
+        $stmt = $db->prepare("
+            SELECT oi2.product_id, COUNT(DISTINCT o2.customer_id) as co_buyers
+            FROM om_market_orders o1
+            JOIN om_market_order_items oi1 ON oi1.order_id = o1.order_id
+            JOIN om_market_order_items oi2 ON oi2.product_id != oi1.product_id
+            JOIN om_market_orders o2 ON o2.order_id = oi2.order_id AND o2.customer_id != o1.customer_id
+            JOIN om_market_order_items oi3 ON oi3.order_id = o2.order_id AND oi3.product_id = oi1.product_id
+            WHERE o1.customer_id = ? AND o1.status = 'entregue'
+            AND o1.created_at > NOW() - INTERVAL '60 days'
+            GROUP BY oi2.product_id
+            ORDER BY co_buyers DESC
+            LIMIT 30
+        ");
+        $stmt->execute([$customerId]);
+        $coProducts = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
+
+        // Total unique buyers for co-purchase percentage
+        $totalBuyers = 1;
+        try {
+            $tbStmt = $db->prepare("
+                SELECT COUNT(DISTINCT customer_id) FROM om_market_orders
+                WHERE status = 'entregue' AND date_added > NOW() - INTERVAL '60 days'
+            ");
+            $tbStmt->execute();
+            $totalBuyers = max(1, (int)$tbStmt->fetchColumn());
+        } catch (\Exception $e) { /* skip */ }
+
+        // 3. Recently bought products
+        $stmt = $db->prepare("
+            SELECT DISTINCT oi.product_id
+            FROM om_market_order_items oi
+            JOIN om_market_orders o ON o.order_id = oi.order_id
+            WHERE o.customer_id = ? AND o.date_added > NOW() - INTERVAL '14 days'
+        ");
+        $stmt->execute([$customerId]);
+        $recentlyBought = $stmt->fetchAll(PDO::FETCH_COLUMN);
+
+        // Build partner filter
+        $partnerFilter = '';
+        $candidateParams = [];
+        if ($partnerId) {
+            $partnerFilter = 'AND p.partner_id = ?';
+            $candidateParams[] = $partnerId;
+        }
+
+        // Fetch candidates
+        $stmt = $db->prepare("
+            SELECT p.product_id, p.name, p.price, p.special_price,
+                   p.partner_id, COALESCE(pa.trade_name, pa.name) as partner_name,
+                   p.category_id, COALESCE(oc.cnt, 0) as sales_count,
+                   p.date_added
+            FROM om_market_products p
+            LEFT JOIN om_market_partners pa ON p.partner_id = pa.partner_id
+            LEFT JOIN (
+                SELECT oi.product_id, COUNT(*) as cnt
+                FROM om_market_order_items oi
+                JOIN om_market_orders o ON o.order_id = oi.order_id
+                WHERE o.date_added > NOW() - INTERVAL '90 days'
+                GROUP BY oi.product_id
+            ) oc ON oc.product_id = p.product_id
+            WHERE p.status = 1 AND (pa.status::text = '1' OR pa.status IS NULL)
+              AND p.name IS NOT NULL AND TRIM(p.name) != ''
+              AND p.price > 0 AND p.quantity > 0
+              {$partnerFilter}
+            ORDER BY oc.cnt DESC NULLS LAST
+            LIMIT 150
+        ");
+        $stmt->execute($candidateParams);
+        $candidates = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        if (empty($candidates)) {
+            return getPopularRecommendationsFallback($db, $partnerId, $limit);
+        }
+
+        // Time-of-day preferences
+        $timeCategories = getRecsTimeCategoryPrefs($currentHour);
+
+        $maxSales = max(1, max(array_column($candidates, 'sales_count') ?: [1]));
+        $maxCoBuyers = max(1, max(array_values($coProducts) ?: [1]));
+        $maxFreq = max(1, max(array_values($favCategories) ?: [1]));
+
+        $scored = [];
+        foreach ($candidates as $p) {
+            $pid = $p['product_id'];
+            $catId = $p['category_id'] ?? 0;
+
+            $histScore = isset($favCategories[(string)$catId]) ? ($favCategories[(string)$catId] / $maxFreq) : 0;
+            $coScore = isset($coProducts[$pid]) ? ($coProducts[$pid] / $maxCoBuyers) : 0;
+
+            $timeScore = 0;
+            $pName = mb_strtolower($p['name'] ?? '');
+            foreach ($timeCategories as $keyword => $weight) {
+                if (mb_stripos($pName, $keyword) !== false) {
+                    $timeScore = max($timeScore, $weight);
+                }
+            }
+
+            $popScore = $p['sales_count'] / $maxSales;
+            $daysOld = max(1, (time() - strtotime($p['date_added'] ?? 'now')) / 86400);
+            $noveltyScore = max(0, 1 - ($daysOld / 30));
+            $recentPenalty = in_array($pid, $recentlyBought) ? 0.7 : 1.0;
+            $saleBonus = ((float)($p['special_price'] ?? 0) > 0 && (float)$p['special_price'] < (float)$p['price']) ? 0.1 : 0;
+
+            $totalScore = (
+                ($histScore * 0.40) +
+                ($coScore * 0.25) +
+                ($timeScore * 0.15) +
+                ($popScore * 0.10) +
+                ($noveltyScore * 0.10) +
+                $saleBonus
+            ) * $recentPenalty;
+
+            // Determine primary reason
+            $reason = 'Popular agora';
+            $reasonData = [];
+            if (isset($purchasedProducts[$pid]) && $purchasedProducts[$pid] >= 2) {
+                $reason = "Voce comprou isso {$purchasedProducts[$pid]}x";
+                $reasonData = ['type' => 'repeat', 'count' => (int)$purchasedProducts[$pid]];
+            } elseif (isset($purchasedProducts[$pid])) {
+                $reason = "Voce ja pediu isso antes";
+                $reasonData = ['type' => 'tried'];
+            } elseif ($coScore > 0.3) {
+                $coPct = min(95, max(15, round(($coProducts[$pid] / max(1, $totalBuyers)) * 100)));
+                if ($coPct < 15) $coPct = min(95, round($coProducts[$pid] * 15));
+                $reason = "Quem pede seus favoritos tambem pede ({$coPct}% dos clientes)";
+                $reasonData = ['type' => 'collaborative', 'pct' => $coPct];
+            } elseif ($histScore > 0.3 && !isset($purchasedProducts[$pid])) {
+                $reason = "Categoria que voce gosta";
+                $reasonData = ['type' => 'category'];
+            } elseif ($noveltyScore > 0.5) {
+                $reason = "Novo no cardapio, categoria que voce gosta";
+                $reasonData = ['type' => 'novelty'];
+            } elseif ($popScore > 0.5) {
+                $reason = "Popular agora";
+                $reasonData = ['type' => 'popular'];
+            }
+
+            $realPrice = ((float)($p['special_price'] ?? 0) > 0 && (float)$p['special_price'] < (float)$p['price'])
+                ? (float)$p['special_price']
+                : (float)$p['price'];
+
+            $scored[] = [
+                'product_id'   => (int)$pid,
+                'name'         => $p['name'],
+                'price'        => $realPrice,
+                'score'        => round($totalScore, 4),
+                'reason'       => $reason,
+                'reason_data'  => $reasonData,
+                'partner_name' => $p['partner_name'] ?? '',
+            ];
+        }
+
+        usort($scored, fn($a, $b) => $b['score'] <=> $a['score']);
+        return array_slice($scored, 0, $limit);
+
+    } catch (\Exception $e) {
+        error_log(WABOT_LOG_PREFIX . " getPersonalizedRecommendations error: " . $e->getMessage());
+        return getPopularRecommendationsFallback($db, $partnerId, $limit);
+    }
+}
+
+/**
+ * Fallback: return popular items when no personalization data is available.
+ */
+function getPopularRecommendationsFallback(PDO $db, ?int $partnerId, int $limit): array
+{
+    try {
+        $partnerFilter = '';
+        $params = [];
+        if ($partnerId) {
+            $partnerFilter = 'AND p.partner_id = ?';
+            $params[] = $partnerId;
+        }
+        $params[] = $limit;
+
+        $stmt = $db->prepare("
+            SELECT p.product_id, p.name, p.price, p.special_price,
+                   COALESCE(pa.trade_name, pa.name) as partner_name,
+                   COALESCE(oc.cnt, 0) as sales_count
+            FROM om_market_products p
+            LEFT JOIN om_market_partners pa ON p.partner_id = pa.partner_id
+            LEFT JOIN (
+                SELECT oi.product_id, COUNT(*) as cnt
+                FROM om_market_order_items oi
+                JOIN om_market_orders o ON o.order_id = oi.order_id
+                WHERE o.date_added > NOW() - INTERVAL '30 days'
+                GROUP BY oi.product_id
+            ) oc ON oc.product_id = p.product_id
+            WHERE p.status = 1 AND (pa.status::text = '1' OR pa.status IS NULL)
+              AND p.name IS NOT NULL AND TRIM(p.name) != ''
+              AND p.price > 0 AND p.quantity > 0
+              {$partnerFilter}
+            ORDER BY oc.cnt DESC NULLS LAST
+            LIMIT ?
+        ");
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        return array_map(function ($r) {
+            $realPrice = ((float)($r['special_price'] ?? 0) > 0 && (float)$r['special_price'] < (float)$r['price'])
+                ? (float)$r['special_price']
+                : (float)$r['price'];
+            return [
+                'product_id'   => (int)$r['product_id'],
+                'name'         => $r['name'],
+                'price'        => $realPrice,
+                'score'        => 0,
+                'reason'       => 'Popular agora',
+                'reason_data'  => ['type' => 'popular'],
+                'partner_name' => $r['partner_name'] ?? '',
+            ];
+        }, $rows);
+    } catch (\Exception $e) {
+        error_log(WABOT_LOG_PREFIX . " getPopularRecommendationsFallback error: " . $e->getMessage());
+        return [];
+    }
+}
+
+/**
+ * Time-of-day category keyword preferences for recommendations.
+ */
+function getRecsTimeCategoryPrefs(int $hour): array
+{
+    if ($hour >= 6 && $hour < 10) {
+        return ['cafe' => 0.8, 'pao' => 0.7, 'leite' => 0.6, 'cereal' => 0.5, 'iogurte' => 0.5, 'suco' => 0.4];
+    } elseif ($hour >= 11 && $hour < 14) {
+        return ['almoco' => 0.8, 'prato' => 0.7, 'arroz' => 0.5, 'feijao' => 0.5, 'salada' => 0.4, 'executivo' => 0.6];
+    } elseif ($hour >= 14 && $hour < 17) {
+        return ['lanche' => 0.7, 'cafe' => 0.5, 'bolo' => 0.6, 'salgado' => 0.5, 'doce' => 0.4];
+    } elseif ($hour >= 18 && $hour < 22) {
+        return ['jantar' => 0.8, 'pizza' => 0.7, 'hamburguer' => 0.7, 'sushi' => 0.5, 'massa' => 0.5, 'cerveja' => 0.3];
+    } else {
+        return ['lanche' => 0.5, 'pizza' => 0.4, 'hamburguer' => 0.4];
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SMART PRICE COMPARISON
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Find cheaper alternatives for a product at other open stores.
+ * Uses fuzzy name matching (ILIKE) and only returns results with >10% savings.
+ */
+function findCheaperAlternatives(PDO $db, string $productName, int $currentPartnerId, float $currentPrice, int $limit = 3): array
+{
+    if ($currentPrice <= 0 || mb_strlen($productName) < 3) return [];
+
+    try {
+        $cleanName = mb_strtolower(trim($productName));
+        $cleanName = preg_replace('/\s*\d+\s*(ml|l|g|kg|un|und|pct|pc)\b/i', '', $cleanName);
+        $cleanName = trim($cleanName);
+
+        if (mb_strlen($cleanName) < 3) return [];
+
+        $pattern = '%' . $cleanName . '%';
+        $maxPrice = $currentPrice * 0.90;
+
+        $stmt = $db->prepare("
+            SELECT p.product_id, p.name as product_name, p.price, p.special_price,
+                   p.partner_id,
+                   COALESCE(pa.trade_name, pa.name) as partner_name,
+                   pa.is_open
+            FROM om_market_products p
+            JOIN om_market_partners pa ON pa.partner_id = p.partner_id
+            WHERE p.partner_id != ?
+              AND p.status = 1
+              AND p.quantity > 0
+              AND pa.status::text = '1'
+              AND pa.is_open = 1
+              AND p.name ILIKE ?
+              AND CASE
+                    WHEN p.special_price IS NOT NULL AND p.special_price > 0 AND p.special_price < p.price
+                    THEN p.special_price
+                    ELSE p.price
+                  END < ?
+            ORDER BY CASE
+                       WHEN p.special_price IS NOT NULL AND p.special_price > 0 AND p.special_price < p.price
+                       THEN p.special_price
+                       ELSE p.price
+                     END ASC
+            LIMIT ?
+        ");
+        $stmt->execute([$currentPartnerId, $pattern, $maxPrice, $limit]);
+        $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $alternatives = [];
+        foreach ($results as $r) {
+            $altPrice = ((float)($r['special_price'] ?? 0) > 0 && (float)$r['special_price'] < (float)$r['price'])
+                ? (float)$r['special_price']
+                : (float)$r['price'];
+            $savings = round($currentPrice - $altPrice, 2);
+            $savingsPct = round(($savings / $currentPrice) * 100);
+
+            if ($savings > 0 && $savingsPct >= 10) {
+                $alternatives[] = [
+                    'partner_name' => $r['partner_name'],
+                    'product_name' => $r['product_name'],
+                    'price'        => $altPrice,
+                    'savings'      => $savings,
+                    'savings_pct'  => $savingsPct,
+                    'partner_id'   => (int)$r['partner_id'],
+                ];
+            }
+        }
+
+        return $alternatives;
+    } catch (\Exception $e) {
+        error_log(WABOT_LOG_PREFIX . " findCheaperAlternatives error: " . $e->getMessage());
+        return [];
+    }
+}
+
+/**
+ * Compare all items in cart against other stores.
+ * Returns a structured comparison for the customer.
+ */
+function compareCartPrices(PDO $db, array $items, int $currentPartnerId): array
+{
+    $comparisons = [];
+    $totalSavings = 0;
+
+    foreach ($items as $item) {
+        $productName = $item['name'] ?? '';
+        $currentPrice = (float)($item['price'] ?? 0);
+        if (empty($productName) || $currentPrice <= 0) continue;
+
+        $alternatives = findCheaperAlternatives($db, $productName, $currentPartnerId, $currentPrice, 2);
+        if (!empty($alternatives)) {
+            $best = $alternatives[0];
+            $qty = (int)($item['qty'] ?? 1);
+            $comparisons[] = [
+                'item_name'     => $productName,
+                'current_price' => $currentPrice,
+                'best_alt'      => $best,
+                'total_savings' => round($best['savings'] * $qty, 2),
+            ];
+            $totalSavings += round($best['savings'] * $qty, 2);
+        }
+    }
+
+    return [
+        'comparisons'  => $comparisons,
+        'total_savings' => $totalSavings,
+    ];
+}
+
     }
 }
 
@@ -1193,6 +2077,304 @@ function formatSearchResultsForPrompt(array $productResults, array $storeResults
     }
 
     return implode("\n", $lines);
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LIVE SENTIMENT DETECTION (pure regex/heuristic — no external API)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Analyze incoming message for emotional state using heuristics.
+ * Returns mood, confidence (0-1), and detected signals. FAST — no I/O.
+ */
+function detectSentiment(string $message): array
+{
+    $result = [
+        'mood'       => 'neutral',
+        'confidence' => 0.5,
+        'signals'    => [],
+    ];
+
+    $msg = $message;
+    $msgLower = mb_strtolower($msg);
+    $msgLen = mb_strlen($msg);
+
+    // Score accumulators per mood
+    $scores = [
+        'frustrated' => 0.0,
+        'hurried'    => 0.0,
+        'happy'      => 0.0,
+        'confused'   => 0.0,
+    ];
+
+    // ── Frustrated signals ──────────────────────────────────────────
+    $frustratedWords = [
+        'absurdo', 'demora', 'lixo', 'pessimo', 'horrivel', 'porcaria',
+        'nunca mais', 'que merda', 'ridiculo', 'palha[cç]ada',
+        'vergonha', 'nojento', 'inaceit[aá]vel', 'falta de respeito',
+        'descaso', 'raiva', 'revoltad[oa]', 'indignad[oa]',
+        'insatisfeit[oa]', 'reclamar', 'reclama[cç][aã]o',
+        'procon', 'processar', 'processo', 'den[uú]ncia',
+        'cad[eê] meu', 'nao aguento', 'cansei', 'que saco',
+        'inferno', 'droga', 'pqp', 'vsf', 'tnc',
+    ];
+    $negativeHitCount = 0;
+    foreach ($frustratedWords as $word) {
+        if (preg_match('/' . $word . '/ui', $msgLower)) {
+            $negativeHitCount++;
+        }
+    }
+    if ($negativeHitCount >= 1) {
+        $scores['frustrated'] += 0.3;
+        $result['signals'][] = 'negative_keyword';
+    }
+    if ($negativeHitCount >= 2) {
+        $scores['frustrated'] += 0.15;
+        $result['signals'][] = 'multiple_negatives';
+    }
+
+    // CAPS LOCK detection (more than 60% uppercase and at least 8 chars)
+    if ($msgLen >= 8) {
+        $upperCount = preg_match_all('/[A-ZÁÉÍÓÚÂÊÔÃÕÇ]/u', $msg);
+        $letterCount = preg_match_all('/[A-Za-záéíóúâêôãõçÁÉÍÓÚÂÊÔÃÕÇ]/u', $msg);
+        if ($letterCount > 0 && ($upperCount / $letterCount) > 0.6) {
+            $scores['frustrated'] += 0.25;
+            $result['signals'][] = 'caps_lock';
+        }
+    }
+
+    // Exclamation chains (3+ !)
+    if (preg_match('/!{3,}/', $msg)) {
+        $scores['frustrated'] += 0.15;
+        $result['signals'][] = 'exclamation_chain';
+    }
+
+    // Negative emoji
+    if (preg_match('/[\x{1F620}\x{1F621}\x{1F624}\x{1F92C}\x{1F44E}\x{1F4A9}\x{1F61E}\x{1F614}\x{1F629}\x{1F630}\x{1F631}\x{1F622}\x{1F62D}\x{1F616}\x{1F623}]/u', $msg)) {
+        $scores['frustrated'] += 0.2;
+        $result['signals'][] = 'negative_emoji';
+    }
+
+    // ── Hurried signals ─────────────────────────────────────────────
+    $hurriedWords = [
+        'r[aá]pido', 'urgente', 'pressa', 'logo', 'depressa',
+        'agora', 'j[aá]', 'correndo', 'precisando', 'to com fome',
+        'morrendo de fome', 'nao demora', 'faz logo', 'manda logo',
+        'pelo amor', 'por favor rapido', 'express', 'asap',
+    ];
+    foreach ($hurriedWords as $word) {
+        if (preg_match('/' . $word . '/ui', $msgLower)) {
+            $scores['hurried'] += 0.3;
+            $result['signals'][] = 'impatience_words';
+            break;
+        }
+    }
+
+    // Short messages without greetings suggest hurriedness
+    if ($msgLen < 15 && !preg_match('/(oi|ol[aá]|bom dia|boa tarde|boa noite|fala|e ai|opa)/ui', $msgLower)) {
+        $scores['hurried'] += 0.1;
+        $result['signals'][] = 'short_no_greeting';
+    }
+
+    // ── Happy signals ───────────────────────────────────────────────
+    $happyWords = [
+        '[oó]timo', 'maravilha', 'perfeito', 'adorei', 'amei',
+        'top', 'show', 'massa', 'demais', 'sensacional',
+        'incr[ií]vel', 'excelente', 'parab[eé]ns', 'obrigad[oa]',
+        'obg', 'valeu', 'vlw', 'genial', 'del[ií]cia',
+        'que bom', 'arrasou', 'mandou bem',
+        'nota 10', 'recomendo', 'satisfeit[oa]', 'feliz',
+    ];
+    foreach ($happyWords as $word) {
+        if (preg_match('/' . $word . '/ui', $msgLower)) {
+            $scores['happy'] += 0.3;
+            $result['signals'][] = 'positive_keyword';
+            break;
+        }
+    }
+
+    // Positive emoji
+    if (preg_match('/[\x{1F60D}\x{1F389}\x{1F44F}\x{2764}\x{1F601}\x{1F60A}\x{1F970}\x{1F973}\x{1F929}\x{1F44D}\x{1F496}\x{1F495}\x{2665}\x{1F618}\x{1F917}]/u', $msg)) {
+        $scores['happy'] += 0.2;
+        $result['signals'][] = 'positive_emoji';
+    }
+
+    // Brazilian laughter
+    if (preg_match('/(k{3,}|ha{2,}|rs{2,}|hua{2,})/i', $msgLower)) {
+        $scores['happy'] += 0.15;
+        $result['signals'][] = 'laughter';
+    }
+
+    // ── Confused signals ────────────────────────────────────────────
+    $confusedWords = [
+        'n[aã]o entendi', 'como assim', 'hein', 'n[aã]o sei',
+        'confus[oa]', 'perdid[oa]', 'n[aã]o entendo',
+        'que significa', 'o que e isso', 'como funciona',
+        'como fa[cç]o', 'me explica', 'n[aã]o compreendi',
+        'pode repetir', 'repete', 'n[aã]o ficou claro',
+    ];
+    foreach ($confusedWords as $word) {
+        if (preg_match('/' . $word . '/ui', $msgLower)) {
+            $scores['confused'] += 0.35;
+            $result['signals'][] = 'confusion_keyword';
+            break;
+        }
+    }
+
+    // Multiple question marks
+    if (preg_match('/\?{2,}/', $msg)) {
+        $scores['confused'] += 0.2;
+        $result['signals'][] = 'question_marks';
+    }
+    // Single "?" as entire message or near-entire
+    if (preg_match('/^\s*\?+\s*$/', $msg) || preg_match('/^(que|hein|como|o que)\s*\?/ui', $msgLower)) {
+        $scores['confused'] += 0.25;
+        $result['signals'][] = 'question_only';
+    }
+
+    // ── Determine winner ────────────────────────────────────────────
+    $maxScore = 0.0;
+    $winningMood = 'neutral';
+    foreach ($scores as $mood => $score) {
+        if ($score > $maxScore) {
+            $maxScore = $score;
+            $winningMood = $mood;
+        }
+    }
+
+    // Minimum threshold to be non-neutral
+    if ($maxScore >= 0.2) {
+        $result['mood'] = $winningMood;
+        $result['confidence'] = min(1.0, round($maxScore, 2));
+    } else {
+        $result['mood'] = 'neutral';
+        $result['confidence'] = round(0.5 + $maxScore, 2);
+    }
+
+    // Deduplicate signals
+    $result['signals'] = array_values(array_unique($result['signals']));
+
+    return $result;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WEATHER-AWARE SUGGESTIONS (pure logic — no external API)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Get weather/climate context based on month, time, and day of week.
+ * Uses Sao Paulo climate patterns. FAST — no I/O, pure logic.
+ */
+function getWeatherContext(): array
+{
+    $tz = new \DateTimeZone('America/Sao_Paulo');
+    $now = new \DateTime('now', $tz);
+    $month = (int)$now->format('n');       // 1-12
+    $hour = (int)$now->format('G');         // 0-23
+    $dayOfWeek = (int)$now->format('N');    // 1=Mon, 7=Sun
+    $isWeekend = ($dayOfWeek >= 6);
+    $dayName = [
+        1 => 'Segunda', 2 => 'Terca', 3 => 'Quarta',
+        4 => 'Quinta', 5 => 'Sexta', 6 => 'Sabado', 7 => 'Domingo',
+    ][$dayOfWeek] ?? '';
+
+    // ── Season based on SP climate ──────────────────────────────────
+    // Jun-Aug: cold/dry, Dec-Feb: hot/rainy, Mar-May & Sep-Nov: mild
+    if ($month >= 6 && $month <= 8) {
+        $season = 'cold';
+    } elseif ($month === 12 || $month <= 2) {
+        // Hot season, but often rainy afternoons
+        if ($hour >= 14 && $hour <= 18) {
+            $season = 'rainy'; // typical afternoon rain in SP summer
+        } else {
+            $season = 'hot';
+        }
+    } elseif ($month >= 3 && $month <= 5) {
+        // Autumn — transitioning to cold, can have cool evenings
+        $season = ($hour >= 18) ? 'cold' : 'mild';
+    } else {
+        // Sep-Nov: spring — transitioning to hot, can have rainy days
+        $season = ($month === 11 && $hour >= 14) ? 'rainy' : 'mild';
+    }
+
+    // ── Meal type based on time ─────────────────────────────────────
+    if ($hour >= 6 && $hour < 10) {
+        $mealType = 'breakfast';
+    } elseif ($hour >= 10 && $hour < 14) {
+        $mealType = 'lunch';
+    } elseif ($hour >= 14 && $hour < 17) {
+        $mealType = 'snack';
+    } elseif ($hour >= 17 && $hour < 22) {
+        $mealType = 'dinner';
+    } else {
+        $mealType = 'snack'; // late night snack
+    }
+
+    // Weekend overrides
+    if ($isWeekend && $hour >= 9 && $hour < 12) {
+        $mealType = 'brunch';
+    }
+
+    // ── Suggestions by season ───────────────────────────────────────
+    $seasonSuggestions = [
+        'hot'   => ['acai', 'sorvete', 'salada', 'suco natural', 'agua de coco', 'poke', 'comida leve', 'frutas', 'sanduiche natural'],
+        'cold'  => ['sopa', 'chocolate quente', 'cafe', 'caldo', 'fondue', 'comida caseira', 'marmita', 'canja', 'capuccino'],
+        'rainy' => ['comfort food', 'pizza', 'hamburguer', 'sopas', 'chocolate', 'pastel', 'coxinha', 'cafe com bolo'],
+        'mild'  => ['prato do dia', 'marmita', 'salada', 'wrap', 'bowl', 'comida variada'],
+    ];
+
+    // ── Suggestions by meal type ────────────────────────────────────
+    $mealSuggestions = [
+        'breakfast' => ['cafe', 'pao de queijo', 'tapioca', 'acai', 'suco', 'vitamina', 'pao na chapa'],
+        'brunch'    => ['acai', 'brunch', 'panqueca', 'ovos', 'suco', 'cafe', 'torrada', 'frutas'],
+        'lunch'     => ['marmita', 'prato feito', 'salada', 'combo almoco', 'executivo', 'self-service'],
+        'snack'     => ['acai', 'lanche', 'pastel', 'coxinha', 'cafe', 'bolo', 'sorvete', 'churros'],
+        'dinner'    => ['pizza', 'hamburguer', 'japonesa', 'churrasco', 'massa', 'comida chinesa', 'mexican'],
+    ];
+
+    // Combine season + meal suggestions (dedup)
+    $combined = array_unique(array_merge(
+        $seasonSuggestions[$season] ?? [],
+        $mealSuggestions[$mealType] ?? []
+    ));
+
+    // ── Build labels ────────────────────────────────────────────────
+    $seasonLabels = [
+        'hot'   => 'Quente (verao em SP)',
+        'cold'  => 'Frio (inverno em SP)',
+        'rainy' => 'Chuvoso (chuva tipica de SP)',
+        'mild'  => 'Ameno (clima agradavel)',
+    ];
+    $mealLabels = [
+        'breakfast' => 'Cafe da manha',
+        'brunch'    => 'Brunch de fim de semana',
+        'lunch'     => 'Almoco',
+        'snack'     => 'Lanche',
+        'dinner'    => 'Jantar',
+    ];
+
+    $seasonHint = $seasonLabels[$season] ?? $season;
+    $mealHint = $mealLabels[$mealType] ?? $mealType;
+
+    // Natural phrasing examples
+    $naturalPhrases = [
+        'hot'   => 'Dia quente pede algo refrescante!',
+        'cold'  => 'Noite fria pede uma sopinha ou um chocolate quente!',
+        'rainy' => 'Com essa chuva, nada melhor que um comfort food!',
+        'mild'  => 'Clima gostoso pra qualquer pedido!',
+    ];
+
+    return [
+        'season'          => $season,
+        'season_label'    => $seasonHint,
+        'meal_type'       => $mealType,
+        'meal_label'      => $mealHint,
+        'day_name'        => $dayName,
+        'is_weekend'      => $isWeekend,
+        'suggestions'     => $combined,
+        'natural_phrase'  => $naturalPhrases[$season] ?? '',
+    ];
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1393,7 +2575,9 @@ function buildSystemPrompt(
     ?array $popularItems = null,
     ?array $complementaryItems = null,
     string $searchContext = '',
-    ?array $timeCtx = null
+    ?array $timeCtx = null,
+    string $conversationHistory = '',
+    ?array $personalizedRecs = null
 ): string {
     $phone = $conversation['phone'] ?? '';
     $context = json_decode($conversation['ai_context'] ?? '{}', true) ?: [];
@@ -1410,6 +2594,45 @@ function buildSystemPrompt(
             $customerProfileBlock .= "\n- Email: {$customerInfo['email']}";
         }
         $customerProfileBlock .= "\n- Telefone: {$customerInfo['phone']}";
+    }
+
+
+    // ── Loyalty tier intelligence ─────────────────────────────────────
+    $loyaltyBlock = '';
+    $customerId_loyalty = $conversation['customer_id'] ?? null;
+    if ($customerId_loyalty && (int)$customerId_loyalty > 0) {
+        $loyaltyTier = $context['loyalty_tier'] ?? null;
+        if (!$loyaltyTier) {
+            $loyaltyTier = getCustomerLoyaltyTier($db, (int)$customerId_loyalty);
+            $context['loyalty_tier'] = $loyaltyTier;
+        }
+        $tier = $loyaltyTier['tier'] ?? 'bronze';
+        $badge = $loyaltyTier['badge'] ?? '';
+        $orders90d = $loyaltyTier['orders_90d'] ?? 0;
+        $spent90d = $loyaltyTier['spent_90d'] ?? 0;
+        $spentFmt = number_format($spent90d, 2, ',', '.');
+        $perks = $loyaltyTier['perks'] ?? [];
+        $tierLabel = ucfirst($tier);
+
+        if ($tier !== 'bronze') {
+            $loyaltyBlock = "\n\nPERFIL DE FIDELIDADE:";
+            $loyaltyBlock .= "\nTier: {$tierLabel} {$badge} | {$orders90d} pedidos nos ultimos 90 dias | R\$ {$spentFmt} gastos";
+            if (!empty($perks)) {
+                $loyaltyBlock .= "\nPerks: " . implode(', ', $perks);
+            }
+            if ($tier === 'diamante') {
+                $loyaltyBlock .= "\n-> Trate como ULTRA VIP! Use o nome, seja MUITO pessoal, ofereca beneficios exclusivos";
+                $loyaltyBlock .= "\n-> \"Voce e um dos nossos melhores clientes! Preparei algo especial...\"";
+                $loyaltyBlock .= "\n-> Se subtotal > R\$50 e tem taxa de entrega, sugira frete gratis como perk Diamante";
+            } elseif ($tier === 'ouro') {
+                $loyaltyBlock .= "\n-> Trate como VIP! Use o nome, seja mais pessoal, ofereca beneficios";
+                $loyaltyBlock .= "\n-> \"Como nosso cliente Ouro, voce tem vantagens especiais!\"";
+                $loyaltyBlock .= "\n-> Se subtotal > R\$50 e tem taxa de entrega, pode sugerir frete gratis eventual";
+            } elseif ($tier === 'prata') {
+                $loyaltyBlock .= "\n-> Cliente frequente! Seja pessoal, mencione que e especial";
+                $loyaltyBlock .= "\n-> \"Ja virou cliente frequente hein! Bom te ver de volta!\"";
+            }
+        }
     }
 
     // ── Active orders summary with ETA ─────────────────────────────────
@@ -1475,6 +2698,115 @@ function buildSystemPrompt(
         }
     }
 
+    // ── Learned preferences (cached in context) ─────────────────────────
+    $learnedPrefsBlock = '';
+    if ($customerInfo && !empty($customerInfo['customer_id'])) {
+        // Use cached preferences from context, or compute once per conversation
+        $learnedPrefs = $context['learned_preferences'] ?? null;
+        if ($learnedPrefs === null) {
+            $learnedPrefs = analyzeCustomerPreferences($db, (int)$customerInfo['customer_id']);
+            // Cache will be stored by caller when context is saved
+        }
+
+        if ($learnedPrefs && ($learnedPrefs['payment_preference'] || !empty($learnedPrefs['favorite_categories']))) {
+            $learnedPrefsBlock = "\n\nPREFERENCIAS APRENDIDAS DO CLIENTE:";
+
+            if ($learnedPrefs['payment_preference']) {
+                $payLabel = formatPaymentLabel($learnedPrefs['payment_preference']);
+                $learnedPrefsBlock .= "\n- Pagamento favorito: {$payLabel} ({$learnedPrefs['payment_confidence']}% dos pedidos)";
+            }
+            if (!empty($learnedPrefs['common_customizations'])) {
+                $customList = implode('", "', $learnedPrefs['common_customizations']);
+                $learnedPrefsBlock .= "\n- Customizacoes frequentes: \"{$customList}\"";
+            }
+            if ($learnedPrefs['avg_order_value'] > 0) {
+                $avgFmt = number_format($learnedPrefs['avg_order_value'], 2, ',', '.');
+                $learnedPrefsBlock .= "\n- Orcamento tipico: R\$ {$avgFmt} ({$learnedPrefs['budget_range']})";
+            }
+            if (!empty($learnedPrefs['favorite_categories'])) {
+                $catList = implode(', ', $learnedPrefs['favorite_categories']);
+                $learnedPrefsBlock .= "\n- Categorias favoritas: {$catList}";
+            }
+            if ($learnedPrefs['top_store_loyalty']) {
+                $ts = $learnedPrefs['top_store_loyalty'];
+                $learnedPrefsBlock .= "\n- Loja mais frequente: {$ts['name']} ({$ts['pct']}% dos pedidos)";
+            }
+            if ($learnedPrefs['avg_tip'] > 0) {
+                $tipFmt = number_format($learnedPrefs['avg_tip'], 2, ',', '.');
+                $learnedPrefsBlock .= "\n- Gorjeta media: R\$ {$tipFmt}";
+            }
+            if ($learnedPrefs['preferred_time']) {
+                $learnedPrefsBlock .= "\n- Horario preferido: {$learnedPrefs['preferred_time']}";
+            }
+            if ($learnedPrefs['order_frequency'] !== 'desconhecido') {
+                $learnedPrefsBlock .= "\n- Frequencia de pedidos: {$learnedPrefs['order_frequency']}";
+            }
+
+            $learnedPrefsBlock .= "\n→ Use essas informacoes naturalmente:";
+            $learnedPrefsBlock .= "\n  - Quando pedir pagamento: sugira o metodo favorito como padrao ('PIX como sempre?' em vez de listar tudo)";
+            $learnedPrefsBlock .= "\n  - Quando montar pedido: sugira customizacoes recorrentes ('Sem cebola como sempre?')";
+            $learnedPrefsBlock .= "\n  - Quando sugerir loja: priorize a favorita mas tambem sugira novidades";
+            $learnedPrefsBlock .= "\n  - NAO fale explicitamente 'analisei seus pedidos' — use as preferencias de forma sutil e natural";
+        }
+    }
+
+    // ── Sentiment-aware behavior block ──────────────────────────────────
+    $sentimentBlock = '';
+    $currentSentiment = $context['sentiment'] ?? null;
+    if ($currentSentiment && ($currentSentiment['mood'] ?? 'neutral') !== 'neutral') {
+        $moodLabel = $currentSentiment['mood'];
+        $moodConf = $currentSentiment['confidence'] ?? 0;
+        $sentimentBlock = "\n\nESTADO EMOCIONAL DO CLIENTE: {$moodLabel} (confianca: {$moodConf})";
+
+        $moodRules = [
+            'frustrated' => "\nRegras para cliente FRUSTRADO:"
+                . "\n- Seja EXTRA empatica. Valide o sentimento primeiro (\"Entendo sua frustracao\", \"Poxa, sinto muito\")"
+                . "\n- Seja direta e resolva rapido. Nao faca piadas."
+                . "\n- Ofereca falar com atendente humano se necessario ([TRANSFER_HUMAN])"
+                . "\n- Use tom calmo e acolhedor. Nao minimize o problema."
+                . "\n- Priorize a resolucao sobre qualquer sugestao comercial.",
+            'hurried' => "\nRegras para cliente COM PRESSA:"
+                . "\n- Respostas CURTAS e diretas. Nada de enrolacao."
+                . "\n- Pule saudacoes longas. Va direto ao ponto."
+                . "\n- Use bullet points quando listar opcoes."
+                . "\n- Confirme acoes rapido: \"Pronto!\", \"Feito!\", \"Adicionado!\""
+                . "\n- Antecipe proximos passos sem esperar perguntas.",
+            'happy' => "\nRegras para cliente FELIZ:"
+                . "\n- Seja animada junto! Use exclamacoes e energia."
+                . "\n- Aproveite o bom humor pra sugestoes e novidades."
+                . "\n- Sugira extras, combos, sobremesas — momento ideal pra upsell."
+                . "\n- Faca comentarios positivos: \"Que bom!\", \"Adorei!\", \"Boa escolha!\"",
+            'confused' => "\nRegras para cliente CONFUSO:"
+                . "\n- Explique passo a passo, de forma simples."
+                . "\n- Use exemplos concretos."
+                . "\n- Pergunte se entendeu antes de seguir."
+                . "\n- Seja paciente — repita se necessario, sem parecer condescendente."
+                . "\n- Ofereca opcoes claras e numeradas.",
+        ];
+
+        $sentimentBlock .= $moodRules[$moodLabel] ?? '';
+    }
+
+    // Sentiment shift warning
+    $sentimentShiftBlock = '';
+    $sentimentHistory = $context['sentiment_history'] ?? [];
+    if (count($sentimentHistory) >= 2) {
+        $prevMoods = array_slice($sentimentHistory, 0, -1);
+        $currentMood = end($sentimentHistory);
+        if (in_array('happy', $prevMoods) && $currentMood === 'frustrated') {
+            $sentimentShiftBlock = "\n\nALERTA DE MUDANCA EMOCIONAL: O cliente estava feliz antes mas agora parece frustrado. Reconheca isso naturalmente: \"Percebi que algo nao ta legal, posso ajudar?\" — Seja extra empatica e direta.";
+        }
+    }
+
+    // ── Weather-aware suggestions block ──────────────────────────────────
+    $weatherBlock = '';
+    $weatherData = getWeatherContext();
+    $weatherSuggestionsList = implode(', ', $weatherData['suggestions'] ?? []);
+    $weatherBlock = "\n\nCONTEXTO CLIMATICO/MOMENTO:"
+        . "\nEstacao: {$weatherData['season_label']} | Refeicao: {$weatherData['meal_label']} | Dia: {$weatherData['day_name']}"
+        . "\nSugestoes contextuais: {$weatherSuggestionsList}"
+        . "\n→ Use naturalmente quando sugerir opcoes: \"{$weatherData['natural_phrase']}\"";
+
     // ── Base personality ───────────────────────────────────────────────
     $personality = <<<PROMPT
 Voce e a *Bora*, assistente da SuperBora pelo WhatsApp. Voce e como uma amiga brasileira — informal, calorosa, esperta e eficiente. Voce ajuda com pedidos, status, duvidas e tudo sobre delivery.
@@ -1516,8 +2848,12 @@ REGRAS CRITICAS:
 - NUNCA diga "Eu sou uma IA" ou "Sou um robo" — voce e a Bora, ponto final
 - Se o cliente perguntar se voce e robo, diga algo como "Sou a Bora, sua assistente da SuperBora! Como posso te ajudar?"
 {$customerProfileBlock}
+{$loyaltyBlock}
 {$activeOrdersBlock}
 {$recentOrdersBlock}
+{$learnedPrefsBlock}
+{$sentimentBlock}{$sentimentShiftBlock}
+{$weatherBlock}
 PROMPT;
 
     // Step-specific instructions
@@ -1656,6 +2992,27 @@ PROMPT;
                 $returningHint = "\n\nDICA: Voce conhece esse cliente! Chame pelo nome: \"{$customerName}\".";
             }
 
+
+            // Build loyalty-aware greeting hint
+            $loyaltyGreetingHint = '';
+            $greetCustId = $conversation['customer_id'] ?? null;
+            if ($greetCustId && (int)$greetCustId > 0) {
+                $greetTier = $context['loyalty_tier'] ?? null;
+                if (!$greetTier) {
+                    $greetTier = getCustomerLoyaltyTier($db, (int)$greetCustId);
+                }
+                $greetTierName = $greetTier['tier'] ?? 'bronze';
+                if ($greetTierName === 'diamante' || $greetTierName === 'ouro') {
+                    $greetBadge = $greetTier['badge'] ?? '';
+                    $loyaltyGreetingHint = "\n\nFIDELIDADE VIP: O cliente e " . ucfirst($greetTierName) . " {$greetBadge}! Cumprimente com carinho extra:";
+                    $loyaltyGreetingHint .= "\n- Ex: \"Oi {$customerName}! Sempre bom te ver por aqui {$greetBadge}\"";
+                    $loyaltyGreetingHint .= "\n- Seja MAIS pessoal, use o nome, faca o cliente sentir que e especial";
+                } elseif ($greetTierName === 'prata') {
+                    $loyaltyGreetingHint = "\n\nFIDELIDADE: O cliente e Prata! Ja virou frequente.";
+                    $loyaltyGreetingHint .= "\n- Ex: \"Oi {$customerName}! Ja virou cliente frequente hein!\"";
+                }
+            }
+
             // Build referral hint
             $referralHint = '';
             if (!empty($context['referral_code'])) {
@@ -1732,6 +3089,30 @@ PROMPT;
                 }
             }
 
+            // Build smart reorder suggestion
+            $smartReorderHint = '';
+            if ($customerInfo && !empty($customerInfo['customer_id'])) {
+                try {
+                    $reorderSuggestion = getSmartReorderSuggestion($db, (int)$customerInfo['customer_id']);
+                    if ($reorderSuggestion && $reorderSuggestion['confidence'] >= 0.15) {
+                        $confPct = round($reorderSuggestion['confidence'] * 100);
+                        $itemList = !empty($reorderSuggestion['items']) ? implode(', ', $reorderSuggestion['items']) : '';
+                        $smartReorderHint = "\n\nSUGESTAO DE REORDER INTELIGENTE:";
+                        $smartReorderHint .= "\n{$reorderSuggestion['pattern_description']}. Pedidos frequentes: {$itemList}.";
+                        $smartReorderHint .= "\nConfianca: {$confPct}%";
+                        if ($reorderSuggestion['confidence'] >= 0.7) {
+                            $smartReorderHint .= "\n→ Confianca ALTA! Sugira diretamente de forma natural e animada. Ex: \"Oi {$customerName}! {$reorderSuggestion['pattern_description']}! Quer o de sempre?\"";
+                        } elseif ($reorderSuggestion['confidence'] >= 0.5) {
+                            $smartReorderHint .= "\n→ Confianca MEDIA. Mencione de forma sutil na conversa. Ex: \"Vi que voce curte a {$reorderSuggestion['store_name']}! Quer pedir de la hoje?\"";
+                        } else {
+                            $smartReorderHint .= "\n→ Confianca BAIXA. NAO mencione diretamente — use apenas como contexto interno para entender melhor o cliente.";
+                        }
+                    }
+                } catch (\Exception $e) {
+                    // Non-critical
+                }
+            }
+
             $stepInstructions = <<<STEP
 ETAPA ATUAL: Saudacao e deteccao de intencao
 
@@ -1756,10 +3137,13 @@ DETECCAO AUTOMATICA DE INTENCAO:
 {$locationHint}
 {$storeList}
 {$returningHint}
+{$loyaltyGreetingHint}
 {$referralHint}
 {$dietaryHint}
 {$promoBlock}
 {$favoritesBlock}
+{$smartReorderHint}
+{$weatherBlock}
 
 INSTRUCOES:
 - SEMPRE esteja a frente: o cliente mandou "oi"? Voce ja sabe se ele tem pedido ativo. Fale sobre isso PRIMEIRO.
@@ -1769,6 +3153,7 @@ INSTRUCOES:
 - Se detectar intencao de pedido direto, pule para o fluxo certo
 - Se nao tiver pedido ativo nem recente, pergunte de forma natural: "Quer fazer um pedido ou precisa de uma ajuda?"
 - Se tiver promocoes ativas nas lojas favoritas, mencione naturalmente: "A [loja] ta com [produto] em promo, viu!"
+- Se houver SUGESTAO DE REORDER INTELIGENTE acima, siga as instrucoes de confianca para decidir se/como mencionar
 - NUNCA responda com um menu de opcoes numerado roboticamente
 - Seja a assistente mais atenciosa do mundo — antecipe tudo!
 
@@ -1812,6 +3197,7 @@ OBJETIVO: Ajudar o cliente a escolher uma loja.
 {$storeList}
 {$promoBlock}
 {$favoritesBlock}
+{$weatherBlock}
 
 INSTRUCOES:
 - Se nao sabe a localizacao do cliente, PERGUNTE PRIMEIRO antes de listar lojas
@@ -1836,7 +3222,7 @@ STEP;
 
         case STEP_TAKE_ORDER:
             $partnerName = $context['partner_name'] ?? 'a loja';
-            $cartSummary = buildCartSummary($items);
+            $cartSummary = buildCartSummary($items, !empty($context['group_order']));
             $cartItemCount = count($items);
 
             // Build popular items block
@@ -1890,6 +3276,15 @@ STEP;
                 if (!empty($complementaryBlock)) {
                     $upsellInstructions .= "\n- Use as SUGESTOES PRA ACOMPANHAR listadas abaixo — sao itens reais do cardapio";
                 }
+                // Add collaborative filtering insight to upsell
+                if ($personalizedRecs && count($personalizedRecs) > 0) {
+                    foreach ($personalizedRecs as $rec) {
+                        if (($rec['reason_data']['type'] ?? '') === 'collaborative' && isset($rec['reason_data']['pct'])) {
+                            $upsellInstructions .= "\n- DADO REAL: {$rec['reason_data']['pct']}% dos clientes que pedem itens parecidos tambem pedem {$rec['name']} (R\$ " . number_format($rec['price'], 2, ',', '.') . ") — use isso na sugestao!";
+                            break; // Only show one collaborative suggestion
+                        }
+                    }
+                }
                 $upsellInstructions .= "\n- Sugira UMA VEZ so. Se o cliente disser nao, respeite e siga em frente.";
             } else {
                 // 2+ items — lighter touch
@@ -1930,6 +3325,55 @@ STEP;
                 $dietaryBlockTakeOrder .= "\n- NAO invente informacoes nutricionais — se nao tiver certeza, diga: 'Nao tenho certeza se esse item contem [alergeno], quer que eu confirme?'";
             }
 
+            // Learned customization preferences for take-order step
+            $customizationHint = '';
+            $lp = $context['learned_preferences'] ?? null;
+            if ($lp && !empty($lp['common_customizations'])) {
+                $customizationHint = "\n\nCUSTOMIZACOES FREQUENTES DO CLIENTE:";
+                foreach ($lp['common_customizations'] as $cust) {
+                    $customizationHint .= "\n- \"{$cust}\"";
+                }
+                $customizationHint .= "\n→ Se o cliente pedir algo que normalmente customiza, pergunte naturalmente: 'Sem cebola como sempre?' ou 'Com borda recheada de novo?'";
+                $customizationHint .= "\n→ NAO aplique automaticamente — sempre confirme com o cliente antes";
+            }
+
+            // Group order mode instructions for take-order
+            $groupOrderBlock = '';
+            if (!empty($context['group_order'])) {
+                $memberSummaries = [];
+                foreach ($context['group_members'] as $gm) {
+                    $itemCount = count($gm['items'] ?? []);
+                    $memberSummaries[] = "{$gm['name']} ({$itemCount} " . ($itemCount === 1 ? 'item' : 'itens') . ")";
+                }
+                $membersStr = !empty($memberSummaries) ? implode(', ', $memberSummaries) : 'nenhum membro ainda';
+                $currentMember = $context['current_group_member'] ?? 'nenhum';
+                $groupOrderBlock = "\n\nMODO GRUPO ATIVO — Pedido coletivo";
+                $groupOrderBlock .= "\nMembros: {$membersStr}";
+                $groupOrderBlock .= "\nMembro atual: {$currentMember}";
+                $groupOrderBlock .= "\n\nRegras do pedido grupo:";
+                $groupOrderBlock .= "\n- Pergunte o que cada pessoa quer, um por vez";
+                $groupOrderBlock .= "\n- Use [GROUP_MEMBER:nome] ao trocar de pessoa (ex: [GROUP_MEMBER:Joao])";
+                $groupOrderBlock .= "\n- Ao final, mostre resumo por pessoa antes de usar [NEXT_STEP]";
+                $groupOrderBlock .= "\n- Total geral e entrega unica para todos";
+                $groupOrderBlock .= "\n- Se o cliente listar nomes ('Maria, Joao, Ana'), registre todos com [GROUP_MEMBER:nome] para cada um";
+            }
+
+            // Personalized recommendations block
+            $personalizedRecsBlock = '';
+            if ($personalizedRecs && count($personalizedRecs) > 0) {
+                $recLines = [];
+                foreach ($personalizedRecs as $i => $rec) {
+                    $recPriceFmt = number_format($rec['price'], 2, ',', '.');
+                    $reasonTag = $rec['reason'];
+                    $recNum = $i + 1;
+                    $recLines[] = "{$recNum}. [{$rec['product_id']}] {$rec['name']} R\$ {$recPriceFmt} — {$reasonTag}";
+                }
+                $personalizedRecsBlock = "\n\nRECOMENDACOES PERSONALIZADAS PARA ESTE CLIENTE:\n" . implode("\n", $recLines);
+                $personalizedRecsBlock .= "\n→ Mencione naturalmente quando fizer sentido. Ex: se o cliente pediu algo similar antes, diga 'A [produto] que voce sempre pede ta disponivel!' ou 'Tem [produto] novo, acho que voce vai gostar!'";
+                $personalizedRecsBlock .= "\n→ NAO force todas as recomendacoes — use 1-2 no maximo, e so se parecer natural";
+                $personalizedRecsBlock .= "\n→ Use APENAS os product_ids listados aqui ou no cardapio. NUNCA invente.";
+            }
+
             $stepInstructions = <<<STEP
 ETAPA ATUAL: Montar pedido
 
@@ -1939,11 +3383,15 @@ LOJA: *{$partnerName}*
 {$complementaryBlock}
 {$comboHint}
 {$storeCouponsBlock}
+{$personalizedRecsBlock}
 
 CARRINHO ATUAL:
 {$cartSummary}{$appliedCouponBlock}
 {$upsellInstructions}
 {$dietaryBlockTakeOrder}
+{$customizationHint}
+{$groupOrderBlock}
+{$weatherBlock}
 
 INSTRUCOES:
 - Ajude o cliente a escolher itens do cardapio de forma natural e amigavel
@@ -1983,6 +3431,7 @@ MARCADORES:
 - [NEXT_STEP] — finalizar montagem do pedido
 - [TRANSFER_HUMAN] — transferir para humano
 - [DIETARY:restricoes_texto] — quando o cliente mencionar restricoes alimentares/alergias durante o pedido
+- [GROUP_MEMBER:nome] — trocar de membro no pedido grupo (ex: [GROUP_MEMBER:Maria]). Apenas quando modo grupo ativo.
 STEP;
             break;
 
@@ -2101,8 +3550,16 @@ STEP;
                 $paymentCouponBlock = "\n\nCUPOM JA APLICADO: *{$context['coupon_code']}* — " . ($context['coupon_description'] ?? '');
             }
 
+            // Payment preference from learned data
+            $paymentPrefHint = '';
+            $lp = $context['learned_preferences'] ?? null;
+            if ($lp && !empty($lp['payment_preference']) && ($lp['payment_confidence'] ?? 0) > 70) {
+                $prefLabel = formatPaymentLabel($lp['payment_preference']);
+                $paymentPrefHint = "\n\nPREFERENCIA DE PAGAMENTO DETECTADA: O cliente geralmente paga com *{$prefLabel}* ({$lp['payment_confidence']}% das vezes). Sugira: '{$prefLabel} como de costume?' em vez de listar todas as opcoes. Se ele confirmar, use direto.";
+            }
+
             $stepInstructions = <<<STEP
-ETAPA ATUAL: Forma de pagamento{$cashbackBlock}{$paymentCouponBlock}
+ETAPA ATUAL: Forma de pagamento{$cashbackBlock}{$paymentCouponBlock}{$paymentPrefHint}
 
 OBJETIVO: Descobrir como o cliente quer pagar e se quer usar cashback.
 
@@ -2145,8 +3602,13 @@ STEP;
             break;
 
         case STEP_CONFIRM_ORDER:
-            $cartSummary = buildCartSummary($items);
             $subtotal = calculateSubtotal($items);
+            // Compute cart optimizations early for use in summary
+            $_confirmOpts = [];
+            try {
+                $_confirmOpts = analyzeCartOptimizations($db, $context);
+            } catch (\Throwable $e) { /* non-critical */ }
+            $cartSummary = buildCartSummary($items, !empty($context['group_order']), $_confirmOpts);
             $deliveryFee = (float)($context['delivery_fee'] ?? WABOT_DEFAULT_DELIVERY_FEE);
             $serviceFee = WABOT_SERVICE_FEE;
 
@@ -2279,6 +3741,68 @@ STEP;
                 }
             }
 
+            // Price comparison info for confirm step
+            $priceComparisonHint = '';
+            $priceAlts = $context['price_alternatives'] ?? [];
+            if (!empty($priceAlts)) {
+                $totalPossibleSavings = 0;
+                $altLines = [];
+                foreach (array_slice($priceAlts, 0, 3) as $pa) {
+                    $savFmt = number_format($pa['savings'], 2, ',', '.');
+                    $altPriceFmt = number_format($pa['alt_price'], 2, ',', '.');
+                    $altLines[] = "- {$pa['item_name']}: R\$ {$altPriceFmt} na {$pa['partner_name']} (economia: R\$ {$savFmt}, {$pa['savings_pct']}%)";
+                    $totalPossibleSavings += $pa['savings'];
+                }
+                if (!empty($altLines)) {
+                    $totalSavFmt = number_format($totalPossibleSavings, 2, ',', '.');
+                    $priceComparisonHint = "\n\nINFO DE PRECOS (economia possivel: R\$ {$totalSavFmt}):\n" . implode("\n", $altLines);
+                    if ($totalPossibleSavings > ($total * 0.20)) {
+                        $priceComparisonHint .= "\n→ A economia e significativa (>20%). Se parecer natural, mencione: 'Ah, vi que a {$priceAlts[0]['partner_name']} tem {$priceAlts[0]['item_name']} mais barato. Mas voce ja ta aqui, entao confirmo?'";
+                    } else {
+                        $priceComparisonHint .= "\n→ A diferenca nao e tao grande. NAO sugira trocar de loja. Siga com a confirmacao normalmente.";
+                    }
+                }
+            }
+
+
+            // ── Cart optimization suggestions ──────────────────────────
+            $cartOptBlock = '';
+            try {
+                $cartOpts = analyzeCartOptimizations($db, $context);
+                if (!empty($cartOpts)) {
+                    $context['cart_optimizations'] = $cartOpts;
+                    $optLines = [];
+                    $optNum = 1;
+                    foreach ($cartOpts as $opt) {
+                        $optLines[] = "{$optNum}. " . ucfirst(str_replace('_', ' ', $opt['type'])) . ": {$opt['message']}";
+                        $optNum++;
+                    }
+                    $cartOptBlock = "\n\nOTIMIZACOES DO CARRINHO:\n" . implode("\n", $optLines);
+                    $cartOptBlock .= "\n-> Mencione naturalmente ANTES de confirmar: sugira de forma leve e amigavel";
+                    $cartOptBlock .= "\n-> Nao force, apenas sugira. Se o cliente disser nao, siga em frente com [CONFIRMED]";
+                    $cartOptBlock .= "\n-> Para frete gratis/combo, diga algo como: 'Ei, sabia que adicionando X voce ganha frete gratis? Compensa!'";
+                }
+            } catch (\Throwable $e) {
+                error_log(WABOT_LOG_PREFIX . " Cart opt at confirm error: " . $e->getMessage());
+            }
+
+            // ── Loyalty tier perk at confirmation ──────────────────────
+            $loyaltyConfirmHint = '';
+            $confirmCustId = $conversation['customer_id'] ?? null;
+            if ($confirmCustId) {
+                $confirmTier = $context['loyalty_tier'] ?? null;
+                if (!$confirmTier) {
+                    $confirmTier = getCustomerLoyaltyTier($db, (int)$confirmCustId);
+                    $context['loyalty_tier'] = $confirmTier;
+                }
+                $tierName = $confirmTier['tier'] ?? 'bronze';
+                if (in_array($tierName, ['ouro', 'diamante']) && $deliveryFee > 0 && $subtotal > 50) {
+                    $loyaltyConfirmHint = "\n\nPERK DE FIDELIDADE: O cliente e {$tierName} {$confirmTier['badge']}!";
+                    $loyaltyConfirmHint .= "\n-> Pode sugerir frete gratis como beneficio: \"Como nosso cliente " . ucfirst($tierName) . ", voce ganha frete gratis nesse pedido!\"";
+                    $loyaltyConfirmHint .= "\n-> NAO aplique automaticamente — apenas sugira para que o cliente se sinta valorizado";
+                }
+            }
+
             $stepInstructions = <<<STEP
 ETAPA ATUAL: Confirmacao do pedido
 
@@ -2296,6 +3820,9 @@ Endereco: {$address}{$deliveryInstructionsDisplay}
 Pagamento: {$payment}{$changeInfo}{$schedulingDisplay}{$etaDisplay}
 {$lastChanceHint}
 {$cashbackHint}
+{$cartOptBlock}
+{$loyaltyConfirmHint}
+{$priceComparisonHint}
 
 INSTRUCOES:
 - Mostre o resumo completo do pedido formatado bonito com WhatsApp formatting
@@ -2544,6 +4071,12 @@ STEP;
         $prompt .= "\n\nMEMORIA DE CONVERSAS ANTERIORES (use para personalizar):\n" . $memoryContext;
     }
 
+    // Add conversation history summary for continuity across sessions
+    if (!empty($conversationHistory)) {
+        $prompt .= "\n\n" . $conversationHistory;
+        $prompt .= "\nUSE ESTE HISTORICO: Faca referencias naturais a conversas passadas quando relevante. Ex: se o cliente pediu pizza semana passada, diga 'Vi que voce curtiu a pizza da Bella outro dia!'. Isso cria conexao e mostra que voce 'lembra' do cliente.";
+    }
+
     // Add note if customer previously sent audio
     $context = json_decode($conversation['ai_context'] ?? '{}', true) ?: [];
     if (!empty($context['sent_audio'])) {
@@ -2560,13 +4093,85 @@ STEP;
 
 /**
  * Build a text summary of the cart items.
+ * If $groupOrder is true and items have group_member fields, renders grouped by member.
  */
-function buildCartSummary(array $items): string
+function buildCartSummary(array $items, bool $groupOrder = false, array $optimizations = []): string
 {
     if (empty($items)) {
         return "(carrinho vazio)";
     }
 
+    // Check if any item has a group_member â if so, render grouped
+    $hasGroupMembers = $groupOrder && !empty(array_filter($items, fn($it) => !empty($it['group_member'])));
+
+    if ($hasGroupMembers) {
+        $byMember = [];
+        $unassigned = [];
+        foreach ($items as $i => $item) {
+            $member = $item['group_member'] ?? null;
+            if ($member) {
+                $byMember[$member][] = ['index' => $i, 'item' => $item];
+            } else {
+                $unassigned[] = ['index' => $i, 'item' => $item];
+            }
+        }
+
+        $lines = [];
+        $subtotal = 0;
+
+        foreach ($byMember as $memberName => $memberItems) {
+            $lines[] = "\xF0\x9F\x91\xA4 *{$memberName}*:";
+            foreach ($memberItems as $entry) {
+                $item = $entry['item'];
+                $idx = $entry['index'];
+                $qty = (int)($item['qty'] ?? $item['quantity'] ?? 1);
+                $price = (float)($item['price'] ?? 0);
+                $itemTotal = $price * $qty;
+                $subtotal += $itemTotal;
+                $priceFmt = number_format($price, 2, ',', '.');
+                $totalFmt = number_format($itemTotal, 2, ',', '.');
+                $name = $item['name'] ?? 'Item';
+                $lines[] = "  {$idx}. {$qty}x {$name} â R\$ {$priceFmt} = R\$ {$totalFmt}";
+
+                if (!empty($item['options'])) {
+                    $optParts = [];
+                    foreach ($item['options'] as $opt) {
+                        $optLine = $opt['option_name'];
+                        if ((float)($opt['price_extra'] ?? 0) > 0) {
+                            $optLine .= ' (+R\$ ' . number_format($opt['price_extra'], 2, ',', '.') . ')';
+                        }
+                        $optParts[] = $optLine;
+                    }
+                    $lines[] = "     opcoes: " . implode(', ', $optParts);
+                } elseif (!empty($item['options_text'])) {
+                    $lines[] = "     opcoes: " . $item['options_text'];
+                }
+            }
+        }
+
+        if (!empty($unassigned)) {
+            $lines[] = "\xF0\x9F\x93\xA6 *Itens gerais*:";
+            foreach ($unassigned as $entry) {
+                $item = $entry['item'];
+                $idx = $entry['index'];
+                $qty = (int)($item['qty'] ?? $item['quantity'] ?? 1);
+                $price = (float)($item['price'] ?? 0);
+                $itemTotal = $price * $qty;
+                $subtotal += $itemTotal;
+                $priceFmt = number_format($price, 2, ',', '.');
+                $totalFmt = number_format($itemTotal, 2, ',', '.');
+                $name = $item['name'] ?? 'Item';
+                $lines[] = "  {$idx}. {$qty}x {$name} â R\$ {$priceFmt} = R\$ {$totalFmt}";
+            }
+        }
+
+        $lines[] = "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80";
+        $lines[] = "Subtotal: R\$ " . number_format($subtotal, 2, ',', '.');
+
+        return implode("\n", $lines);
+    }
+
+    // Standard (non-group) cart summary
     $lines = [];
     $subtotal = 0;
     foreach ($items as $i => $item) {
@@ -2596,6 +4201,22 @@ function buildCartSummary(array $items): string
     }
     $lines[] = "";
     $lines[] = "Subtotal: R\$ " . number_format($subtotal, 2, ',', '.');
+
+    // Add optimization tips if available
+    if (!empty($optimizations)) {
+        $lines[] = "";
+        foreach ($optimizations as $opt) {
+            $icon = match($opt['type'] ?? '') {
+                'free_delivery' => "\xF0\x9F\x9A\x9A",
+                'combo' => "\xF0\x9F\x8E\xAF",
+                'quantity_discount' => "\xF0\x9F\x92\xA1",
+                'min_order' => "\xE2\x9A\xA0\xEF\xB8\x8F",
+                'promo_active' => "\xF0\x9F\x94\xA5",
+                default => "\xF0\x9F\x92\xA1",
+            };
+            $lines[] = "{$icon} " . ($opt['message'] ?? '');
+        }
+    }
 
     return implode("\n", $lines);
 }
@@ -2627,6 +4248,279 @@ function formatPaymentLabel(string $method): string
         'dinheiro' => 'Dinheiro na entrega',
     ];
     return $labels[$method] ?? ($method ?: 'Nao definido');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SMART CART OPTIMIZATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Analyze the customer's cart and suggest optimizations:
+ * free delivery threshold, combo savings, quantity discounts, min order, promos.
+ *
+ * @return array List of suggestions, each with type, message, savings
+ */
+function analyzeCartOptimizations(PDO $db, array $context): array
+{
+    $suggestions = [];
+    $items = $context['items'] ?? [];
+    $partnerId = $context['partner_id'] ?? null;
+    $subtotal = calculateSubtotal($items);
+    $deliveryFee = (float)($context['delivery_fee'] ?? WABOT_DEFAULT_DELIVERY_FEE);
+
+    if (!$partnerId || empty($items)) {
+        return $suggestions;
+    }
+
+    try {
+        $storeStmt = $db->prepare("
+            SELECT free_delivery_above, min_order_value,
+                   COALESCE(trade_name, name) as store_name
+            FROM om_market_partners
+            WHERE partner_id = ? AND status::text = '1'
+        ");
+        $storeStmt->execute([$partnerId]);
+        $store = $storeStmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$store) {
+            return $suggestions;
+        }
+
+        $freeDeliveryAbove = (float)($store['free_delivery_above'] ?? 0);
+        $minOrderValue = (float)($store['min_order_value'] ?? 0);
+        $couponFreeDelivery = !empty($context['coupon_free_delivery']);
+
+        // a) Free delivery threshold
+        if ($freeDeliveryAbove > 0 && $subtotal < $freeDeliveryAbove && $deliveryFee > 0 && !$couponFreeDelivery) {
+            $diff = round($freeDeliveryAbove - $subtotal, 2);
+            if ($diff <= 15.00) {
+                $diffFmt = number_format($diff, 2, ',', '.');
+                $delivFmt = number_format($deliveryFee, 2, ',', '.');
+
+                $cheapStmt = $db->prepare("
+                    SELECT product_id, name, price, special_price
+                    FROM om_market_products
+                    WHERE partner_id = ? AND status::text = '1' AND quantity > 0
+                      AND COALESCE(NULLIF(special_price, 0), price) >= ?
+                      AND COALESCE(NULLIF(special_price, 0), price) <= ?
+                    ORDER BY COALESCE(NULLIF(special_price, 0), price) ASC
+                    LIMIT 3
+                ");
+                $cheapStmt->execute([$partnerId, max(1, $diff - 3), $diff + 10]);
+                $cheapItems = $cheapStmt->fetchAll(PDO::FETCH_ASSOC);
+
+                $suggestion = "Faltam R\$ {$diffFmt} para frete gratis (economia de R\$ {$delivFmt})!";
+                if (!empty($cheapItems)) {
+                    $itemSug = $cheapItems[0];
+                    $itemPrice = ((float)($itemSug['special_price'] ?? 0) > 0 && (float)$itemSug['special_price'] < (float)$itemSug['price'])
+                        ? (float)$itemSug['special_price'] : (float)$itemSug['price'];
+                    $itemPriceFmt = number_format($itemPrice, 2, ',', '.');
+                    $suggestion .= " Sugestao: {$itemSug['name']} (R\$ {$itemPriceFmt})";
+                }
+
+                $suggestions[] = ['type' => 'free_delivery', 'message' => $suggestion, 'savings' => $deliveryFee];
+            }
+        }
+
+        // b) Combo detection
+        $comboStmt = $db->prepare("
+            SELECT product_id, name, price, special_price, description
+            FROM om_market_products
+            WHERE partner_id = ? AND status::text = '1' AND quantity > 0
+              AND (LOWER(name) LIKE '%combo%' OR LOWER(name) LIKE '%kit%'
+                   OR LOWER(name) LIKE '%promocao%' OR LOWER(name) LIKE '%promo %')
+            ORDER BY price ASC LIMIT 10
+        ");
+        $comboStmt->execute([$partnerId]);
+        $combos = $comboStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($combos as $combo) {
+            $comboNameLower = mb_strtolower($combo['name']);
+            $comboDescLower = mb_strtolower($combo['description'] ?? '');
+            $comboPrice = ((float)($combo['special_price'] ?? 0) > 0 && (float)$combo['special_price'] < (float)$combo['price'])
+                ? (float)$combo['special_price'] : (float)$combo['price'];
+
+            $matchCount = 0;
+            $matchedCartTotal = 0;
+            foreach ($items as $item) {
+                $words = preg_split('/\s+/', mb_strtolower($item['name'] ?? ''));
+                foreach ($words as $w) {
+                    if (mb_strlen($w) >= 4 && (strpos($comboNameLower, $w) !== false || strpos($comboDescLower, $w) !== false)) {
+                        $matchCount++;
+                        $matchedCartTotal += (float)($item['price'] ?? 0) * (int)($item['qty'] ?? 1);
+                        break;
+                    }
+                }
+            }
+
+            if ($matchCount >= 2 && $comboPrice < $matchedCartTotal) {
+                $savings = round($matchedCartTotal - $comboPrice, 2);
+                $savingsFmt = number_format($savings, 2, ',', '.');
+                $comboPriceFmt = number_format($comboPrice, 2, ',', '.');
+                $suggestions[] = [
+                    'type' => 'combo',
+                    'message' => "\"{$combo['name']}\" (R\$ {$comboPriceFmt}) sai R\$ {$savingsFmt} mais barato que os itens separados",
+                    'savings' => $savings,
+                ];
+                break;
+            }
+        }
+
+        // c) Quantity discount / larger size
+        foreach ($items as $item) {
+            $qty = (int)($item['qty'] ?? 1);
+            if ($qty < 2) continue;
+            $itemTotal = (float)($item['price'] ?? 0) * $qty;
+            $keywords = preg_split('/\s+/', preg_replace('/\d+\s*(ml|l|g|kg)\b/i', '', mb_strtolower($item['name'] ?? '')));
+            $keywords = array_filter($keywords, fn($w) => mb_strlen($w) >= 3);
+            if (empty($keywords)) continue;
+            $searchTerm = '%' . implode('%', array_slice(array_values($keywords), 0, 2)) . '%';
+
+            $biggerStmt = $db->prepare("
+                SELECT product_id, name, price, special_price
+                FROM om_market_products
+                WHERE partner_id = ? AND status::text = '1' AND quantity > 0
+                  AND product_id != ? AND LOWER(name) LIKE ?
+                  AND COALESCE(NULLIF(special_price, 0), price) > ?
+                  AND COALESCE(NULLIF(special_price, 0), price) < ?
+                ORDER BY COALESCE(NULLIF(special_price, 0), price) DESC LIMIT 1
+            ");
+            $biggerStmt->execute([$partnerId, (int)($item['product_id'] ?? 0), $searchTerm, (float)($item['price'] ?? 0), $itemTotal]);
+            $bigger = $biggerStmt->fetch(PDO::FETCH_ASSOC);
+
+            if ($bigger) {
+                $bigPrice = ((float)($bigger['special_price'] ?? 0) > 0 && (float)$bigger['special_price'] < (float)$bigger['price'])
+                    ? (float)$bigger['special_price'] : (float)$bigger['price'];
+                $savings = round($itemTotal - $bigPrice, 2);
+                if ($savings > 0) {
+                    $savingsFmt = number_format($savings, 2, ',', '.');
+                    $bigPriceFmt = number_format($bigPrice, 2, ',', '.');
+                    $suggestions[] = [
+                        'type' => 'quantity_discount',
+                        'message' => "Em vez de {$qty}x {$item['name']} (R\$ " . number_format($itemTotal, 2, ',', '.') . "), que tal 1x {$bigger['name']} (R\$ {$bigPriceFmt})? Economia de R\$ {$savingsFmt}",
+                        'savings' => $savings,
+                    ];
+                    break;
+                }
+            }
+        }
+
+        // d) Min order warning
+        if ($minOrderValue > 0 && $subtotal < $minOrderValue) {
+            $diff = round($minOrderValue - $subtotal, 2);
+            $diffFmt = number_format($diff, 2, ',', '.');
+            $minFmt = number_format($minOrderValue, 2, ',', '.');
+
+            $fillStmt = $db->prepare("
+                SELECT product_id, name FROM om_market_products
+                WHERE partner_id = ? AND status::text = '1' AND quantity > 0
+                  AND COALESCE(NULLIF(special_price, 0), price) >= ?
+                  AND COALESCE(NULLIF(special_price, 0), price) <= ?
+                ORDER BY COALESCE(NULLIF(special_price, 0), price) ASC LIMIT 3
+            ");
+            $fillStmt->execute([$partnerId, max(1, $diff - 2), $diff + 10]);
+            $fillItems = $fillStmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $msg = "Pedido minimo desta loja e R\$ {$minFmt}. Faltam R\$ {$diffFmt}.";
+            if (!empty($fillItems)) {
+                $names = array_map(fn($f) => $f['name'], array_slice($fillItems, 0, 2));
+                $msg .= " Sugestoes: " . implode(', ', $names);
+            }
+            $suggestions[] = ['type' => 'min_order', 'message' => $msg, 'savings' => 0];
+        }
+
+        // e) Better deal detection (items on promotion)
+        foreach ($items as $item) {
+            $productId = (int)($item['product_id'] ?? 0);
+            if ($productId <= 0) continue;
+            $promoStmt = $db->prepare("
+                SELECT price, special_price, name FROM om_market_products
+                WHERE product_id = ? AND special_price IS NOT NULL AND special_price > 0 AND special_price < price
+            ");
+            $promoStmt->execute([$productId]);
+            $promo = $promoStmt->fetch(PDO::FETCH_ASSOC);
+            if ($promo) {
+                $currentItemPrice = (float)($item['base_price'] ?? $item['price'] ?? 0);
+                if (abs($currentItemPrice - (float)$promo['special_price']) < 0.01) {
+                    $savings = round((float)$promo['price'] - (float)$promo['special_price'], 2);
+                    $savingsFmt = number_format($savings, 2, ',', '.');
+                    $suggestions[] = [
+                        'type' => 'promo_active',
+                        'message' => "{$promo['name']} esta em promocao! Voce economizou R\$ {$savingsFmt} nesse item",
+                        'savings' => $savings,
+                    ];
+                }
+            }
+        }
+
+    } catch (\Exception $e) {
+        error_log(WABOT_LOG_PREFIX . " Cart optimization error: " . $e->getMessage());
+    }
+
+    return $suggestions;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LOYALTY TIER INTELLIGENCE
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Get customer loyalty tier based on order history (last 90 days).
+ *
+ * Tiers:
+ *   Bronze  (0-4 orders)  - New customer
+ *   Prata   (5-14 orders) - Regular
+ *   Ouro    (15-29 orders OR R$500+ spent) - VIP
+ *   Diamante(30+ orders OR R$1000+ spent) - Ultra VIP
+ */
+function getCustomerLoyaltyTier(PDO $db, int $customerId): array
+{
+    $default = [
+        'tier' => 'bronze', 'orders_90d' => 0, 'spent_90d' => 0.0,
+        'perks' => [], 'badge' => "\xF0\x9F\xA5\x89",
+    ];
+    if ($customerId <= 0) return $default;
+
+    try {
+        $stmt = $db->prepare("
+            SELECT COUNT(*) as order_count, COALESCE(SUM(total), 0) as total_spent
+            FROM om_market_orders
+            WHERE customer_id = ? AND status NOT IN ('cancelado', 'recusado')
+              AND created_at >= NOW() - INTERVAL '90 days'
+        ");
+        $stmt->execute([$customerId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        $orders90d = (int)($row['order_count'] ?? 0);
+        $spent90d = round((float)($row['total_spent'] ?? 0), 2);
+
+        if ($orders90d >= 30 || $spent90d >= 1000) {
+            return [
+                'tier' => 'diamante', 'orders_90d' => $orders90d, 'spent_90d' => $spent90d,
+                'badge' => "\xF0\x9F\x92\x8E",
+                'perks' => ['frete gratis em pedidos acima de R$50', 'cupons exclusivos', 'cashback de aniversario', 'prioridade total no atendimento'],
+            ];
+        } elseif ($orders90d >= 15 || $spent90d >= 500) {
+            return [
+                'tier' => 'ouro', 'orders_90d' => $orders90d, 'spent_90d' => $spent90d,
+                'badge' => "\xF0\x9F\xA5\x87",
+                'perks' => ['suporte prioritario', 'frete gratis eventual', 'cupons exclusivos'],
+            ];
+        } elseif ($orders90d >= 5) {
+            return [
+                'tier' => 'prata', 'orders_90d' => $orders90d, 'spent_90d' => $spent90d,
+                'badge' => "\xF0\x9F\xA5\x88",
+                'perks' => ['suporte prioritario'],
+            ];
+        }
+
+        return ['tier' => 'bronze', 'orders_90d' => $orders90d, 'spent_90d' => $spent90d,
+                'perks' => [], 'badge' => "\xF0\x9F\xA5\x89"];
+
+    } catch (\Exception $e) {
+        error_log(WABOT_LOG_PREFIX . " Loyalty tier error: " . $e->getMessage());
+        return $default;
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3121,6 +5015,19 @@ function handleQuickCommand(PDO $db, string $message, array $conversation, array
         ];
     }
 
+    // Group / family order mode
+    if (in_array($msg, ['pedido grupo', 'pedido familia', 'pedido família', 'pedido pra turma', 'pedido coletivo', 'pedir pra galera', 'pedido em grupo'])) {
+        $newContext = array_merge($context, [
+            'group_order' => true,
+            'group_members' => [],
+            'current_group_member' => null,
+        ]);
+        return [
+            'response' => "Modo grupo ativado! Me diga os nomes de quem vai pedir. Exemplo: 'Maria, Joao, Ana'\n\nVou anotar o pedido de cada um separadinho e no final junto tudo numa entrega so!",
+            'context' => $newContext,
+        ];
+    }
+
     // Cancel
     if (in_array($msg, ['cancelar', 'cancela', 'nao quero mais', 'desistir'])) {
         // If in ordering flow, cancel current order assembly
@@ -3151,6 +5058,61 @@ function handleQuickCommand(PDO $db, string $message, array $conversation, array
 
         return [
             'response' => "Pronto! Voce nao vai mais receber mensagens promocionais da SuperBora. Se mudar de ideia, e so mandar *voltar notificacoes* que a gente reativa. \xE2\x9C\x85\n\nIsso nao afeta as notificacoes dos seus pedidos — essas continuam normalmente!",
+            'context'  => $context,
+        ];
+    }
+
+
+    // Loyalty tier / VIP status check
+    if (in_array($msg, ['meu nivel', 'meu nível', 'minha categoria', 'fidelidade', 'vip', 'meu tier', 'nivel', 'nível'])) {
+        if (!$customerId) {
+            return [
+                'response' => "Preciso identificar sua conta para ver seu nivel. Qual seu nome ou email cadastrado?",
+                'context'  => $context,
+            ];
+        }
+
+        $tierInfo = getCustomerLoyaltyTier($db, $customerId);
+        $context['loyalty_tier'] = $tierInfo;
+        $tierLabel = ucfirst($tierInfo['tier']);
+        $badge = $tierInfo['badge'];
+        $orders = $tierInfo['orders_90d'];
+        $spentFmt = number_format($tierInfo['spent_90d'], 2, ',', '.');
+        $perks = $tierInfo['perks'];
+
+        $lines = ["{$badge} *Seu nivel de fidelidade: {$tierLabel}*\n"];
+        $lines[] = "\xF0\x9F\x93\x8A {$orders} pedidos nos ultimos 90 dias";
+        $lines[] = "\xF0\x9F\x92\xB0 R\$ {$spentFmt} gastos no periodo";
+
+        if (!empty($perks)) {
+            $lines[] = "\n\xF0\x9F\x8E\x81 *Seus beneficios:*";
+            foreach ($perks as $perk) {
+                $lines[] = "\xE2\x80\xA2 " . ucfirst($perk);
+            }
+        }
+
+        // Show next tier info
+        if ($tierInfo['tier'] === 'bronze') {
+            $remaining = 5 - $orders;
+            $lines[] = "\n\xF0\x9F\x8E\xAF Faltam *{$remaining} pedidos* para nivel Prata!";
+        } elseif ($tierInfo['tier'] === 'prata') {
+            $remaining = 15 - $orders;
+            $spentRemaining = max(0, 500 - $tierInfo['spent_90d']);
+            $spentRemFmt = number_format($spentRemaining, 2, ',', '.');
+            $lines[] = "\n\xF0\x9F\x8E\xAF Faltam *{$remaining} pedidos* ou *R\$ {$spentRemFmt}* para nivel Ouro!";
+        } elseif ($tierInfo['tier'] === 'ouro') {
+            $remaining = 30 - $orders;
+            $spentRemaining = max(0, 1000 - $tierInfo['spent_90d']);
+            $spentRemFmt = number_format($spentRemaining, 2, ',', '.');
+            $lines[] = "\n\xF0\x9F\x8E\xAF Faltam *{$remaining} pedidos* ou *R\$ {$spentRemFmt}* para nivel Diamante!";
+        } elseif ($tierInfo['tier'] === 'diamante') {
+            $lines[] = "\n\xF0\x9F\x8E\x89 Voce e um dos nossos melhores clientes! Obrigado pela fidelidade!";
+        }
+
+        $lines[] = "\nQuer fazer um pedido?";
+
+        return [
+            'response' => implode("\n", $lines),
             'context'  => $context,
         ];
     }
@@ -3517,6 +5479,55 @@ function handleQuickCommand(PDO $db, string $message, array $conversation, array
         ];
     }
 
+    // Compare prices — "comparar precos", "onde é mais barato", "precos"
+    if (in_array($msg, ['comparar precos', 'comparar preços', 'onde e mais barato', 'onde é mais barato', 'mais barato', 'comparar'])) {
+        $partnerId = $context['partner_id'] ?? null;
+        $cartItems = $context['items'] ?? [];
+
+        if (empty($cartItems) || !$partnerId) {
+            return [
+                'response' => "Voce precisa ter itens no carrinho pra eu comparar precos! Adicione alguns itens e depois digite *comparar precos*.",
+                'context'  => $context,
+            ];
+        }
+
+        $comparison = compareCartPrices($db, $cartItems, (int)$partnerId);
+
+        if (empty($comparison['comparisons'])) {
+            $partnerName = $context['partner_name'] ?? 'esta loja';
+            return [
+                'response' => "\xF0\x9F\x94\x8D Comparei seus itens com outras lojas e nao encontrei precos significativamente menores. Voce ta com um bom preco na *{$partnerName}*!",
+                'context'  => $context,
+            ];
+        }
+
+        $lines = ["\xF0\x9F\x92\xB0 *Comparacao de precos do seu carrinho:*\n"];
+        foreach ($comparison['comparisons'] as $comp) {
+            $currentFmt = number_format($comp['current_price'], 2, ',', '.');
+            $altFmt = number_format($comp['best_alt']['price'], 2, ',', '.');
+            $savFmt = number_format($comp['best_alt']['savings'], 2, ',', '.');
+            $lines[] = "\xE2\x80\xA2 *{$comp['item_name']}*";
+            $lines[] = "  Aqui: R\$ {$currentFmt} | {$comp['best_alt']['partner_name']}: R\$ {$altFmt}";
+            $lines[] = "  Economia: R\$ {$savFmt} ({$comp['best_alt']['savings_pct']}%)";
+        }
+
+        $totalSavFmt = number_format($comparison['total_savings'], 2, ',', '.');
+        $lines[] = "\n*Economia total possivel: R\$ {$totalSavFmt}*";
+
+        if ($comparison['total_savings'] > 10) {
+            $lines[] = "\n_Lembre que trocar de loja significa nova entrega e taxa. Nem sempre compensa!_";
+        } else {
+            $lines[] = "\nA diferenca e pequena — vale mais ficar onde voce ja esta!";
+        }
+
+        $lines[] = "\nQuer continuar com o pedido atual? Confirma pra mim!";
+
+        return [
+            'response' => implode("\n", $lines),
+            'context'  => $context,
+        ];
+    }
+
     return null;
 }
 
@@ -3614,7 +5625,44 @@ function processAiResponse(PDO $db, array $conversation, string $aiResponse, str
                         $itemData['options_text'] = $optionsText;
                         $itemData['options_extra'] = $optionsExtra;
                     }
+                    // Attach group member if in group order mode
+                    if (!empty($context['group_order']) && !empty($context['current_group_member'])) {
+                        $itemData['group_member'] = $context['current_group_member'];
+                        // Also track in group_members array
+                        foreach ($context['group_members'] as &$gMember) {
+                            if (mb_strtolower($gMember['name']) === mb_strtolower($context['current_group_member'])) {
+                                $gMember['items'][] = $itemData['name'];
+                                break;
+                            }
+                        }
+                        unset($gMember);
+                    }
                     $context['items'][] = $itemData;
+
+                    // Check for cheaper alternatives at other stores (non-blocking)
+                    try {
+                        $partnerId_for_alt = (int)($context['partner_id'] ?? 0);
+                        if ($partnerId_for_alt > 0) {
+                            $alts = findCheaperAlternatives($db, $product['name'], $partnerId_for_alt, $realPrice, 1);
+                            if (!empty($alts)) {
+                                if (!isset($context['price_alternatives']) || !is_array($context['price_alternatives'])) {
+                                    $context['price_alternatives'] = [];
+                                }
+                                $context['price_alternatives'][] = [
+                                    'item_name'    => $product['name'],
+                                    'current_price' => $realPrice,
+                                    'alt_price'    => $alts[0]['price'],
+                                    'savings'      => $alts[0]['savings'],
+                                    'savings_pct'  => $alts[0]['savings_pct'],
+                                    'partner_name' => $alts[0]['partner_name'],
+                                    'partner_id'   => $alts[0]['partner_id'],
+                                ];
+                            }
+                        }
+                    } catch (\Exception $e) {
+                        // Non-critical — don't break the flow
+                        error_log(WABOT_LOG_PREFIX . " Price alternatives lookup error: " . $e->getMessage());
+                    }
                 } else {
                     error_log(WABOT_LOG_PREFIX . " Product {$productId} belongs to partner {$product['partner_id']}, not {$context['partner_id']}");
                 }
@@ -3623,6 +5671,17 @@ function processAiResponse(PDO $db, array $conversation, string $aiResponse, str
             }
 
             $cleanedResponse = str_replace($m[0], '', $cleanedResponse);
+        }
+    }
+
+
+    // ── Cart optimization after items added ────────────────────────────
+    if (!empty($markersFound) && preg_grep('/^ITEM:/', $markersFound) && !empty($context['items'])) {
+        try {
+            $cartOpts = analyzeCartOptimizations($db, $context);
+            $context['cart_optimizations'] = $cartOpts;
+        } catch (\Throwable $e) {
+            error_log(WABOT_LOG_PREFIX . " Cart optimization after item error: " . $e->getMessage());
         }
     }
 
@@ -4004,6 +6063,42 @@ function processAiResponse(PDO $db, array $conversation, string $aiResponse, str
     }
 
 
+    // Parse [GROUP_MEMBER:name] — switch active group member for group orders
+    if (preg_match_all('/\[GROUP_MEMBER:([^\]]+)\]/', $aiResponse, $groupMatches, PREG_SET_ORDER)) {
+        foreach ($groupMatches as $gm) {
+            $memberName = trim($gm[1]);
+            $markersFound[] = "GROUP_MEMBER:{$memberName}";
+            $cleanedResponse = str_replace($gm[0], '', $cleanedResponse);
+
+            if (!empty($memberName)) {
+                // Enable group mode if not already
+                if (empty($context['group_order'])) {
+                    $context['group_order'] = true;
+                    $context['group_members'] = $context['group_members'] ?? [];
+                }
+
+                // Find or create this member in group_members
+                $found = false;
+                foreach ($context['group_members'] as &$existingMember) {
+                    if (mb_strtolower($existingMember['name']) === mb_strtolower($memberName)) {
+                        $found = true;
+                        break;
+                    }
+                }
+                unset($existingMember);
+
+                if (!$found) {
+                    $context['group_members'][] = [
+                        'name' => $memberName,
+                        'items' => [],
+                    ];
+                }
+
+                $context['current_group_member'] = $memberName;
+            }
+        }
+    }
+
     // ── ORDER MODIFICATION MARKERS ──────────────────────────────────────
 
     // Parse [MODIFY_ADD_ITEM:product_id:name:price:qty]
@@ -4383,6 +6478,23 @@ function submitWhatsAppOrder(PDO $db, array $conversation): array
             . formatPaymentLabel($paymentMethod) . ' R$' . number_format($paymentSplit[0], 2, ',', '.')
             . ' + ' . formatPaymentLabel($paymentMethod2) . ' R$' . number_format($paymentSplit[1], 2, ',', '.');
         $notes = $notes ? ($notes . ' | ' . $splitNote) : $splitNote;
+    }
+
+    // Append group order info to notes if applicable
+    if (!empty($context['group_order']) && !empty($context['group_members'])) {
+        $groupParts = [];
+        foreach ($context['group_members'] as $gm) {
+            $memberItems = $gm['items'] ?? [];
+            if (!empty($memberItems)) {
+                $groupParts[] = $gm['name'] . ' (' . implode(', ', $memberItems) . ')';
+            } else {
+                $groupParts[] = $gm['name'];
+            }
+        }
+        if (!empty($groupParts)) {
+            $groupNote = 'Pedido grupo: ' . implode('; ', $groupParts);
+            $notes = $notes ? ($notes . ' | ' . $groupNote) : $groupNote;
+        }
     }
 
     $deliveryInstructions = $context['delivery_instructions'] ?? '';
@@ -4824,6 +6936,38 @@ function submitWhatsAppOrder(PDO $db, array $conversation): array
                 'delivery_address' => $address,
                 'items'            => $orderItemsForMemory,
             ]);
+
+            // Enhanced pattern tracking for smart reorder predictions
+            $spTz = new DateTimeZone('America/Sao_Paulo');
+            $spNow = new DateTime('now', $spTz);
+            $orderDow = (int)$spNow->format('w');  // 0=Sunday
+            $orderHour = (int)$spNow->format('G');  // 0-23
+            $normalizedPhone = preg_replace('/\D/', '', $phone);
+
+            // Track day-of-week frequency
+            $dowKey = 'order_day_' . $orderDow;
+            $dayNames = ['domingo', 'segunda', 'terca', 'quarta', 'quinta', 'sexta', 'sabado'];
+            aiMemorySave($db, $normalizedPhone, $customerId, 'pattern', $dowKey, 'Pediu na ' . $dayNames[$orderDow]);
+
+            // Track hour frequency
+            $hourKey = 'order_hour_' . $orderHour;
+            aiMemorySave($db, $normalizedPhone, $customerId, 'pattern', $hourKey, 'Pediu as ' . $orderHour . 'h');
+
+            // Track last order timestamp per store
+            $storeKey = 'last_order_partner_' . $partnerId;
+            aiMemorySave($db, $normalizedPhone, $customerId, 'pattern', $storeKey, $partnerName . ' em ' . $spNow->format('d/m/Y H:i'));
+
+            // Save payment preference for cross-session learning
+            aiMemorySave($db, $normalizedPhone, $customerId, 'preference', 'payment_method', $dbPaymentMethod);
+
+            // Save tip preference if given
+            if ($tipAmount > 0) {
+                aiMemorySave($db, $normalizedPhone, $customerId, 'preference', 'tip_amount', (string)$tipAmount);
+            }
+
+            // Save budget range
+            $budgetRange = ($total < 25) ? 'economico' : (($total < 60) ? 'medio' : (($total < 120) ? 'premium' : 'alto'));
+            aiMemorySave($db, $normalizedPhone, $customerId, 'preference', 'budget_range', $budgetRange);
         } catch (\Exception $e) {
             error_log(WABOT_LOG_PREFIX . " Memory learn error: " . $e->getMessage());
         }
@@ -5462,6 +7606,33 @@ function handleWhatsAppMessage(
         $context['last_mentioned_store'] = $context['partner_name'];
     }
 
+    // ── Detect sentiment (pure heuristic — no API) ────────────────────
+    $sentiment = detectSentiment($message);
+    $context['sentiment'] = $sentiment;
+
+    // Track sentiment history for shift detection
+    $sentimentHistory = $context['sentiment_history'] ?? [];
+    $sentimentHistory[] = $sentiment['mood'];
+    // Keep only last 10 entries
+    if (count($sentimentHistory) > 10) {
+        $sentimentHistory = array_slice($sentimentHistory, -10);
+    }
+    $context['sentiment_history'] = $sentimentHistory;
+
+    // Detect sentiment shift: happy -> frustrated
+    $sentimentShiftWarning = '';
+    if (count($sentimentHistory) >= 2) {
+        $prevMoods = array_slice($sentimentHistory, 0, -1);
+        $currentMood = end($sentimentHistory);
+        $hadHappy = in_array('happy', $prevMoods);
+        if ($hadHappy && $currentMood === 'frustrated') {
+            $sentimentShiftWarning = "\n\nALERTA DE MUDANCA EMOCIONAL: O cliente estava feliz antes mas agora parece frustrado. Reconheca isso naturalmente: \"Percebi que algo nao ta legal, posso ajudar?\" — Seja extra empatica e direta.";
+        }
+    }
+
+    // ── Get weather context (pure logic — no API) ──────────────────────
+    $weatherCtx = getWeatherContext();
+
     // ── Build Claude context ────────────────────────────────────────────
 
     $step = $context['step'] ?? STEP_GREETING;
@@ -5479,6 +7650,15 @@ function handleWhatsAppMessage(
         }
     }
 
+    // Load loyalty tier into context (if not already set)
+    if (empty($context['loyalty_tier']) && $customerId) {
+        try {
+            $context['loyalty_tier'] = getCustomerLoyaltyTier($db, (int)$customerId);
+        } catch (\Exception $e) {
+            // Non-critical — loyalty tier is optional
+        }
+    }
+
     // Load referral code into context (if not already set)
     if (empty($context['referral_code']) && $customerId) {
         try {
@@ -5489,6 +7669,16 @@ function handleWhatsAppMessage(
                 $context['referral_code'] = $refCode;
             }
         } catch (\Exception $e) { /* non-critical */ }
+    }
+
+    // Load learned preferences into context (computed once per conversation)
+    if ($customerId && !isset($context['learned_preferences'])) {
+        try {
+            $context['learned_preferences'] = analyzeCustomerPreferences($db, $customerId);
+        } catch (\Exception $e) {
+            $context['learned_preferences'] = null;
+            error_log(WABOT_LOG_PREFIX . " Preference analysis error: " . $e->getMessage());
+        }
     }
 
     // Get menu if in ordering steps
@@ -5538,6 +7728,12 @@ function handleWhatsAppMessage(
         }
     }
 
+    // Get personalized recommendations for ordering steps
+    $personalizedRecs = null;
+    if ($customerId && in_array($step, [STEP_TAKE_ORDER, STEP_CONFIRM_ORDER]) && !empty($context['partner_id'])) {
+        $personalizedRecs = getPersonalizedRecommendations($db, $customerId, (int)$context['partner_id'], 5);
+    }
+
     // ── Smart search: find products/stores matching the customer's message ──
     $searchContext = '';
     if (in_array($step, [STEP_GREETING, STEP_IDENTIFY_STORE]) && mb_strlen($message) >= 3) {
@@ -5552,6 +7748,14 @@ function handleWhatsAppMessage(
 
     // ── Time context (Sao Paulo timezone) ────────────────────────────────
     $timeCtx = getTimeContext();
+
+    // ── Conversation history summary for continuity ────────────────────
+    $conversationHistory = '';
+    try {
+        $conversationHistory = getConversationHistory($db, $phone, 3);
+    } catch (\Exception $e) {
+        error_log(WABOT_LOG_PREFIX . " Conversation history load error: " . $e->getMessage());
+    }
 
     // Update context in conversation before Claude call
     $conversation['ai_context'] = json_encode($context, JSON_UNESCAPED_UNICODE);
@@ -5570,7 +7774,9 @@ function handleWhatsAppMessage(
         $popularItems,
         $complementaryItems,
         $searchContext,
-        $timeCtx
+        $timeCtx,
+        $conversationHistory,
+        $personalizedRecs
     );
 
     // ── Build message history for Claude ────────────────────────────────
