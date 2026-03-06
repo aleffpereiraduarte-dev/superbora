@@ -1613,7 +1613,7 @@ function getVoiceCallHistory(PDO $db, string $phone, int $limit = 3): string
 
     try {
         $stmt = $db->prepare("
-            SELECT id, notes, ai_context, created_at, status, store_identified
+            SELECT id, notes, created_at, status, store_identified
             FROM om_callcenter_calls
             WHERE customer_phone LIKE ?
               AND status IN ('completed', 'transferred', 'ai_completed')
@@ -1635,7 +1635,9 @@ function getVoiceCallHistory(PDO $db, string $phone, int $limit = 3): string
         foreach ($pastCalls as $call) {
             $callDate = new DateTime($call['created_at'], $tz);
             $dateStr = $callDate->format('d/m H:i');
-            $ctx = json_decode($call['ai_context'] ?? '{}', true) ?: [];
+            // ai_context is stored inside notes JSON under '_ai_context' key
+            $notesData = json_decode($call['notes'] ?? '{}', true) ?: [];
+            $ctx = $notesData['_ai_context'] ?? [];
             $storeName = $ctx['store_name'] ?? $call['store_identified'] ?? '';
             $items = $ctx['items'] ?? [];
             $step = $ctx['step'] ?? '';
@@ -1943,16 +1945,16 @@ function getVoiceLearnedPreferences(PDO $db, int $customerId): array {
 
     // Favorite categories (from partner categories in recent orders)
     $stmt = $db->prepare("
-        SELECT p.category, COUNT(*) as cnt
+        SELECT p.categoria, COUNT(*) as cnt
         FROM om_market_orders o
         JOIN om_market_partners p ON p.partner_id = o.partner_id
         WHERE o.customer_id = ? AND o.status NOT IN ('cancelled','refunded')
-          AND p.category IS NOT NULL AND p.category != ''
-        GROUP BY p.category ORDER BY cnt DESC LIMIT 3
+          AND p.categoria IS NOT NULL AND p.categoria != ''
+        GROUP BY p.categoria ORDER BY cnt DESC LIMIT 3
     ");
     $stmt->execute([$customerId]);
     foreach ($stmt->fetchAll() as $row) {
-        $prefs['favorite_categories'][] = $row['category'];
+        $prefs['favorite_categories'][] = $row['categoria'];
     }
 
     // Average order value
@@ -3003,6 +3005,20 @@ function parseAiResponse(string $response, array $context, PDO $db): array {
             ];
         }
         $cleaned = preg_replace('/\[ITEM:\d+:\d+:[\d.]+:[^\]]+\](?:\[OPT:[\d,]+\])?/', '', $cleaned);
+
+        // Price comparison: check new items for cheaper alternatives at other stores
+        $pcStoreId = $newContext['store_id'] ?? null;
+        if ($pcStoreId) {
+            if (!isset($newContext['price_tips'])) $newContext['price_tips'] = [];
+            foreach ($matches as $pm) {
+                try {
+                    $pcAlt = findVoiceCheaperAlternatives($db, trim($pm[4]), $pcStoreId, (float)$pm[3]);
+                    if ($pcAlt && !empty($pcAlt['tip'])) {
+                        $newContext['price_tips'][] = $pcAlt['tip'];
+                    }
+                } catch (\Exception $e) { /* non-critical */ }
+            }
+        }
     }
 
     // Parse [SCHEDULE:YYYY-MM-DD HH:MM]
@@ -3556,6 +3572,7 @@ function submitAiOrder(PDO $db, int $callId, ?int $customerId, ?string $customer
                 delivery_address, shipping_address, shipping_city, shipping_state, shipping_cep,
                 shipping_lat, shipping_lng,
                 forma_pagamento, payment_status, codigo_entrega,
+                delivery_instructions, tip_amount,
                 notes, source, date_added
             ) VALUES (
                 ?, ?, ?, ?,
@@ -3563,6 +3580,7 @@ function submitAiOrder(PDO $db, int $callId, ?int $customerId, ?string $customer
                 ?, ?, ?, ?, ?,
                 ?, ?,
                 ?, 'pendente', ?,
+                ?, ?,
                 ?, 'callcenter_ai', NOW()
             ) RETURNING order_id
         ");
@@ -3573,6 +3591,7 @@ function submitAiOrder(PDO $db, int $callId, ?int $customerId, ?string $customer
             $address['street'] ?? '', $address['city'] ?? '', $address['state'] ?? '', $address['zipcode'] ?? '',
             $address['lat'] ?? null, $address['lng'] ?? null,
             $paymentMethod, $codigoEntrega,
+            $deliveryInstructions, $tipAmount > 0 ? $tipAmount : null,
             $orderNotes,
         ]);
         $orderId = (int)$stmt->fetch()['order_id'];
