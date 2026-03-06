@@ -23,6 +23,7 @@
  *   [CANCEL_ORDER:order_id]  — cancel order
  *   [TRANSFER_HUMAN]         — transfer to human agent
  *   [SWITCH_TO_ORDER]        — switch from support to ordering mode
+ *   [REORDER:order_number]   — repeat a previous order (smart reorder)
  */
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -36,6 +37,7 @@ require_once __DIR__ . '/../helpers/ai-memory.php';
 require_once __DIR__ . '/../helpers/ai-safeguards.php';
 require_once __DIR__ . '/../helpers/callcenter-sms.php';
 require_once __DIR__ . '/../helpers/ws-callcenter-broadcast.php';
+require_once __DIR__ . '/../helpers/whatsapp-rating.php';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CONSTANTS
@@ -207,6 +209,8 @@ function getDefaultContext(): array
         'notes'          => null,
         'message_count'  => 0,
         'session_start'  => date('c'),
+        'rating_requested_for_order' => null,
+        'rating_pending_value'       => null,
     ];
 }
 
@@ -389,13 +393,18 @@ function getCustomerOrderByNumber(PDO $db, int $customerId, string $orderNumber)
 
 /**
  * Get items from a specific order (for reorder).
+ * Joins with om_market_products to get current name, price, and status.
  */
 function getOrderItems(PDO $db, int $orderId): array
 {
     $stmt = $db->prepare("
         SELECT oi.product_id, oi.name, oi.price, oi.quantity, oi.total,
-               oi.options
+               oi.options,
+               p.name AS current_name, p.price AS current_price,
+               p.special_price AS current_special_price,
+               p.status AS product_status, p.quantity AS product_stock
         FROM om_market_order_items oi
+        LEFT JOIN om_market_products p ON p.product_id = oi.product_id
         WHERE oi.order_id = ?
         ORDER BY oi.id
     ");
@@ -746,6 +755,7 @@ function sendWhatsAppResponse(string $phone, string $text): void
  * Build the Claude system prompt for the current conversation step.
  */
 function buildSystemPrompt(
+    PDO    $db,
     array  $conversation,
     string $step,
     ?array $customerInfo,
@@ -793,7 +803,7 @@ function buildSystemPrompt(
         }
     }
 
-    // ── Recent orders summary ──────────────────────────────────────────
+    // ── Recent orders summary (with items for reorder) ─────────────────
     $recentOrdersBlock = '';
     if ($recentOrders && count($recentOrders) > 0) {
         $recentOrdersBlock = "\nHISTORICO DE PEDIDOS RECENTES:";
@@ -801,6 +811,21 @@ function buildSystemPrompt(
             $total = number_format((float)$ro['total'], 2, ',', '.');
             $date = date('d/m H:i', strtotime($ro['date_added'] ?? $ro['created_at']));
             $recentOrdersBlock .= "\n- #{$ro['order_number']} | {$ro['partner_name']} | R\$ {$total} | {$ro['status']} | {$date}";
+
+            // Fetch order items for reorder context
+            try {
+                $roItems = getOrderItems($db, (int)$ro['order_id']);
+                if (!empty($roItems)) {
+                    $itemNames = [];
+                    foreach ($roItems as $roi) {
+                        $qty = (int)($roi['quantity'] ?? 1);
+                        $itemNames[] = "{$qty}x {$roi['name']}";
+                    }
+                    $recentOrdersBlock .= "\n  Itens: " . implode(', ', $itemNames);
+                }
+            } catch (\Exception $e) {
+                // Non-critical — skip items if query fails
+            }
         }
     }
 
@@ -884,6 +909,47 @@ PROMPT;
     if (!$hasLocation && !empty($context['customer_city'])) {
         $customerCity = $context['customer_city'];
         $hasLocation = true;
+    }
+
+    // ── Fetch active promotions at customer's favorite stores ────────
+    $promoBlock = '';
+    if ($customerInfo && !empty($customerInfo['customer_id'])) {
+        try {
+            $promoStmt = $db->prepare("
+                SELECT
+                    p.name as product_name,
+                    p.price,
+                    p.special_price,
+                    COALESCE(pa.trade_name, pa.name) as store_name
+                FROM om_market_products p
+                JOIN om_market_partners pa ON pa.partner_id = p.partner_id
+                JOIN om_market_orders o ON o.partner_id = pa.partner_id AND o.customer_id = ?
+                WHERE p.special_price IS NOT NULL
+                  AND p.special_price > 0
+                  AND p.special_price < p.price
+                  AND p.status::text = '1'
+                  AND pa.status::text = '1'
+                  AND pa.is_open = 1
+                GROUP BY p.product_id, p.name, p.price, p.special_price, pa.trade_name, pa.name
+                ORDER BY (p.price - p.special_price) DESC
+                LIMIT 5
+            ");
+            $promoStmt->execute([$customerInfo['customer_id']]);
+            $promos = $promoStmt->fetchAll(PDO::FETCH_ASSOC);
+
+            if (!empty($promos)) {
+                $promoLines = [];
+                foreach ($promos as $promo) {
+                    $priceFmt = number_format((float)$promo['price'], 2, ',', '.');
+                    $specialFmt = number_format((float)$promo['special_price'], 2, ',', '.');
+                    $promoLines[] = "- {$promo['product_name']} na {$promo['store_name']}: de R\$ {$priceFmt} por R\$ {$specialFmt}";
+                }
+                $promoBlock = "\n\nPROMOCOES ATIVAS NAS LOJAS FAVORITAS DO CLIENTE:\n" . implode("\n", $promoLines);
+                $promoBlock .= "\nDICA: Mencione essas promos de forma natural se fizer sentido na conversa. Ex: \"A [loja] ta com [produto] em promo!\"";
+            }
+        } catch (\Exception $e) {
+            // Non-critical — skip promos if query fails
+        }
     }
 
     switch ($step) {
@@ -974,7 +1040,7 @@ DETECCAO AUTOMATICA DE INTENCAO:
 1. Se mencionar nome de loja/restaurante -> identifique a loja e use [STORE:id:nome]
 2. Se perguntar sobre pedido/status/rastreio -> fale sobre os pedidos ativos (se houver) e NUNCA use marcador nesse caso
 3. Se reclamar de algo -> entre em modo empatico, use [SWITCH_TO_ORDER] para suporte
-4. Se disser "repetir"/"mesmo pedido" -> mostre o ultimo pedido e ofereca repetir
+4. Se disser "repetir"/"mesmo pedido"/"pedir de novo"/"o de sempre"/"quero o mesmo" -> mostre os ultimos 3 pedidos com os itens e pergunte qual quer repetir. Quando o cliente escolher, use [REORDER:order_number] com o numero do pedido escolhido
 5. Se disser "cancelar" -> mostre pedidos ativos e ajude a cancelar, use [SWITCH_TO_ORDER]
 6. Se saudacao simples ("oi", "ola") E tem pedido ativo -> INFORMAR STATUS DO PEDIDO (regra prioritaria acima)
 7. Se saudacao simples E ultimo pedido foi entregue -> perguntar se a entrega foi ok
@@ -984,6 +1050,7 @@ DETECCAO AUTOMATICA DE INTENCAO:
 {$locationHint}
 {$storeList}
 {$returningHint}
+{$promoBlock}
 
 INSTRUCOES:
 - SEMPRE esteja a frente: o cliente mandou "oi"? Voce ja sabe se ele tem pedido ativo. Fale sobre isso PRIMEIRO.
@@ -991,11 +1058,13 @@ INSTRUCOES:
 - Se o cliente e recorrente, use o nome dele e seja pessoal
 - Se detectar intencao de pedido direto, pule para o fluxo certo
 - Se nao tiver pedido ativo nem recente, pergunte de forma natural: "Quer fazer um pedido ou precisa de uma ajuda?"
+- Se tiver promocoes ativas nas lojas favoritas, mencione naturalmente: "A [loja] ta com [produto] em promo, viu!"
 - NUNCA responda com um menu de opcoes numerado roboticamente
 - Seja a assistente mais atenciosa do mundo — antecipe tudo!
 
 MARCADORES DISPONIVEIS:
 - [STORE:id:nome] — quando identificar a loja (vai para proximo passo)
+- [REORDER:order_number] — quando o cliente quiser repetir um pedido anterior (ex: [REORDER:WA00123]). Use o order_number exato do HISTORICO DE PEDIDOS RECENTES
 - [CITY:nome_da_cidade] — quando o cliente informar cidade/bairro/localizacao
 - [SWITCH_TO_ORDER] — mudar para modo suporte (status, reclamacao, cancelamento)
 - [TRANSFER_HUMAN] — se pedir atendente humano
@@ -1029,6 +1098,7 @@ ETAPA ATUAL: Identificar loja
 OBJETIVO: Ajudar o cliente a escolher uma loja.
 {$identifyLocationHint}
 {$storeList}
+{$promoBlock}
 
 INSTRUCOES:
 - Se nao sabe a localizacao do cliente, PERGUNTE PRIMEIRO antes de listar lojas
@@ -1039,9 +1109,11 @@ INSTRUCOES:
 - Se nao encontrar, peca mais detalhes ou sugira opcoes populares
 - Se o cliente disser uma categoria ("pizza", "hamburguer", "acai"), filtre e mostre opcoes
 - Se mencionar "qualquer uma" ou "tanto faz", sugira as melhores avaliadas que estao abertas
+- Se tiver promocoes ativas, mencione naturalmente pra ajudar na decisao
 
 MARCADORES:
 - [STORE:id:nome] — loja identificada
+- [REORDER:order_number] — repetir pedido anterior (ex: [REORDER:WA00123])
 - [CITY:nome_da_cidade] — salvar localizacao do cliente
 - [TRANSFER_HUMAN] — transferir para humano
 STEP;
@@ -1424,8 +1496,8 @@ function handleQuickCommand(PDO $db, string $message, array $conversation, array
         ];
     }
 
-    // Repeat last order
-    if (in_array($msg, ['repetir', 'repetir pedido', 'mesmo pedido', 'quero o mesmo', 'pedir de novo'])) {
+    // Repeat last order — with product availability check and current prices
+    if (in_array($msg, ['repetir', 'repetir pedido', 'mesmo pedido', 'quero o mesmo', 'pedir de novo', 'o de sempre'])) {
         if (!$customerId) {
             return [
                 'response' => "Preciso identificar sua conta para repetir o pedido. Qual seu nome ou email cadastrado?",
@@ -1451,26 +1523,79 @@ function handleQuickCommand(PDO $db, string $message, array $conversation, array
             ];
         }
 
-        // Load items into cart
+        // Load items into cart using CURRENT prices and checking availability
         $cartItems = [];
+        $skippedItems = [];
+
         foreach ($orderItems as $oi) {
+            $productId = (int)($oi['product_id'] ?? 0);
+            if ($productId <= 0) continue;
+
+            $productStatus = $oi['product_status'] ?? null;
+            $productStock = (int)($oi['product_stock'] ?? 0);
+
+            // Skip unavailable products
+            if ($productStatus === null || (int)$productStatus !== 1 || $productStock <= 0) {
+                $skippedItems[] = $oi['name'];
+                continue;
+            }
+
+            // Use CURRENT price from DB
+            $currentPrice = (float)($oi['current_price'] ?? 0);
+            $currentSpecial = (float)($oi['current_special_price'] ?? 0);
+            $realPrice = ($currentSpecial > 0 && $currentSpecial < $currentPrice)
+                ? $currentSpecial
+                : $currentPrice;
+
+            if ($realPrice <= 0) {
+                $skippedItems[] = $oi['name'];
+                continue;
+            }
+
+            $qty = min((int)($oi['quantity'] ?? 1), $productStock);
             $cartItems[] = [
-                'product_id' => $oi['product_id'],
-                'name'       => $oi['name'],
-                'price'      => (float)$oi['price'],
-                'qty'        => (int)$oi['quantity'],
+                'product_id' => $productId,
+                'name'       => $oi['current_name'] ?? $oi['name'],
+                'price'      => $realPrice,
+                'qty'        => $qty,
             ];
         }
 
+        if (empty($cartItems)) {
+            return [
+                'response' => "Poxa, nenhum dos itens do seu ultimo pedido esta disponivel no momento. Vamos montar um pedido novo?",
+                'context'  => $context,
+            ];
+        }
+
+        // Load delivery fee from partner
+        $deliveryFee = WABOT_DEFAULT_DELIVERY_FEE;
+        try {
+            $pStmt = $db->prepare("SELECT delivery_fee FROM om_market_partners WHERE partner_id = ?");
+            $pStmt->execute([(int)$lastOrder['partner_id']]);
+            $pRow = $pStmt->fetch(PDO::FETCH_ASSOC);
+            if ($pRow) {
+                $deliveryFee = (float)($pRow['delivery_fee'] ?? WABOT_DEFAULT_DELIVERY_FEE);
+            }
+        } catch (\Exception $e) { /* use default */ }
+
         $newContext = array_merge($context, [
-            'step'         => STEP_TAKE_ORDER,
+            'step'         => STEP_GET_ADDRESS,
+            'mode'         => 'ordering',
             'partner_id'   => (int)$lastOrder['partner_id'],
             'partner_name' => $lastOrder['partner_name'],
+            'delivery_fee' => $deliveryFee,
             'items'        => $cartItems,
         ]);
 
         $summary = buildCartSummary($cartItems);
-        $response = "Encontrei seu ultimo pedido da *{$lastOrder['partner_name']}*:\n\n{$summary}\n\nQuer pedir exatamente isso ou quer alterar algo?";
+        $response = "Encontrei seu ultimo pedido da *{$lastOrder['partner_name']}*:\n\n{$summary}";
+
+        if (!empty($skippedItems)) {
+            $response .= "\n\n_Alguns itens nao estao mais disponiveis: " . implode(', ', $skippedItems) . "_";
+        }
+
+        $response .= "\n\nQuer pedir exatamente isso? Pra onde entrego?";
 
         return [
             'response' => $response,
@@ -1509,6 +1634,44 @@ function handleQuickCommand(PDO $db, string $message, array $conversation, array
         }
         // Otherwise let Claude handle
         return null;
+    }
+
+    // Opt-out from proactive WhatsApp messages
+    if (in_array($msg, ['parar', 'sair', 'cancelar notificacoes', 'cancelar notificações', 'parar notificacoes', 'parar notificações', 'nao quero receber', 'não quero receber', 'parar mensagens', 'stop'])) {
+        if ($customerId) {
+            try {
+                $db->prepare("
+                    INSERT INTO om_whatsapp_proactive_optout (customer_id, opted_out_at, reason)
+                    VALUES (?, NOW(), 'user_request')
+                    ON CONFLICT (customer_id) DO NOTHING
+                ")->execute([$customerId]);
+            } catch (Exception $e) {
+                error_log(WABOT_LOG_PREFIX . " Opt-out DB error: " . $e->getMessage());
+            }
+        }
+
+        return [
+            'response' => "Pronto! Voce nao vai mais receber mensagens promocionais da SuperBora. Se mudar de ideia, e so mandar *voltar notificacoes* que a gente reativa. \xE2\x9C\x85\n\nIsso nao afeta as notificacoes dos seus pedidos — essas continuam normalmente!",
+            'context'  => $context,
+        ];
+    }
+
+    // Opt back in to proactive WhatsApp messages
+    if (in_array($msg, ['voltar notificacoes', 'voltar notificações', 'quero receber', 'ativar notificacoes', 'ativar notificações'])) {
+        if ($customerId) {
+            try {
+                $db->prepare("
+                    DELETE FROM om_whatsapp_proactive_optout WHERE customer_id = ?
+                ")->execute([$customerId]);
+            } catch (Exception $e) {
+                error_log(WABOT_LOG_PREFIX . " Opt-in DB error: " . $e->getMessage());
+            }
+        }
+
+        return [
+            'response' => "Show! Reativei suas notificacoes. Voce vai receber novidades e promos das suas lojas favoritas! \xF0\x9F\x8E\x89",
+            'context'  => $context,
+        ];
     }
 
     return null;
@@ -1666,6 +1829,110 @@ function processAiResponse(PDO $db, array $conversation, string $aiResponse, str
         $context['mode'] = 'ordering';
         $context['step'] = STEP_GREETING;
         $cleanedResponse = str_replace('[SWITCH_TO_ORDER]', '', $cleanedResponse);
+    }
+
+    // Parse [REORDER:order_number] — smart reorder from previous orders
+    if (preg_match('/\[REORDER:([^\]]+)\]/', $aiResponse, $m)) {
+        $reorderNumber = trim($m[1]);
+        $markersFound[] = "REORDER:{$reorderNumber}";
+        $cleanedResponse = str_replace($m[0], '', $cleanedResponse);
+
+        if ($customerId) {
+            $reorderOrder = getCustomerOrderByNumber($db, $customerId, $reorderNumber);
+
+            if ($reorderOrder) {
+                $reorderItems = getOrderItems($db, (int)$reorderOrder['order_id']);
+
+                if (!empty($reorderItems)) {
+                    // Set store from the original order
+                    $context['partner_id'] = (int)$reorderOrder['partner_id'];
+                    $context['partner_name'] = $reorderOrder['partner_name'];
+
+                    // Load delivery fee from partner
+                    try {
+                        $pStmt = $db->prepare("SELECT delivery_fee FROM om_market_partners WHERE partner_id = ?");
+                        $pStmt->execute([(int)$reorderOrder['partner_id']]);
+                        $pRow = $pStmt->fetch(PDO::FETCH_ASSOC);
+                        if ($pRow) {
+                            $context['delivery_fee'] = (float)($pRow['delivery_fee'] ?? WABOT_DEFAULT_DELIVERY_FEE);
+                        }
+                    } catch (\Exception $e) { /* use default */ }
+
+                    // Build cart with current prices, skip unavailable products
+                    $cartItems = [];
+                    $skippedItems = [];
+
+                    foreach ($reorderItems as $ri) {
+                        $productId = (int)($ri['product_id'] ?? 0);
+                        if ($productId <= 0) continue;
+
+                        // Check if product still exists, is active, and has stock
+                        $productStatus = $ri['product_status'] ?? null;
+                        $productStock = (int)($ri['product_stock'] ?? 0);
+
+                        if ($productStatus === null || (int)$productStatus !== 1 || $productStock <= 0) {
+                            // Product no longer available
+                            $skippedItems[] = $ri['name'];
+                            continue;
+                        }
+
+                        // Use CURRENT price from DB, not old order price
+                        $currentPrice = (float)($ri['current_price'] ?? 0);
+                        $currentSpecial = (float)($ri['current_special_price'] ?? 0);
+                        $realPrice = ($currentSpecial > 0 && $currentSpecial < $currentPrice)
+                            ? $currentSpecial
+                            : $currentPrice;
+
+                        if ($realPrice <= 0) {
+                            $skippedItems[] = $ri['name'];
+                            continue;
+                        }
+
+                        $qty = min((int)($ri['quantity'] ?? 1), $productStock);
+                        $cartItems[] = [
+                            'product_id' => $productId,
+                            'name'       => $ri['current_name'] ?? $ri['name'],
+                            'price'      => $realPrice,
+                            'qty'        => $qty,
+                        ];
+                    }
+
+                    if (!empty($cartItems)) {
+                        $context['items'] = $cartItems;
+                        $context['mode'] = 'ordering';
+                        // Skip directly to address step since items are loaded
+                        $context['step'] = STEP_GET_ADDRESS;
+
+                        // Append info about skipped items to the response
+                        if (!empty($skippedItems)) {
+                            $skippedList = implode(', ', $skippedItems);
+                            $cleanedResponse .= "\n\n_Obs: alguns itens nao estao mais disponiveis e foram removidos: {$skippedList}_";
+                        }
+
+                        // Append reorder summary
+                        $cartSummary = buildCartSummary($cartItems);
+                        $cleanedResponse .= "\n\n" . $cartSummary;
+
+                        // Save to memory
+                        if ($customerId) {
+                            aiMemorySave($db, $phone, $customerId, 'preference', 'favorite_store',
+                                $context['partner_name'] . ' (ID:' . $context['partner_id'] . ')');
+                        }
+                    } else {
+                        // All items unavailable
+                        $cleanedResponse .= "\n\n_Poxa, nenhum dos itens desse pedido esta disponivel no momento. Vamos montar um pedido novo?_";
+                        $context['step'] = STEP_GREETING;
+                    }
+                } else {
+                    $cleanedResponse .= "\n\n_Nao encontrei os itens desse pedido. Vamos montar um novo?_";
+                    $context['step'] = STEP_GREETING;
+                }
+            } else {
+                $cleanedResponse .= "\n\n_Nao encontrei o pedido #{$reorderNumber}. Pode verificar o numero?_";
+            }
+        } else {
+            $cleanedResponse .= "\n\n_Preciso identificar sua conta para repetir o pedido. Qual seu nome ou email cadastrado?_";
+        }
     }
 
     // Parse [CITY:nome_da_cidade]
@@ -2295,6 +2562,38 @@ function handleWhatsAppMessage(
         return;
     }
 
+    // ── Rating response handling (before Claude) ────────────────────────
+    // If there's a pending rating request, try to process the response
+    if (!empty($context['rating_requested_for_order']) && $customerId) {
+        $ratingResult = processRatingResponse($db, $phone, $customerId, $message, $context);
+        if ($ratingResult !== null) {
+            $response = $ratingResult['response'];
+            if (!empty($ratingResult['clear_rating_context'])) {
+                $context['rating_requested_for_order'] = null;
+                $context['rating_pending_value'] = null;
+            }
+            updateConversationContext($db, $conversationId, $context);
+            saveMessage($db, $conversationId, 'outbound', 'ai', $response);
+            sendWhatsAppResponse($phone, $response);
+            return;
+        }
+    }
+
+    // ── Proactive rating request for recently delivered orders ───────────
+    // On first message in a new/reset session, check if customer has unrated orders
+    if ($customerId && ($context['message_count'] ?? 0) <= 1
+        && empty($context['rating_requested_for_order'])
+        && in_array($context['step'], [STEP_GREETING, STEP_COMPLETED])) {
+        $unratedOrder = checkAndSendRatingRequest($db, $phone, $customerId);
+        if ($unratedOrder) {
+            $context['rating_requested_for_order'] = (int)$unratedOrder['order_id'];
+            $context['rating_pending_value'] = null;
+            updateConversationContext($db, $conversationId, $context);
+            // Don't return — let the greeting also proceed to Claude
+            // The rating request was sent as a separate message
+        }
+    }
+
     // ── Pre-Claude context extraction ───────────────────────────────────
 
     // Try to extract address if in address step
@@ -2362,6 +2661,7 @@ function handleWhatsAppMessage(
     $conversation['ai_context'] = json_encode($context, JSON_UNESCAPED_UNICODE);
 
     $systemPrompt = buildSystemPrompt(
+        $db,
         $conversation,
         $step,
         $customerInfo,

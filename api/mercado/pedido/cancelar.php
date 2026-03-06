@@ -24,6 +24,7 @@ require_once __DIR__ . "/../config/database.php";
 setCorsHeaders();
 require_once __DIR__ . "/../helpers/notify.php";
 require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
+require_once __DIR__ . '/../helpers/zapi-whatsapp.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     response(false, null, "Metodo nao permitido", 405);
@@ -331,6 +332,17 @@ try {
                     '/painel/mercado/pedidos.php'
                 );
             } catch (Exception $e) {}
+        }
+
+        // WhatsApp notification (never breaks the flow)
+        try {
+            $customerPhone = $pedido['customer_phone'] ?? '';
+            if ($customerPhone) {
+                $waResult = whatsappOrderCancelled($customerPhone, $pedido['order_number'], $motivo);
+                error_log("[cancelar] WhatsApp pedido #{$pedido['order_number']} phone=****" . substr($customerPhone, -4) . " success=" . ($waResult['success'] ? 'yes' : 'no'));
+            }
+        } catch (\Throwable $waErr) {
+            error_log("[cancelar] WhatsApp error: " . $waErr->getMessage());
         }
 
         $responseData = [

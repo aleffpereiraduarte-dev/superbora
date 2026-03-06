@@ -8,6 +8,7 @@ require_once __DIR__ . "/../config/database.php";
 require_once __DIR__ . "/../helpers/notify.php";
 require_once __DIR__ . "/../helpers/delivery.php";
 require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
+require_once __DIR__ . '/../helpers/zapi-whatsapp.php';
 setCorsHeaders();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -133,6 +134,17 @@ try {
                 '/mercado/pedido.php?id=' . $order_id
             );
         }
+    }
+
+    // WhatsApp notification (never breaks the flow)
+    try {
+        $customerPhone = $pedido['customer_phone'] ?? '';
+        if ($customerPhone) {
+            $waResult = whatsappOrderReady($customerPhone, $pedido['order_number']);
+            error_log("[pronto] WhatsApp pedido #{$pedido['order_number']} phone=****" . substr($customerPhone, -4) . " success=" . ($waResult['success'] ? 'yes' : 'no'));
+        }
+    } catch (\Throwable $waErr) {
+        error_log("[pronto] WhatsApp error: " . $waErr->getMessage());
     }
 
     // Post-commit: Auto-dispatch BoraUm (external API call, must be outside transaction)

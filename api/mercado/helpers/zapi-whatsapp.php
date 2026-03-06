@@ -330,8 +330,8 @@ function whatsappShopperAssigned(string $phone, string $orderNumber, string $sho
     return sendWhatsApp($phone, $msg);
 }
 
-function whatsappOTP(string $phone, string $code): array {
-    $msg = "🔐 *SuperBora - Codigo de Verificacao*\n\n"
+function whatsappOTP(string $phone, string $code, string $app = 'SuperBora'): array {
+    $msg = "🔐 *{$app} - Codigo de Verificacao*\n\n"
          . "Seu codigo: *{$code}*\n\n"
          . "Valido por 5 minutos. Nao compartilhe este codigo.";
     return sendWhatsApp($phone, $msg);
@@ -340,6 +340,19 @@ function whatsappOTP(string $phone, string $code): array {
 /**
  * Notifica parceiro via WhatsApp sobre novo pedido
  */
+function whatsappAskRating(string $phone, string $orderNumber, string $partnerName): array {
+    $msg = "⭐ *Como foi seu pedido?*\n\n"
+         . "Pedido *#{$orderNumber}* da *{$partnerName}*\n\n"
+         . "De 1 a 5, como voce avalia?\n"
+         . "1 ⭐ — Ruim\n"
+         . "2 ⭐⭐ — Regular\n"
+         . "3 ⭐⭐⭐ — Bom\n"
+         . "4 ⭐⭐⭐⭐ — Muito bom\n"
+         . "5 ⭐⭐⭐⭐⭐ — Excelente\n\n"
+         . "Responda com o numero ou mande um comentario!";
+    return sendWhatsApp($phone, $msg);
+}
+
 function whatsappNewOrderPartner(string $phone, string $orderNumber, float $total, string $customerName): array {
     $totalFmt = number_format($total, 2, ',', '.');
     $msg = "🔔 *Novo Pedido!*\n\n"

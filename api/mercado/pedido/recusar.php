@@ -7,6 +7,7 @@
 require_once __DIR__ . "/../config/database.php";
 require_once __DIR__ . "/../helpers/notify.php";
 require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
+require_once __DIR__ . '/../helpers/zapi-whatsapp.php';
 setCorsHeaders();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -223,6 +224,17 @@ try {
             "Seu pedido #{$pedido['order_number']} foi cancelado. Motivo: $motivo",
             '/mercado/'
         );
+    }
+
+    // WhatsApp notification (never breaks the flow)
+    try {
+        $customerPhone = $pedido['customer_phone'] ?? '';
+        if ($customerPhone) {
+            $waResult = whatsappOrderCancelled($customerPhone, $pedido['order_number'], $motivo);
+            error_log("[recusar] WhatsApp pedido #{$pedido['order_number']} phone=****" . substr($customerPhone, -4) . " success=" . ($waResult['success'] ? 'yes' : 'no'));
+        }
+    } catch (\Throwable $waErr) {
+        error_log("[recusar] WhatsApp error: " . $waErr->getMessage());
     }
 
     error_log("[recusar] Pedido #$order_id recusado por parceiro #$mercado_id | Motivo: $motivo");

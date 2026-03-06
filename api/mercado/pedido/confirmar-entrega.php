@@ -16,6 +16,7 @@
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../helpers/notify.php';
 require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
+require_once __DIR__ . '/../helpers/zapi-whatsapp.php';
 require_once dirname(__DIR__, 3) . '/includes/classes/OmAuth.php';
 
 setCorsHeaders();
@@ -417,6 +418,27 @@ try {
             }
         } catch (Exception $pushErr) {
             error_log("[confirmar-entrega] Push error: " . $pushErr->getMessage());
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // WHATSAPP - notificar cliente da entrega
+        // ═══════════════════════════════════════════════════════
+        try {
+            $customerPhone = $pedido['customer_phone'] ?? '';
+            if ($customerPhone) {
+                $waResult = whatsappOrderDelivered($customerPhone, $pedido['order_number']);
+                error_log("[confirmar-entrega] WhatsApp pedido #{$pedido['order_number']} phone=****" . substr($customerPhone, -4) . " success=" . ($waResult['success'] ? 'yes' : 'no'));
+
+                // Send rating request after delivery notification (slight delay)
+                if ($waResult['success']) {
+                    usleep(500000); // 0.5s delay between messages
+                    $partnerName = $pedido['mercado_nome'] ?? $pedido['partner_name'] ?? 'a loja';
+                    $ratingResult = whatsappAskRating($customerPhone, $pedido['order_number'], $partnerName);
+                    error_log("[confirmar-entrega] Rating request pedido #{$pedido['order_number']} success=" . ($ratingResult['success'] ? 'yes' : 'no'));
+                }
+            }
+        } catch (\Throwable $waErr) {
+            error_log("[confirmar-entrega] WhatsApp error: " . $waErr->getMessage());
         }
 
         // ═══════════════════════════════════════════════════════

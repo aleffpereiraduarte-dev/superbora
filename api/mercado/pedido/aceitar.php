@@ -10,6 +10,7 @@
 require_once __DIR__ . "/../config/database.php";
 require_once __DIR__ . "/../helpers/notify.php";
 require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
+require_once __DIR__ . '/../helpers/zapi-whatsapp.php';
 setCorsHeaders();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -104,6 +105,17 @@ try {
             "Seu pedido #{$pedido['order_number']} foi aceito e esta sendo preparado.",
             '/mercado/pedido.php?id=' . $order_id
         );
+    }
+
+    // WhatsApp notification (never breaks the flow)
+    try {
+        $customerPhone = $pedido['customer_phone'] ?? '';
+        if ($customerPhone) {
+            $waResult = whatsappOrderAccepted($customerPhone, $pedido['order_number']);
+            error_log("[aceitar] WhatsApp pedido #{$pedido['order_number']} phone=****" . substr($customerPhone, -4) . " success=" . ($waResult['success'] ? 'yes' : 'no'));
+        }
+    } catch (\Throwable $waErr) {
+        error_log("[aceitar] WhatsApp error: " . $waErr->getMessage());
     }
 
     error_log("[aceitar] Pedido #$order_id aceito por parceiro #$mercado_id | Status: $novo_status");
