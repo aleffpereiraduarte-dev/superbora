@@ -192,16 +192,16 @@ if ($cust && $cust['name']) {
             . "Quer saber mais, cancelar, ou fazer outro pedido?";
     } else {
         $greetText = "{$periodo}, {$firstName}! Aqui é a Bora, do SuperBora. "
-            . "Como posso te ajudar?";
+            . "No que posso te ajudar hoje?";
     }
 } else {
-    // Unknown phone number — ask for linked phone to find their account
+    // Unknown phone number — friendly greeting, ask name naturally
     $greetText = "{$periodo}! Aqui é a Bora, do SuperBora. "
-        . "Não achei uma conta com esse número. Me fala o telefone cadastrado, ou me diz como posso te ajudar!";
+        . "Me fala seu nome e como posso te ajudar!";
 }
 
-// Append the agent option as a short suffix
-$agentHint = " E se preferir falar com uma pessoa, é só apertar zero.";
+// Append the agent option as a short suffix (only for first-time greeting)
+$agentHint = " Se quiser falar com uma pessoa, aperta zero.";
 
 // Create call record early — wrapped in try/catch to not break greeting on DB issues
 try {
@@ -229,7 +229,7 @@ try {
 $fullGreeting = $greetText . $agentHint;
 
 $routeEsc = htmlspecialchars($routeUrl, ENT_XML1 | ENT_QUOTES, 'UTF-8');
-$gatherAttrs = 'input="speech dtmf" language="pt-BR" speechModel="experimental_utterances" speechTimeout="auto" profanityFilter="false" hints="sim, não, pedido, atendente, cancelar, status, ajuda, pizza, lanche, hamburguer, bebida, um, dois, três, zero"';
+$gatherAttrs = 'input="speech dtmf" language="pt-BR" speechModel="experimental_utterances" speechTimeout="auto" profanityFilter="false" enhanced="true" hints="sim, não, pedido, atendente, cancelar, status, ajuda, pizza, lanche, hambúrguer, bebida, açaí, sushi, um, dois, três, zero, Aleff, meu nome é, endereço, CEP, pix, cartão, dinheiro"';
 
 echo '<?xml version="1.0" encoding="UTF-8"?>';
 echo '<Response>';

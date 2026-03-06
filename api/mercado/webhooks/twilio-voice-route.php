@@ -647,7 +647,7 @@ try {
 
     $aiUrlEsc = htmlspecialchars($aiUrl, ENT_XML1 | ENT_QUOTES, 'UTF-8');
 
-    $gatherAttrs = 'input="speech dtmf" language="pt-BR" speechModel="experimental_utterances" speechTimeout="auto" profanityFilter="false" hints="sim, não, pedido, atendente, cancelar, status, pizza, lanche, um, dois, três, zero"';
+    $gatherAttrs = 'input="speech dtmf" language="pt-BR" speechModel="experimental_utterances" speechTimeout="auto" profanityFilter="false" enhanced="true" hints="sim, não, pedido, atendente, cancelar, status, pizza, lanche, hambúrguer, açaí, sushi, um, dois, três, zero, Aleff, meu nome é, endereço, CEP, pix, cartão, dinheiro"';
 
     // Respond
     echo '<?xml version="1.0" encoding="UTF-8"?>';

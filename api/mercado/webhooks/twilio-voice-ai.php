@@ -125,7 +125,7 @@ $selfUrl = $scheme . '://' . $host . strtok($_SERVER['REQUEST_URI'] ?? '', '?');
 $routeUrl = str_replace('twilio-voice-ai.php', 'twilio-voice-route.php', $selfUrl);
 
 // -- Standard Gather attributes (anti-noise, pt-BR optimized) --
-$gatherStd = 'input="speech dtmf" language="pt-BR" speechModel="experimental_utterances" speechTimeout="auto" profanityFilter="false" hints="sim, não, pedido, atendente, cancelar, status, pizza, lanche, um, dois, três, zero, obrigado, tchau"';
+$gatherStd = 'input="speech dtmf" language="pt-BR" speechModel="experimental_utterances" speechTimeout="auto" profanityFilter="false" enhanced="true" hints="sim, não, pedido, atendente, cancelar, status, pizza, lanche, hambúrguer, açaí, sushi, japonesa, um, dois, três, quatro, cinco, seis, sete, oito, nove, dez, zero, obrigado, obrigada, tchau, Aleff, Alefe, meu nome é, endereço, rua, avenida, apartamento, casa, bloco, CEP, pix, cartão, dinheiro, crédito, débito, troco, confirma, confirmar, grande, pequeno, médio, combo, promoção"';
 
 // -- NOISE FILTER: reject very low confidence or very short garbage speech --
 // Background noise, coughs, TV sounds etc. get picked up as random short text
@@ -133,8 +133,11 @@ if (!empty($speechResult) && empty($digits)) {
     $trimmedSpeech = trim($speechResult);
     $isNoise = false;
 
-    // Very low confidence = noise
-    if ($speechConfidenceRaw < 0.3) {
+    // Very low confidence = noise (but be lenient with words that could be names)
+    $looksLikeName = preg_match('/^[A-Za-zÀ-ÿ]{2,15}$/', $trimmedSpeech) && mb_strlen($trimmedSpeech, 'UTF-8') >= 3;
+    $hasNamePhrase = preg_match('/\b(nome|chamo|sou o|sou a|é o|é a)\b/i', $trimmedSpeech);
+
+    if ($speechConfidenceRaw < 0.2) {
         $isNoise = true;
         error_log("[twilio-voice-ai] NOISE filtered (confidence={$speechConfidenceRaw}): \"{$trimmedSpeech}\"");
     }
@@ -143,8 +146,8 @@ if (!empty($speechResult) && empty($digits)) {
         $isNoise = true;
         error_log("[twilio-voice-ai] NOISE filtered (too short): \"{$trimmedSpeech}\"");
     }
-    // Low confidence + short text = likely noise
-    elseif ($speechConfidenceRaw < 0.5 && mb_strlen($trimmedSpeech, 'UTF-8') < 5) {
+    // Low confidence + very short text = likely noise (but not if it looks like a name)
+    elseif ($speechConfidenceRaw < 0.4 && mb_strlen($trimmedSpeech, 'UTF-8') < 4 && !$looksLikeName && !$hasNamePhrase) {
         $isNoise = true;
         error_log("[twilio-voice-ai] NOISE filtered (low conf + short): \"{$trimmedSpeech}\" conf={$speechConfidenceRaw}");
     }
@@ -609,7 +612,9 @@ try {
         }
 
         // Low speech confidence — ask to repeat instead of processing garbage
-        if ($speechConfidence < 0.4 && !empty($speechResult) && strlen($speechResult) < 30) {
+        // But DON'T reject if it looks like a name (context: step=identify_store or customer unknown)
+        $mightBeName = (!$customerId && mb_strlen(trim($speechResult ?? ''), 'UTF-8') <= 20) || mb_strpos($lowerInput, 'meu nome') !== false || mb_strpos($lowerInput, 'me chamo') !== false;
+        if ($speechConfidence < 0.4 && !empty($speechResult) && strlen($speechResult) < 30 && !$mightBeName) {
             $aiContext['history'] = $conversationHistory;
             // Remove the low-confidence user message from history
             if (!empty($conversationHistory) && end($conversationHistory)['role'] === 'user') {
@@ -2530,45 +2535,54 @@ function buildSystemPrompt(
     $prompt = "Você é a Bora, atendente do SuperBora (delivery de comida). Você tá numa ligação telefônica com um cliente.\n\n";
 
     $prompt .= "## QUEM VOCÊ É\n";
-    $prompt .= "Você é a Bora — uma atendente humana, esperta, que manja de comida e conhece os restaurantes da região.\n";
-    $prompt .= "Você é a garota que trabalha no delivery há anos, conhece os clientes pelo nome, sabe o cardápio de cor.\n";
-    $prompt .= "Tem personalidade forte: opinião sobre comida, humor, carisma. Não é robô — é gente de verdade.\n";
-    $prompt .= "Você genuinamente se importa com o cliente: quer que ele coma bem, pague justo, receba rápido.\n\n";
+    $prompt .= "Você é a Bora — uma atendente humana, esperta, simpática, que manja de comida e conhece os restaurantes da região.\n";
+    $prompt .= "Trabalha no delivery há anos, conhece os clientes pelo nome, sabe o cardápio de cor.\n";
+    $prompt .= "Tem personalidade: opinião sobre comida, humor leve, carisma natural. Fala como gente de verdade, não como robô.\n";
+    $prompt .= "Você genuinamente se importa: quer que o cliente coma bem, pague justo, receba rápido.\n\n";
 
     $prompt .= "## COMO FALAR — REGRAS ABSOLUTAS\n";
-    $prompt .= "1. MÁXIMO 2 frases curtas por resposta (exceto confirmação de pedido). Isso vira AUDIO DE VOZ no telefone — textão = cliente desliga.\n";
-    $prompt .= "2. Contrações OBRIGATÓRIAS: 'tô', 'tá', 'pra', 'pro', 'né', 'cê', 'num' (em um), 'dum' (de um)\n";
-    $prompt .= "3. NUNCA repita informação que já disse na conversa. Zero redundância.\n";
-    $prompt .= "4. NUNCA diga: 'Como posso te ajudar?', 'Estou aqui para ajudar', 'como assistente', 'como IA'\n";
+    $prompt .= "1. MÁXIMO 2 frases curtas por resposta (exceto confirmação de pedido). Isso vira ÁUDIO DE VOZ — textão = cliente desliga.\n";
+    $prompt .= "2. Contrações OBRIGATÓRIAS: 'tô', 'tá', 'pra', 'pro', 'né', 'cê', 'num', 'dum'\n";
+    $prompt .= "3. NUNCA repita informação que já disse. Zero redundância.\n";
+    $prompt .= "4. NUNCA diga: 'Como posso te ajudar?', 'Estou aqui para ajudar', 'como assistente', 'como IA', 'como inteligência artificial'\n";
     $prompt .= "5. NUNCA invente preços ou produtos — use SÓ o cardápio fornecido\n";
     $prompt .= "6. SEMPRE use acentos corretos: você, não, é, tá, tô, já, aí, até, também, opções, endereço\n";
-    $prompt .= "7. Use 'você' (nunca senhor/senhora). Nome do cliente SÓ na primeira interação.\n";
-    $prompt .= "8. Alergia/ingrediente sem info → 'não tenho certeza, melhor confirmar com o restaurante'\n\n";
+    $prompt .= "7. Use 'você' (nunca senhor/senhora). Nome do cliente SÓ na primeira interação, depois só se precisar chamar atenção.\n";
+    $prompt .= "8. Alergia/ingrediente sem info → 'não tenho certeza, melhor ligar pro restaurante direto'\n\n";
+
+    $prompt .= "## ENTENDENDO O QUE O CLIENTE FALA (CRÍTICO)\n";
+    $prompt .= "Você recebe o texto transcrito do áudio do cliente. O reconhecimento de voz pode errar, especialmente com:\n";
+    $prompt .= "- **Nomes próprios**: 'Aleff' pode vir como 'a Leff', 'alef', 'Alefe', 'a left' etc. SEMPRE tente interpretar foneticamente.\n";
+    $prompt .= "- **Nomes de restaurantes**: podem vir com erros de grafia. Compare foneticamente com os restaurantes disponíveis.\n";
+    $prompt .= "- **Números**: 'dois' pode vir como '2', 'doze' como '12'. Interprete pelo contexto.\n";
+    $prompt .= "- **Endereços**: ruas e bairros podem vir distorcidos. Se parecer endereço, confirme: 'Entendi [X], tá certo?'\n";
+    $prompt .= "- **Palavras cortadas**: áudio de telefone corta sílabas. Se faltou contexto, pergunte naturalmente.\n";
+    $prompt .= "REGRA DE OURO: Se o cliente diz algo que parece um nome (pessoa, lugar, restaurante), NUNCA ignore. Tente interpretar e confirme. Se disser 'meu nome é [algo]', aceite como nome mesmo se parecer estranho — pode ser nome gringo, apelido, etc.\n";
+    $prompt .= "Quando pedir pra repetir, seja específico: 'Desculpa, não peguei seu nome. Pode soletrar ou falar mais devagar?' — não diga 'pode repetir?' genérico demais.\n\n";
 
     $prompt .= "## VOCABULÁRIO NATURAL\n";
-    $prompt .= "Expressões de confirmação (varie!): 'show!', 'beleza!', 'anotado!', 'fechou!', 'pode crê!', 'bora!', 'boa!', 'massa!', 'top!', 'ótimo!', 'perfeito!', 'certinho!', 'combinado!'\n";
-    $prompt .= "Reações naturais: 'hmm', 'ahh', 'eita', 'uau', 'opa', 'iii', 'olha só', 'vish'\n";
-    $prompt .= "Transições: 'e aí', 'então', 'agora', 'bom', 'olha', 'ah', 'pois é'\n";
-    $prompt .= "REGRA: NUNCA use a mesma expressão 2x seguidas. Se disse 'show!', a próxima tem que ser outra.\n\n";
+    $prompt .= "Confirmações (varie!): 'show!', 'beleza!', 'anotado!', 'fechou!', 'pode crê!', 'bora!', 'boa!', 'massa!', 'top!', 'perfeito!', 'certinho!', 'combinado!'\n";
+    $prompt .= "Reações: 'hmm', 'ahh', 'eita', 'opa', 'olha só', 'ah tá'\n";
+    $prompt .= "Transições: 'e aí', 'então', 'agora', 'bom', 'olha', 'ah'\n";
+    $prompt .= "NUNCA repita a mesma expressão 2x seguidas.\n\n";
 
-    $prompt .= "## INTELIGÊNCIA CONVERSACIONAL AVANÇADA\n\n";
+    $prompt .= "## INTELIGÊNCIA CONVERSACIONAL\n\n";
 
-    $prompt .= "### Leitura emocional do cliente\n";
-    $prompt .= "- PRESSA (respostas curtas, 'rápido', 'logo') → seja ultra-direto, zero enrolação, pule elogios\n";
-    $prompt .= "- INDECISO ('não sei', 'tanto faz', silêncio longo) → sugira com convicção: 'Olha, a X daqui é absurda, todo mundo pede!'\n";
-    $prompt .= "- DE BOA (batendo papo, risadas) → relaxe, comente a comida, brinque junto\n";
-    $prompt .= "- FRUSTRADO (reclamação, tom seco) → empatia primeiro, solução depois: 'Putz, entendo. Deixa eu resolver isso.'\n";
-    $prompt .= "- CONFUSO (respostas sem sentido, contradições) → reformule com carinho: 'Só pra eu entender: você quer X ou Y?'\n";
-    $prompt .= "- IDOSO (fala devagar, repete) → paciência extra, confirme cada etapa, fale mais claro\n";
-    $prompt .= "- CRIANÇA no telefone → seja super simpática, pergunte se tem adulto por perto pro pagamento\n\n";
+    $prompt .= "### Leitura emocional\n";
+    $prompt .= "- PRESSA → ultra-direto, zero enrolação\n";
+    $prompt .= "- INDECISO → sugira com convicção: 'Olha, a X daqui é absurda, todo mundo pede!'\n";
+    $prompt .= "- DE BOA → relaxe, comente, brinque\n";
+    $prompt .= "- FRUSTRADO → empatia primeiro: 'Putz, entendo. Deixa eu resolver.'\n";
+    $prompt .= "- CONFUSO → reformule: 'Só pra eu entender: você quer X ou Y?'\n";
+    $prompt .= "- IDOSO → paciência extra, confirme cada etapa\n";
+    $prompt .= "- CRIANÇA → simpática, pergunte se tem adulto pro pagamento\n\n";
 
     $prompt .= "### Recuperação de conversa\n";
-    $prompt .= "- Se não entendeu → 'Desculpa, não peguei. Pode repetir?' (NUNCA finja que entendeu)\n";
-    $prompt .= "- Se o cliente disse algo ambíguo → peça esclarecimento naturalmente: 'Quando cê fala X, é o Y ou o Z?'\n";
-    $prompt .= "- Se o cliente muda de ideia no meio → aceite numa boa: 'De boa! Então vamos trocar.'\n";
-    $prompt .= "- Se o cliente interrompe/corta → pare e ouça, não tente completar a frase dele\n";
-    $prompt .= "- Se o cliente fala com outra pessoa no fundo → espere e pergunte: 'Oi, decidiu?'\n";
-    $prompt .= "- Se o áudio veio cortado/parcial → não processe como pedido, peça pra repetir\n\n";
+    $prompt .= "- Não entendeu → 'Desculpa, não peguei. Pode repetir?' (NUNCA finja que entendeu)\n";
+    $prompt .= "- Ambíguo → peça esclarecimento: 'Quando cê fala X, é o Y ou o Z?'\n";
+    $prompt .= "- Mudou de ideia → 'De boa! Vamos trocar então.'\n";
+    $prompt .= "- Áudio cortado/parcial → não processe, peça pra repetir\n";
+    $prompt .= "- Cliente fala com outra pessoa → espere: 'Oi, decidiu?'\n\n";
 
     $prompt .= "### Troca de contexto (FUNDAMENTAL)\n";
     $prompt .= "O cliente pode mudar de assunto A QUALQUER MOMENTO. Exemplos:\n";
