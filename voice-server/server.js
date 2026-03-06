@@ -1,0 +1,865 @@
+// ============================================================
+// SuperBora Voice Server — Twilio ConversationRelay + Claude AI
+// ============================================================
+//
+// Architecture:
+//   Caller → Twilio → ConversationRelay (STT: Google, TTS: ElevenLabs)
+//     → WebSocket → this server → Claude API (with tools)
+//     → text response → ConversationRelay → ElevenLabs → Caller
+//
+// Zero webhooks per turn. Zero TwiML generation. Zero timeouts.
+// One persistent WebSocket for the entire call.
+// ============================================================
+
+import Fastify from 'fastify';
+import websocketPlugin from '@fastify/websocket';
+import formbodyPlugin from '@fastify/formbody';
+import Anthropic from '@anthropic-ai/sdk';
+import pg from 'pg';
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
+
+// ─── Load .env from parent directory ────────────────────────
+const envPath = resolve(import.meta.dirname, '../.env');
+try {
+    const envFile = readFileSync(envPath, 'utf-8');
+    for (const line of envFile.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const eqIdx = trimmed.indexOf('=');
+        if (eqIdx === -1) continue;
+        const key = trimmed.slice(0, eqIdx).trim();
+        const val = trimmed.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, '');
+        if (!process.env[key]) process.env[key] = val;
+    }
+} catch (e) {
+    console.error('[voice] Could not load .env:', e.message);
+}
+
+// ─── Config ─────────────────────────────────────────────────
+const PORT = parseInt(process.env.VOICE_PORT || '5050');
+const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
+const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || '0ozreaQ0xnggCu2x9oFC';
+const TWILIO_SID = process.env.TWILIO_SID;
+const TWILIO_TOKEN = process.env.TWILIO_AUTH_TOKEN || process.env.TWILIO_TOKEN;
+const WS_HOST = process.env.VOICE_WS_HOST || 'superbora.com.br';
+const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
+
+// ─── Database ───────────────────────────────────────────────
+const pool = new pg.Pool({
+    host: process.env.DB_HOST || '127.0.0.1',
+    port: parseInt(process.env.DB_PORT || '6432'),
+    user: process.env.DB_USER || 'love1',
+    password: process.env.DB_PASS || process.env.DB_PASSWORD,
+    database: process.env.DB_NAME || process.env.DB_DATABASE || 'love1',
+    max: 10,
+    idleTimeoutMillis: 30000,
+});
+
+pool.on('error', (err) => console.error('[voice] Pool error:', err.message));
+
+// ─── Claude Client ──────────────────────────────────────────
+const anthropic = new Anthropic({ apiKey: CLAUDE_API_KEY });
+
+// ─── Active Calls ───────────────────────────────────────────
+const activeCalls = new Map();
+
+// ─── System Prompt ──────────────────────────────────────────
+function buildSystemPrompt(customerName, callerPhone) {
+    const hora = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: 'numeric', hour12: false });
+    const horaNum = parseInt(hora);
+    const periodo = horaNum < 12 ? 'manhã' : horaNum < 18 ? 'tarde' : 'noite';
+
+    return `Você é a Bora, assistente virtual do SuperBora — um app de delivery de comida como iFood.
+Você está atendendo uma ligação telefônica. O cliente pode querer fazer pedido, ver status, ou pedir ajuda.
+
+REGRAS OBRIGATÓRIAS:
+- Fale em português brasileiro, informal e calorosa
+- NUNCA use emojis, bullets, asteriscos, ou qualquer formatação — sua fala será convertida em áudio
+- Fale números por extenso: "doze reais e cinquenta" não "R$12,50"
+- Respostas CURTAS — máximo 2-3 frases por vez. É uma conversa por telefone
+- Confirme cada item antes de adicionar ao pedido
+- SEMPRE confirme o pedido completo antes de usar submit_order
+- Se o cliente pedir atendente humano, use transfer_to_agent IMEDIATAMENTE
+- Use as ferramentas para buscar dados reais — NUNCA invente preços, produtos ou lojas
+- Se não encontrar algo, diga que não encontrou
+
+FLUXO NATURAL:
+1. Se for pedido novo: pergunte de qual loja → busque com search_stores → peça pra escolher → carregue o cardápio com get_store_menu → ofereça itens populares → monte o pedido com add_to_order → confirme tudo → peça endereço e pagamento → finalize com submit_order
+2. Se for status de pedido: use check_order_status
+3. Se for dúvida ou problema: responda se souber, senão use transfer_to_agent
+
+DICAS:
+- Se o cliente mencionar um tipo de comida (pizza, hambúrguer), busque lojas desse tipo
+- Ao listar lojas, diga nome, nota e se está aberta
+- Ao listar produtos, diga nome e preço (por extenso)
+- Ao confirmar pedido, liste todos os itens e diga o total por extenso
+- Se o cliente tiver endereço salvo, ofereça usar o endereço salvo
+- Não precisa cumprimentar de novo — o sistema já deu boas-vindas
+
+Horário atual: ${horaNum}h (${periodo})
+Telefone do cliente: ${callerPhone}
+${customerName ? `Nome do cliente: ${customerName}` : 'Cliente não identificado'}`;
+}
+
+// ─── Tool Definitions ───────────────────────────────────────
+const TOOLS = [
+    {
+        name: 'lookup_customer',
+        description: 'Busca um cliente pelo telefone. Retorna nome, endereços salvos, pedidos recentes e saldo de cashback.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                phone: { type: 'string', description: 'Número de telefone (qualquer formato)' }
+            },
+            required: ['phone']
+        }
+    },
+    {
+        name: 'search_stores',
+        description: 'Busca restaurantes e lojas por nome, tipo de comida ou bairro. Retorna lista com nome, avaliação, tempo de entrega e taxa.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                query: { type: 'string', description: 'Nome do restaurante, tipo de comida (pizza, hamburguer), ou bairro' }
+            },
+            required: ['query']
+        }
+    },
+    {
+        name: 'get_store_menu',
+        description: 'Retorna o cardápio completo de uma loja: categorias, produtos com preços e opções disponíveis.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                partner_id: { type: 'integer', description: 'ID da loja (obtido via search_stores)' }
+            },
+            required: ['partner_id']
+        }
+    },
+    {
+        name: 'add_to_order',
+        description: 'Adiciona um produto ao pedido atual. Retorna o pedido atualizado com subtotal.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                product_id: { type: 'integer', description: 'ID do produto' },
+                product_name: { type: 'string', description: 'Nome do produto' },
+                price: { type: 'number', description: 'Preço unitário' },
+                quantity: { type: 'integer', description: 'Quantidade' },
+                notes: { type: 'string', description: 'Observações (ex: sem cebola)' }
+            },
+            required: ['product_id', 'product_name', 'price', 'quantity']
+        }
+    },
+    {
+        name: 'remove_from_order',
+        description: 'Remove um item do pedido atual pelo índice (começa em 0).',
+        input_schema: {
+            type: 'object',
+            properties: {
+                index: { type: 'integer', description: 'Índice do item (0 = primeiro)' }
+            },
+            required: ['index']
+        }
+    },
+    {
+        name: 'get_order_summary',
+        description: 'Retorna resumo do pedido atual com itens, preços e total.',
+        input_schema: { type: 'object', properties: {} }
+    },
+    {
+        name: 'submit_order',
+        description: 'Finaliza e envia o pedido. SÓ usar depois que o cliente CONFIRMAR tudo. Envia SMS de confirmação.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                address_id: { type: 'integer', description: 'ID do endereço de entrega (dos endereços salvos)' },
+                payment_method: { type: 'string', enum: ['pix', 'cartao', 'dinheiro'], description: 'Forma de pagamento' },
+                change_for: { type: 'number', description: 'Troco para quanto (só pra dinheiro)' }
+            },
+            required: ['payment_method']
+        }
+    },
+    {
+        name: 'check_order_status',
+        description: 'Verifica pedidos ativos do cliente. Retorna status, loja e previsão de entrega.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                customer_id: { type: 'integer', description: 'ID do cliente' }
+            },
+            required: ['customer_id']
+        }
+    },
+    {
+        name: 'transfer_to_agent',
+        description: 'Transfere para um atendente humano. Usar quando o cliente pedir ou quando não conseguir resolver.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                reason: { type: 'string', description: 'Motivo da transferência' }
+            },
+            required: ['reason']
+        }
+    }
+];
+
+// ─── Tool Handlers ──────────────────────────────────────────
+
+async function executeTool(name, input, callState) {
+    try {
+        switch (name) {
+            case 'lookup_customer': return await lookupCustomer(input.phone);
+            case 'search_stores': return await searchStores(input.query);
+            case 'get_store_menu': {
+                const menu = await getStoreMenu(input.partner_id);
+                // Track selected store
+                if (menu.store_name) {
+                    callState.store = { partner_id: input.partner_id, name: menu.store_name, delivery_fee: menu.delivery_fee };
+                }
+                return menu;
+            }
+            case 'add_to_order': return addToOrder(callState, input);
+            case 'remove_from_order': return removeFromOrder(callState, input.index);
+            case 'get_order_summary': return getOrderSummary(callState);
+            case 'submit_order': return await submitOrder(callState, input);
+            case 'check_order_status': return await checkOrderStatus(input.customer_id);
+            case 'transfer_to_agent': {
+                callState.transferRequested = true;
+                callState.transferReason = input.reason;
+                return { success: true, message: 'Transferência será feita após sua próxima fala.' };
+            }
+            default: return { error: `Ferramenta desconhecida: ${name}` };
+        }
+    } catch (err) {
+        console.error(`[voice] Tool ${name} error:`, err.message);
+        return { error: `Erro ao executar ${name}: ${err.message}` };
+    }
+}
+
+async function lookupCustomer(phone) {
+    const suffix = phone.replace(/\D/g, '').slice(-11);
+    const custResult = await pool.query(
+        `SELECT customer_id, name, email, phone, cashback_balance
+         FROM om_customers
+         WHERE REPLACE(REPLACE(phone, '+', ''), '-', '') LIKE $1
+         LIMIT 1`,
+        ['%' + suffix]
+    );
+    if (custResult.rows.length === 0) {
+        return { found: false };
+    }
+    const c = custResult.rows[0];
+    const addrResult = await pool.query(
+        `SELECT address_id, label, street, number, complement, neighborhood, city, cep
+         FROM om_customer_addresses WHERE customer_id = $1 AND is_active = '1'
+         ORDER BY is_default DESC`, [c.customer_id]
+    );
+    const ordersResult = await pool.query(
+        `SELECT o.order_number, o.status, o.total, p.name as store_name,
+                TO_CHAR(o.date_added, 'DD/MM') as date
+         FROM om_market_orders o
+         JOIN om_market_partners p ON p.partner_id = o.partner_id
+         WHERE o.customer_id = $1 ORDER BY o.date_added DESC LIMIT 5`,
+        [c.customer_id]
+    );
+    return {
+        found: true,
+        customer_id: c.customer_id,
+        name: c.name,
+        cashback: parseFloat(c.cashback_balance || 0),
+        addresses: addrResult.rows,
+        recent_orders: ordersResult.rows
+    };
+}
+
+async function searchStores(query) {
+    const result = await pool.query(
+        `SELECT partner_id, name, description, city, neighborhood,
+                rating, delivery_time_min, delivery_fee, minimum_order,
+                CASE WHEN is_open = '1' OR is_open::text = 'true' THEN true ELSE false END as is_open
+         FROM om_market_partners
+         WHERE is_active = '1'
+           AND (name ILIKE $1 OR description ILIKE $1 OR category ILIKE $1)
+         ORDER BY is_open DESC, rating DESC NULLS LAST
+         LIMIT 10`,
+        ['%' + query + '%']
+    );
+    return { stores: result.rows, count: result.rows.length };
+}
+
+async function getStoreMenu(partnerId) {
+    // Get store info
+    const storeResult = await pool.query(
+        `SELECT name, delivery_fee, delivery_time_min, minimum_order, is_open
+         FROM om_market_partners WHERE partner_id = $1`, [partnerId]
+    );
+    const store = storeResult.rows[0];
+    if (!store) return { error: 'Loja não encontrada' };
+
+    // Get products grouped by category
+    const prodResult = await pool.query(
+        `SELECT p.product_id, p.name, p.description, p.price, p.is_available,
+                pc.name as category_name
+         FROM om_market_products p
+         JOIN om_market_product_categories pc ON pc.category_id = p.category_id
+         WHERE p.partner_id = $1 AND p.is_active = '1'
+         ORDER BY pc.sort_order, p.sort_order`,
+        [partnerId]
+    );
+
+    // Group by category, limit to available items
+    const menu = {};
+    for (const p of prodResult.rows) {
+        const cat = p.category_name || 'Outros';
+        if (!menu[cat]) menu[cat] = [];
+        if (p.is_available === '1' || p.is_available === true) {
+            menu[cat].push({
+                product_id: p.product_id,
+                name: p.name,
+                description: p.description ? p.description.slice(0, 80) : null,
+                price: parseFloat(p.price)
+            });
+        }
+    }
+
+    return {
+        store_name: store.name,
+        delivery_fee: parseFloat(store.delivery_fee || 0),
+        delivery_time: store.delivery_time_min,
+        minimum_order: parseFloat(store.minimum_order || 0),
+        is_open: store.is_open === '1' || store.is_open === true,
+        menu
+    };
+}
+
+function addToOrder(callState, item) {
+    if (!callState.items) callState.items = [];
+    callState.items.push({
+        product_id: item.product_id,
+        product_name: item.product_name,
+        price: item.price,
+        quantity: item.quantity,
+        notes: item.notes || ''
+    });
+    const subtotal = callState.items.reduce((s, i) => s + i.price * i.quantity, 0);
+    return {
+        added: item.product_name,
+        quantity: item.quantity,
+        items_count: callState.items.length,
+        subtotal,
+        message: `${item.product_name} (${item.quantity}x) adicionado. Subtotal: R$${subtotal.toFixed(2)}`
+    };
+}
+
+function removeFromOrder(callState, index) {
+    if (!callState.items || index < 0 || index >= callState.items.length) {
+        return { error: 'Item não encontrado' };
+    }
+    const removed = callState.items.splice(index, 1)[0];
+    const subtotal = callState.items.reduce((s, i) => s + i.price * i.quantity, 0);
+    return { removed: removed.product_name, items_count: callState.items.length, subtotal };
+}
+
+function getOrderSummary(callState) {
+    if (!callState.items || callState.items.length === 0) {
+        return { items: [], subtotal: 0, message: 'Pedido vazio' };
+    }
+    const subtotal = callState.items.reduce((s, i) => s + i.price * i.quantity, 0);
+    const deliveryFee = callState.store?.delivery_fee || 0;
+    return {
+        store: callState.store?.name || 'Não definida',
+        items: callState.items.map((i, idx) => ({
+            index: idx,
+            name: i.product_name,
+            quantity: i.quantity,
+            unit_price: i.price,
+            line_total: i.price * i.quantity,
+            notes: i.notes
+        })),
+        subtotal,
+        delivery_fee: deliveryFee,
+        total: subtotal + deliveryFee
+    };
+}
+
+async function checkOrderStatus(customerId) {
+    const result = await pool.query(
+        `SELECT o.order_number, o.status, o.total, p.name as store_name,
+                TO_CHAR(o.date_added, 'HH24:MI') as time
+         FROM om_market_orders o
+         JOIN om_market_partners p ON p.partner_id = o.partner_id
+         WHERE o.customer_id = $1
+           AND o.status IN ('pending','accepted','preparing','ready','delivering','em_preparo','saiu_entrega')
+         ORDER BY o.date_added DESC LIMIT 3`,
+        [customerId]
+    );
+    if (result.rows.length === 0) {
+        return { active_orders: [], message: 'Nenhum pedido ativo encontrado' };
+    }
+    const statusLabels = {
+        pending: 'aguardando confirmação da loja',
+        accepted: 'aceito pela loja',
+        preparing: 'sendo preparado',
+        em_preparo: 'sendo preparado',
+        ready: 'pronto, aguardando entregador',
+        delivering: 'saiu para entrega',
+        saiu_entrega: 'saiu para entrega'
+    };
+    return {
+        active_orders: result.rows.map(o => ({
+            ...o,
+            status_label: statusLabels[o.status] || o.status
+        }))
+    };
+}
+
+async function submitOrder(callState, input) {
+    if (!callState.items || callState.items.length === 0) {
+        return { success: false, error: 'Pedido vazio — adicione itens primeiro' };
+    }
+    if (!callState.store?.partner_id) {
+        return { success: false, error: 'Loja não selecionada' };
+    }
+    if (!callState.customer?.customer_id) {
+        return { success: false, error: 'Cliente não identificado — peça o telefone cadastrado' };
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        const subtotal = callState.items.reduce((s, i) => s + i.price * i.quantity, 0);
+        const deliveryFee = callState.store.delivery_fee || 0;
+        const serviceFee = Math.round(subtotal * 0.05 * 100) / 100;
+        const total = subtotal + deliveryFee + serviceFee;
+
+        // Generate order number
+        const orderNumber = 'SB' + Date.now().toString(36).toUpperCase();
+
+        const orderResult = await client.query(
+            `INSERT INTO om_market_orders (
+                customer_id, partner_id, order_number, status,
+                subtotal, delivery_fee, service_fee, total,
+                payment_method, payment_change,
+                delivery_address_id, source, notes, date_added
+            ) VALUES ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, $9, $10, 'voice_ai', $11, NOW())
+            RETURNING order_id, order_number`,
+            [
+                callState.customer.customer_id,
+                callState.store.partner_id,
+                orderNumber,
+                subtotal, deliveryFee, serviceFee, total,
+                input.payment_method, input.change_for || null,
+                input.address_id || null,
+                'Pedido feito por telefone via IA'
+            ]
+        );
+
+        const { order_id } = orderResult.rows[0];
+
+        for (const item of callState.items) {
+            await client.query(
+                `INSERT INTO om_market_order_products (
+                    order_id, product_id, name, price, quantity, options, notes
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                [order_id, item.product_id, item.product_name, item.price, item.quantity,
+                 JSON.stringify([]), item.notes || '']
+            );
+        }
+
+        await client.query('COMMIT');
+
+        // Update call record with order
+        pool.query(
+            `UPDATE om_callcenter_calls SET order_id = $1, store_identified = $2
+             WHERE twilio_call_sid = $3`,
+            [order_id, callState.store.name, callState.callSid]
+        ).catch(() => {});
+
+        // Send SMS confirmation (fire and forget via PHP)
+        sendOrderSMS(callState.callerPhone, orderNumber, callState.store.name, callState.items, total);
+
+        callState.orderSubmitted = true;
+
+        return {
+            success: true,
+            order_number: orderNumber,
+            total,
+            message: `Pedido ${orderNumber} criado! Total: R$${total.toFixed(2)}. SMS de confirmação enviado.`
+        };
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('[voice] Order submission failed:', err);
+        return { success: false, error: 'Erro ao criar pedido: ' + err.message };
+    } finally {
+        client.release();
+    }
+}
+
+function sendOrderSMS(phone, orderNumber, storeName, items, total) {
+    // Call PHP SMS endpoint (fire and forget)
+    const itemsList = items.map(i => `${i.quantity}x ${i.product_name}`).join(', ');
+    const body = new URLSearchParams({
+        phone, order_number: orderNumber, store_name: storeName,
+        items: itemsList, total: total.toFixed(2)
+    });
+    fetch('http://localhost/api/mercado/webhooks/voice-sms.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded',
+                    'X-Internal-Key': 'superbora-voice-2026' },
+        body
+    }).catch(e => console.error('[voice] SMS send failed:', e.message));
+}
+
+// ─── Claude Conversation Engine ─────────────────────────────
+
+async function getClaudeResponse(callState) {
+    const messages = callState.history;
+    let maxLoops = 6;
+
+    while (maxLoops-- > 0) {
+        const response = await anthropic.messages.create({
+            model: CLAUDE_MODEL,
+            max_tokens: 300,
+            system: callState.systemPrompt,
+            messages,
+            tools: TOOLS,
+        });
+
+        const toolBlocks = response.content.filter(b => b.type === 'tool_use');
+
+        // Add assistant response to history
+        messages.push({ role: 'assistant', content: response.content });
+
+        if (toolBlocks.length === 0) {
+            // No tool calls — return the text
+            return response.content
+                .filter(b => b.type === 'text')
+                .map(b => b.text)
+                .join(' ');
+        }
+
+        // Execute tools
+        const toolResults = [];
+        for (const tu of toolBlocks) {
+            console.log(`[voice] Tool call: ${tu.name}(${JSON.stringify(tu.input).slice(0, 100)})`);
+            const result = await executeTool(tu.name, tu.input, callState);
+            toolResults.push({
+                type: 'tool_result',
+                tool_use_id: tu.id,
+                content: JSON.stringify(result)
+            });
+        }
+        messages.push({ role: 'user', content: toolResults });
+        // Loop to get Claude's response with tool results
+    }
+
+    return 'Desculpa, deu um probleminha. Pode repetir o que você precisa?';
+}
+
+// ─── Quick Customer Lookup (for greeting) ───────────────────
+
+async function quickLookup(phone) {
+    try {
+        const suffix = phone.replace(/\D/g, '').slice(-11);
+        if (suffix.length < 8) return null;
+        const result = await pool.query(
+            `SELECT customer_id, name FROM om_customers
+             WHERE REPLACE(REPLACE(phone, '+', ''), '-', '') LIKE $1 LIMIT 1`,
+            ['%' + suffix]
+        );
+        return result.rows[0] || null;
+    } catch {
+        return null;
+    }
+}
+
+// ─── Call Record Management ─────────────────────────────────
+
+async function createCallRecord(callSid, phone, customer) {
+    try {
+        await pool.query(
+            `INSERT INTO om_callcenter_calls
+             (twilio_call_sid, customer_phone, customer_id, customer_name, direction, status, started_at)
+             VALUES ($1, $2, $3, $4, 'inbound', 'ai_handling', NOW())
+             ON CONFLICT (twilio_call_sid) DO UPDATE SET status = 'ai_handling'`,
+            [callSid, phone, customer?.customer_id || null, customer?.name || null]
+        );
+    } catch (e) {
+        console.error('[voice] Call record insert failed:', e.message);
+    }
+}
+
+async function finalizeCall(callSid, status, summary) {
+    try {
+        await pool.query(
+            `UPDATE om_callcenter_calls
+             SET status = $2, ai_summary = $3, ended_at = NOW(),
+                 duration_seconds = EXTRACT(EPOCH FROM (NOW() - started_at))::int
+             WHERE twilio_call_sid = $1`,
+            [callSid, status || 'completed', summary || null]
+        );
+    } catch (e) {
+        console.error('[voice] Call finalize failed:', e.message);
+    }
+}
+
+// ─── Transfer to Agent ──────────────────────────────────────
+
+async function transferCall(callSid) {
+    try {
+        const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Calls/${callSid}.json`;
+        const twiml = `<Response>
+            <Say language="pt-BR" voice="Polly.Camila">Transferindo para um atendente. Aguarde um momento.</Say>
+            <Dial timeout="60" callerId="${process.env.TWILIO_PHONE || '+17432285380'}">
+                <Client>agent</Client>
+            </Dial>
+            <Say language="pt-BR" voice="Polly.Camila">Desculpe, nenhum atendente disponível. Tente novamente mais tarde.</Say>
+            <Hangup/>
+        </Response>`;
+
+        const auth = Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString('base64');
+        await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Basic ${auth}`,
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: new URLSearchParams({ Twiml: twiml })
+        });
+        console.log(`[voice] Transfer initiated for ${callSid}`);
+    } catch (e) {
+        console.error('[voice] Transfer failed:', e.message);
+    }
+}
+
+// ─── XML Escape ─────────────────────────────────────────────
+
+function escXml(str) {
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&apos;');
+}
+
+// ─── Fastify Server ─────────────────────────────────────────
+
+const app = Fastify({ logger: false });
+app.register(websocketPlugin);
+app.register(formbodyPlugin);
+
+// Health check
+app.get('/health', async () => ({ status: 'ok', calls: activeCalls.size }));
+
+// ─── HTTP: Incoming Call → TwiML with ConversationRelay ─────
+
+app.post('/incoming-call', async (req, reply) => {
+    const callerPhone = req.body?.From || '';
+    const callSid = req.body?.CallSid || '';
+
+    console.log(`[voice] Incoming call from ${callerPhone} | CallSid: ${callSid}`);
+
+    // Quick customer lookup for personalized greeting
+    const customer = await quickLookup(callerPhone);
+    const firstName = customer?.name?.split(' ')[0];
+
+    const hora = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: 'numeric', hour12: false });
+    const horaNum = parseInt(hora);
+    const periodo = horaNum < 12 ? 'Bom dia' : horaNum < 18 ? 'Boa tarde' : 'Boa noite';
+
+    const greeting = firstName
+        ? `${periodo}, ${firstName}! Aqui é a Bora, do SuperBora. Como posso te ajudar?`
+        : `${periodo}! Aqui é a Bora, do SuperBora. Como posso te ajudar?`;
+
+    // Create call record
+    createCallRecord(callSid, callerPhone, customer);
+
+    // Build WebSocket URL with customer context
+    const wsParams = new URLSearchParams({
+        phone: callerPhone,
+        ...(customer && { name: customer.name, cid: String(customer.customer_id) })
+    });
+    const wsUrl = `wss://${WS_HOST}/voice/ws?${wsParams}`;
+
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Connect>
+        <ConversationRelay
+            url="${escXml(wsUrl)}"
+            welcomeGreeting="${escXml(greeting)}"
+            language="pt-BR"
+            ttsProvider="ElevenLabs"
+            voice="${ELEVENLABS_VOICE_ID}"
+            transcriptionProvider="google"
+            interruptible="true"
+            dtmfDetection="true"
+            profanityFilter="false"
+        />
+    </Connect>
+</Response>`;
+
+    reply.type('text/xml').send(twiml);
+});
+
+// ─── WebSocket: ConversationRelay Handler ───────────────────
+
+app.register(async (fastify) => {
+    fastify.get('/ws', { websocket: true }, (socket, req) => {
+        let callState = null;
+
+        socket.on('message', async (rawData) => {
+            let msg;
+            try {
+                msg = JSON.parse(rawData.toString());
+            } catch {
+                return;
+            }
+
+            switch (msg.type) {
+                // ── Call connected ──
+                case 'setup': {
+                    const params = new URL(req.url, 'http://localhost').searchParams;
+                    const callerPhone = params.get('phone') || msg.from || '';
+                    const customerName = params.get('name') || null;
+                    const customerId = params.get('cid') ? parseInt(params.get('cid')) : null;
+
+                    callState = {
+                        callSid: msg.callSid,
+                        streamSid: msg.streamSid,
+                        callerPhone,
+                        customer: customerId ? { customer_id: customerId, name: customerName } : null,
+                        store: null,
+                        items: [],
+                        history: [],
+                        systemPrompt: buildSystemPrompt(customerName, callerPhone),
+                        transferRequested: false,
+                        orderSubmitted: false,
+                        startTime: Date.now()
+                    };
+
+                    activeCalls.set(msg.callSid, callState);
+                    console.log(`[voice] Call setup: ${msg.callSid} | ${callerPhone} | ${customerName || 'unknown'}`);
+                    break;
+                }
+
+                // ── Caller spoke (transcribed text) ──
+                case 'prompt': {
+                    if (!callState) return;
+
+                    const userText = msg.voicePrompt || '';
+                    if (!userText.trim()) return;
+
+                    console.log(`[voice] ${callState.callSid} User: "${userText}"`);
+
+                    // Add user message to history
+                    callState.history.push({ role: 'user', content: userText });
+
+                    try {
+                        const aiResponse = await getClaudeResponse(callState);
+                        console.log(`[voice] ${callState.callSid} AI: "${aiResponse.slice(0, 100)}..."`);
+
+                        // Send response to ConversationRelay → ElevenLabs → caller
+                        socket.send(JSON.stringify({
+                            type: 'text',
+                            token: aiResponse,
+                            last: true
+                        }));
+
+                        // Handle transfer after response
+                        if (callState.transferRequested) {
+                            setTimeout(() => {
+                                transferCall(callState.callSid);
+                                finalizeCall(callState.callSid, 'transferred', `Transferido: ${callState.transferReason}`);
+                            }, 3000); // Wait for goodbye message to play
+                        }
+                    } catch (err) {
+                        console.error(`[voice] ${callState.callSid} Claude error:`, err.message);
+                        socket.send(JSON.stringify({
+                            type: 'text',
+                            token: 'Desculpa, deu um probleminha. Pode repetir?',
+                            last: true
+                        }));
+                    }
+                    break;
+                }
+
+                // ── Caller interrupted ──
+                case 'interrupt': {
+                    if (!callState) return;
+                    console.log(`[voice] ${callState.callSid} Interrupted at ${msg.durationUntilInterruptMs}ms`);
+                    // ConversationRelay handles stopping audio; next prompt will come naturally
+                    break;
+                }
+
+                // ── DTMF digit pressed ──
+                case 'dtmf': {
+                    if (!callState) return;
+                    const digit = msg.digit;
+                    console.log(`[voice] ${callState.callSid} DTMF: ${digit}`);
+
+                    if (digit === '0') {
+                        // Transfer to agent
+                        socket.send(JSON.stringify({
+                            type: 'text',
+                            token: 'Vou te transferir para um atendente agora. Um momento.',
+                            last: true
+                        }));
+                        setTimeout(() => {
+                            transferCall(callState.callSid);
+                            finalizeCall(callState.callSid, 'transferred', 'DTMF 0 — pediu atendente');
+                        }, 2000);
+                    } else {
+                        // Treat digit as text input
+                        callState.history.push({ role: 'user', content: `Digitou ${digit}` });
+                        try {
+                            const resp = await getClaudeResponse(callState);
+                            socket.send(JSON.stringify({ type: 'text', token: resp, last: true }));
+                        } catch {
+                            socket.send(JSON.stringify({ type: 'text', token: 'Pode falar, estou ouvindo!', last: true }));
+                        }
+                    }
+                    break;
+                }
+
+                default:
+                    console.log(`[voice] Unknown message type: ${msg.type}`);
+            }
+        });
+
+        socket.on('close', () => {
+            if (callState) {
+                const duration = Math.round((Date.now() - callState.startTime) / 1000);
+                console.log(`[voice] Call ended: ${callState.callSid} | ${duration}s | items: ${callState.items?.length || 0}`);
+
+                if (!callState.transferRequested) {
+                    const summary = callState.orderSubmitted
+                        ? `Pedido realizado via IA (${callState.items.length} itens)`
+                        : `Conversa IA sem pedido (${callState.history.length} turnos)`;
+                    finalizeCall(callState.callSid, 'completed', summary);
+                }
+
+                activeCalls.delete(callState.callSid);
+            }
+        });
+
+        socket.on('error', (err) => {
+            console.error('[voice] WebSocket error:', err.message);
+        });
+    });
+});
+
+// ─── Start Server ───────────────────────────────────────────
+
+app.listen({ port: PORT, host: '0.0.0.0' }, (err, address) => {
+    if (err) {
+        console.error('[voice] Failed to start:', err);
+        process.exit(1);
+    }
+    console.log(`[voice] SuperBora Voice Server running on ${address}`);
+    console.log(`[voice] ConversationRelay WS: wss://${WS_HOST}/voice/ws`);
+    console.log(`[voice] Incoming call webhook: ${address}/incoming-call`);
+});
