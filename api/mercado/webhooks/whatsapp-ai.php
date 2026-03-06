@@ -851,10 +851,47 @@ PROMPT;
     // Step-specific instructions
     $stepInstructions = '';
 
+    // Check if we know the customer's location (saved address or context)
+    $customerCity = null;
+    $hasLocation = false;
+    if ($customerInfo) {
+        // Check saved addresses for city
+        $savedAddresses = $addresses;
+        if (!$savedAddresses && !empty($customerInfo['customer_id'])) {
+            try {
+                $addrStmt = $db->prepare("SELECT city FROM om_market_customer_addresses WHERE customer_id = ? AND city IS NOT NULL AND city != '' ORDER BY is_default DESC LIMIT 1");
+                $addrStmt->execute([$customerInfo['customer_id']]);
+                $addrRow = $addrStmt->fetch(PDO::FETCH_ASSOC);
+                if ($addrRow) {
+                    $customerCity = $addrRow['city'];
+                    $hasLocation = true;
+                }
+            } catch (\Exception $e) { /* ignore */ }
+        } elseif ($savedAddresses) {
+            foreach ($savedAddresses as $sa) {
+                if (!empty($sa['city'])) {
+                    $customerCity = $sa['city'];
+                    $hasLocation = true;
+                    break;
+                }
+            }
+        }
+    }
+    // Also check context for location
+    if (!$hasLocation && !empty($context['address_lat'])) {
+        $hasLocation = true;
+    }
+    if (!$hasLocation && !empty($context['customer_city'])) {
+        $customerCity = $context['customer_city'];
+        $hasLocation = true;
+    }
+
     switch ($step) {
         case STEP_GREETING:
+            // Only show stores if we know the customer's location
             $storeList = '';
-            if ($stores) {
+            $locationHint = '';
+            if ($hasLocation && $stores) {
                 $storeLines = [];
                 foreach ($stores as $s) {
                     $name = $s['trade_name'] ?: $s['name'];
@@ -863,7 +900,15 @@ PROMPT;
                     $rating = $s['rating'] ? number_format((float)$s['rating'], 1) : '-';
                     $storeLines[] = "- [{$s['partner_id']}] {$name} ({$cat}) — {$status} — nota {$rating}";
                 }
-                $storeList = "\n\nLOJAS DISPONIVEIS:\n" . implode("\n", $storeLines);
+                $storeList = "\n\nLOJAS DISPONIVEIS NA REGIAO DO CLIENTE ({$customerCity}):\n" . implode("\n", $storeLines);
+            } elseif (!$hasLocation) {
+                $locationHint = "\n\n⚠️ VOCE NAO SABE ONDE O CLIENTE ESTA!";
+                $locationHint .= "\n- NAO sugira lojas sem saber a localizacao do cliente";
+                $locationHint .= "\n- Se o cliente quiser fazer um pedido, PRIMEIRO pergunte a cidade/bairro dele de forma natural";
+                $locationHint .= "\n- Ex: \"Pra eu te mostrar as melhores opcoes, me fala sua cidade ou bairro!\"";
+                $locationHint .= "\n- Ou peca pra ele compartilhar a localizacao do WhatsApp (icone de clipe > Localizacao)";
+                $locationHint .= "\n- So depois de saber a localizacao, mostre as lojas";
+                $locationHint .= "\n- Se ele ja disser o nome de uma loja especifica, tudo bem — nao precisa perguntar localizacao";
             }
 
             // Build returning customer hint
@@ -935,6 +980,8 @@ DETECCAO AUTOMATICA DE INTENCAO:
 7. Se saudacao simples E ultimo pedido foi entregue -> perguntar se a entrega foi ok
 8. Se saudacao simples sem pedidos -> cumprimentar e perguntar o que precisa
 9. Se pedir "atendente"/"humano" -> use [TRANSFER_HUMAN]
+10. Se o cliente informar cidade/bairro/localizacao -> use [CITY:nome_da_cidade] para salvar e mostre lojas da regiao
+{$locationHint}
 {$storeList}
 {$returningHint}
 
@@ -949,6 +996,7 @@ INSTRUCOES:
 
 MARCADORES DISPONIVEIS:
 - [STORE:id:nome] — quando identificar a loja (vai para proximo passo)
+- [CITY:nome_da_cidade] — quando o cliente informar cidade/bairro/localizacao
 - [SWITCH_TO_ORDER] — mudar para modo suporte (status, reclamacao, cancelamento)
 - [TRANSFER_HUMAN] — se pedir atendente humano
 STEP;
@@ -956,7 +1004,8 @@ STEP;
 
         case STEP_IDENTIFY_STORE:
             $storeList = '';
-            if ($stores) {
+            $identifyLocationHint = '';
+            if ($hasLocation && $stores) {
                 $storeLines = [];
                 foreach ($stores as $s) {
                     $name = $s['trade_name'] ?: $s['name'];
@@ -969,16 +1018,21 @@ STEP;
                     $extra .= $delivFee ? " | entrega {$delivFee}" : '';
                     $storeLines[] = "- [{$s['partner_id']}] {$name} ({$cat}) — {$status} — nota {$rating}{$extra}";
                 }
-                $storeList = "\n\nLOJAS DISPONIVEIS:\n" . implode("\n", $storeLines);
+                $storeList = "\n\nLOJAS DISPONIVEIS NA REGIAO:\n" . implode("\n", $storeLines);
+            } elseif (!$hasLocation) {
+                $identifyLocationHint = "\n\n⚠️ VOCE AINDA NAO SABE ONDE O CLIENTE ESTA! Pergunte a cidade/bairro antes de sugerir lojas. Use [CITY:nome] quando ele informar.";
             }
 
             $stepInstructions = <<<STEP
 ETAPA ATUAL: Identificar loja
 
 OBJETIVO: Ajudar o cliente a escolher uma loja.
+{$identifyLocationHint}
 {$storeList}
 
 INSTRUCOES:
+- Se nao sabe a localizacao do cliente, PERGUNTE PRIMEIRO antes de listar lojas
+- Quando o cliente informar cidade/bairro, use [CITY:nome_da_cidade]
 - Tente fazer match entre o que o cliente disse e uma loja da lista (match parcial e por categoria tb)
 - Se encontrar, confirme o nome e use o marcador [STORE:id:nome]
 - Se a loja estiver FECHADA, avise com empatia e sugira alternativas abertas da mesma categoria
@@ -988,6 +1042,7 @@ INSTRUCOES:
 
 MARCADORES:
 - [STORE:id:nome] — loja identificada
+- [CITY:nome_da_cidade] — salvar localizacao do cliente
 - [TRANSFER_HUMAN] — transferir para humano
 STEP;
             break;
@@ -1611,6 +1666,20 @@ function processAiResponse(PDO $db, array $conversation, string $aiResponse, str
         $context['mode'] = 'ordering';
         $context['step'] = STEP_GREETING;
         $cleanedResponse = str_replace('[SWITCH_TO_ORDER]', '', $cleanedResponse);
+    }
+
+    // Parse [CITY:nome_da_cidade]
+    if (preg_match('/\[CITY:([^\]]+)\]/', $aiResponse, $m)) {
+        $cityName = trim($m[1]);
+        $markersFound[] = "CITY:{$cityName}";
+        $context['customer_city'] = $cityName;
+
+        // Save to memory if customer is identified
+        if ($customerId) {
+            aiMemorySave($db, $phone, $customerId, 'preference', 'city', $cityName);
+        }
+
+        $cleanedResponse = str_replace($m[0], '', $cleanedResponse);
     }
 
     // Update subtotal
