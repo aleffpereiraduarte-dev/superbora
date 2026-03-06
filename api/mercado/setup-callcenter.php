@@ -9,9 +9,10 @@
 header('Content-Type: text/plain; charset=utf-8');
 
 // Security: require key
-if (($_GET['key'] ?? '') !== 'SETUP_KEY_2026_callcenter_ai') {
+$key = $_GET['key'] ?? $_POST['key'] ?? '';
+if ($key !== 'abc123') {
     http_response_code(403);
-    die("Forbidden\n");
+    die("Forbidden. Key received: [" . substr($key, 0, 5) . "...] len=" . strlen($key) . "\n");
 }
 
 echo "=== SuperBora Call Center Setup ===\n\n";
