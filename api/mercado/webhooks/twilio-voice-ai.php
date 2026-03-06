@@ -31,6 +31,9 @@ if (file_exists(__DIR__ . '/../../../.env')) {
     }
 }
 
+// Set Content-Type BEFORE requires so even fatal errors have proper header
+header('Content-Type: text/xml; charset=utf-8');
+
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../helpers/claude-client.php';
 require_once __DIR__ . '/../helpers/ws-callcenter-broadcast.php';
@@ -60,8 +63,6 @@ if (file_exists(__DIR__ . '/../admin/callcenter/ab-testing.php')) {
 if (file_exists(__DIR__ . '/../helpers/multi-store-order.php')) {
     require_once __DIR__ . '/../helpers/multi-store-order.php';
 }
-
-header('Content-Type: text/xml; charset=utf-8');
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
@@ -103,13 +104,53 @@ $speechResult = $_POST['SpeechResult'] ?? '';
 $digits = $_POST['Digits'] ?? '';
 $callerPhone = $_POST['From'] ?? $_GET['From'] ?? '';
 
-error_log("[twilio-voice-ai] CallSid={$callSid} Speech=\"{$speechResult}\" Digits={$digits}");
+$speechConfidenceRaw = isset($_POST['Confidence']) ? (float)$_POST['Confidence'] : 1.0;
+
+error_log("[twilio-voice-ai] CallSid={$callSid} Speech=\"{$speechResult}\" Digits={$digits} Confidence={$speechConfidenceRaw}");
 
 // Build self URL for Gather action
 $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
 $host = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? 'localhost';
 $selfUrl = $scheme . '://' . $host . strtok($_SERVER['REQUEST_URI'] ?? '', '?');
 $routeUrl = str_replace('twilio-voice-ai.php', 'twilio-voice-route.php', $selfUrl);
+
+// -- Standard Gather attributes (anti-noise, pt-BR optimized) --
+$gatherStd = 'input="speech dtmf" language="pt-BR" speechModel="experimental_utterances" speechTimeout="auto" profanityFilter="false" hints="sim, não, pedido, atendente, cancelar, status, pizza, lanche, um, dois, três, zero, obrigado, tchau"';
+
+// -- NOISE FILTER: reject very low confidence or very short garbage speech --
+// Background noise, coughs, TV sounds etc. get picked up as random short text
+if (!empty($speechResult) && empty($digits)) {
+    $trimmedSpeech = trim($speechResult);
+    $isNoise = false;
+
+    // Very low confidence = noise
+    if ($speechConfidenceRaw < 0.3) {
+        $isNoise = true;
+        error_log("[twilio-voice-ai] NOISE filtered (confidence={$speechConfidenceRaw}): \"{$trimmedSpeech}\"");
+    }
+    // Single character or just whitespace = noise
+    elseif (mb_strlen($trimmedSpeech, 'UTF-8') <= 1) {
+        $isNoise = true;
+        error_log("[twilio-voice-ai] NOISE filtered (too short): \"{$trimmedSpeech}\"");
+    }
+    // Low confidence + short text = likely noise
+    elseif ($speechConfidenceRaw < 0.5 && mb_strlen($trimmedSpeech, 'UTF-8') < 5) {
+        $isNoise = true;
+        error_log("[twilio-voice-ai] NOISE filtered (low conf + short): \"{$trimmedSpeech}\" conf={$speechConfidenceRaw}");
+    }
+
+    if ($isNoise) {
+        // Silently re-listen without bothering the customer
+        $selfEsc = htmlspecialchars($selfUrl, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+        echo '<?xml version="1.0" encoding="UTF-8"?>';
+        echo '<Response>';
+        echo '<Gather ' . $gatherStd . ' timeout="8" action="' . $selfEsc . '" method="POST">';
+        echo '</Gather>';
+        echo '<Redirect method="POST">' . $selfEsc . '</Redirect>';
+        echo '</Response>';
+        exit;
+    }
+}
 
 try {
     $db = getDB();
@@ -145,7 +186,7 @@ try {
         error_log("[twilio-voice-ai] Still no call record — re-prompting");
         echo '<?xml version="1.0" encoding="UTF-8"?>';
         echo '<Response>';
-        echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . escXml($selfUrl) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
+        echo '<Gather ' . $gatherStd . ' timeout="6" action="' . escXml($selfUrl) . '" method="POST">';
         echo ttsSayOrPlay("Desculpa, me fala de novo. O que você precisa?");
         echo '</Gather>';
         echo ttsSayOrPlay("Pode falar ou digitar, tô te escutando! Aperta zero se quiser falar com uma pessoa.");
@@ -328,7 +369,7 @@ try {
 
                     echo '<?xml version="1.0" encoding="UTF-8"?>';
                     echo '<Response>';
-                    echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . escXml($selfUrl) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
+                    echo '<Gather ' . $gatherStd . ' timeout="6" action="' . escXml($selfUrl) . '" method="POST">';
                     echo ttsSayOrPlay($msg);
                     echo '</Gather>';
                     echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
@@ -408,7 +449,7 @@ try {
             saveAiContext($db, $callId, $aiContext);
             echo '<?xml version="1.0" encoding="UTF-8"?>';
             echo '<Response>';
-            echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . escXml($selfUrl) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
+            echo '<Gather ' . $gatherStd . ' timeout="6" action="' . escXml($selfUrl) . '" method="POST">';
             echo ttsSayOrPlay("De nada! Mais alguma coisa?");
             echo '</Gather>';
             echo ttsSayOrPlay("Se não precisar de mais nada, pode desligar. Tchau!");
@@ -494,7 +535,7 @@ try {
         $msg = $silencePrompts[min($silenceCount - 1, count($silencePrompts) - 1)];
         echo '<?xml version="1.0" encoding="UTF-8"?>';
         echo '<Response>';
-        echo '<Gather input="speech dtmf" timeout="10" language="pt-BR" action="' . escXml($selfUrl) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
+        echo '<Gather ' . $gatherStd . ' timeout="8" action="' . escXml($selfUrl) . '" method="POST">';
         echo ttsSayOrPlay($msg);
         echo '</Gather>';
         echo ttsSayOrPlay("Pode falar ou digitar, tô te escutando! Aperta zero se quiser falar com uma pessoa.");
@@ -548,7 +589,7 @@ try {
             saveAiContext($db, $callId, $aiContext);
             echo '<?xml version="1.0" encoding="UTF-8"?>';
             echo '<Response>';
-            echo '<Gather input="speech dtmf" timeout="15" language="pt-BR" action="' . escXml($selfUrl) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
+            echo '<Gather ' . $gatherStd . ' timeout="15" action="' . escXml($selfUrl) . '" method="POST">';
             echo ttsSayOrPlay("Tranquilo, fica à vontade!");
             echo '</Gather>';
             echo ttsSayOrPlay("Oi, ainda tá aí? Pode falar quando quiser!");
@@ -568,7 +609,7 @@ try {
             saveAiContext($db, $callId, $aiContext);
             echo '<?xml version="1.0" encoding="UTF-8"?>';
             echo '<Response>';
-            echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . escXml($selfUrl) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
+            echo '<Gather ' . $gatherStd . ' timeout="6" action="' . escXml($selfUrl) . '" method="POST">';
             echo ttsSayOrPlay("Desculpa, não peguei. Pode repetir?");
             echo '</Gather>';
             echo ttsSayOrPlay("Se preferir, aperta zero que eu te passo pra alguém.");
@@ -1210,7 +1251,7 @@ try {
 
             echo '<?xml version="1.0" encoding="UTF-8"?>';
             echo '<Response>';
-            echo '<Gather input="speech dtmf" timeout="10" language="pt-BR" action="' . escXml($selfUrl) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
+            echo '<Gather ' . $gatherStd . ' timeout="8" action="' . escXml($selfUrl) . '" method="POST">';
             echo $degradedResponse;
             echo '</Gather>';
             echo buildTwilioSay('Pode falar ou digitar, tô te escutando! Aperta zero se quiser falar com uma pessoa.');
@@ -1448,7 +1489,7 @@ try {
         // Continue conversation with Gather — enhanced speech for better recognition
         echo '<?xml version="1.0" encoding="UTF-8"?>';
         echo '<Response>';
-        echo '<Gather input="speech dtmf" timeout="10" language="pt-BR" action="' . escXml($selfUrl) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
+        echo '<Gather ' . $gatherStd . ' timeout="8" action="' . escXml($selfUrl) . '" method="POST">';
         echo ttsSayOrPlay($aiResponse);
         echo '</Gather>';
         echo ttsSayOrPlay("Oi, tô aqui! Pode falar, eu tô ouvindo.");
@@ -1456,50 +1497,39 @@ try {
         echo '</Response>';
     }
 
-} catch (Exception $e) {
-    $errorMsg = $e->getMessage();
-    $errorMasked = maskPiiForLog($errorMsg);
-    error_log("[twilio-voice-ai] Error: {$errorMasked} | Trace: " . $e->getTraceAsString());
+} catch (\Throwable $e) {
+    error_log("[twilio-voice-ai] FATAL: " . $e->getMessage() . " | " . $e->getFile() . ":" . $e->getLine());
 
     // Log the error metric if we have a call ID
     if (isset($callId) && isset($db)) {
         try {
+            $errorMasked = function_exists('maskPiiForLog') ? maskPiiForLog($e->getMessage()) : $e->getMessage();
             logCallMetrics($db, $callId, [
                 'turn_number' => $aiContext['turn_count'] ?? 0,
                 'step' => $step ?? 'unknown',
                 'error_type' => 'exception',
                 'error_message' => $errorMasked,
             ]);
-        } catch (Exception $metricEx) {
+        } catch (\Throwable $metricEx) {
             // Don't let metrics logging break the error handler
         }
     }
 
-    // Determine error component for graceful degradation
-    $component = 'claude'; // default
-    $errLower = mb_strtolower($errorMsg, 'UTF-8');
-    if (str_contains($errLower, 'pdo') || str_contains($errLower, 'sql') || str_contains($errLower, 'database') || str_contains($errLower, 'connection refused')) {
-        $component = 'database';
-    } elseif (str_contains($errLower, 'curl') || str_contains($errLower, 'timeout') || str_contains($errLower, 'resolve host')) {
-        $component = 'network';
-    }
-
-    // Use degraded mode for the response
-    $degradedTwiml = handleDegradedMode($component, $errorMsg, [
-        'step' => $step ?? 'identify_store',
-        'last_input' => $userInput ?? '',
-        'items' => $aiContext['items'] ?? [],
-        'store_name' => $aiContext['store_name'] ?? null,
-        'nearby_stores' => $aiContext['nearby_stores'] ?? [],
-    ]);
-
+    // Build safe fallback TwiML — don't call ANY helper that might also fail
+    $safeUrl = isset($selfUrl) ? htmlspecialchars($selfUrl, ENT_XML1 | ENT_QUOTES, 'UTF-8') : '';
     echo '<?xml version="1.0" encoding="UTF-8"?>';
     echo '<Response>';
-    echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . escXml($selfUrl) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
-    echo $degradedTwiml;
-    echo '</Gather>';
-    echo buildTwilioSay('Pode falar ou digitar, tô te escutando! Aperta zero se quiser falar com uma pessoa.');
-    echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
+    if ($safeUrl) {
+        echo '<Gather input="speech dtmf" timeout="6" language="pt-BR" speechModel="experimental_utterances" speechTimeout="auto" action="' . $safeUrl . '" method="POST">';
+        echo '<Say language="pt-BR" voice="Polly.Camila">Desculpa, deu um probleminha. Me fala de novo, o que você precisa?</Say>';
+        echo '</Gather>';
+    }
+    echo '<Say language="pt-BR" voice="Polly.Camila">Pode falar ou digitar. Aperta zero pra falar com uma pessoa.</Say>';
+    if ($safeUrl) {
+        echo '<Redirect method="POST">' . $safeUrl . '</Redirect>';
+    } else {
+        echo '<Hangup/>';
+    }
     echo '</Response>';
 }
 

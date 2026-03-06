@@ -78,6 +78,21 @@ error_log("[twilio-voice] Inbound call from {$callerPhone} | CallSid: {$callSid}
 
 $routeUrl = str_replace('twilio-voice.php', 'twilio-voice-route.php', $fullUrl);
 
+// Safe fallback TwiML function (no dependencies)
+function safeErrorTwiml(string $routeUrl = ''): void {
+    echo '<?xml version="1.0" encoding="UTF-8"?>';
+    echo '<Response>';
+    echo '<Say language="pt-BR" voice="Polly.Camila">Oi! Aqui é a Bora, do SuperBora. Como posso te ajudar?</Say>';
+    if ($routeUrl) {
+        $esc = htmlspecialchars($routeUrl, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+        echo '<Gather input="speech dtmf" timeout="6" language="pt-BR" action="' . $esc . '" method="POST" speechTimeout="auto" speechModel="experimental_utterances" hints="sim, não, pedido, atendente, cancelar, status, ajuda">';
+        echo '<Say language="pt-BR" voice="Polly.Camila">Pode falar ou digitar, tô te escutando!</Say>';
+        echo '</Gather>';
+    }
+    echo '</Response>';
+}
+
+try {
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../helpers/voice-tts.php';
 $db = getDB();
@@ -204,15 +219,21 @@ try {
 $fullGreeting = $greetText . $agentHint;
 
 $routeEsc = htmlspecialchars($routeUrl, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+$gatherAttrs = 'input="speech dtmf" language="pt-BR" speechModel="experimental_utterances" speechTimeout="auto" profanityFilter="false" hints="sim, não, pedido, atendente, cancelar, status, ajuda, pizza, lanche, hamburguer, bebida, um, dois, três, zero"';
 
 echo '<?xml version="1.0" encoding="UTF-8"?>';
 echo '<Response>';
-echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . $routeEsc . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
+echo '<Gather ' . $gatherAttrs . ' timeout="6" action="' . $routeEsc . '" method="POST">';
 echo ttsSayOrPlay($fullGreeting);
 echo '</Gather>';
 // Fallback re-prompt — shorter and friendlier
-echo '<Gather input="speech dtmf" timeout="6" language="pt-BR" action="' . $routeEsc . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
-echo ttsSayOrPlay("Pode falar ou digitar, tô te escutando! Se preferir falar com uma pessoa, aperta zero.");
+echo '<Gather ' . $gatherAttrs . ' timeout="5" action="' . $routeEsc . '" method="POST">';
+echo ttsSayOrPlay("Pode falar ou digitar, tô te escutando! Aperta zero pra falar com uma pessoa.");
 echo '</Gather>';
 echo '<Redirect method="POST">' . $routeEsc . '?Digits=0&amp;noInput=1</Redirect>';
 echo '</Response>';
+
+} catch (\Throwable $e) {
+    error_log("[twilio-voice] FATAL: " . $e->getMessage() . " | " . $e->getFile() . ":" . $e->getLine());
+    safeErrorTwiml($routeUrl ?? '');
+}

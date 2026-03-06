@@ -22,11 +22,11 @@ if (file_exists(__DIR__ . '/../../../.env')) {
     }
 }
 
+header('Content-Type: text/xml; charset=utf-8');
+
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../helpers/ws-callcenter-broadcast.php';
 require_once __DIR__ . '/../helpers/voice-tts.php';
-
-header('Content-Type: text/xml; charset=utf-8');
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
@@ -637,31 +637,33 @@ try {
 
     $aiUrlEsc = htmlspecialchars($aiUrl, ENT_XML1 | ENT_QUOTES, 'UTF-8');
 
+    $gatherAttrs = 'input="speech dtmf" language="pt-BR" speechModel="experimental_utterances" speechTimeout="auto" profanityFilter="false" hints="sim, não, pedido, atendente, cancelar, status, pizza, lanche, um, dois, três, zero"';
+
     // Respond
     echo '<?xml version="1.0" encoding="UTF-8"?>';
     echo '<Response>';
-    echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . $aiUrlEsc . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
+    echo '<Gather ' . $gatherAttrs . ' timeout="6" action="' . $aiUrlEsc . '" method="POST">';
     echo ttsSayOrPlay($plainSsml);
     echo '</Gather>';
     // Fallback re-prompt with DTMF option for timeout
-    echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . $aiUrlEsc . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
+    echo '<Gather ' . $gatherAttrs . ' timeout="5" action="' . $aiUrlEsc . '" method="POST">';
     echo ttsSayOrPlay("Pode falar ou digitar, tô te escutando! Aperta 1 pra pedir, 2 pra ver pedido, ou zero pra falar com uma pessoa.");
     echo '</Gather>';
     // If both Gathers time out, go to AI anyway (it will re-prompt naturally)
     echo '<Redirect method="POST">' . $aiUrlEsc . '</Redirect>';
     echo '</Response>';
 
-} catch (Exception $e) {
-    error_log("[twilio-voice-route] Error: " . $e->getMessage() . " | Trace: " . $e->getTraceAsString());
+} catch (\Throwable $e) {
+    error_log("[twilio-voice-route] FATAL: " . $e->getMessage() . " | " . $e->getFile() . ":" . $e->getLine());
     // On error, redirect to AI handler which will re-prompt — don't hang up
-    $aiUrlFallback = str_replace('twilio-voice-route.php', 'twilio-voice-ai.php', $scheme . '://' . $host . strtok($_SERVER['REQUEST_URI'] ?? '', '?'));
+    $aiUrlFallback = str_replace('twilio-voice-route.php', 'twilio-voice-ai.php', ($scheme ?? 'https') . '://' . ($host ?? 'superbora.com.br') . strtok($_SERVER['REQUEST_URI'] ?? '', '?'));
     $aiUrlFbEsc = htmlspecialchars($aiUrlFallback, ENT_XML1 | ENT_QUOTES, 'UTF-8');
     echo '<?xml version="1.0" encoding="UTF-8"?>';
     echo '<Response>';
-    echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . $aiUrlFbEsc . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
-    echo ttsSayOrPlay("Desculpa, deu um probleminha. Me fala de novo, o que você precisa?");
+    echo '<Say language="pt-BR" voice="Polly.Camila">Desculpa, deu um probleminha. Me fala de novo, o que você precisa?</Say>';
+    echo '<Gather input="speech dtmf" timeout="6" language="pt-BR" speechModel="experimental_utterances" speechTimeout="auto" action="' . $aiUrlFbEsc . '" method="POST">';
+    echo '<Say language="pt-BR" voice="Polly.Camila">Pode falar ou digitar. Aperta zero pra falar com uma pessoa.</Say>';
     echo '</Gather>';
-    echo ttsSayOrPlay("Pode falar ou digitar, tô te escutando! Se preferir falar com uma pessoa, aperta zero.");
     echo '<Redirect method="POST">' . $aiUrlFbEsc . '</Redirect>';
     echo '</Response>';
 }
