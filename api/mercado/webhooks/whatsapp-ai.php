@@ -16,7 +16,8 @@
  *
  * AI Markers parsed from Claude responses:
  *   [STORE:id:name]          — store identified
- *   [ITEM:product_id:name:price:qty]  — item added
+ *   [ITEM:product_id:name:price:qty]  — item added (without options)
+ *   [ITEM:product_id:name:price:qty:options_text] — item added with options (e.g. "Tamanho: Grande; Borda: Catupiry")
  *   [REMOVE_ITEM:index]      — item removed
  *   [NEXT_STEP]              — move to next step
  *   [CONFIRMED]              — order confirmed
@@ -442,14 +443,70 @@ function getActiveStores(PDO $db, int $limit = 20): array
     $stmt = $db->prepare("
         SELECT p.partner_id, p.name, p.trade_name, p.categoria, p.is_open,
                p.delivery_fee, p.min_order_value, p.delivery_time_min,
-               p.rating, p.total_orders
+               p.rating, p.total_orders,
+               p.weekly_hours, p.horario_funcionamento,
+               p.opens_at, p.closes_at
         FROM om_market_partners p
         WHERE p.status::text = '1'
         ORDER BY p.is_open DESC, p.rating DESC NULLS LAST, p.total_orders DESC NULLS LAST
         LIMIT ?
     ");
     $stmt->execute([$limit]);
-    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $stores = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // Enrich with hours info
+    $tz = new \DateTimeZone('America/Sao_Paulo');
+    $now = new \DateTime('now', $tz);
+    $dayMap = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sab'];
+    $today = $dayMap[(int)$now->format('w')];
+    $currentTime = $now->format('H:i');
+
+    foreach ($stores as &$s) {
+        $s['hours_info'] = '';
+        $weeklyHours = null;
+        if (!empty($s['weekly_hours'])) {
+            $weeklyHours = json_decode($s['weekly_hours'], true);
+        }
+        if (!$weeklyHours && !empty($s['horario_funcionamento'])) {
+            $weeklyHours = json_decode($s['horario_funcionamento'], true);
+        }
+
+        if ((int)($s['is_open'] ?? 0) === 1) {
+            // Open — show closing time
+            if ($weeklyHours && isset($weeklyHours[$today])) {
+                $closes = $weeklyHours[$today]['fecha'] ?? $weeklyHours[$today]['closes'] ?? null;
+                if ($closes) $s['hours_info'] = "Aberta ate {$closes}";
+            } elseif (!empty($s['closes_at'])) {
+                $s['hours_info'] = "Aberta ate " . substr($s['closes_at'], 0, 5);
+            }
+        } else {
+            // Closed — show when it opens
+            if ($weeklyHours && isset($weeklyHours[$today])) {
+                $dayData = $weeklyHours[$today];
+                if ($dayData === null || $dayData === false) {
+                    // Closed today — find next open day
+                    $s['hours_info'] = 'Fechada hoje';
+                } else {
+                    $opens = $dayData['abre'] ?? $dayData['opens'] ?? null;
+                    if ($opens && $currentTime < $opens) {
+                        $s['hours_info'] = "Abre as {$opens}";
+                    } else {
+                        $s['hours_info'] = 'Fechada agora';
+                    }
+                }
+            } elseif (!empty($s['opens_at'])) {
+                $opensStr = substr($s['opens_at'], 0, 5);
+                if ($currentTime < $opensStr) {
+                    $s['hours_info'] = "Abre as {$opensStr}";
+                } else {
+                    $s['hours_info'] = 'Fechada agora';
+                }
+            }
+        }
+    }
+    unset($s);
+
+    return $stores;
 }
 
 /**
@@ -550,26 +607,52 @@ function fetchStoreMenu(PDO $db, int $partnerId): string
     $prodStmt->execute([$partnerId]);
     $products = $prodStmt->fetchAll(PDO::FETCH_ASSOC);
 
-    // Get product options
-    $optStmt = $db->prepare("
-        SELECT po.id as option_id, po.product_id, po.name as option_name,
-               po.price as option_price, po.required, po.group_name
-        FROM om_market_product_options po
-        INNER JOIN om_market_products p ON p.product_id = po.product_id
-        WHERE p.partner_id = ? AND p.status = 1
-        ORDER BY po.group_name, po.sort_order ASC, po.name ASC
+    // Get product option groups + options (from om_product_option_groups / om_product_options)
+    $optGroupStmt = $db->prepare("
+        SELECT g.id as group_id, g.product_id, g.name as group_name,
+               g.required, g.min_select, g.max_select
+        FROM om_product_option_groups g
+        INNER JOIN om_market_products p ON p.product_id = g.product_id
+        WHERE g.partner_id = ? AND g.active = 1 AND p.status = 1
+        ORDER BY g.product_id, g.sort_order ASC, g.id ASC
     ");
-    $optStmt->execute([$partnerId]);
-    $allOptions = $optStmt->fetchAll(PDO::FETCH_ASSOC);
+    $optGroupStmt->execute([$partnerId]);
+    $allGroups = $optGroupStmt->fetchAll(PDO::FETCH_ASSOC);
 
-    // Index options by product_id
+    $optItemStmt = $db->prepare("
+        SELECT o.id as option_id, o.group_id, o.name as option_name,
+               o.price_extra as option_price, o.available
+        FROM om_product_options o
+        INNER JOIN om_product_option_groups g ON o.group_id = g.id
+        WHERE g.partner_id = ? AND g.active = 1 AND o.available::text = '1'
+        ORDER BY o.group_id, o.sort_order ASC, o.id ASC
+    ");
+    $optItemStmt->execute([$partnerId]);
+    $allOptItems = $optItemStmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // Index option items by group_id
+    $optItemsByGroup = [];
+    foreach ($allOptItems as $oi) {
+        $optItemsByGroup[$oi['group_id']][] = $oi;
+    }
+
+    // Build optionsByProduct: product_id => [ {group_name, required, option_id, option_name, option_price, ...} ]
     $optionsByProduct = [];
-    foreach ($allOptions as $opt) {
-        $pid = $opt['product_id'];
-        if (!isset($optionsByProduct[$pid])) {
-            $optionsByProduct[$pid] = [];
+    foreach ($allGroups as $grp) {
+        $pid = $grp['product_id'];
+        $groupItems = $optItemsByGroup[$grp['group_id']] ?? [];
+        foreach ($groupItems as $oi) {
+            $optionsByProduct[$pid][] = [
+                'product_id'   => $pid,
+                'group_name'   => $grp['group_name'],
+                'required'     => (int)$grp['required'],
+                'min_select'   => (int)$grp['min_select'],
+                'max_select'   => (int)$grp['max_select'],
+                'option_id'    => (int)$oi['option_id'],
+                'option_name'  => $oi['option_name'],
+                'option_price' => (float)$oi['option_price'],
+            ];
         }
-        $optionsByProduct[$pid][] = $opt;
     }
 
     // Index products by category
@@ -617,8 +700,10 @@ function fetchStoreMenu(PDO $db, int $partnerId): string
                     $groups[$gn][] = $o;
                 }
                 foreach ($groups as $groupName => $groupOpts) {
-                    $req = ($groupOpts[0]['required'] ?? false) ? ' (obrigatorio)' : '';
-                    $lines[] = "    > {$groupName}{$req}:";
+                    $req = ($groupOpts[0]['required'] ?? false) ? ' (OBRIGATORIO)' : ' (opcional)';
+                    $maxSel = (int)($groupOpts[0]['max_select'] ?? 1);
+                    $selHint = $maxSel > 1 ? " escolha ate {$maxSel}" : " escolha 1";
+                    $lines[] = "    > {$groupName}{$req}{$selHint}:";
                     foreach ($groupOpts as $o) {
                         $optPrice = (float)($o['option_price'] ?? 0);
                         $optPriceFmt = $optPrice > 0 ? ' +R$ ' . number_format($optPrice, 2, ',', '.') : '';
@@ -659,6 +744,122 @@ function getProduct(PDO $db, int $productId): ?array
     ");
     $stmt->execute([$productId]);
     return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+}
+
+/**
+ * Get option groups and their options for a specific product.
+ * Returns structured array of groups with their option items.
+ *
+ * @return array [ ['group_id'=>int, 'group_name'=>string, 'required'=>bool, 'min_select'=>int, 'max_select'=>int,
+ *                   'options'=>[ ['option_id'=>int, 'name'=>string, 'price_extra'=>float], ... ] ], ... ]
+ */
+function getProductOptions(PDO $db, int $productId): array
+{
+    $groupStmt = $db->prepare("
+        SELECT g.id as group_id, g.name as group_name, g.required, g.min_select, g.max_select
+        FROM om_product_option_groups g
+        WHERE g.product_id = ? AND g.active = 1
+        ORDER BY g.sort_order ASC, g.id ASC
+    ");
+    $groupStmt->execute([$productId]);
+    $groups = $groupStmt->fetchAll(PDO::FETCH_ASSOC);
+
+    if (empty($groups)) return [];
+
+    $optStmt = $db->prepare("
+        SELECT o.id as option_id, o.group_id, o.name, o.price_extra
+        FROM om_product_options o
+        WHERE o.group_id = ? AND o.available::text = '1'
+        ORDER BY o.sort_order ASC, o.id ASC
+    ");
+
+    $result = [];
+    foreach ($groups as $g) {
+        $optStmt->execute([$g['group_id']]);
+        $options = $optStmt->fetchAll(PDO::FETCH_ASSOC);
+        if (empty($options)) continue;
+
+        $result[] = [
+            'group_id'   => (int)$g['group_id'],
+            'group_name' => $g['group_name'],
+            'required'   => (bool)$g['required'],
+            'min_select' => (int)$g['min_select'],
+            'max_select' => (int)$g['max_select'],
+            'options'    => array_map(function($o) {
+                return [
+                    'option_id'   => (int)$o['option_id'],
+                    'name'        => $o['name'],
+                    'price_extra' => round((float)$o['price_extra'], 2),
+                ];
+            }, $options),
+        ];
+    }
+    return $result;
+}
+
+/**
+ * Validate options text from AI against actual product options and calculate extra price.
+ * Options text format: "Grupo: Escolha; Grupo2: Escolha2"
+ *
+ * @param array $productOptions  Output of getProductOptions()
+ * @param string $optionsText    AI-provided options string
+ * @param array &$validatedOptions  Populated with validated option details
+ * @return float  Total extra price from validated options
+ */
+function validateAndPriceOptions(array $productOptions, string $optionsText, array &$validatedOptions): float
+{
+    $totalExtra = 0;
+    $validatedOptions = [];
+
+    // Parse "Grupo: Escolha; Grupo2: Escolha2" format
+    $pairs = array_map('trim', explode(';', $optionsText));
+
+    foreach ($pairs as $pair) {
+        if (empty($pair)) continue;
+
+        // Split on first colon: "Tamanho: Grande" -> ["Tamanho", "Grande"]
+        $colonPos = strpos($pair, ':');
+        if ($colonPos === false) continue;
+
+        $groupName = trim(substr($pair, 0, $colonPos));
+        $choiceName = trim(substr($pair, $colonPos + 1));
+        if (empty($groupName) || empty($choiceName)) continue;
+
+        // Find matching group (fuzzy: case-insensitive, accent-insensitive)
+        $groupNameLower = mb_strtolower($groupName);
+        foreach ($productOptions as $group) {
+            $dbGroupLower = mb_strtolower($group['group_name']);
+            if ($dbGroupLower !== $groupNameLower && strpos($dbGroupLower, $groupNameLower) === false && strpos($groupNameLower, $dbGroupLower) === false) {
+                continue;
+            }
+
+            // Multiple choices can be comma-separated within a group: "Bacon, Mussarela Extra"
+            $choices = array_map('trim', explode(',', $choiceName));
+            foreach ($choices as $choice) {
+                if (empty($choice)) continue;
+                $choiceLower = mb_strtolower($choice);
+
+                // Find matching option (fuzzy match)
+                foreach ($group['options'] as $opt) {
+                    $optNameLower = mb_strtolower($opt['name']);
+                    if ($optNameLower === $choiceLower || strpos($optNameLower, $choiceLower) !== false || strpos($choiceLower, $optNameLower) !== false) {
+                        $validatedOptions[] = [
+                            'group_id'    => $group['group_id'],
+                            'group_name'  => $group['group_name'],
+                            'option_id'   => $opt['option_id'],
+                            'option_name' => $opt['name'],
+                            'price_extra' => $opt['price_extra'],
+                        ];
+                        $totalExtra += $opt['price_extra'];
+                        break; // Found match for this choice, move to next
+                    }
+                }
+            }
+            break; // Found matching group, move to next pair
+        }
+    }
+
+    return round($totalExtra, 2);
 }
 
 /**
@@ -912,7 +1113,8 @@ function formatSearchResultsForPrompt(array $productResults, array $storeResults
             $status = ((int)($s['is_open'] ?? 0) === 1) ? 'Aberta' : 'Fechada';
             $cat = $s['categoria'] ?? '';
             $rating = !empty($s['rating']) ? number_format((float)$s['rating'], 1) : '-';
-            $lines[] = "- [{$s['partner_id']}] {$name} ({$cat}) -- {$status} -- nota {$rating}";
+            $delivTime = !empty($s['delivery_time_min']) ? " ~{$s['delivery_time_min']}min" : '';
+            $lines[] = "- [{$s['partner_id']}] {$name} ({$cat}) -- {$status} -- nota {$rating}{$delivTime}";
         }
         $lines[] = "";
     }
@@ -1357,7 +1559,8 @@ PROMPT;
                     $status = ((int)($s['is_open'] ?? 0) === 1) ? 'Aberta' : 'Fechada';
                     $cat = $s['categoria'] ?? '';
                     $rating = $s['rating'] ? number_format((float)$s['rating'], 1) : '-';
-                    $storeLines[] = "- [{$s['partner_id']}] {$name} ({$cat}) — {$status} — nota {$rating}";
+                    $hoursInfo = !empty($s['hours_info']) ? " ({$s['hours_info']})" : '';
+                    $storeLines[] = "- [{$s['partner_id']}] {$name} ({$cat}) — {$status}{$hoursInfo} — nota {$rating}";
                 }
                 $storeList = "\n\nLOJAS DISPONIVEIS NA REGIAO DO CLIENTE ({$customerCity}):\n" . implode("\n", $storeLines);
             } elseif (!$hasLocation) {
@@ -1496,11 +1699,12 @@ STEP;
                     $status = ((int)($s['is_open'] ?? 0) === 1) ? 'Aberta' : 'Fechada';
                     $cat = $s['categoria'] ?? '';
                     $rating = $s['rating'] ? number_format((float)$s['rating'], 1) : '-';
+                    $hoursInfo = !empty($s['hours_info']) ? " ({$s['hours_info']})" : '';
                     $delivTime = $s['delivery_time_min'] ?? '';
                     $delivFee = $s['delivery_fee'] ? 'R$ ' . number_format((float)$s['delivery_fee'], 2, ',', '.') : '';
                     $extra = $delivTime ? " ~{$delivTime}min" : '';
                     $extra .= $delivFee ? " | entrega {$delivFee}" : '';
-                    $storeLines[] = "- [{$s['partner_id']}] {$name} ({$cat}) — {$status} — nota {$rating}{$extra}";
+                    $storeLines[] = "- [{$s['partner_id']}] {$name} ({$cat}) — {$status}{$hoursInfo} — nota {$rating}{$extra}";
                 }
                 $storeList = "\n\nLOJAS DISPONIVEIS NA REGIAO:\n" . implode("\n", $storeLines);
             } elseif (!$hasLocation) {
@@ -1521,7 +1725,8 @@ INSTRUCOES:
 - Tente fazer match entre o que o cliente disse e uma loja da lista (match parcial e por categoria tb)
 - Se houver RESULTADOS DE BUSCA no contexto, USE-OS! Eles contem lojas e produtos que combinam com o que o cliente pediu
 - Se encontrar, confirme o nome e use o marcador [STORE:id:nome]
-- Se a loja estiver FECHADA, avise com empatia e sugira alternativas abertas da mesma categoria
+- Se a loja estiver FECHADA, avise com empatia e informe o HORARIO que ela abre (se disponivel no parenteses ao lado do status). Ex: "A Pizzaria Bella ta fechada agora, mas abre as 18:00! Enquanto isso, posso sugerir outra?"
+- Se a loja fechada tiver horario de abertura, oferte agendar: "Quer agendar um pedido pra quando ela abrir?"
 - Se nao encontrar, peca mais detalhes ou sugira opcoes populares
 - Se o cliente disser uma categoria ("pizza", "hamburguer", "acai"), filtre e mostre opcoes
 - Se mencionar "qualquer uma" ou "tanto faz", sugira as melhores avaliadas que estao abertas
@@ -1638,8 +1843,7 @@ CARRINHO ATUAL:
 INSTRUCOES:
 - Ajude o cliente a escolher itens do cardapio de forma natural e amigavel
 - Quando o cliente pedir um item, identifique no cardapio pelo nome (aceite nomes parciais e aproximados)
-- Adicione com [ITEM:product_id:nome:preco:quantidade]
-- Se o produto tem opcoes OBRIGATORIAS, pergunte quais opcoes antes de adicionar
+- Adicione com [ITEM:product_id:nome:preco:quantidade] (sem opcoes) ou [ITEM:product_id:nome:preco:quantidade:opcoes] (com opcoes)
 - Se o cliente quer remover um item, use [REMOVE_ITEM:indice] (indice comeca em 0)
 - Quando o cliente disser que terminou ("so isso", "e isso", "fecha", "bora", "pode fechar"), use [NEXT_STEP]
 - Mostre o subtotal atualizado quando adicionar/remover itens
@@ -1649,13 +1853,26 @@ INSTRUCOES:
 - Se o cliente pedir "o de sempre" ou "o mesmo", verifique no historico de pedidos e sugira
 - Seja natural nas sugestoes — como um garcom amigo, nao como um vendedor insistente
 
+OPCOES DE PRODUTO (OBRIGATORIAS E OPCIONAIS):
+- No cardapio, alguns produtos mostram opcoes com ">" abaixo deles (ex: Tamanho, Borda, Extras)
+- Se um produto tem opcoes marcadas como "OBRIGATORIO", voce DEVE perguntar ao cliente antes de adicionar
+- Apresente as opcoes de forma natural e amigavel. Exemplo:
+  "Esse produto tem opcoes. *Tamanho* (obrigatorio): Broto (sem adicional), Media (+R$10), Grande (+R$20). Qual prefere?"
+- Se o produto so tem opcoes opcionais, adicione o item normalmente e pergunte se quer alguma opcao: "Quer algum extra? Tem Bacon (+R$5), Mussarela Extra (+R$6)..."
+- Ao adicionar o item, calcule o preco final = preco base + soma dos adicionais de opcoes escolhidas
+- Use o campo opcoes no marcador com as opcoes separadas por virgula: [ITEM:id:nome:preco_final:qty:Tamanho: Grande; Borda: Catupiry]
+- Se o cliente NAO quiser nenhuma opcao opcional, adicione sem o campo opcoes: [ITEM:id:nome:preco_base:qty]
+- Para opcoes com max_select > 1, o cliente pode escolher varias do mesmo grupo (ex: ate 3 Ingredientes Extras)
+- Os option_ids estao entre colchetes no cardapio (ex: [42] Bacon +R$5). Use os nomes, NAO os IDs no campo opcoes.
+
 CUPONS E DESCONTOS:
 - Se o cliente mencionar "cupom", "desconto", "codigo promocional" ou similar, peca o codigo e use [COUPON:CODIGO]
 - Se a loja tem cupons disponiveis (listados abaixo), mencione de forma natural: "A loja ta com cupom [CODE] com [desconto]!"
 - Nunca invente cupons — use apenas os listados ou o que o cliente informar
 
 MARCADORES:
-- [ITEM:product_id:nome:preco:qty] — adicionar item (preco unitario como float, ex: 25.90)
+- [ITEM:product_id:nome:preco_final:qty] — adicionar item sem opcoes (preco unitario como float, ex: 25.90)
+- [ITEM:product_id:nome:preco_final:qty:opcoes] — adicionar item com opcoes (preco_final = base + extras; opcoes = "Grupo: Escolha; Grupo2: Escolha2")
 - [REMOVE_ITEM:indice] — remover item pelo indice no carrinho (0-based)
 - [COUPON:CODIGO] — aplicar cupom de desconto (ex: [COUPON:PROMO10])
 - [NEXT_STEP] — finalizar montagem do pedido
@@ -2068,6 +2285,21 @@ function buildCartSummary(array $items): string
         $totalFmt = number_format($itemTotal, 2, ',', '.');
         $name = $item['name'] ?? 'Item';
         $lines[] = "{$i}. {$qty}x {$name} — R\$ {$priceFmt} = R\$ {$totalFmt}";
+
+        // Show selected options if present
+        if (!empty($item['options'])) {
+            $optParts = [];
+            foreach ($item['options'] as $opt) {
+                $optLine = $opt['option_name'];
+                if ((float)($opt['price_extra'] ?? 0) > 0) {
+                    $optLine .= ' (+R\$ ' . number_format($opt['price_extra'], 2, ',', '.') . ')';
+                }
+                $optParts[] = $optLine;
+            }
+            $lines[] = "   opcoes: " . implode(', ', $optParts);
+        } elseif (!empty($item['options_text'])) {
+            $lines[] = "   opcoes: " . $item['options_text'];
+        }
     }
     $lines[] = "";
     $lines[] = "Subtotal: R\$ " . number_format($subtotal, 2, ',', '.');
@@ -2394,9 +2626,10 @@ function handleQuickCommand(PDO $db, string $message, array $conversation, array
         $lines = ["Aqui estao nossas lojas disponiveis:\n"];
         foreach ($stores as $s) {
             $name = $s['trade_name'] ?: $s['name'];
-            $status = ((int)($s['is_open'] ?? 0) === 1) ? '🟢 Aberta' : '🔴 Fechada';
+            $status = ((int)($s['is_open'] ?? 0) === 1) ? "\xF0\x9F\x9F\xA2 Aberta" : "\xF0\x9F\x94\xB4 Fechada";
             $cat = $s['categoria'] ?? '';
-            $lines[] = "• *{$name}* ({$cat}) — {$status}";
+            $hoursNote = !empty($s['hours_info']) ? " — {$s['hours_info']}" : '';
+            $lines[] = "\xE2\x80\xA2 *{$name}* ({$cat}) — {$status}{$hoursNote}";
         }
         $lines[] = "\nDigite o nome da loja para ver o cardapio.";
 
@@ -2440,8 +2673,25 @@ function handleQuickCommand(PDO $db, string $message, array $conversation, array
             $statusLabel = $statusLabels[$o['status']] ?? $o['status'];
             $total = number_format((float)$o['total'], 2, ',', '.');
             $date = date('d/m H:i', strtotime($o['date_added'] ?? $o['created_at']));
-            $lines[] = "• *#{$o['order_number']}* — {$o['partner_name']}";
-            $lines[] = "  {$statusLabel} | R\$ {$total} | {$date}";
+            $lines[] = "\xE2\x80\xA2 *#{$o['order_number']}* — {$o['partner_name']}";
+
+            // Add ETA for active orders
+            $etaNote = '';
+            $activeStatuses = ['pendente', 'confirmado', 'aceito', 'preparando', 'pronto', 'em_entrega'];
+            if (in_array($o['status'], $activeStatuses)) {
+                try {
+                    $distKm = isset($o['distancia_km']) ? (float)$o['distancia_km'] : 5.0;
+                    $etaMins = calculateSmartETA($db, (int)$o['partner_id'], $distKm, $o['status']);
+                    if ($etaMins > 0) {
+                        $etaTime = (new \DateTime('now', new \DateTimeZone('America/Sao_Paulo')))
+                            ->modify("+{$etaMins} minutes")
+                            ->format('H:i');
+                        $etaNote = " | chega ~{$etaTime}";
+                    }
+                } catch (\Throwable $e) {}
+            }
+
+            $lines[] = "  {$statusLabel} | R\$ {$total} | {$date}{$etaNote}";
         }
         $lines[] = "\nPrecisa de ajuda com algum pedido?";
 
@@ -2612,6 +2862,65 @@ function handleQuickCommand(PDO $db, string $message, array $conversation, array
         ];
     }
 
+    // Cashback balance check
+    if (in_array($msg, ['cashback', 'saldo', 'meu cashback', 'meu saldo', 'saldo cashback'])) {
+        if (!$customerId) {
+            return [
+                'response' => "Preciso identificar sua conta para ver seu saldo. Qual seu nome ou email cadastrado?",
+                'context'  => $context,
+            ];
+        }
+
+        $balance = getCustomerCashback($db, $customerId);
+        if ($balance > 0) {
+            $balFmt = number_format($balance, 2, ',', '.');
+            return [
+                'response' => "\xF0\x9F\x92\xB0 Seu saldo de cashback: *R\$ {$balFmt}*\n\nVoce pode usar no proximo pedido! E so me avisar na hora de pagar.",
+                'context'  => $context,
+            ];
+        } else {
+            return [
+                'response' => "Voce nao tem saldo de cashback no momento. Faca pedidos para acumular!\n\nQuer pedir algo agora?",
+                'context'  => $context,
+            ];
+        }
+    }
+
+    // Addresses management
+    if (in_array($msg, ['enderecos', 'meus enderecos', 'endereço', 'meus endereços'])) {
+        if (!$customerId) {
+            return [
+                'response' => "Preciso identificar sua conta. Qual seu nome ou email?",
+                'context'  => $context,
+            ];
+        }
+
+        $addrs = getCustomerAddresses($db, $customerId);
+        if (empty($addrs)) {
+            return [
+                'response' => "Voce nao tem enderecos salvos ainda. Na hora de fazer seu proximo pedido, vou salvar o endereco pra facilitar!",
+                'context'  => $context,
+            ];
+        }
+
+        $lines = ["\xF0\x9F\x93\x8D *Seus enderecos salvos:*\n"];
+        foreach ($addrs as $i => $a) {
+            $label = $a['label'] ?? ('Endereco ' . ($i + 1));
+            $full = implode(', ', array_filter([
+                $a['street'] ?? '', $a['number'] ?? '', $a['complement'] ?? '',
+                $a['neighborhood'] ?? '', $a['city'] ?? '',
+            ]));
+            $def = ((int)($a['is_default'] ?? 0) === 1) ? ' (padrao)' : '';
+            $lines[] = ($i + 1) . ". *{$label}*{$def}: {$full}";
+        }
+        $lines[] = "\nPra mudar o padrao, e so me avisar durante o pedido!";
+
+        return [
+            'response' => implode("\n", $lines),
+            'context'  => $context,
+        ];
+    }
+
     // Opt back in to proactive WhatsApp messages
     if (in_array($msg, ['voltar notificacoes', 'voltar notificações', 'quero receber', 'ativar notificacoes', 'ativar notificações'])) {
         if ($customerId) {
@@ -2684,30 +2993,50 @@ function processAiResponse(PDO $db, array $conversation, string $aiResponse, str
         $cleanedResponse = str_replace($m[0], '', $cleanedResponse);
     }
 
-    // Parse [ITEM:product_id:name:price:qty] — can be multiple
-    if (preg_match_all('/\[ITEM:(\d+):([^:]+):([0-9.]+):(\d+)\]/', $aiResponse, $matches, PREG_SET_ORDER)) {
+    // Parse [ITEM:product_id:name:price:qty] or [ITEM:product_id:name:price:qty:options_text] — can be multiple
+    if (preg_match_all('/\[ITEM:(\d+):([^:]+):([0-9.]+):(\d+)(?::([^\]]+))?\]/', $aiResponse, $matches, PREG_SET_ORDER)) {
         foreach ($matches as $m) {
             $productId = (int)$m[1];
             $itemName = trim($m[2]);
             $itemPrice = (float)$m[3];
             $itemQty = max(1, (int)$m[4]);
-            $markersFound[] = "ITEM:{$productId}:{$itemName}:{$itemPrice}:{$itemQty}";
+            $optionsText = isset($m[5]) ? trim($m[5]) : '';
+            $markersFound[] = "ITEM:{$productId}:{$itemName}:{$itemPrice}:{$itemQty}" . ($optionsText ? ":{$optionsText}" : '');
 
             // Validate product exists and price matches
             $product = getProduct($db, $productId);
             if ($product) {
-                $realPrice = ((float)($product['special_price'] ?? 0) > 0 && (float)$product['special_price'] < (float)$product['price'])
+                $realBasePrice = ((float)($product['special_price'] ?? 0) > 0 && (float)$product['special_price'] < (float)$product['price'])
                     ? (float)$product['special_price']
                     : (float)$product['price'];
 
+                // Validate options and calculate real price with extras
+                $validatedOptions = [];
+                $optionsExtra = 0;
+                if ($optionsText) {
+                    $productOptions = getProductOptions($db, $productId);
+                    if (!empty($productOptions)) {
+                        $optionsExtra = validateAndPriceOptions($productOptions, $optionsText, $validatedOptions);
+                    }
+                }
+
+                $realPrice = round($realBasePrice + $optionsExtra, 2);
+
                 // Ensure partner matches
                 if ($product['partner_id'] == $context['partner_id']) {
-                    $context['items'][] = [
+                    $itemData = [
                         'product_id' => $productId,
                         'name'       => $product['name'], // Use DB name, not AI name
-                        'price'      => $realPrice,       // Use DB price, not AI price
+                        'price'      => $realPrice,        // Base price + validated option extras
+                        'base_price' => $realBasePrice,
                         'qty'        => $itemQty,
                     ];
+                    if (!empty($validatedOptions)) {
+                        $itemData['options'] = $validatedOptions;
+                        $itemData['options_text'] = $optionsText;
+                        $itemData['options_extra'] = $optionsExtra;
+                    }
+                    $context['items'][] = $itemData;
                 } else {
                     error_log(WABOT_LOG_PREFIX . " Product {$productId} belongs to partner {$product['partner_id']}, not {$context['partner_id']}");
                 }
@@ -3198,19 +3527,32 @@ function submitWhatsAppOrder(PDO $db, array $conversation): array
             ];
         }
 
-        $price = ((float)($product['special_price'] ?? 0) > 0 && (float)$product['special_price'] < (float)$product['price'])
+        $basePrice = ((float)($product['special_price'] ?? 0) > 0 && (float)$product['special_price'] < (float)$product['price'])
             ? (float)$product['special_price']
             : (float)$product['price'];
 
-        if ($price <= 0) continue;
+        if ($basePrice <= 0) continue;
 
-        $validatedItems[] = [
+        // Calculate options extra from context
+        $optionsExtra = (float)($item['options_extra'] ?? 0);
+        $price = round($basePrice + $optionsExtra, 2);
+
+        $validatedItem = [
             'product_id' => $productId,
             'name'       => $product['name'],
             'price'      => $price,
+            'base_price' => $basePrice,
             'qty'        => $qty,
             'total'      => round($price * $qty, 2),
         ];
+
+        // Carry options data forward for order item extras insertion
+        if (!empty($item['options'])) {
+            $validatedItem['options'] = $item['options'];
+            $validatedItem['options_text'] = $item['options_text'] ?? '';
+        }
+
+        $validatedItems[] = $validatedItem;
         $subtotal += round($price * $qty, 2);
     }
 
@@ -3385,11 +3727,19 @@ function submitWhatsAppOrder(PDO $db, array $conversation): array
 
         // Insert order items
         $itemStmt = $db->prepare("
-            INSERT INTO om_market_order_items (order_id, product_id, name, quantity, price, total)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO om_market_order_items (order_id, product_id, name, quantity, price, total, observacao)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            RETURNING item_id
+        ");
+
+        // Prepare extras insert statement
+        $extrasStmt = $db->prepare("
+            INSERT INTO om_order_item_extras (order_id, order_item_id, product_id, group_name, option_name, quantity, unit_price, total_price)
+            VALUES (?, ?, ?, ?, ?, 1, ?, ?)
         ");
 
         foreach ($validatedItems as $item) {
+            $optObs = !empty($item['options_text']) ? $item['options_text'] : null;
             $itemStmt->execute([
                 $orderId,
                 $item['product_id'],
@@ -3397,7 +3747,24 @@ function submitWhatsAppOrder(PDO $db, array $conversation): array
                 $item['qty'],
                 $item['price'],
                 $item['total'],
+                $optObs,
             ]);
+            $orderItemId = (int)$itemStmt->fetchColumn();
+
+            // Insert option extras into om_order_item_extras
+            if (!empty($item['options'])) {
+                foreach ($item['options'] as $opt) {
+                    $extrasStmt->execute([
+                        $orderId,
+                        $orderItemId,
+                        $item['product_id'],
+                        $opt['group_name'] ?? '',
+                        $opt['option_name'] ?? '',
+                        (float)($opt['price_extra'] ?? 0),
+                        (float)($opt['price_extra'] ?? 0),
+                    ]);
+                }
+            }
 
             // Decrement stock
             $db->prepare("
@@ -3791,6 +4158,181 @@ function tryExtractPayment(string $message): ?array
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INTERACTIVE WHATSAPP MESSAGES (Buttons & Lists)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Send interactive WhatsApp elements (buttons or list) based on the current
+ * conversation step. This complements the AI's natural text response with
+ * structured choices to make the ordering flow easier.
+ *
+ * Failures are silently logged — interactive messages are a bonus layer,
+ * never blocking the main flow.
+ *
+ * @param string $phone        Customer phone number
+ * @param string $step         Current conversation step constant
+ * @param array  $context      Current conversation context
+ * @param string $responseText The AI text that was just sent
+ */
+function sendInteractiveResponse(string $phone, string $step, array $context, string $responseText): void
+{
+    try {
+        switch ($step) {
+
+            // ── GREETING: offer main actions ─────────────────────────────
+            case STEP_GREETING:
+                // Only send buttons if no store is selected yet
+                if (empty($context['partner_id'])) {
+                    sendWhatsAppButtons($phone, 'Como posso te ajudar?', [
+                        ['id' => 'action_order',   'label' => 'Fazer pedido'],
+                        ['id' => 'action_status',  'label' => 'Ver status'],
+                        ['id' => 'action_support', 'label' => 'Falar com atendente'],
+                    ]);
+                }
+                break;
+
+            // ── IDENTIFY STORE: show store list ──────────────────────────
+            case STEP_IDENTIFY_STORE:
+                // Build a list of stores from the AI response context
+                $stores = getInteractiveStoreList($context, $responseText);
+                if (!empty($stores)) {
+                    $rows = [];
+                    foreach ($stores as $store) {
+                        $status = !empty($store['is_open']) ? 'Aberto agora' : 'Fechado';
+                        $rows[] = [
+                            'title'       => $store['name'],
+                            'description' => ($store['categoria'] ?? 'Loja') . ' - ' . $status,
+                            'rowId'       => 'store_' . $store['partner_id'],
+                        ];
+                    }
+                    if (!empty($rows)) {
+                        sendWhatsAppList(
+                            $phone,
+                            'Escolha uma loja para fazer seu pedido:',
+                            'Ver lojas',
+                            [['title' => 'Lojas disponiveis', 'rows' => $rows]]
+                        );
+                    }
+                }
+                break;
+
+            // ── GET PAYMENT: show payment method buttons ─────────────────
+            case STEP_GET_PAYMENT:
+                // Only send if payment hasn't been chosen yet
+                if (empty($context['payment_method'])) {
+                    sendWhatsAppButtons($phone, 'Escolha a forma de pagamento:', [
+                        ['id' => 'pay_pix',      'label' => 'PIX'],
+                        ['id' => 'pay_cartao',   'label' => 'Cartao'],
+                        ['id' => 'pay_dinheiro', 'label' => 'Dinheiro'],
+                    ]);
+                }
+                break;
+
+            // ── CONFIRM ORDER: show confirm/edit/cancel buttons ──────────
+            case STEP_CONFIRM_ORDER:
+                sendWhatsAppButtons($phone, 'O que deseja fazer?', [
+                    ['id' => 'confirm_yes',    'label' => 'Confirmar'],
+                    ['id' => 'confirm_edit',   'label' => 'Alterar pedido'],
+                    ['id' => 'confirm_cancel', 'label' => 'Cancelar'],
+                ]);
+                break;
+        }
+    } catch (\Exception $e) {
+        // Interactive messages are optional — never break the flow
+        error_log(WABOT_LOG_PREFIX . " Interactive message error at step {$step}: " . $e->getMessage());
+    }
+}
+
+/**
+ * Extract store list for the interactive list message.
+ * Tries to get stores from the database (same query as the main flow).
+ * Falls back to empty if unavailable.
+ *
+ * @param array  $context      Current conversation context
+ * @param string $responseText AI response text (used to check if stores were mentioned)
+ * @return array List of store rows with partner_id, name, categoria, is_open
+ */
+function getInteractiveStoreList(array $context, string $responseText): array
+{
+    // Only show store list if the AI response seems to list stores
+    // Look for numbered list patterns or store-related keywords
+    if (!preg_match('/\d+\.\s|lojas?\s+(dispon|aberta|perto)|escolh|qual\s+loja/ui', $responseText)) {
+        return [];
+    }
+
+    try {
+        $db = getDB();
+        $stores = getActiveStores($db, 10);
+        // Filter to only open stores for better UX, but include closed if fewer than 2 open
+        $openStores = array_filter($stores, fn($s) => !empty($s['is_open']));
+        return count($openStores) >= 2 ? array_values($openStores) : $stores;
+    } catch (\Exception $e) {
+        error_log(WABOT_LOG_PREFIX . " Error fetching stores for interactive list: " . $e->getMessage());
+        return [];
+    }
+}
+
+/**
+ * Map interactive button/list IDs to meaningful text that Claude can understand.
+ * Called during webhook parsing to translate structured responses into natural text.
+ *
+ * @param string $buttonId   The selected button ID or row ID
+ * @param string $buttonText The display text of the selected option
+ * @param string $messageType 'button' or 'list'
+ * @return string The mapped message text for Claude
+ */
+function mapInteractiveResponseToText(string $buttonId, string $buttonText, string $messageType): string
+{
+    // Button response mappings
+    $buttonMap = [
+        // Greeting buttons
+        'action_order'   => 'Quero fazer um pedido',
+        'action_status'  => 'Quero ver o status do meu pedido',
+        'action_support' => 'Quero falar com um atendente',
+        // Payment buttons
+        'pay_pix'        => 'PIX',
+        'pay_cartao'     => 'Cartao',
+        'pay_dinheiro'   => 'Dinheiro',
+        // Confirmation buttons
+        'confirm_yes'    => 'Confirmar pedido',
+        'confirm_edit'   => 'Quero alterar o pedido',
+        'confirm_cancel' => 'Cancelar pedido',
+    ];
+
+    // Check button map first
+    if (isset($buttonMap[$buttonId])) {
+        return $buttonMap[$buttonId];
+    }
+
+    // List response: store selection (store_123 -> "Quero pedir na loja X")
+    if ($messageType === 'list' && str_starts_with($buttonId, 'store_')) {
+        $storeId = substr($buttonId, 6);
+        // Look up store name from DB
+        try {
+            $db = getDB();
+            $stmt = $db->prepare("SELECT name, trade_name FROM om_market_partners WHERE partner_id = ?");
+            $stmt->execute([$storeId]);
+            $store = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($store) {
+                $storeName = $store['trade_name'] ?: $store['name'];
+                return "Quero pedir na {$storeName}";
+            }
+        } catch (\Exception $e) {
+            // Fallback below
+        }
+        // Fallback: use the display text
+        if (!empty($buttonText)) {
+            return "Quero pedir na {$buttonText}";
+        }
+        return "Quero pedir na loja {$storeId}";
+    }
+
+    // Fallback: use the display text if available, otherwise the ID itself
+    return !empty($buttonText) ? $buttonText : $buttonId;
+}
+
 // CORE MESSAGE HANDLER
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -3865,6 +4407,7 @@ function handleWhatsAppMessage(
                 $response = "Localizacao recebida! Vou usar esse endereco para a entrega.\n\nAgora, como voce quer pagar?\n\n1. *PIX* — pagamento instantaneo\n2. *Cartao* — link de pagamento\n3. *Dinheiro* — na entrega";
                 saveMessage($db, $conversationId, 'outbound', 'ai', $response);
                 sendWhatsAppResponse($phone, $response);
+                sendInteractiveResponse($phone, STEP_GET_PAYMENT, $context, $response);
                 return;
             }
         }
@@ -4247,6 +4790,9 @@ function handleWhatsAppMessage(
     saveMessage($db, $conversationId, 'outbound', 'ai', $responseText);
     sendWhatsAppResponse($phone, $responseText);
 
+    // Send interactive buttons/list as a complement to the AI text response
+    sendInteractiveResponse($phone, $context['step'], $context, $responseText);
+
     // Broadcast AI response to dashboard
     ccBroadcastDashboard('wa_ai_response', [
         'conversation_id' => $conversationId,
@@ -4400,7 +4946,7 @@ function parseWebhookRequest(): ?array
     // Button response
     elseif (isset($body['buttonsResponseMessage'])) {
         $btnResponse = $body['buttonsResponseMessage'];
-        $message = $btnResponse['selectedButtonId'] ?? $btnResponse['selectedDisplayText'] ?? '';
+        $message = mapInteractiveResponseToText($btnResponse['selectedButtonId'] ?? '', $btnResponse['selectedDisplayText'] ?? '', 'button');
         $messageType = 'button';
         $extraData['button_id'] = $btnResponse['selectedButtonId'] ?? '';
         $extraData['button_text'] = $btnResponse['selectedDisplayText'] ?? '';
@@ -4408,7 +4954,9 @@ function parseWebhookRequest(): ?array
     // List response
     elseif (isset($body['listResponseMessage'])) {
         $listResponse = $body['listResponseMessage'];
-        $message = $listResponse['singleSelectReply']['selectedRowId'] ?? $listResponse['title'] ?? '';
+        $listRowId = $listResponse['singleSelectReply']['selectedRowId'] ?? '';
+        $listTitle = $listResponse['title'] ?? '';
+        $message = mapInteractiveResponseToText($listRowId ?: $listTitle, $listTitle, 'list');
         $messageType = 'list';
         $extraData['list_row_id'] = $listResponse['singleSelectReply']['selectedRowId'] ?? '';
         $extraData['list_title'] = $listResponse['title'] ?? '';

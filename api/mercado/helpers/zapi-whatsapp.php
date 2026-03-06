@@ -142,9 +142,19 @@ function sendWhatsAppInternal(string $phone, string $message): array {
 }
 
 /**
- * Envia mensagem com botoes (template interativo)
+ * Envia mensagem com botoes interativos (ate 3 botoes).
+ *
+ * Z-API endpoint: POST /send-button-list
+ * Payload:
+ *   { "phone": "55...", "message": "text",
+ *     "buttonList": { "buttons": [{"id": "btn_1", "label": "Button Text"}, ...] } }
+ *
+ * @param string $phone  Telefone com DDD
+ * @param string $message Texto da mensagem
+ * @param array  $buttons Array de botoes: [['id' => 'btn_x', 'label' => 'Text'], ...]
+ * @return array ['success' => bool, 'message' => string]
  */
-function sendWhatsAppButtons(string $phone, string $message, string $title, array $buttons): array {
+function sendWhatsAppButtons(string $phone, string $message, array $buttons): array {
     if (empty(ZAPI_BASE_URL) || empty(ZAPI_CLIENT_TOKEN)) {
         return ['success' => false, 'message' => 'Z-API nao configurado'];
     }
@@ -152,17 +162,24 @@ function sendWhatsAppButtons(string $phone, string $message, string $title, arra
     $phone = formatPhoneForZapi($phone);
     if (!$phone) return ['success' => false, 'message' => 'Telefone invalido'];
 
+    // Enforce WhatsApp limit of 3 buttons
+    $buttons = array_slice($buttons, 0, 3);
+
     $buttonList = [];
     foreach ($buttons as $btn) {
-        $buttonList[] = ['id' => $btn['id'] ?? uniqid(), 'label' => $btn['label']];
+        $buttonList[] = [
+            'id'    => $btn['id'] ?? uniqid('btn_'),
+            'label' => mb_substr($btn['label'] ?? '', 0, 20), // WhatsApp 20-char limit
+        ];
     }
 
     $payload = json_encode([
-        'phone' => $phone,
-        'message' => $message,
-        'title' => $title,
-        'buttons' => $buttonList
-    ]);
+        'phone'      => $phone,
+        'message'    => $message,
+        'buttonList' => [
+            'buttons' => $buttonList,
+        ],
+    ], JSON_UNESCAPED_UNICODE);
 
     $ch = curl_init(ZAPI_BASE_URL . '/send-button-list');
     curl_setopt_array($ch, [
@@ -178,11 +195,122 @@ function sendWhatsAppButtons(string $phone, string $message, string $title, arra
 
     $result = curl_exec($ch);
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $error = curl_error($ch);
     curl_close($ch);
 
+    if ($error) {
+        error_log("[zapi] cURL error (buttons): $error");
+        return ['success' => false, 'message' => "Erro conexao: $error"];
+    }
+
     $data = json_decode($result, true);
-    $ok = $httpCode >= 200 && $httpCode < 300;
-    return ['success' => $ok, 'message' => $ok ? 'Enviado' : ($data['error'] ?? 'Erro')];
+    $messageId = $data['zaapId'] ?? $data['messageId'] ?? $data['id'] ?? null;
+    $ok = $httpCode >= 200 && $httpCode < 300 && $messageId;
+
+    if ($ok) {
+        error_log("[zapi] Buttons enviados para " . substr($phone, 0, 4) . "****" . substr($phone, -2) . " | ID: $messageId");
+    } else {
+        error_log("[zapi] Falha enviar buttons para " . substr($phone, 0, 4) . "****" . substr($phone, -2) . ": " . ($data['error'] ?? "HTTP $httpCode"));
+    }
+
+    return ['success' => $ok, 'message' => $ok ? 'Enviado' : ($data['error'] ?? $data['message'] ?? "HTTP $httpCode")];
+}
+
+/**
+ * Envia mensagem com lista de opcoes (menu com secoes).
+ *
+ * Z-API endpoint: POST /send-option-list
+ * Payload:
+ *   { "phone": "55...", "message": "text",
+ *     "optionList": {
+ *       "title": "Menu Title",
+ *       "buttonLabel": "Ver opcoes",
+ *       "options": [
+ *         { "title": "Section", "rows": [{"title": "Item", "description": "desc", "rowId": "id"}, ...] }
+ *       ]
+ *     }
+ *   }
+ *
+ * @param string $phone        Telefone com DDD
+ * @param string $message      Texto da mensagem
+ * @param string $buttonLabel  Label do botao que abre a lista
+ * @param array  $sections     Array de secoes: [['title' => 'Section', 'rows' => [['title' => 'Item', 'description' => 'desc', 'rowId' => 'id'], ...]], ...]
+ * @return array ['success' => bool, 'message' => string]
+ */
+function sendWhatsAppList(string $phone, string $message, string $buttonLabel, array $sections): array {
+    if (empty(ZAPI_BASE_URL) || empty(ZAPI_CLIENT_TOKEN)) {
+        return ['success' => false, 'message' => 'Z-API nao configurado'];
+    }
+
+    $phone = formatPhoneForZapi($phone);
+    if (!$phone) return ['success' => false, 'message' => 'Telefone invalido'];
+
+    // Build options array with WhatsApp limits
+    $options = [];
+    foreach ($sections as $section) {
+        $rows = [];
+        foreach (($section['rows'] ?? []) as $row) {
+            $rows[] = [
+                'title'       => mb_substr($row['title'] ?? '', 0, 24),       // WhatsApp 24-char limit
+                'description' => mb_substr($row['description'] ?? '', 0, 72), // WhatsApp 72-char limit
+                'rowId'       => $row['rowId'] ?? uniqid('row_'),
+            ];
+        }
+        if (!empty($rows)) {
+            $options[] = [
+                'title' => mb_substr($section['title'] ?? '', 0, 24),
+                'rows'  => array_slice($rows, 0, 10), // WhatsApp max 10 rows per section
+            ];
+        }
+    }
+
+    if (empty($options)) {
+        return ['success' => false, 'message' => 'Nenhuma opcao fornecida'];
+    }
+
+    $payload = json_encode([
+        'phone'      => $phone,
+        'message'    => $message,
+        'optionList' => [
+            'title'       => mb_substr($buttonLabel, 0, 20),
+            'buttonLabel' => mb_substr($buttonLabel, 0, 20),
+            'options'     => array_slice($options, 0, 10), // WhatsApp max 10 sections
+        ],
+    ], JSON_UNESCAPED_UNICODE);
+
+    $ch = curl_init(ZAPI_BASE_URL . '/send-option-list');
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => $payload,
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/json',
+            'Client-Token: ' . ZAPI_CLIENT_TOKEN
+        ],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 15
+    ]);
+
+    $result = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $error = curl_error($ch);
+    curl_close($ch);
+
+    if ($error) {
+        error_log("[zapi] cURL error (list): $error");
+        return ['success' => false, 'message' => "Erro conexao: $error"];
+    }
+
+    $data = json_decode($result, true);
+    $messageId = $data['zaapId'] ?? $data['messageId'] ?? $data['id'] ?? null;
+    $ok = $httpCode >= 200 && $httpCode < 300 && $messageId;
+
+    if ($ok) {
+        error_log("[zapi] List enviada para " . substr($phone, 0, 4) . "****" . substr($phone, -2) . " | ID: $messageId");
+    } else {
+        error_log("[zapi] Falha enviar list para " . substr($phone, 0, 4) . "****" . substr($phone, -2) . ": " . ($data['error'] ?? "HTTP $httpCode"));
+    }
+
+    return ['success' => $ok, 'message' => $ok ? 'Enviado' : ($data['error'] ?? $data['message'] ?? "HTTP $httpCode")];
 }
 
 /**
