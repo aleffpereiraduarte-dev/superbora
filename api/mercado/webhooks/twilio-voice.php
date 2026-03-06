@@ -101,14 +101,33 @@ $periodo = $hora < 12 ? 'Bom dia' : ($hora < 18 ? 'Boa tarde' : 'Boa noite');
 
 if ($cust && $cust['name']) {
     $firstName = explode(' ', trim($cust['name']))[0];
-    $greeting = "{$periodo}, {$firstName}! Bem-vindo de volta ao SuperBora. ";
+
+    // Check if customer ordered recently (smart greeting)
+    $recentOrder = null;
+    try {
+        $recStmt = $db->prepare("
+            SELECT p.name as partner_name FROM om_market_orders o
+            JOIN om_market_partners p ON p.partner_id = o.partner_id
+            WHERE o.customer_id = ? AND o.status NOT IN ('cancelled','refunded')
+            ORDER BY o.date_added DESC LIMIT 1
+        ");
+        $recStmt->execute([$cust['customer_id']]);
+        $recentOrder = $recStmt->fetch();
+    } catch (Exception $e) {}
+
+    if ($recentOrder) {
+        $greeting = "{$periodo}, {$firstName}! Que bom falar com voce de novo. ";
+        $greeting .= "Quer pedir de novo da {$recentOrder['partner_name']}, ou de outro lugar? ";
+    } else {
+        $greeting = "{$periodo}, {$firstName}! Aqui e a Bora, do SuperBora. ";
+        $greeting .= "Me diz, de onde voce quer pedir hoje? ";
+    }
 } else {
-    $greeting = "{$periodo}! Bem-vindo ao SuperBora. ";
+    $greeting = "{$periodo}! Aqui e a Bora, assistente do SuperBora. ";
+    $greeting .= "Me diz o nome do restaurante que voce quer pedir, ou o que ta com vontade de comer. ";
 }
 
-$greeting .= "Para fazer um pedido, diga o nome do restaurante. ";
-$greeting .= "Para ver o status do seu pedido, diga status. ";
-$greeting .= "Para falar com um atendente, pressione zero.";
+$greeting .= "Se preferir falar com uma pessoa, e so dizer atendente ou apertar zero.";
 
 // Create call record early for tracking
 $db->prepare("

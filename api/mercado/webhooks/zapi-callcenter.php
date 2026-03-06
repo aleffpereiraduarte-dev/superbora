@@ -367,9 +367,34 @@ function handleBotConversation(PDO $db, int $conversationId, string $userMessage
         $address = $context['address'] ?? null;
         $payment = $context['payment_method'] ?? null;
 
+        // Detect "repeat last order" intent
+        $repeatPhrases = ['mesmo pedido', 'mesmo de sempre', 'repete', 'repetir', 'igual ao ultimo', 'o de sempre', 'o mesmo', 'mesmo que o anterior', 'pedir o mesmo', 'quero o mesmo'];
+        foreach ($repeatPhrases as $rp) {
+            if (mb_strpos($lowerMsg, $rp) !== false && $customerId && $storeId && empty($items)) {
+                $repeatItems = fetchLastOrderItemsWA($db, $customerId, $storeId);
+                if (!empty($repeatItems)) {
+                    $context['items'] = $repeatItems;
+                    $items = $repeatItems;
+                    $context['repeat_order'] = true;
+                }
+                break;
+            }
+        }
+
+        // Detect "remove item" intent
+        $removePhrases = ['tira', 'remove', 'retira', 'sem o', 'nao quero mais o', 'cancela o'];
+        foreach ($removePhrases as $rp) {
+            if (mb_strpos($lowerMsg, $rp) !== false && !empty($items)) {
+                $context['wants_remove'] = true;
+                break;
+            }
+        }
+
         $menuText = '';
+        $storeInfo = null;
         if ($storeId) {
             $menuText = fetchStoreMenuWA($db, $storeId);
+            $storeInfo = fetchStoreInfoWA($db, $storeId);
         }
 
         $storeNames = [];
@@ -446,19 +471,85 @@ function handleBotConversation(PDO $db, int $conversationId, string $userMessage
             $context['support_orders'] = $supportOrders;
         }
 
+        // Popular items for store
+        $popularItems = [];
+        if ($storeId && $step === 'take_order') {
+            $popStmt = $db->prepare("
+                SELECT oi.product_name, COUNT(*) as order_count
+                FROM om_market_order_items oi
+                JOIN om_market_orders o ON o.order_id = oi.order_id
+                WHERE o.partner_id = ? AND o.status NOT IN ('cancelled','refunded')
+                AND oi.product_name IS NOT NULL AND oi.product_name != ''
+                GROUP BY oi.product_name
+                ORDER BY order_count DESC LIMIT 5
+            ");
+            $popStmt->execute([$storeId]);
+            $popularItems = $popStmt->fetchAll();
+        }
+
+        // Active promos
+        $activePromos = [];
+        if ($step === 'take_order' || $step === 'confirm_order') {
+            $promoStmt = $db->query("
+                SELECT code, discount_type, discount_value, max_discount, min_order_value
+                FROM om_market_coupons
+                WHERE status = 'active' AND (valid_until IS NULL OR valid_until > NOW())
+                AND (max_uses IS NULL OR current_uses < max_uses)
+                LIMIT 3
+            ");
+            $activePromos = $promoStmt->fetchAll();
+        }
+
+        // Last payment method
+        $lastPayment = null;
+        if ($customerId && $step === 'get_payment') {
+            $payStmt = $db->prepare("
+                SELECT forma_pagamento FROM om_market_orders
+                WHERE customer_id = ? AND status NOT IN ('cancelled','refunded')
+                ORDER BY date_added DESC LIMIT 1
+            ");
+            $payStmt->execute([$customerId]);
+            $lastPay = $payStmt->fetch();
+            if ($lastPay) $lastPayment = $lastPay['forma_pagamento'];
+        }
+
+        // Customer lifetime stats
+        $customerStats = null;
+        if ($customerId) {
+            $statsStmt = $db->prepare("
+                SELECT COUNT(*) as total_orders, COALESCE(SUM(total), 0) as lifetime_value
+                FROM om_market_orders WHERE customer_id = ? AND status NOT IN ('cancelled','refunded')
+            ");
+            $statsStmt->execute([$customerId]);
+            $customerStats = $statsStmt->fetch();
+        }
+
         $savedAddresses = [];
-        if ($customerId && in_array($step, ['get_address', 'confirm_order'])) {
+        $defaultAddress = null;
+        if ($customerId) {
             $addrStmt = $db->prepare("
-                SELECT address_id, label, street, number, complement, neighborhood, city, state, lat, lng
+                SELECT address_id, label, street, number, complement, neighborhood, city, state, zipcode, lat, lng, is_default
                 FROM om_customer_addresses WHERE customer_id = ? AND is_active = '1'
                 ORDER BY is_default DESC LIMIT 5
             ");
             $addrStmt->execute([$customerId]);
             $savedAddresses = $addrStmt->fetchAll();
+            foreach ($savedAddresses as $addr) {
+                if ($addr['is_default']) { $defaultAddress = $addr; break; }
+            }
+            if (!$defaultAddress && !empty($savedAddresses)) $defaultAddress = $savedAddresses[0];
         }
 
         // Build system prompt
-        $systemPrompt = buildWASystemPrompt($step, $storeName, $menuText, $items, $address, $payment, $customerName, $savedAddresses, $storeNames, $customerId, $lastOrderItems ?? [], $context);
+        $extraData = [
+            'store_info' => $storeInfo,
+            'popular_items' => $popularItems ?? [],
+            'active_promos' => $activePromos ?? [],
+            'last_payment' => $lastPayment ?? null,
+            'customer_stats' => $customerStats,
+            'default_address' => $defaultAddress,
+        ];
+        $systemPrompt = buildWASystemPrompt($step, $storeName, $menuText, $items, $address, $payment, $customerName, $savedAddresses, $storeNames, $customerId, $lastOrderItems ?? [], $context, $extraData);
 
         // Keep history manageable
         $recentHistory = array_slice($history, -16);
@@ -558,24 +649,45 @@ function buildWASystemPrompt(
     string $step, ?string $storeName, string $menuText, array $items,
     ?array $address, ?string $payment, ?string $customerName,
     array $savedAddresses, array $storeNames, ?int $customerId,
-    array $lastOrderItems = [], array $context = []
+    array $lastOrderItems = [], array $context = [], array $extraData = []
 ): string {
     $hora = (int)date('H');
     $periodo = $hora < 12 ? 'bom dia' : ($hora < 18 ? 'boa tarde' : 'boa noite');
 
-    $prompt = "Voce e a assistente virtual do SuperBora por WhatsApp. SuperBora e um app de delivery de comida.\n\n";
-    $prompt .= "REGRAS OBRIGATORIAS:\n";
-    $prompt .= "- Fale SEMPRE em portugues brasileiro, de forma amigavel e natural\n";
-    $prompt .= "- Use emojis com moderacao para deixar a conversa agradavel\n";
+    $storeInfo = $extraData['store_info'] ?? null;
+    $popularItems = $extraData['popular_items'] ?? [];
+    $activePromos = $extraData['active_promos'] ?? [];
+    $lastPayment = $extraData['last_payment'] ?? null;
+    $customerStats = $extraData['customer_stats'] ?? null;
+
+    $prompt = "Voce e a Bora, assistente virtual do SuperBora por WhatsApp — app de delivery de comida.\n\n";
+    $prompt .= "PERSONALIDADE:\n";
+    $prompt .= "- Voce e simpatica, calorosa e eficiente — como uma amiga que trabalha num restaurante\n";
+    $prompt .= "- Fale em portugues brasileiro natural, com expressoes do dia-a-dia\n";
+    $prompt .= "- Use emojis com moderacao (1-2 por mensagem)\n";
+    $prompt .= "- Demonstre entusiasmo: 'Hmm, otima escolha!', 'Esse e sucesso aqui!'\n\n";
+    $prompt .= "REGRAS:\n";
     $prompt .= "- Respostas claras e organizadas, use *negrito* para destaques (sintaxe WhatsApp)\n";
     $prompt .= "- NUNCA invente precos ou produtos — use SOMENTE o cardapio fornecido\n";
-    $prompt .= "- Se o cliente pedir algo que nao tem no cardapio, diga que nao esta disponivel e sugira algo parecido\n";
-    $prompt .= "- Seja educado e eficiente como um atendente profissional\n";
-    $prompt .= "- Maximo 500 caracteres por resposta (limitar para leitura no celular)\n";
+    $prompt .= "- Se nao tem no cardapio, sugira algo parecido\n";
+    $prompt .= "- Maximo 500 caracteres por resposta\n";
+    $prompt .= "- Se o cliente fizer uma pergunta, responda ANTES de continuar o fluxo\n";
+    $prompt .= "- SEMPRE que souber dados do cliente (endereco, pagamento), sugira usar os mesmos\n";
     $prompt .= "- Hora atual: " . date('H:i') . " ({$periodo})\n\n";
 
     if ($customerName) {
-        $prompt .= "CLIENTE: {$customerName}" . ($customerId ? " (cadastrado)" : " (nao cadastrado)") . "\n\n";
+        $prompt .= "CLIENTE: {$customerName}";
+        if ($customerStats && (int)$customerStats['total_orders'] > 0) {
+            $orders = (int)$customerStats['total_orders'];
+            $value = number_format((float)$customerStats['lifetime_value'], 2, ',', '.');
+            $prompt .= " (cliente fiel: {$orders} pedidos, R\${$value} total)";
+            if ($orders >= 20) $prompt .= " [VIP]";
+        } elseif ($customerId) {
+            $prompt .= " (cadastrado)";
+        } else {
+            $prompt .= " (nao cadastrado)";
+        }
+        $prompt .= "\n\n";
     }
 
     switch ($step) {
@@ -583,78 +695,165 @@ function buildWASystemPrompt(
         case 'identify_store':
             $prompt .= "ETAPA: Identificar restaurante\n";
             $prompt .= "- Se e a primeira mensagem, cumprimente e pergunte de qual restaurante quer pedir\n";
-            $prompt .= "- Se o cliente ja disse um nome, faca match com a lista abaixo\n";
+            $prompt .= "- Se o cliente ja disse um nome, faca match com a lista abaixo (aceite nomes aproximados)\n";
             $prompt .= "- Se encontrar, confirme o nome e avance\n";
-            $prompt .= "- Se nao encontrar, mostre 5 opcoes populares e pergunte qual prefere\n\n";
+            $prompt .= "- Se nao encontrar, mostre 5 opcoes populares e pergunte qual prefere\n";
+            $prompt .= "- Se disser algo generico (pizza, lanche, acai), sugira restaurantes da categoria\n";
+            $prompt .= "- Se disser 'o de sempre', sugira o favorito (marcado [favorito])\n";
+            $prompt .= "- Se disser 'to com fome', sugira 3 opcoes baseadas nos favoritos e horario\n\n";
             $prompt .= "RESTAURANTES:\n" . implode("\n", $storeNames) . "\n\n";
-            $prompt .= "MARCADORES (inclua na resposta, serao removidos antes de enviar):\n";
+            // Location context
+            if (!empty($extraData['default_address'])) {
+                $da = $extraData['default_address'];
+                $prompt .= "REGIAO DO CLIENTE: {$da['neighborhood']}, {$da['city']}\n";
+                $prompt .= "- Priorize restaurantes dessa regiao\n\n";
+            }
+            // Time suggestions
+            $hora = (int)date('H');
+            if ($hora >= 6 && $hora < 10) $prompt .= "DICA: E manha — sugira cafes, padarias.\n";
+            elseif ($hora >= 11 && $hora < 14) $prompt .= "DICA: Almoco — sugira pratos executivos, marmitas.\n";
+            elseif ($hora >= 14 && $hora < 17) $prompt .= "DICA: Tarde — sugira acai, lanches.\n";
+            elseif ($hora >= 18 && $hora < 22) $prompt .= "DICA: Noite — sugira pizzarias, hamburguerias.\n";
+            $prompt .= "\nMARCADORES (inclua na resposta, serao removidos antes de enviar):\n";
             $prompt .= "- Se identificar o restaurante: [STORE:ID:nome]\n";
             $prompt .= "  Exemplo: [STORE:42:Pizzaria Bella]\n";
             break;
 
         case 'take_order':
             $prompt .= "ETAPA: Anotar pedido\n";
-            $prompt .= "RESTAURANTE: *{$storeName}*\n\n";
-            $prompt .= "CARDAPIO:\n{$menuText}\n\n";
-            // Smart: returning customer suggestions
-            if (!empty($lastOrderItems)) {
-                $prompt .= "ULTIMO PEDIDO DO CLIENTE NESTA LOJA:\n";
-                foreach ($lastOrderItems as $li) {
-                    $prompt .= "- {$li['quantity']}x {$li['product_name']} R$" . number_format((float)$li['unit_price'], 2, ',', '.') . "\n";
+            $prompt .= "RESTAURANTE: *{$storeName}*\n";
+            // Store info
+            if ($storeInfo) {
+                if ($storeInfo['rating']) $prompt .= "Nota: " . number_format((float)$storeInfo['rating'], 1) . "/5 | ";
+                $prompt .= "Entrega: ~{$storeInfo['delivery_time']} min | ";
+                $prompt .= "Taxa: R$" . number_format((float)$storeInfo['delivery_fee'], 2, ',', '.') . "\n";
+                if ($storeInfo['min_order'] > 0) {
+                    $prompt .= "Pedido minimo: R$" . number_format((float)$storeInfo['min_order'], 2, ',', '.') . "\n";
                 }
-                $prompt .= "\n- Na primeira mensagem, pergunte: 'Vi que voce ja pediu [itens] antes. Quer repetir ou experimentar algo diferente?'\n\n";
             }
-            if (!empty($items)) {
-                $prompt .= "ITENS JA ANOTADOS:\n";
+            $prompt .= "\nCARDAPIO:\n{$menuText}\n\n";
+
+            // Repeat order detected
+            if (!empty($context['repeat_order']) && !empty($items)) {
+                $prompt .= "*** O CLIENTE PEDIU PARA REPETIR O ULTIMO PEDIDO ***\n";
+                $prompt .= "Itens adicionados automaticamente:\n";
                 $total = 0;
                 foreach ($items as $item) {
                     $lineTotal = ($item['price'] ?? 0) * ($item['quantity'] ?? 1);
                     $total += $lineTotal;
                     $prompt .= "- {$item['quantity']}x {$item['name']} R$" . number_format($lineTotal, 2, ',', '.') . "\n";
                 }
+                $prompt .= "Subtotal: R$" . number_format($total, 2, ',', '.') . "\n";
+                $prompt .= "- Confirme: 'Adicionei os mesmos itens do ultimo pedido: [lista]. Quer mudar algo?'\n";
+                $prompt .= "- Se disser que esta bom, inclua [NEXT_STEP]\n\n";
+            } elseif (!empty($items)) {
+                $prompt .= "ITENS JA ANOTADOS:\n";
+                $total = 0;
+                foreach ($items as $idx => $item) {
+                    $lineTotal = ($item['price'] ?? 0) * ($item['quantity'] ?? 1);
+                    $total += $lineTotal;
+                    $prompt .= "- [{$idx}] {$item['quantity']}x {$item['name']} R$" . number_format($lineTotal, 2, ',', '.') . "\n";
+                }
                 $prompt .= "Subtotal: R$" . number_format($total, 2, ',', '.') . "\n\n";
             }
-            $prompt .= "- Quando o cliente disser um produto, identifique no cardapio, confirme nome e preco\n";
-            $prompt .= "- Pergunte quantidade se nao informada\n";
-            $prompt .= "- Se o cliente pedir algo que nao tem, sugira o mais parecido do cardapio\n";
-            $prompt .= "- Sugira complementos naturais (ex: bebida com comida, sobremesa)\n";
+
+            // Returning customer suggestions
+            if (!empty($lastOrderItems) && empty($items)) {
+                $prompt .= "ULTIMO PEDIDO DO CLIENTE NESTA LOJA:\n";
+                foreach ($lastOrderItems as $li) {
+                    $prompt .= "- {$li['quantity']}x {$li['product_name']} R$" . number_format((float)$li['unit_price'], 2, ',', '.') . "\n";
+                }
+                $prompt .= "- Mencione: 'Vi que voce ja pediu [itens] antes. Quer repetir ou algo diferente?'\n\n";
+            }
+
+            // Popular items
+            if (!empty($popularItems) && empty($items)) {
+                $prompt .= "MAIS PEDIDOS: ";
+                $popNames = array_map(fn($p) => $p['product_name'], $popularItems);
+                $prompt .= implode(', ', $popNames) . "\n";
+                $prompt .= "- Se nao sabe o que pedir, sugira estes\n\n";
+            }
+
+            $prompt .= "COMPORTAMENTO:\n";
+            $prompt .= "- Identifique o produto no cardapio, confirme nome e preco\n";
+            $prompt .= "- O cliente pode pedir VARIOS itens de uma vez — parse todos\n";
+            $prompt .= "- Pergunte quantidade SOMENTE se nao foi especificada\n";
+            $prompt .= "- Se nao tem, sugira o mais parecido\n";
+            $prompt .= "- Upsell NATURAL: se pediu comida sem bebida, sugira bebida\n";
             $prompt .= "- Apos cada item: 'Mais alguma coisa?'\n";
-            $prompt .= "- Quando disser que acabou (so isso, e so, nao, pronto), finalize\n\n";
+            $prompt .= "- Quando disser que acabou (so isso, e so, nao, pronto), finalize\n";
+            $prompt .= "- Se pedir para TIRAR/REMOVER item: [REMOVE_ITEM:indice]\n";
+            $prompt .= "- Se pedir para MUDAR QUANTIDADE: [UPDATE_QTY:indice:nova_qtd]\n\n";
+
+            // Active promos
+            if (!empty($activePromos)) {
+                $prompt .= "CUPONS ATIVOS:\n";
+                foreach ($activePromos as $promo) {
+                    $desc = $promo['discount_type'] === 'percentage'
+                        ? $promo['discount_value'] . '%'
+                        : ($promo['discount_type'] === 'free_delivery' ? 'Frete gratis' : 'R$' . number_format((float)$promo['discount_value'], 2, ',', '.'));
+                    $min = $promo['min_order_value'] > 0 ? ' (min R$' . number_format((float)$promo['min_order_value'], 2, ',', '.') . ')' : '';
+                    $prompt .= "- {$promo['code']}: {$desc}{$min}\n";
+                }
+                $prompt .= "- Mencione SOMENTE quando subtotal estiver perto do minimo\n\n";
+            }
+
             $prompt .= "MARCADORES:\n";
             $prompt .= "- Para cada item: [ITEM:product_id:quantidade:preco:nome]\n";
             $prompt .= "  Ex: [ITEM:123:2:12.90:Coxinha de Frango]\n";
+            $prompt .= "- Para remover: [REMOVE_ITEM:indice_do_item]\n";
+            $prompt .= "- Para alterar qtd: [UPDATE_QTY:indice_do_item:nova_qtd]\n";
             $prompt .= "- Quando finalizar itens: [NEXT_STEP]\n";
             break;
 
         case 'get_address':
             $prompt .= "ETAPA: Endereco de entrega\n";
             $prompt .= "RESTAURANTE: *{$storeName}*\n\n";
-            // If CEP was already resolved
             if (!empty($address['from_cep'])) {
-                $prompt .= "ENDERECO ENCONTRADO PELO CEP ({$address['cep']}):\n";
+                $prompt .= "ENDERECO PELO CEP ({$address['cep']}):\n";
                 $prompt .= "Rua: {$address['street']}, Bairro: {$address['neighborhood']}, Cidade: {$address['city']}-{$address['state']}\n";
-                $prompt .= "- Confirme com o cliente e pergunte o NUMERO da casa/apto\n";
-                $prompt .= "- Quando tiver: [ADDRESS_TEXT:rua, numero - bairro, cidade] e [NEXT_STEP]\n\n";
+                $prompt .= "- Confirme e pergunte o NUMERO\n";
+                $prompt .= "- Com numero: [ADDRESS_TEXT:rua, numero - bairro, cidade] e [NEXT_STEP]\n\n";
             } elseif (!empty($savedAddresses)) {
                 $prompt .= "ENDERECOS SALVOS:\n";
                 foreach ($savedAddresses as $i => $addr) {
                     $num = $i + 1;
                     $label = $addr['label'] ?? '';
                     $full = ($addr['street'] ?? '') . ', ' . ($addr['number'] ?? '') . ' - ' . ($addr['neighborhood'] ?? '');
-                    $prompt .= "{$num}. {$label}: {$full}\n";
+                    $isDefault = !empty($addr['is_default']) ? ' [PADRAO]' : '';
+                    $prompt .= "{$num}. {$label}: {$full}{$isDefault}\n";
                 }
-                $prompt .= "\n- Pergunte se quer entregar em um dos enderecos salvos ou outro\n";
-                $prompt .= "- Se escolher salvo: [ADDRESS:indice]\n";
+                $prompt .= "\n";
+                if (count($savedAddresses) === 1) {
+                    $prompt .= "- So tem 1 endereco. Diga: 'Entrego no mesmo endereco, na [rua - bairro]?'\n";
+                    $prompt .= "- Se confirmar: [ADDRESS:1] e [NEXT_STEP]\n";
+                } else {
+                    $prompt .= "- Sugira o PADRAO: 'Entrego no endereco de sempre, [rua - bairro]?'\n";
+                    $prompt .= "- Se confirmar: [ADDRESS:1] e [NEXT_STEP]\n";
+                    $prompt .= "- Se quiser outro, pergunte qual\n";
+                }
+                $prompt .= "- Para salvo: [ADDRESS:indice]\n";
             } else {
                 $prompt .= "- Peca o endereco completo (rua, numero, bairro, cidade)\n";
-                $prompt .= "- O cliente pode enviar o CEP tambem — o sistema busca automaticamente\n";
+                $prompt .= "- Pode enviar CEP tambem\n";
             }
-            $prompt .= "- Se o cliente enviar um CEP (8 digitos): [CEP:00000000]\n";
-            $prompt .= "- Com endereco definido: [ADDRESS_TEXT:endereco completo] e [NEXT_STEP]\n";
+            $prompt .= "- CEP (8 digitos): [CEP:00000000]\n";
+            $prompt .= "- Endereco definido: [ADDRESS_TEXT:endereco completo] e [NEXT_STEP]\n";
             break;
 
         case 'get_payment':
             $prompt .= "ETAPA: Forma de pagamento\n";
+            if ($lastPayment) {
+                $paymentLabels = [
+                    'dinheiro' => 'Dinheiro', 'pix' => 'PIX',
+                    'credit_card' => 'Cartao de credito', 'debit_card' => 'Cartao de debito',
+                    'credito' => 'Cartao de credito', 'debito' => 'Cartao de debito',
+                ];
+                $lastPayLabel = $paymentLabels[$lastPayment] ?? $lastPayment;
+                $prompt .= "ULTIMO PAGAMENTO: {$lastPayLabel}\n";
+                $prompt .= "- Pergunte: 'Da outra vez foi {$lastPayLabel}. Quer manter?'\n";
+                $prompt .= "- Se disser 'o mesmo', 'pode ser', 'mantem', use {$lastPayment}\n\n";
+            }
             $prompt .= "- Opcoes: Dinheiro, PIX, Cartao na maquininha\n";
             $prompt .= "- Se dinheiro, pergunte se precisa de troco\n";
             $prompt .= "- Marcadores:\n";
@@ -673,7 +872,7 @@ function buildWASystemPrompt(
                 $subtotal += $lineTotal;
                 $prompt .= "- {$item['quantity']}x {$item['name']} R$" . number_format($lineTotal, 2, ',', '.') . "\n";
             }
-            $deliveryFee = 5.0;
+            $deliveryFee = $storeInfo ? (float)$storeInfo['delivery_fee'] : 5.0;
             $serviceFee = round($subtotal * 0.08, 2);
             $total = $subtotal + $deliveryFee + $serviceFee;
             $prompt .= "\nSubtotal: R$" . number_format($subtotal, 2, ',', '.');
@@ -681,16 +880,48 @@ function buildWASystemPrompt(
             $prompt .= "\nTaxa: R$" . number_format($serviceFee, 2, ',', '.');
             $prompt .= "\n*Total: R$" . number_format($total, 2, ',', '.') . "*\n\n";
 
+            // ETA
+            $eta = $storeInfo ? (int)$storeInfo['delivery_time'] : 40;
+            $prompt .= "TEMPO ESTIMADO: ~{$eta} minutos\n";
+            if ($storeInfo && $storeInfo['busy_mode']) {
+                $prompt .= "(Restaurante ocupado — pode demorar um pouco mais)\n";
+            }
+            $prompt .= "\n";
+
             if ($address) {
                 $prompt .= "ENDERECO: " . ($address['full'] ?? ($address['street'] ?? 'N/A')) . "\n";
             }
             if ($payment) {
-                $prompt .= "PAGAMENTO: {$payment}\n\n";
+                $paymentLabels = [
+                    'dinheiro' => 'Dinheiro', 'pix' => 'PIX',
+                    'credit_card' => 'Cartao de credito', 'debit_card' => 'Cartao de debito',
+                ];
+                $payLabel = $paymentLabels[$payment] ?? $payment;
+                $prompt .= "PAGAMENTO: {$payLabel}\n";
+                if ($payment === 'dinheiro' && !empty($context['payment_change'])) {
+                    $prompt .= "TROCO PARA: R$" . number_format((float)$context['payment_change'], 2, ',', '.') . "\n";
+                }
+                $prompt .= "\n";
             }
 
-            $prompt .= "- Mostre o resumo completo e bonito do pedido\n";
+            // Promo reminder
+            if (!empty($activePromos)) {
+                foreach ($activePromos as $promo) {
+                    $minVal = (float)($promo['min_order_value'] ?? 0);
+                    if ($subtotal >= $minVal && $minVal > 0) {
+                        $desc = $promo['discount_type'] === 'percentage'
+                            ? $promo['discount_value'] . '%'
+                            : ($promo['discount_type'] === 'free_delivery' ? 'frete gratis' : 'R$' . number_format((float)$promo['discount_value'], 2, ',', '.'));
+                        $prompt .= "CUPOM DISPONIVEL: {$promo['code']} ({$desc}) — mencione!\n\n";
+                        break;
+                    }
+                }
+            }
+
+            $prompt .= "- Mostre o resumo bonito e completo com emojis\n";
+            $prompt .= "- Inclua tempo estimado de entrega\n";
             $prompt .= "- Pergunte: 'Posso confirmar?'\n";
-            $prompt .= "- Se confirmar (sim, pode, confirma, isso, correto, ok): [CONFIRMED]\n";
+            $prompt .= "- Se confirmar (sim, pode, confirma, isso, correto, ok, manda): [CONFIRMED]\n";
             $prompt .= "- Se quiser mudar algo, volte para a etapa adequada\n";
             break;
 
@@ -814,6 +1045,34 @@ function parseWAResponse(string $response, array $context, PDO $db): array {
         $cleaned = preg_replace('/\[PAYMENT:\w+(?::\d+)?\]/', '', $cleaned);
     }
 
+    // Parse [REMOVE_ITEM:index]
+    if (preg_match_all('/\[REMOVE_ITEM:(\d+)\]/', $response, $matches, PREG_SET_ORDER)) {
+        $indicesToRemove = array_map(fn($m) => (int)$m[1], $matches);
+        rsort($indicesToRemove);
+        foreach ($indicesToRemove as $idx) {
+            if (isset($newContext['items'][$idx])) {
+                array_splice($newContext['items'], $idx, 1);
+            }
+        }
+        $cleaned = preg_replace('/\[REMOVE_ITEM:\d+\]/', '', $cleaned);
+    }
+
+    // Parse [UPDATE_QTY:index:new_qty]
+    if (preg_match_all('/\[UPDATE_QTY:(\d+):(\d+)\]/', $response, $matches, PREG_SET_ORDER)) {
+        foreach ($matches as $m) {
+            $idx = (int)$m[1];
+            $qty = (int)$m[2];
+            if (isset($newContext['items'][$idx])) {
+                if ($qty <= 0) {
+                    array_splice($newContext['items'], $idx, 1);
+                } else {
+                    $newContext['items'][$idx]['quantity'] = $qty;
+                }
+            }
+        }
+        $cleaned = preg_replace('/\[UPDATE_QTY:\d+:\d+\]/', '', $cleaned);
+    }
+
     // Parse [NEXT_STEP]
     if (strpos($response, '[NEXT_STEP]') !== false) {
         $currentStep = $newContext['step'] ?? 'greeting';
@@ -922,9 +1181,66 @@ function findStoresByCepWA(PDO $db, string $cep): array {
     return $stores;
 }
 
+function fetchStoreInfoWA(PDO $db, int $storeId): ?array {
+    $stmt = $db->prepare("
+        SELECT name, rating, delivery_fee, delivery_time_min, delivery_time_max,
+               busy_mode, current_prep_time, default_prep_time, min_order_value, is_open
+        FROM om_market_partners WHERE partner_id = ?
+    ");
+    $stmt->execute([$storeId]);
+    $row = $stmt->fetch();
+    if (!$row) return null;
+
+    $deliveryTime = $row['delivery_time_max'] ?? $row['delivery_time_min'] ?? 40;
+    if ($row['busy_mode'] && $row['current_prep_time']) {
+        $deliveryTime = (int)$row['current_prep_time'] + 15;
+    }
+
+    return [
+        'name' => $row['name'],
+        'rating' => $row['rating'],
+        'delivery_fee' => (float)($row['delivery_fee'] ?? 5.00),
+        'delivery_time' => $deliveryTime,
+        'min_order' => (float)($row['min_order_value'] ?? 0),
+        'is_open' => (bool)$row['is_open'],
+        'busy_mode' => (bool)$row['busy_mode'],
+    ];
+}
+
+function fetchLastOrderItemsWA(PDO $db, int $customerId, int $storeId): array {
+    $stmt = $db->prepare("
+        SELECT oi.product_id, oi.name AS product_name, oi.quantity, oi.price AS unit_price
+        FROM om_market_order_items oi
+        JOIN om_market_orders o ON o.order_id = oi.order_id
+        WHERE o.customer_id = ? AND o.partner_id = ? AND o.status NOT IN ('cancelled','refunded')
+        ORDER BY o.created_at DESC LIMIT 10
+    ");
+    $stmt->execute([$customerId, $storeId]);
+    $rows = $stmt->fetchAll();
+
+    $items = [];
+    $seen = [];
+    foreach ($rows as $r) {
+        $key = $r['product_id'] ?? $r['product_name'];
+        if (isset($seen[$key])) continue;
+        $seen[$key] = true;
+        $items[] = [
+            'product_id' => (int)($r['product_id'] ?? 0),
+            'name' => $r['product_name'],
+            'quantity' => (int)$r['quantity'],
+            'price' => (float)$r['unit_price'],
+            'options' => [],
+            'notes' => '',
+        ];
+    }
+    return $items;
+}
+
 function fetchStoreMenuWA(PDO $db, int $storeId): string {
     $stmt = $db->prepare("
-        SELECT c.name AS category, p.product_id, p.name, p.price, p.description
+        SELECT c.name AS category, p.product_id, p.name, p.price, p.description,
+               p.special_price, p.special_start, p.special_end,
+               p.is_featured, p.is_combo, p.dietary_tags
         FROM om_market_products p
         LEFT JOIN om_market_categories c ON c.category_id = p.category_id
         WHERE p.partner_id = ? AND p.status = 1
@@ -935,13 +1251,34 @@ function fetchStoreMenuWA(PDO $db, int $storeId): string {
     $products = $stmt->fetchAll();
     $text = '';
     $lastCat = '';
+    $now = date('Y-m-d H:i:s');
     foreach ($products as $p) {
         $cat = $p['category'] ?? 'Outros';
         if ($cat !== $lastCat) {
             $text .= "\n=={$cat}==\n";
             $lastCat = $cat;
         }
-        $text .= "ID:{$p['product_id']} {$p['name']} R$" . number_format((float)$p['price'], 2, ',', '.');
+
+        $price = (float)$p['price'];
+        $hasPromo = false;
+        if ($p['special_price'] && (float)$p['special_price'] > 0) {
+            $inRange = true;
+            if ($p['special_start'] && $now < $p['special_start']) $inRange = false;
+            if ($p['special_end'] && $now > $p['special_end']) $inRange = false;
+            if ($inRange) {
+                $hasPromo = true;
+                $originalPrice = $price;
+                $price = (float)$p['special_price'];
+            }
+        }
+
+        $text .= "ID:{$p['product_id']} {$p['name']} R$" . number_format($price, 2, ',', '.');
+        if ($hasPromo) {
+            $text .= " [PROMO! de R$" . number_format($originalPrice, 2, ',', '.') . "]";
+        }
+        if ($p['is_featured']) $text .= " [DESTAQUE]";
+        if ($p['is_combo']) $text .= " [COMBO]";
+        if ($p['dietary_tags']) $text .= " [{$p['dietary_tags']}]";
         if ($p['description']) $text .= " ({$p['description']})";
         $text .= "\n";
     }
