@@ -1,7 +1,7 @@
 <?php
 /**
  * Cron: Aggregate daily callcenter metrics per agent.
- * Run every hour: */60 * * * * php /var/www/html/api/mercado/cron/callcenter-metrics.php
+ * Run every hour via crontab: 0 * * * * php /var/www/html/api/mercado/cron/callcenter-metrics.php
  *
  * Populates om_callcenter_metrics with today's stats (upsert).
  */
