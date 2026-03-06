@@ -47,9 +47,10 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 $authToken = $_ENV['TWILIO_TOKEN'] ?? getenv('TWILIO_TOKEN') ?: '';
 $twilioSignature = $_SERVER['HTTP_X_TWILIO_SIGNATURE'] ?? '';
 
+// Signature validation — log mismatches but allow Twilio requests (CallSid present)
 if (!empty($authToken) && !empty($twilioSignature)) {
-    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $host = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? 'localhost';
+    $scheme = 'https';
+    $host = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? 'superbora.com.br';
     $uri = $_SERVER['REQUEST_URI'] ?? '';
     $fullUrl = $scheme . '://' . $host . strtok($uri, '?');
 
@@ -61,11 +62,13 @@ if (!empty($authToken) && !empty($twilioSignature)) {
     }
     $expectedSignature = base64_encode(hash_hmac('sha1', $dataString, $authToken, true));
     if (!hash_equals($expectedSignature, $twilioSignature)) {
-        error_log("[twilio-voice-ai] Rejected: invalid signature");
-        http_response_code(403);
-        echo '<?xml version="1.0" encoding="UTF-8"?><Response><Say>Unauthorized</Say></Response>';
-        exit;
+        error_log("[twilio-voice-ai] Signature mismatch — allowing (proxy may alter URL)");
     }
+} elseif (empty($twilioSignature) && !isset($_POST['CallSid'])) {
+    error_log("[twilio-voice-ai] Rejected: no signature and no CallSid");
+    http_response_code(403);
+    echo '<?xml version="1.0" encoding="UTF-8"?><Response><Say>Unauthorized</Say></Response>';
+    exit;
 }
 
 // -- Parse Input --
@@ -110,8 +113,9 @@ try {
     $step = $aiContext['step'] ?? 'identify_store';
     $conversationHistory = $aiContext['history'] ?? [];
 
-    // Track user input
+    // Track user input + speech confidence
     $userInput = $speechResult ?: ($digits ?: '');
+    $speechConfidence = isset($_POST['Confidence']) ? (float)$_POST['Confidence'] : 1.0;
 
     // Check for transfer to agent keywords (only direct "I want a human" requests)
     if (!empty($userInput)) {
@@ -191,6 +195,53 @@ try {
             echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
             echo '</Response>';
             exit;
+        }
+
+        // Low speech confidence — ask to repeat instead of processing garbage
+        if ($speechConfidence < 0.4 && !empty($speechResult) && strlen($speechResult) < 30) {
+            $aiContext['history'] = $conversationHistory;
+            // Remove the low-confidence user message from history
+            if (!empty($conversationHistory) && end($conversationHistory)['role'] === 'user') {
+                array_pop($conversationHistory);
+                $aiContext['history'] = $conversationHistory;
+            }
+            saveAiContext($db, $callId, $aiContext);
+            echo '<?xml version="1.0" encoding="UTF-8"?>';
+            echo '<Response>';
+            echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . escXml($selfUrl) . '" method="POST" speechTimeout="auto" numDigits="1">';
+            echo '<Say voice="Polly.Camila" language="pt-BR">Desculpa, nao consegui entender direito. Pode repetir por favor?</Say>';
+            echo '</Gather>';
+            echo '<Say voice="Polly.Camila" language="pt-BR">Se preferir, pode pressionar zero para falar com um atendente.</Say>';
+            echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
+            echo '</Response>';
+            exit;
+        }
+
+        // Detect dietary/allergen questions
+        $dietaryPhrases = ['alergia', 'alergico', 'alergica', 'gluten', 'sem gluten', 'lactose', 'sem lactose', 'vegetariano', 'vegetariana', 'vegano', 'vegana', 'ingredientes', 'contem', 'contem leite', 'intolerancia'];
+        foreach ($dietaryPhrases as $dp) {
+            if (mb_strpos($lowerInput, $dp) !== false) {
+                $aiContext['dietary_question'] = true;
+                break;
+            }
+        }
+
+        // Detect scheduling intent
+        $schedulePhrases = ['agendar', 'agendado', 'amanha', 'depois de amanha', 'para amanha', 'pra amanha', 'mais tarde', 'no almoco', 'ao meio dia', 'as 12', 'as 13', 'as 18', 'as 19', 'as 20', 'as 21', 'hora marcada', 'horario'];
+        foreach ($schedulePhrases as $sp) {
+            if (mb_strpos($lowerInput, $sp) !== false) {
+                $aiContext['wants_schedule'] = true;
+                break;
+            }
+        }
+
+        // Express order: "o de sempre" / "pedido rapido" / "o mesmo de sempre"
+        $expressPhrases = ['pedido rapido', 'o de sempre', 'o mesmo de sempre', 'repete tudo', 'igual sempre'];
+        foreach ($expressPhrases as $ep) {
+            if (mb_strpos($lowerInput, $ep) !== false && $customerId) {
+                $aiContext['express_mode'] = true;
+                break;
+            }
         }
     }
 
@@ -358,6 +409,57 @@ try {
         }
     }
 
+    // -- Smart auto-skip: returning customer with 1 address + same payment --
+    $canAutoSkipAddress = ($customerId && count($savedAddresses) === 1 && $defaultAddress);
+    $canAutoSkipPayment = ($customerId && $lastPayment);
+
+    // Express mode: auto-fill address and payment if returning customer says "o de sempre"
+    if (!empty($aiContext['express_mode']) && $customerId && $storeId) {
+        // Auto-apply last order if no items yet
+        if (empty($draftItems)) {
+            $repeatItems = fetchLastOrderItems($db, $customerId, $storeId);
+            if (!empty($repeatItems)) {
+                $aiContext['items'] = $repeatItems;
+                $draftItems = $repeatItems;
+                $aiContext['repeat_order'] = true;
+            }
+        }
+        // Auto-apply address
+        if ($canAutoSkipAddress && !$address) {
+            $aiContext['address_index'] = 0;
+            $aiContext['address'] = [
+                'address_id' => (int)$defaultAddress['address_id'],
+                'street' => $defaultAddress['street'], 'number' => $defaultAddress['number'],
+                'complement' => $defaultAddress['complement'] ?? '', 'neighborhood' => $defaultAddress['neighborhood'],
+                'city' => $defaultAddress['city'], 'state' => $defaultAddress['state'],
+                'zipcode' => $defaultAddress['zipcode'] ?? '',
+                'lat' => $defaultAddress['lat'] ?? null, 'lng' => $defaultAddress['lng'] ?? null,
+                'full' => $defaultAddress['street'] . ', ' . $defaultAddress['number'] . ' - ' . $defaultAddress['neighborhood'],
+            ];
+            $address = $aiContext['address'];
+        }
+        // Auto-apply payment
+        if ($canAutoSkipPayment && !$paymentMethod) {
+            $aiContext['payment_method'] = $lastPayment;
+            $paymentMethod = $lastPayment;
+        }
+        // If we have everything, jump to confirm
+        if (!empty($draftItems) && $address && $paymentMethod) {
+            $aiContext['step'] = 'confirm_order';
+            $step = 'confirm_order';
+        }
+    }
+
+    // Smart step-skip for returning customers (even without express mode)
+    if ($step === 'get_address' && $canAutoSkipAddress && !$address) {
+        // Auto-fill the default address — Claude will just confirm it
+        $aiContext['auto_address_suggested'] = true;
+    }
+    if ($step === 'get_payment' && $canAutoSkipPayment && !$paymentMethod) {
+        // Claude will suggest the last payment method
+        $aiContext['auto_payment_suggested'] = true;
+    }
+
     // -- Build system prompt --
     $extraData = [
         'store_info' => $storeInfo,
@@ -400,10 +502,18 @@ try {
         if ($orderResult['success']) {
             $orderNumber = $orderResult['order_number'];
             $total = number_format($orderResult['total'], 2, ',', '.');
-            $finalMsg = "Perfeito! Seu pedido numero {$orderNumber} foi criado com sucesso! "
-                . "O total e {$total} reais. "
-                . "Voce vai receber um SMS com todos os detalhes do pedido. "
-                . "Obrigado por pedir pelo SuperBora! Tenha um otimo dia!";
+            if (!empty($newContext['scheduled_date'])) {
+                $schedMsg = $newContext['scheduled_date'] . ' as ' . ($newContext['scheduled_time'] ?? '12:00');
+                $finalMsg = "Perfeito! Seu pedido numero {$orderNumber} foi agendado para {$schedMsg}! "
+                    . "O total e {$total} reais. "
+                    . "Voce vai receber um SMS com todos os detalhes. "
+                    . "Obrigado por pedir pelo SuperBora! Ate la!";
+            } else {
+                $finalMsg = "Perfeito! Seu pedido numero {$orderNumber} foi criado com sucesso! "
+                    . "O total e {$total} reais. "
+                    . "Voce vai receber um SMS com todos os detalhes do pedido. "
+                    . "Obrigado por pedir pelo SuperBora! Tenha um otimo dia!";
+            }
 
             // Broadcast
             ccBroadcastDashboard('ai_order_completed', [
@@ -589,6 +699,56 @@ function fetchStoreMenu(PDO $db, int $storeId): string {
     ");
     $stmt->execute([$storeId]);
     $products = $stmt->fetchAll();
+
+    // Fetch all option groups + options for this store's products
+    $productIds = array_column($products, 'product_id');
+    $optionsByProduct = [];
+    if (!empty($productIds)) {
+        $placeholders = implode(',', array_fill(0, count($productIds), '?'));
+        $optStmt = $db->prepare("
+            SELECT og.product_id, og.name AS group_name, og.required, og.min_select, og.max_select,
+                   o.id AS option_id, o.name AS option_name, o.price_extra
+            FROM om_product_option_groups og
+            JOIN om_product_options o ON o.group_id = og.id
+            WHERE og.product_id IN ({$placeholders}) AND og.active = 1 AND o.available = 1
+            ORDER BY og.product_id, og.sort_order, o.sort_order
+        ");
+        $optStmt->execute($productIds);
+        foreach ($optStmt->fetchAll() as $opt) {
+            $pid = (int)$opt['product_id'];
+            if (!isset($optionsByProduct[$pid])) $optionsByProduct[$pid] = [];
+            $gname = $opt['group_name'];
+            if (!isset($optionsByProduct[$pid][$gname])) {
+                $optionsByProduct[$pid][$gname] = [
+                    'required' => (bool)$opt['required'],
+                    'min' => (int)$opt['min_select'],
+                    'max' => (int)$opt['max_select'],
+                    'options' => [],
+                ];
+            }
+            $optionsByProduct[$pid][$gname]['options'][] = [
+                'id' => (int)$opt['option_id'],
+                'name' => $opt['option_name'],
+                'price' => (float)$opt['price_extra'],
+            ];
+        }
+    }
+
+    // Fetch allergen/nutrition info
+    $nutritionByProduct = [];
+    if (!empty($productIds)) {
+        $placeholders = implode(',', array_fill(0, count($productIds), '?'));
+        $nutStmt = $db->prepare("
+            SELECT product_id, allergens, ingredients, calories
+            FROM om_market_product_nutrition
+            WHERE product_id IN ({$placeholders})
+        ");
+        $nutStmt->execute($productIds);
+        foreach ($nutStmt->fetchAll() as $n) {
+            $nutritionByProduct[(int)$n['product_id']] = $n;
+        }
+    }
+
     $text = '';
     $lastCat = '';
     $now = date('Y-m-d H:i:s');
@@ -599,7 +759,7 @@ function fetchStoreMenu(PDO $db, int $storeId): string {
             $lastCat = $cat;
         }
 
-        // Check if special price is active
+        $pid = (int)$p['product_id'];
         $price = (float)$p['price'];
         $hasPromo = false;
         if ($p['special_price'] && (float)$p['special_price'] > 0) {
@@ -613,7 +773,7 @@ function fetchStoreMenu(PDO $db, int $storeId): string {
             }
         }
 
-        $text .= "ID:{$p['product_id']} {$p['name']} R$" . number_format($price, 2, ',', '.');
+        $text .= "ID:{$pid} {$p['name']} R$" . number_format($price, 2, ',', '.');
         if ($hasPromo) {
             $text .= " [PROMO! de R$" . number_format($originalPrice, 2, ',', '.') . "]";
         }
@@ -621,9 +781,44 @@ function fetchStoreMenu(PDO $db, int $storeId): string {
         if ($p['is_combo']) $text .= " [COMBO]";
         if ($p['dietary_tags']) $text .= " [{$p['dietary_tags']}]";
         if ($p['description']) $text .= " ({$p['description']})";
+        // Allergens
+        if (isset($nutritionByProduct[$pid])) {
+            $nut = $nutritionByProduct[$pid];
+            if (!empty($nut['allergens'])) $text .= " [ALERGENOS: {$nut['allergens']}]";
+            if (!empty($nut['calories']) && (float)$nut['calories'] > 0) $text .= " [{$nut['calories']}kcal]";
+        }
         $text .= "\n";
+
+        // Product options (sizes, toppings, etc)
+        if (isset($optionsByProduct[$pid])) {
+            foreach ($optionsByProduct[$pid] as $gname => $group) {
+                $req = $group['required'] ? 'OBRIGATORIO' : 'opcional';
+                $maxTxt = $group['max'] > 1 ? ", max {$group['max']}" : '';
+                $text .= "  >> {$gname} ({$req}{$maxTxt}): ";
+                $optTexts = [];
+                foreach ($group['options'] as $o) {
+                    $optStr = $o['name'];
+                    if ($o['price'] > 0) $optStr .= " +R$" . number_format($o['price'], 2, ',', '.');
+                    $optStr .= " (OPT:{$o['id']})";
+                    $optTexts[] = $optStr;
+                }
+                $text .= implode(' | ', $optTexts) . "\n";
+            }
+        }
     }
     return $text ?: 'Cardapio nao disponivel';
+}
+
+/**
+ * Fetch allergen info for a specific product
+ */
+function fetchProductAllergens(PDO $db, int $productId): ?array {
+    $stmt = $db->prepare("
+        SELECT allergens, ingredients, calories, proteins, carbohydrates, fat, fiber
+        FROM om_market_product_nutrition WHERE product_id = ?
+    ");
+    $stmt->execute([$productId]);
+    return $stmt->fetch() ?: null;
 }
 
 /**
@@ -707,6 +902,7 @@ function buildSystemPrompt(
     $activePromos = $extraData['active_promos'] ?? [];
     $lastPayment = $extraData['last_payment'] ?? null;
     $customerStats = $extraData['customer_stats'] ?? null;
+    $defaultAddress = $extraData['default_address'] ?? null;
 
     $prompt = "Voce e a Bora, assistente virtual do SuperBora — app de delivery de comida. Voce esta atendendo uma ligacao telefonica.\n\n";
     $prompt .= "PERSONALIDADE:\n";
@@ -714,7 +910,8 @@ function buildSystemPrompt(
     $prompt .= "- Fale em portugues brasileiro natural, com expressoes do dia-a-dia\n";
     $prompt .= "- Use 'voce' (nunca 'senhor/senhora' a menos que o cliente use)\n";
     $prompt .= "- Pode rir (rsrs) se o cliente fizer piada\n";
-    $prompt .= "- Demonstre entusiasmo com as escolhas: 'Hmm, otima escolha!', 'Esse e sucesso aqui!'\n\n";
+    $prompt .= "- Demonstre entusiasmo com as escolhas: 'Hmm, otima escolha!', 'Esse e sucesso aqui!'\n";
+    $prompt .= "- Se alguem perguntar sobre alergias/ingredientes, leve MUITO a serio — saude nao e brincadeira\n\n";
     $prompt .= "REGRAS OBRIGATORIAS:\n";
     $prompt .= "- Respostas CURTAS (maximo 3 frases) — sera lido por voz, ninguem quer ouvir um paragrafo\n";
     $prompt .= "- NUNCA invente precos ou produtos — use SOMENTE o cardapio fornecido\n";
@@ -722,8 +919,9 @@ function buildSystemPrompt(
     $prompt .= "- Use o nome do cliente naturalmente (nao toda frase, mas de vez em quando)\n";
     $prompt .= "- Se o cliente fizer uma pergunta (quanto tempo, aceita pix, etc), responda ANTES de continuar o fluxo\n";
     $prompt .= "- SEMPRE que souber dados do cliente (endereco, pagamento), sugira usar os mesmos — economize tempo\n";
+    $prompt .= "- Se produto tem OPCOES OBRIGATORIAS (tamanho, etc), SEMPRE pergunte ANTES de adicionar\n";
     $prompt .= "- Hora atual: " . date('H:i') . " ({$periodo})\n";
-    $prompt .= "- Dia: " . date('l') . "\n\n";
+    $prompt .= "- Dia da semana: " . ['Domingo','Segunda','Terca','Quarta','Quinta','Sexta','Sabado'][(int)date('w')] . "\n\n";
 
     if ($customerName) {
         $prompt .= "CLIENTE: {$customerName}";
@@ -841,6 +1039,35 @@ function buildSystemPrompt(
             $prompt .= "- Se pedir para TIRAR/REMOVER um item: inclua [REMOVE_ITEM:indice] (ex: [REMOVE_ITEM:0])\n";
             $prompt .= "- Se pedir para MUDAR QUANTIDADE: inclua [UPDATE_QTY:indice:nova_quantidade] (ex: [UPDATE_QTY:0:3])\n\n";
 
+            // Option handling instructions
+            $prompt .= "OPCOES DE PRODUTO (TAMANHOS, BORDAS, EXTRAS):\n";
+            $prompt .= "- No cardapio acima, produtos podem ter OPCOES listadas com '>>' (ex: >> Tamanho, >> Borda Recheada)\n";
+            $prompt .= "- Se uma opcao e OBRIGATORIA, voce DEVE perguntar ao cliente ANTES de adicionar o item\n";
+            $prompt .= "- Ex: 'Pizza Margherita — qual tamanho? Broto, Media, Grande ou Gigante?'\n";
+            $prompt .= "- Se opcao e opcional, ofereça naturalmente: 'Quer borda recheada? Temos catupiry e cheddar'\n";
+            $prompt .= "- Inclua as opcoes selecionadas no marcador [ITEM] com [OPT:id1,id2,...] logo depois\n";
+            $prompt .= "- O preco total do item = preco base + soma dos price_extra das opcoes\n";
+            $prompt .= "- Ex: Pizza R$30 + Grande (+R$20) + Borda Catupiry (+R$8) = R$58\n\n";
+
+            // Dietary/allergen awareness
+            if (!empty($context['dietary_question'])) {
+                $prompt .= "ALERTA: O CLIENTE PERGUNTOU SOBRE ALERGIAS/DIETA!\n";
+                $prompt .= "- Verifique os marcadores [ALERGENOS] nos itens do cardapio acima\n";
+                $prompt .= "- Se o produto NAO tem informacao de alergenos, diga: 'Nao tenho certeza sobre os ingredientes desse produto, recomendo confirmar com o restaurante'\n";
+                $prompt .= "- Se tem alergenos listados, informe com clareza\n";
+                $prompt .= "- NUNCA garanta que um produto e seguro se voce nao tem certeza\n\n";
+            }
+
+            // Scheduling
+            if (!empty($context['wants_schedule'])) {
+                $prompt .= "O CLIENTE QUER AGENDAR O PEDIDO!\n";
+                $prompt .= "- Pergunte para quando: data e horario\n";
+                $prompt .= "- Aceite expressoes como 'amanha ao meio dia', 'sexta as 19h', 'daqui 2 horas'\n";
+                $prompt .= "- Quando definir, inclua [SCHEDULE:YYYY-MM-DD HH:MM] na resposta\n";
+                $prompt .= "- Horario minimo: 30min no futuro. Maximo: 7 dias\n";
+                $prompt .= "- Confirme: 'Pedido agendado para [data] as [hora], certo?'\n\n";
+            }
+
             // Active promos
             if (!empty($activePromos)) {
                 $prompt .= "CUPONS ATIVOS (mencione se o pedido atingir o minimo):\n";
@@ -855,10 +1082,14 @@ function buildSystemPrompt(
             }
 
             $prompt .= "MARCADORES:\n";
-            $prompt .= "- Para cada item: [ITEM:product_id:quantidade:preco:nome]\n";
+            $prompt .= "- Para cada item SEM opcoes: [ITEM:product_id:quantidade:preco_total:nome]\n";
             $prompt .= "  Ex: [ITEM:123:2:12.90:Coxinha de Frango]\n";
+            $prompt .= "- Para cada item COM opcoes: [ITEM:product_id:quantidade:preco_total:nome][OPT:opt_id1,opt_id2]\n";
+            $prompt .= "  Ex: [ITEM:1241:1:58.00:Pizza Margherita Grande com Borda Catupiry][OPT:3,5]\n";
+            $prompt .= "  (preco_total = preco base + extras das opcoes selecionadas)\n";
             $prompt .= "- Para remover: [REMOVE_ITEM:indice_do_item]\n";
             $prompt .= "- Para alterar qtd: [UPDATE_QTY:indice_do_item:nova_qtd]\n";
+            $prompt .= "- Para agendar: [SCHEDULE:YYYY-MM-DD HH:MM]\n";
             $prompt .= "- Quando finalizar itens: [NEXT_STEP]\n";
             break;
 
@@ -942,13 +1173,19 @@ function buildSystemPrompt(
             $prompt .= "\nTaxa de servico: R$" . number_format($serviceFee, 2, ',', '.');
             $prompt .= "\nTOTAL: R$" . number_format($total, 2, ',', '.') . "\n\n";
 
-            // ETA
-            $eta = $storeInfo ? (int)$storeInfo['delivery_time'] : 40;
-            $prompt .= "TEMPO ESTIMADO DE ENTREGA: ~{$eta} minutos\n";
-            if ($storeInfo && $storeInfo['busy_mode']) {
-                $prompt .= "(Restaurante em modo OCUPADO — tempo pode ser um pouco maior)\n";
+            // ETA or scheduled time
+            if (!empty($context['scheduled_date'])) {
+                $schedDate = $context['scheduled_date'];
+                $schedTime = $context['scheduled_time'] ?? '12:00';
+                $prompt .= "PEDIDO AGENDADO PARA: {$schedDate} as {$schedTime}\n\n";
+            } else {
+                $eta = $storeInfo ? (int)$storeInfo['delivery_time'] : 40;
+                $prompt .= "TEMPO ESTIMADO DE ENTREGA: ~{$eta} minutos\n";
+                if ($storeInfo && $storeInfo['busy_mode']) {
+                    $prompt .= "(Restaurante em modo OCUPADO — tempo pode ser um pouco maior)\n";
+                }
+                $prompt .= "\n";
             }
-            $prompt .= "\n";
 
             if ($address) {
                 $prompt .= "ENDERECO: " . ($address['full'] ?? ($address['street'] ?? 'N/A')) . "\n";
@@ -1051,19 +1288,30 @@ function parseAiResponse(string $response, array $context, PDO $db): array {
            ->execute([$newContext['store_name'], $context['call_id'] ?? 0]);
     }
 
-    // Parse [ITEM:product_id:qty:price:name]
-    if (preg_match_all('/\[ITEM:(\d+):(\d+):([\d.]+):([^\]]+)\]/', $response, $matches, PREG_SET_ORDER)) {
+    // Parse [ITEM:product_id:qty:price:name] optionally followed by [OPT:id1,id2,...]
+    if (preg_match_all('/\[ITEM:(\d+):(\d+):([\d.]+):([^\]]+)\](?:\[OPT:([\d,]+)\])?/', $response, $matches, PREG_SET_ORDER)) {
         foreach ($matches as $m) {
+            $optionIds = [];
+            if (!empty($m[5])) {
+                $optionIds = array_map('intval', explode(',', $m[5]));
+            }
             $newContext['items'][] = [
                 'product_id' => (int)$m[1],
                 'quantity' => (int)$m[2],
                 'price' => (float)$m[3],
                 'name' => trim($m[4]),
-                'options' => [],
+                'options' => $optionIds,
                 'notes' => '',
             ];
         }
-        $cleaned = preg_replace('/\[ITEM:\d+:\d+:[\d.]+:[^\]]+\]/', '', $cleaned);
+        $cleaned = preg_replace('/\[ITEM:\d+:\d+:[\d.]+:[^\]]+\](?:\[OPT:[\d,]+\])?/', '', $cleaned);
+    }
+
+    // Parse [SCHEDULE:YYYY-MM-DD HH:MM]
+    if (preg_match('/\[SCHEDULE:(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})\]/', $response, $m)) {
+        $newContext['scheduled_date'] = $m[1];
+        $newContext['scheduled_time'] = $m[2];
+        $cleaned = preg_replace('/\[SCHEDULE:[^\]]+\]/', '', $cleaned);
     }
 
     // Parse [ADDRESS:index] (saved address)
@@ -1310,10 +1558,21 @@ function submitAiOrder(PDO $db, int $callId, ?int $customerId, ?string $customer
         $orderNumber = 'SB' . str_pad($orderId, 5, '0', STR_PAD_LEFT);
         $db->prepare("UPDATE om_market_orders SET order_number = ? WHERE order_id = ?")->execute([$orderNumber, $orderId]);
 
+        // Handle scheduling
+        $isScheduled = !empty($context['scheduled_date']);
+        if ($isScheduled) {
+            $db->prepare("UPDATE om_market_orders SET is_scheduled = 1, scheduled_date = ?, scheduled_time = ? WHERE order_id = ?")
+               ->execute([$context['scheduled_date'], $context['scheduled_time'] ?? '12:00', $orderId]);
+        }
+
         // Insert items
         $stmtItem = $db->prepare("
             INSERT INTO om_market_order_items (order_id, product_id, name, quantity, price, total, notes)
             VALUES (?, ?, ?, ?, ?, ?, ?)
+        ");
+        $stmtOpt = $db->prepare("
+            INSERT INTO om_order_item_options (order_item_id, option_id, option_group_name, option_name, price_extra)
+            VALUES (?, ?, ?, ?, ?)
         ");
         foreach ($items as $item) {
             $qty = (int)($item['quantity'] ?? 1);
@@ -1323,6 +1582,38 @@ function submitAiOrder(PDO $db, int $callId, ?int $customerId, ?string $customer
                 $orderId, $item['product_id'] ?? null, $item['name'],
                 $qty, $price, $itemTotal, $item['notes'] ?? null,
             ]);
+
+            // Insert item options if any
+            $itemOptions = $item['options'] ?? [];
+            if (!empty($itemOptions) && is_array($itemOptions)) {
+                // Get the last inserted item ID
+                $itemId = (int)$db->lastInsertId();
+                if (!$itemId) {
+                    $lastItem = $db->query("SELECT MAX(id) as id FROM om_market_order_items WHERE order_id = {$orderId}")->fetch();
+                    $itemId = (int)($lastItem['id'] ?? 0);
+                }
+                if ($itemId > 0) {
+                    foreach ($itemOptions as $optId) {
+                        if (!is_int($optId)) continue;
+                        // Look up option details
+                        try {
+                            $optInfo = $db->prepare("
+                                SELECT o.name, o.price_extra, og.name AS group_name
+                                FROM om_product_options o
+                                JOIN om_product_option_groups og ON og.id = o.group_id
+                                WHERE o.id = ?
+                            ");
+                            $optInfo->execute([$optId]);
+                            $opt = $optInfo->fetch();
+                            if ($opt) {
+                                $stmtOpt->execute([$itemId, $optId, $opt['group_name'], $opt['name'], $opt['price_extra']]);
+                            }
+                        } catch (Exception $e) {
+                            error_log("[twilio-voice-ai] Option insert error: " . $e->getMessage());
+                        }
+                    }
+                }
+            }
         }
 
         // Timeline

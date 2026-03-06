@@ -390,6 +390,24 @@ function handleBotConversation(PDO $db, int $conversationId, string $userMessage
             }
         }
 
+        // Detect dietary/allergen questions
+        $dietaryPhrases = ['alergia', 'alergico', 'alergica', 'gluten', 'sem gluten', 'lactose', 'sem lactose', 'vegetariano', 'vegetariana', 'vegano', 'vegana', 'ingredientes', 'contem', 'intolerancia'];
+        foreach ($dietaryPhrases as $dp) {
+            if (mb_strpos($lowerMsg, $dp) !== false) {
+                $context['dietary_question'] = true;
+                break;
+            }
+        }
+
+        // Detect scheduling intent
+        $schedulePhrases = ['agendar', 'agendado', 'amanha', 'depois de amanha', 'para amanha', 'pra amanha', 'mais tarde', 'hora marcada'];
+        foreach ($schedulePhrases as $sp) {
+            if (mb_strpos($lowerMsg, $sp) !== false) {
+                $context['wants_schedule'] = true;
+                break;
+            }
+        }
+
         $menuText = '';
         $storeInfo = null;
         if ($storeId) {
@@ -665,7 +683,8 @@ function buildWASystemPrompt(
     $prompt .= "- Voce e simpatica, calorosa e eficiente — como uma amiga que trabalha num restaurante\n";
     $prompt .= "- Fale em portugues brasileiro natural, com expressoes do dia-a-dia\n";
     $prompt .= "- Use emojis com moderacao (1-2 por mensagem)\n";
-    $prompt .= "- Demonstre entusiasmo: 'Hmm, otima escolha!', 'Esse e sucesso aqui!'\n\n";
+    $prompt .= "- Demonstre entusiasmo: 'Hmm, otima escolha!', 'Esse e sucesso aqui!'\n";
+    $prompt .= "- Se alguem perguntar sobre alergias/ingredientes, leve MUITO a serio\n\n";
     $prompt .= "REGRAS:\n";
     $prompt .= "- Respostas claras e organizadas, use *negrito* para destaques (sintaxe WhatsApp)\n";
     $prompt .= "- NUNCA invente precos ou produtos — use SOMENTE o cardapio fornecido\n";
@@ -673,7 +692,9 @@ function buildWASystemPrompt(
     $prompt .= "- Maximo 500 caracteres por resposta\n";
     $prompt .= "- Se o cliente fizer uma pergunta, responda ANTES de continuar o fluxo\n";
     $prompt .= "- SEMPRE que souber dados do cliente (endereco, pagamento), sugira usar os mesmos\n";
-    $prompt .= "- Hora atual: " . date('H:i') . " ({$periodo})\n\n";
+    $prompt .= "- Se produto tem OPCOES OBRIGATORIAS (tamanho, etc), SEMPRE pergunte ANTES de adicionar\n";
+    $prompt .= "- Hora atual: " . date('H:i') . " ({$periodo})\n";
+    $prompt .= "- Dia: " . ['Domingo','Segunda','Terca','Quarta','Quinta','Sexta','Sabado'][(int)date('w')] . "\n\n";
 
     if ($customerName) {
         $prompt .= "CLIENTE: {$customerName}";
@@ -785,6 +806,27 @@ function buildWASystemPrompt(
             $prompt .= "- Se pedir para TIRAR/REMOVER item: [REMOVE_ITEM:indice]\n";
             $prompt .= "- Se pedir para MUDAR QUANTIDADE: [UPDATE_QTY:indice:nova_qtd]\n\n";
 
+            // Option handling
+            $prompt .= "OPCOES DE PRODUTO:\n";
+            $prompt .= "- No cardapio, produtos podem ter opcoes com '>>' (Tamanho, Borda, Extras)\n";
+            $prompt .= "- Se OBRIGATORIA, pergunte ANTES de adicionar: 'Qual tamanho? Broto, Media, Grande?'\n";
+            $prompt .= "- Se opcional, ofereça: 'Quer borda recheada? Temos catupiry e cheddar'\n";
+            $prompt .= "- Inclua [OPT:id1,id2] logo apos o [ITEM] com opcoes selecionadas\n";
+            $prompt .= "- Preco total = preco base + soma dos extras\n\n";
+
+            // Dietary awareness
+            if (!empty($context['dietary_question'])) {
+                $prompt .= "ALERTA ALERGIA: O cliente perguntou sobre dieta/alergenos!\n";
+                $prompt .= "- Verifique marcadores [ALERGENOS] no cardapio\n";
+                $prompt .= "- Se nao tem info, diga: 'Recomendo confirmar com o restaurante'\n\n";
+            }
+            // Scheduling
+            if (!empty($context['wants_schedule'])) {
+                $prompt .= "AGENDAMENTO: O cliente quer agendar!\n";
+                $prompt .= "- Pergunte data e horario\n";
+                $prompt .= "- Quando definir: [SCHEDULE:YYYY-MM-DD HH:MM]\n\n";
+            }
+
             // Active promos
             if (!empty($activePromos)) {
                 $prompt .= "CUPONS ATIVOS:\n";
@@ -799,11 +841,13 @@ function buildWASystemPrompt(
             }
 
             $prompt .= "MARCADORES:\n";
-            $prompt .= "- Para cada item: [ITEM:product_id:quantidade:preco:nome]\n";
-            $prompt .= "  Ex: [ITEM:123:2:12.90:Coxinha de Frango]\n";
-            $prompt .= "- Para remover: [REMOVE_ITEM:indice_do_item]\n";
-            $prompt .= "- Para alterar qtd: [UPDATE_QTY:indice_do_item:nova_qtd]\n";
-            $prompt .= "- Quando finalizar itens: [NEXT_STEP]\n";
+            $prompt .= "- Sem opcoes: [ITEM:product_id:quantidade:preco_total:nome]\n";
+            $prompt .= "- Com opcoes: [ITEM:product_id:quantidade:preco_total:nome][OPT:opt_id1,opt_id2]\n";
+            $prompt .= "  Ex: [ITEM:1241:1:58.00:Pizza Margherita Grande Borda Catupiry][OPT:3,5]\n";
+            $prompt .= "- Remover: [REMOVE_ITEM:indice]\n";
+            $prompt .= "- Alterar qtd: [UPDATE_QTY:indice:nova_qtd]\n";
+            $prompt .= "- Agendar: [SCHEDULE:YYYY-MM-DD HH:MM]\n";
+            $prompt .= "- Finalizar itens: [NEXT_STEP]\n";
             break;
 
         case 'get_address':
@@ -985,20 +1029,31 @@ function parseWAResponse(string $response, array $context, PDO $db): array {
         $cleaned = preg_replace('/\[STORE:(?:ID:)?\d+:[^\]]+\]/', '', $cleaned);
     }
 
-    // Parse [ITEM:product_id:qty:price:name]
-    if (preg_match_all('/\[ITEM:(\d+):(\d+):([\d.]+):([^\]]+)\]/', $response, $matches, PREG_SET_ORDER)) {
+    // Parse [ITEM:product_id:qty:price:name] optionally followed by [OPT:id1,id2,...]
+    if (preg_match_all('/\[ITEM:(\d+):(\d+):([\d.]+):([^\]]+)\](?:\[OPT:([\d,]+)\])?/', $response, $matches, PREG_SET_ORDER)) {
         if (!isset($newContext['items'])) $newContext['items'] = [];
         foreach ($matches as $m) {
+            $optionIds = [];
+            if (!empty($m[5])) {
+                $optionIds = array_map('intval', explode(',', $m[5]));
+            }
             $newContext['items'][] = [
                 'product_id' => (int)$m[1],
                 'quantity' => (int)$m[2],
                 'price' => (float)$m[3],
                 'name' => trim($m[4]),
-                'options' => [],
+                'options' => $optionIds,
                 'notes' => '',
             ];
         }
-        $cleaned = preg_replace('/\[ITEM:\d+:\d+:[\d.]+:[^\]]+\]/', '', $cleaned);
+        $cleaned = preg_replace('/\[ITEM:\d+:\d+:[\d.]+:[^\]]+\](?:\[OPT:[\d,]+\])?/', '', $cleaned);
+    }
+
+    // Parse [SCHEDULE:YYYY-MM-DD HH:MM]
+    if (preg_match('/\[SCHEDULE:(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})\]/', $response, $m)) {
+        $newContext['scheduled_date'] = $m[1];
+        $newContext['scheduled_time'] = $m[2];
+        $cleaned = preg_replace('/\[SCHEDULE:[^\]]+\]/', '', $cleaned);
     }
 
     // Parse [ADDRESS:index]
@@ -1249,6 +1304,52 @@ function fetchStoreMenuWA(PDO $db, int $storeId): string {
     ");
     $stmt->execute([$storeId]);
     $products = $stmt->fetchAll();
+
+    // Fetch option groups + options
+    $productIds = array_column($products, 'product_id');
+    $optionsByProduct = [];
+    if (!empty($productIds)) {
+        $placeholders = implode(',', array_fill(0, count($productIds), '?'));
+        $optStmt = $db->prepare("
+            SELECT og.product_id, og.name AS group_name, og.required, og.min_select, og.max_select,
+                   o.id AS option_id, o.name AS option_name, o.price_extra
+            FROM om_product_option_groups og
+            JOIN om_product_options o ON o.group_id = og.id
+            WHERE og.product_id IN ({$placeholders}) AND og.active = 1 AND o.available = 1
+            ORDER BY og.product_id, og.sort_order, o.sort_order
+        ");
+        $optStmt->execute($productIds);
+        foreach ($optStmt->fetchAll() as $opt) {
+            $pid = (int)$opt['product_id'];
+            if (!isset($optionsByProduct[$pid])) $optionsByProduct[$pid] = [];
+            $gname = $opt['group_name'];
+            if (!isset($optionsByProduct[$pid][$gname])) {
+                $optionsByProduct[$pid][$gname] = [
+                    'required' => (bool)$opt['required'],
+                    'min' => (int)$opt['min_select'],
+                    'max' => (int)$opt['max_select'],
+                    'options' => [],
+                ];
+            }
+            $optionsByProduct[$pid][$gname]['options'][] = [
+                'id' => (int)$opt['option_id'],
+                'name' => $opt['option_name'],
+                'price' => (float)$opt['price_extra'],
+            ];
+        }
+    }
+
+    // Fetch allergens
+    $nutritionByProduct = [];
+    if (!empty($productIds)) {
+        $placeholders = implode(',', array_fill(0, count($productIds), '?'));
+        $nutStmt = $db->prepare("SELECT product_id, allergens, calories FROM om_market_product_nutrition WHERE product_id IN ({$placeholders})");
+        $nutStmt->execute($productIds);
+        foreach ($nutStmt->fetchAll() as $n) {
+            $nutritionByProduct[(int)$n['product_id']] = $n;
+        }
+    }
+
     $text = '';
     $lastCat = '';
     $now = date('Y-m-d H:i:s');
@@ -1259,6 +1360,7 @@ function fetchStoreMenuWA(PDO $db, int $storeId): string {
             $lastCat = $cat;
         }
 
+        $pid = (int)$p['product_id'];
         $price = (float)$p['price'];
         $hasPromo = false;
         if ($p['special_price'] && (float)$p['special_price'] > 0) {
@@ -1272,7 +1374,7 @@ function fetchStoreMenuWA(PDO $db, int $storeId): string {
             }
         }
 
-        $text .= "ID:{$p['product_id']} {$p['name']} R$" . number_format($price, 2, ',', '.');
+        $text .= "ID:{$pid} {$p['name']} R$" . number_format($price, 2, ',', '.');
         if ($hasPromo) {
             $text .= " [PROMO! de R$" . number_format($originalPrice, 2, ',', '.') . "]";
         }
@@ -1280,7 +1382,27 @@ function fetchStoreMenuWA(PDO $db, int $storeId): string {
         if ($p['is_combo']) $text .= " [COMBO]";
         if ($p['dietary_tags']) $text .= " [{$p['dietary_tags']}]";
         if ($p['description']) $text .= " ({$p['description']})";
+        if (isset($nutritionByProduct[$pid]) && !empty($nutritionByProduct[$pid]['allergens'])) {
+            $text .= " [ALERGENOS: {$nutritionByProduct[$pid]['allergens']}]";
+        }
         $text .= "\n";
+
+        // Product options
+        if (isset($optionsByProduct[$pid])) {
+            foreach ($optionsByProduct[$pid] as $gname => $group) {
+                $req = $group['required'] ? 'OBRIGATORIO' : 'opcional';
+                $maxTxt = $group['max'] > 1 ? ", max {$group['max']}" : '';
+                $text .= "  >> {$gname} ({$req}{$maxTxt}): ";
+                $optTexts = [];
+                foreach ($group['options'] as $o) {
+                    $optStr = $o['name'];
+                    if ($o['price'] > 0) $optStr .= " +R$" . number_format($o['price'], 2, ',', '.');
+                    $optStr .= " (OPT:{$o['id']})";
+                    $optTexts[] = $optStr;
+                }
+                $text .= implode(' | ', $optTexts) . "\n";
+            }
+        }
     }
     return $text ?: 'Cardapio nao disponivel';
 }
@@ -1438,10 +1560,20 @@ function submitWAOrder(PDO $db, int $conversationId, ?int $customerId, ?string $
         $orderNumber = 'SB' . str_pad($orderId, 5, '0', STR_PAD_LEFT);
         $db->prepare("UPDATE om_market_orders SET order_number = ? WHERE order_id = ?")->execute([$orderNumber, $orderId]);
 
+        // Handle scheduling
+        if (!empty($context['scheduled_date'])) {
+            $db->prepare("UPDATE om_market_orders SET is_scheduled = 1, scheduled_date = ?, scheduled_time = ? WHERE order_id = ?")
+               ->execute([$context['scheduled_date'], $context['scheduled_time'] ?? '12:00', $orderId]);
+        }
+
         // Insert items
         $stmtItem = $db->prepare("
             INSERT INTO om_market_order_items (order_id, product_id, name, quantity, price, total, notes)
             VALUES (?, ?, ?, ?, ?, ?, ?)
+        ");
+        $stmtOpt = $db->prepare("
+            INSERT INTO om_order_item_options (order_item_id, option_id, option_group_name, option_name, price_extra)
+            VALUES (?, ?, ?, ?, ?)
         ");
         foreach ($items as $item) {
             $qty = (int)($item['quantity'] ?? 1);
@@ -1451,6 +1583,31 @@ function submitWAOrder(PDO $db, int $conversationId, ?int $customerId, ?string $
                 $orderId, $item['product_id'] ?? null, $item['name'],
                 $qty, $price, $itemTotal, $item['notes'] ?? null,
             ]);
+
+            // Insert item options if any
+            $itemOptions = $item['options'] ?? [];
+            if (!empty($itemOptions) && is_array($itemOptions)) {
+                $lastItem = $db->query("SELECT MAX(id) as id FROM om_market_order_items WHERE order_id = {$orderId}")->fetch();
+                $itemId = (int)($lastItem['id'] ?? 0);
+                if ($itemId > 0) {
+                    foreach ($itemOptions as $optId) {
+                        if (!is_int($optId)) continue;
+                        try {
+                            $optInfo = $db->prepare("
+                                SELECT o.name, o.price_extra, og.name AS group_name
+                                FROM om_product_options o
+                                JOIN om_product_option_groups og ON og.id = o.group_id
+                                WHERE o.id = ?
+                            ");
+                            $optInfo->execute([$optId]);
+                            $opt = $optInfo->fetch();
+                            if ($opt) {
+                                $stmtOpt->execute([$itemId, $optId, $opt['group_name'], $opt['name'], $opt['price_extra']]);
+                            }
+                        } catch (Exception $e) {}
+                    }
+                }
+            }
         }
 
         // Timeline
