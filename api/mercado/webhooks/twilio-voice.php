@@ -153,32 +153,25 @@ if ($cust && $cust['name']) {
     } catch (Exception $e) {}
 
     if ($activeOrder) {
-        // Customer has an active order — skip menu, go straight to status
         $statusLabels = ['pending' => 'esperando confirmação', 'accepted' => 'foi aceito', 'preparing' => 'tá sendo preparado', 'em_preparo' => 'tá sendo preparado', 'ready' => 'tá pronto', 'delivering' => 'tá a caminho', 'saiu_entrega' => 'tá a caminho'];
         $statusText = $statusLabels[$activeOrder['status']] ?? 'em andamento';
-        $greetText = "Oi, {$firstName}! Seu pedido da {$activeOrder['partner_name']} {$statusText}. Quer saber mais ou fazer outro pedido?";
-    } elseif ($recentOrder && $daysSinceOrder < 3) {
-        $greetText = "{$periodo}, {$firstName}! Bem-vinda de volta ao SuperBora. Quer repetir da {$recentOrder['partner_name']} ou pedir algo diferente?";
-    } elseif ($orderCount >= 5) {
-        $greetText = "{$periodo}, {$firstName}! Bem-vinda de volta ao SuperBora. O que vai ser hoje?";
-    } elseif ($recentOrder) {
-        $greetText = "{$periodo}, {$firstName}! Aqui é a Bora, do SuperBora. Me fala, o que você tá precisando?";
+        $greetText = "{$periodo}, {$firstName}! Que bom que você ligou. "
+            . "Vi aqui que seu pedido da {$activeOrder['partner_name']} {$statusText}. "
+            . "Tô aqui pra te ajudar com o que precisar — se quiser saber mais sobre esse pedido, cancelar, fazer um pedido novo, ou qualquer outra coisa, é só me falar!";
     } else {
-        // Known customer but no orders
-        $greetText = "{$periodo}, {$firstName}! Aqui é a Bora, do SuperBora. ";
-        if (!$hasAddress) {
-            $greetText .= "Me fala seu CEP ou o que você quer pedir!";
-        } else {
-            $greetText .= "Me fala, o que você tá precisando?";
-        }
+        $greetText = "{$periodo}" . ($firstName ? ", {$firstName}" : "") . "! Aqui é a Bora, do SuperBora. Que bom que você ligou! "
+            . "Tô aqui pra te ajudar no que precisar — seja fazer um pedido, acompanhar uma entrega, cancelar, tirar dúvida, ou qualquer contratempo. "
+            . "Me conta, como posso te ajudar?";
     }
 } else {
-    // New/unknown customer — concise welcome
-    $greetText = "{$periodo}! Aqui é a Bora, do SuperBora. Me fala o que você quer pedir, ou seu CEP pra eu ver os restaurantes perto de você.";
+    // New/unknown customer
+    $greetText = "{$periodo}! Aqui é a Bora, do SuperBora. Que bom que você ligou! "
+        . "Tô aqui pra te ajudar no que precisar — fazer um pedido, acompanhar entrega, cancelar, tirar dúvida, o que for. "
+        . "Me conta, como posso te ajudar?";
 }
 
 // Append the agent option as a short suffix
-$agentHint = " Ou aperta zero pra falar com uma pessoa.";
+$agentHint = " E se preferir falar com uma pessoa, é só apertar zero.";
 
 // Create call record early — wrapped in try/catch to not break greeting on DB issues
 try {
