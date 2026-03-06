@@ -12,6 +12,81 @@ try {
 
     $payload = om_auth()->requireAdmin();
 
+    // Single worker detail
+    $id = (int)($_GET['id'] ?? 0);
+    $section = trim($_GET['section'] ?? '');
+
+    if ($id > 0) {
+        // Section: earnings
+        if ($section === 'earnings') {
+            $stmt = $db->prepare("
+                SELECT id, amount, type, description, status, created_at
+                FROM om_worker_earnings
+                WHERE worker_id = ?
+                ORDER BY created_at DESC LIMIT 50
+            ");
+            try {
+                $stmt->execute([$id]);
+                $earnings = $stmt->fetchAll();
+            } catch (\Exception $e) {
+                // Fallback: calculate from orders
+                $stmt = $db->prepare("
+                    SELECT order_id as id, delivery_fee as amount, 'delivery' as type, status as description, status, created_at
+                    FROM om_market_orders
+                    WHERE shopper_id = ? AND status IN ('entregue', 'delivered')
+                    ORDER BY created_at DESC LIMIT 50
+                ");
+                $stmt->execute([$id]);
+                $earnings = $stmt->fetchAll();
+            }
+            response(true, ['earnings' => $earnings], "Ganhos do worker");
+        }
+
+        // Section: reviews
+        if ($section === 'reviews') {
+            $reviews = [];
+            try {
+                $stmt = $db->prepare("
+                    SELECT r.id, r.rating, r.comment, r.created_at,
+                           c.name as customer_name, r.order_id
+                    FROM om_worker_reviews r
+                    LEFT JOIN om_customers c ON r.customer_id = c.customer_id
+                    WHERE r.worker_id = ?
+                    ORDER BY r.created_at DESC LIMIT 50
+                ");
+                $stmt->execute([$id]);
+                $reviews = $stmt->fetchAll();
+            } catch (\Exception $e) {
+                // Table may not exist
+            }
+            response(true, ['reviews' => $reviews], "Avaliacoes do worker");
+        }
+
+        // Default: full worker detail
+        $stmt = $db->prepare("
+            SELECT w.*
+            FROM om_workers w
+            WHERE w.worker_id = ?
+        ");
+        $stmt->execute([$id]);
+        $worker = $stmt->fetch();
+        if (!$worker) response(false, null, "Worker nao encontrado", 404);
+
+        // Remove password hash from response
+        unset($worker['password'], $worker['password_hash']);
+
+        // Stats
+        $deliveryCount = 0;
+        try {
+            $stmt = $db->prepare("SELECT COUNT(*) as total FROM om_market_orders WHERE shopper_id = ? AND status IN ('entregue', 'delivered')");
+            $stmt->execute([$id]);
+            $deliveryCount = (int)$stmt->fetch()['total'];
+        } catch (\Exception $e) {}
+
+        $worker['completed_deliveries'] = $deliveryCount;
+        response(true, $worker, "Detalhe do worker");
+    }
+
     $search = $_GET['search'] ?? null;
     $status = $_GET['status'] ?? null;
     $page = max(1, (int)($_GET['page'] ?? 1));

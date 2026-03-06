@@ -8,6 +8,7 @@ require_once __DIR__ . "/../config/database.php";
 require_once __DIR__ . "/../helpers/notify.php";
 require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
 require_once __DIR__ . '/../helpers/zapi-whatsapp.php';
+require_once __DIR__ . '/../helpers/eta-calculator.php';
 setCorsHeaders();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -88,12 +89,32 @@ try {
         );
     }
 
-    // WhatsApp notification (never breaks the flow)
+    // WhatsApp notification with prep time ETA (never breaks the flow)
     try {
         $customerPhone = $pedido['customer_phone'] ?? '';
         if ($customerPhone) {
-            $waResult = whatsappOrderPreparing($customerPhone, $pedido['order_number']);
-            error_log("[preparando] WhatsApp pedido #{$pedido['order_number']} phone=****" . substr($customerPhone, -4) . " success=" . ($waResult['success'] ? 'yes' : 'no'));
+            // Calculate remaining prep time
+            $prepMinutes = 0;
+            try {
+                $prepMinutes = (int)round(getAvgPrepTime($db, $mercado_id));
+            } catch (\Throwable $etaErr) {
+                error_log("[preparando] ETA calc error: " . $etaErr->getMessage());
+                $prepMinutes = 15; // fallback
+            }
+
+            // Get partner name
+            $partnerName = $pedido['partner_name'] ?? '';
+            if (!$partnerName) {
+                try {
+                    $pStmt = $db->prepare("SELECT COALESCE(trade_name, name) as pname FROM om_market_partners WHERE partner_id = ?");
+                    $pStmt->execute([$mercado_id]);
+                    $pRow = $pStmt->fetch();
+                    $partnerName = $pRow['pname'] ?? '';
+                } catch (\Throwable $e) {}
+            }
+
+            $waResult = whatsappOrderPreparing($customerPhone, $pedido['order_number'], $partnerName, $prepMinutes);
+            error_log("[preparando] WhatsApp pedido #{$pedido['order_number']} phone=****" . substr($customerPhone, -4) . " prep={$prepMinutes}min success=" . ($waResult['success'] ? 'yes' : 'no'));
         }
     } catch (\Throwable $waErr) {
         error_log("[preparando] WhatsApp error: " . $waErr->getMessage());

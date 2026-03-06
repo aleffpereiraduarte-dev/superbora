@@ -209,7 +209,10 @@ function sendViaSMTP(string $to, string $subject, string $headers, string $body)
         }
     }
 
-    // AUTH LOGIN
+    // AUTH LOGIN (skip for port 25 local relay)
+    if (SMTP_PORT == 25) {
+        // Port 25 local relay - no auth needed
+    } else {
     fputs($socket, "AUTH LOGIN\r\n");
     $response = fgets($socket, 512);
     if (substr($response, 0, 3) != '334') {
@@ -230,6 +233,7 @@ function sendViaSMTP(string $to, string $subject, string $headers, string $body)
         fclose($socket);
         return ['success' => false, 'message' => 'Senha inválida'];
     }
+    } // end if SMTP_PORT != 25
 
     // MAIL FROM
     fputs($socket, "MAIL FROM:<" . SMTP_FROM . ">\r\n");

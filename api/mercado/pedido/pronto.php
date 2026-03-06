@@ -9,6 +9,7 @@ require_once __DIR__ . "/../helpers/notify.php";
 require_once __DIR__ . "/../helpers/delivery.php";
 require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
 require_once __DIR__ . '/../helpers/zapi-whatsapp.php';
+require_once __DIR__ . '/../helpers/eta-calculator.php';
 setCorsHeaders();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -136,12 +137,30 @@ try {
         }
     }
 
-    // WhatsApp notification (never breaks the flow)
+    // WhatsApp notification with delivery ETA (never breaks the flow)
     try {
         $customerPhone = $pedido['customer_phone'] ?? '';
         if ($customerPhone) {
-            $waResult = whatsappOrderReady($customerPhone, $pedido['order_number']);
-            error_log("[pronto] WhatsApp pedido #{$pedido['order_number']} phone=****" . substr($customerPhone, -4) . " success=" . ($waResult['success'] ? 'yes' : 'no'));
+            // Calculate delivery-only ETA (order is ready, only delivery time remains)
+            $deliveryMinutes = 0;
+            try {
+                $distKm = isset($pedido['distancia_km']) ? (float)$pedido['distancia_km'] : 5.0;
+                $deliveryMinutes = calculateSmartETA($db, $mercado_id, $distKm, 'pronto');
+            } catch (\Throwable $etaErr) {
+                error_log("[pronto] ETA calc error: " . $etaErr->getMessage());
+                // Fallback: use distance * 4 min/km, min 10
+                $distKm = isset($pedido['distancia_km']) ? (float)$pedido['distancia_km'] : 5.0;
+                $deliveryMinutes = max(10, (int)round($distKm * 4));
+            }
+
+            // Get partner name
+            $partnerName = $pedido['partner_name'] ?? '';
+            if (!$partnerName) {
+                $partnerName = $parceiro['trade_name'] ?? $parceiro['name'] ?? '';
+            }
+
+            $waResult = whatsappOrderReady($customerPhone, $pedido['order_number'], $partnerName, $deliveryMinutes, $isPickup);
+            error_log("[pronto] WhatsApp pedido #{$pedido['order_number']} phone=****" . substr($customerPhone, -4) . " delivery={$deliveryMinutes}min pickup=" . ($isPickup ? 'yes' : 'no') . " success=" . ($waResult['success'] ? 'yes' : 'no'));
         }
     } catch (\Throwable $waErr) {
         error_log("[pronto] WhatsApp error: " . $waErr->getMessage());

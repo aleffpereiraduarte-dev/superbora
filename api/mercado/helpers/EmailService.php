@@ -38,7 +38,7 @@ class EmailService {
         $this->smtpPort = (int)($_ENV['SUPERBORA_MAIL_PORT'] ?? $_ENV['SMTP_PORT'] ?? 465);
         $this->smtpUser = $_ENV['SUPERBORA_MAIL_USERNAME'] ?? $_ENV['SMTP_USER'] ?? '';
         $this->smtpPass = $_ENV['SUPERBORA_MAIL_PASSWORD'] ?? $_ENV['SMTP_PASS'] ?? '';
-        $this->enabled = !empty($this->smtpHost) && !empty($this->smtpUser);
+        $this->enabled = !empty($this->smtpHost);
     }
 
     public function isEnabled(): bool {
@@ -171,12 +171,24 @@ class EmailService {
 
             $mail->isSMTP();
             $mail->Host = $this->smtpHost;
-            $mail->SMTPAuth = true;
-            $mail->Username = $this->smtpUser;
-            $mail->Password = $this->smtpPass;
-            $mail->SMTPSecure = $this->smtpPort === 465 ? PHPMailer::ENCRYPTION_SMTPS : PHPMailer::ENCRYPTION_STARTTLS;
             $mail->Port = $this->smtpPort;
             $mail->CharSet = 'UTF-8';
+
+            // Port 25 = local relay (no auth/encryption needed)
+            if ($this->smtpPort === 25) {
+                $mail->SMTPAuth = false;
+                $mail->SMTPSecure = false;
+                $mail->SMTPAutoTLS = false;
+            } else {
+                $mail->SMTPAuth = true;
+                $mail->Username = $this->smtpUser;
+                $mail->Password = $this->smtpPass;
+                $mail->SMTPSecure = $this->smtpPort === 465 ? PHPMailer::ENCRYPTION_SMTPS : PHPMailer::ENCRYPTION_STARTTLS;
+                // Self-hosted mail server - skip peer verification when connecting via IP
+                $mail->SMTPOptions = [
+                    'ssl' => ['verify_peer' => false, 'verify_peer_name' => false, 'allow_self_signed' => true]
+                ];
+            }
 
             $mail->setFrom($this->fromEmail, $this->fromName);
             $mail->addAddress($to);

@@ -13,6 +13,10 @@
  * POST action=ban         { partner_id, reason }                 - Banir parceiro permanentemente
  * POST action=reactivate  { partner_id, note }                   - Reativar parceiro
  * POST action=add_note    { partner_id, note }                   - Adicionar nota administrativa
+ * POST action=pause       { partner_id, reason, duration_hours? } - Pausar loja temporariamente
+ * POST action=unpause     { partner_id }                         - Despausar loja
+ * POST action=edit_hours  { partner_id, hours: { mon: {open,close}, ... } } - Atualizar horarios
+ * POST action=edit_details { partner_id, name?, address?, phone?, description?, logo_url?, min_order?, delivery_radius? } - Editar detalhes
  */
 require_once __DIR__ . "/../config/database.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
@@ -662,6 +666,282 @@ try {
                 'admin_id' => $admin_id,
                 'note' => $note
             ], "Nota adicionada com sucesso");
+        }
+
+        // --- Pausar loja temporariamente ---
+        if ($action === 'pause') {
+            $partner_id = (int)($input['partner_id'] ?? 0);
+            $reason = trim($input['reason'] ?? '');
+            $duration_hours = isset($input['duration_hours']) ? (int)$input['duration_hours'] : null;
+
+            if (!$partner_id) response(false, null, "partner_id obrigatorio", 400);
+            if (!$reason) response(false, null, "reason obrigatorio", 400);
+
+            // Buscar parceiro atual
+            $stmt = $db->prepare("SELECT partner_id, name, is_open, pause_until FROM om_market_partners WHERE partner_id = ?");
+            $stmt->execute([$partner_id]);
+            $partner = $stmt->fetch();
+            if (!$partner) response(false, null, "Parceiro nao encontrado", 404);
+
+            // Verificar se ja esta pausado
+            if ($partner['pause_until'] && strtotime($partner['pause_until']) > time()) {
+                response(false, null, "Parceiro ja esta pausado ate " . $partner['pause_until'], 400);
+            }
+
+            $pause_until = null;
+            if ($duration_hours && $duration_hours > 0) {
+                $pause_until = date('Y-m-d H:i:s', strtotime("+{$duration_hours} hours"));
+            }
+
+            $db->beginTransaction();
+
+            $stmt = $db->prepare("
+                UPDATE om_market_partners
+                SET is_open = 0,
+                    pause_until = ?,
+                    pause_reason = ?,
+                    updated_at = NOW()
+                WHERE partner_id = ?
+            ");
+            $stmt->execute([$pause_until, $reason, $partner_id]);
+
+            // Notificar parceiro
+            $pause_msg = $duration_hours
+                ? "Sua loja foi pausada por {$duration_hours} hora(s). Motivo: {$reason}"
+                : "Sua loja foi pausada pela administracao. Motivo: {$reason}";
+
+            $db->prepare("
+                INSERT INTO om_notifications (user_id, user_type, title, body, type, reference_type, reference_id, created_at)
+                VALUES (?, 'partner', ?, ?, 'account_action', 'partner', ?, NOW())
+            ")->execute([
+                $partner_id,
+                'Loja pausada',
+                $pause_msg,
+                $partner_id
+            ]);
+
+            $db->commit();
+
+            // Registro de auditoria
+            om_audit()->log(
+                'partner_pause',
+                'partner',
+                $partner_id,
+                ['is_open' => $partner['is_open'], 'pause_until' => $partner['pause_until']],
+                ['is_open' => 0, 'pause_until' => $pause_until, 'pause_reason' => $reason, 'duration_hours' => $duration_hours],
+                "Loja '{$partner['name']}' pausada pelo admin #{$admin_id}. Motivo: {$reason}"
+            );
+
+            response(true, [
+                'partner_id' => $partner_id,
+                'action' => 'pause',
+                'pause_until' => $pause_until,
+                'duration_hours' => $duration_hours,
+                'reason' => $reason
+            ], "Loja pausada com sucesso");
+        }
+
+        // --- Despausar loja ---
+        if ($action === 'unpause') {
+            $partner_id = (int)($input['partner_id'] ?? 0);
+
+            if (!$partner_id) response(false, null, "partner_id obrigatorio", 400);
+
+            // Buscar parceiro atual
+            $stmt = $db->prepare("SELECT partner_id, name, is_open, pause_until, pause_reason FROM om_market_partners WHERE partner_id = ?");
+            $stmt->execute([$partner_id]);
+            $partner = $stmt->fetch();
+            if (!$partner) response(false, null, "Parceiro nao encontrado", 404);
+
+            // Verificar se realmente esta pausado/fechado
+            $isCurrentlyPaused = !$partner['is_open'] || ($partner['pause_until'] && strtotime($partner['pause_until']) > time());
+            if ($partner['is_open'] && !$partner['pause_until']) {
+                response(false, null, "Parceiro ja esta ativo e sem pausa", 400);
+            }
+
+            $db->beginTransaction();
+
+            $stmt = $db->prepare("
+                UPDATE om_market_partners
+                SET is_open = 1,
+                    pause_until = NULL,
+                    pause_reason = NULL,
+                    updated_at = NOW()
+                WHERE partner_id = ?
+            ");
+            $stmt->execute([$partner_id]);
+
+            // Notificar parceiro
+            $db->prepare("
+                INSERT INTO om_notifications (user_id, user_type, title, body, type, reference_type, reference_id, created_at)
+                VALUES (?, 'partner', ?, ?, 'account_action', 'partner', ?, NOW())
+            ")->execute([
+                $partner_id,
+                'Loja reativada',
+                'Sua loja foi reativada pela administracao. Voce ja pode receber pedidos.',
+                $partner_id
+            ]);
+
+            $db->commit();
+
+            // Registro de auditoria
+            om_audit()->log(
+                'partner_unpause',
+                'partner',
+                $partner_id,
+                ['is_open' => $partner['is_open'], 'pause_until' => $partner['pause_until'], 'pause_reason' => $partner['pause_reason']],
+                ['is_open' => 1, 'pause_until' => null, 'pause_reason' => null],
+                "Loja '{$partner['name']}' despausada pelo admin #{$admin_id}"
+            );
+
+            response(true, [
+                'partner_id' => $partner_id,
+                'action' => 'unpause',
+                'previous_pause_until' => $partner['pause_until']
+            ], "Loja reativada com sucesso");
+        }
+
+        // --- Atualizar horarios de funcionamento ---
+        if ($action === 'edit_hours') {
+            $partner_id = (int)($input['partner_id'] ?? 0);
+            $hours = $input['hours'] ?? null;
+
+            if (!$partner_id) response(false, null, "partner_id obrigatorio", 400);
+            if (!$hours || !is_array($hours)) response(false, null, "hours obrigatorio (objeto com dias da semana)", 400);
+
+            // Validar dias permitidos
+            $valid_days = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+            foreach ($hours as $day => $times) {
+                if (!in_array($day, $valid_days)) {
+                    response(false, null, "Dia invalido: {$day}. Permitidos: " . implode(', ', $valid_days), 400);
+                }
+                if (!isset($times['open']) || !isset($times['close'])) {
+                    response(false, null, "Cada dia deve ter 'open' e 'close'. Faltando em: {$day}", 400);
+                }
+                // Validar formato HH:MM
+                if (!preg_match('/^\d{2}:\d{2}$/', $times['open']) || !preg_match('/^\d{2}:\d{2}$/', $times['close'])) {
+                    response(false, null, "Formato de horario invalido em {$day}. Use HH:MM", 400);
+                }
+            }
+
+            // Buscar parceiro e horarios atuais
+            $stmt = $db->prepare("SELECT partner_id, name, opening_hours FROM om_market_partners WHERE partner_id = ?");
+            $stmt->execute([$partner_id]);
+            $partner = $stmt->fetch();
+            if (!$partner) response(false, null, "Parceiro nao encontrado", 404);
+
+            $old_hours = $partner['opening_hours'];
+            $hours_json = json_encode($hours, JSON_UNESCAPED_UNICODE);
+
+            $db->beginTransaction();
+
+            $stmt = $db->prepare("
+                UPDATE om_market_partners
+                SET opening_hours = ?,
+                    updated_at = NOW()
+                WHERE partner_id = ?
+            ");
+            $stmt->execute([$hours_json, $partner_id]);
+
+            $db->commit();
+
+            // Registro de auditoria
+            om_audit()->log(
+                'partner_edit_hours',
+                'partner',
+                $partner_id,
+                ['opening_hours' => $old_hours],
+                ['opening_hours' => $hours_json],
+                "Horarios de funcionamento atualizados para '{$partner['name']}' pelo admin #{$admin_id}"
+            );
+
+            response(true, [
+                'partner_id' => $partner_id,
+                'action' => 'edit_hours',
+                'hours' => $hours
+            ], "Horarios atualizados com sucesso");
+        }
+
+        // --- Editar detalhes do parceiro ---
+        if ($action === 'edit_details') {
+            $partner_id = (int)($input['partner_id'] ?? 0);
+
+            if (!$partner_id) response(false, null, "partner_id obrigatorio", 400);
+
+            // Buscar parceiro atual
+            $stmt = $db->prepare("
+                SELECT partner_id, name, address, phone, description, logo, min_order, delivery_radius_km
+                FROM om_market_partners WHERE partner_id = ?
+            ");
+            $stmt->execute([$partner_id]);
+            $partner = $stmt->fetch();
+            if (!$partner) response(false, null, "Parceiro nao encontrado", 404);
+
+            // Campos editaveis e seus mapeamentos para colunas do banco
+            $editable_fields = [
+                'name' => 'name',
+                'address' => 'address',
+                'phone' => 'phone',
+                'description' => 'description',
+                'logo_url' => 'logo',
+                'min_order' => 'min_order',
+                'delivery_radius' => 'delivery_radius_km',
+            ];
+
+            $updates = [];
+            $params = [];
+            $old_data = [];
+            $new_data = [];
+
+            foreach ($editable_fields as $input_key => $db_column) {
+                if (isset($input[$input_key]) && $input[$input_key] !== '') {
+                    $value = $input[$input_key];
+
+                    // Validar campos numericos
+                    if (in_array($input_key, ['min_order', 'delivery_radius'])) {
+                        $value = (float)$value;
+                        if ($value < 0) response(false, null, "{$input_key} nao pode ser negativo", 400);
+                    } else {
+                        $value = trim($value);
+                    }
+
+                    $old_data[$db_column] = $partner[$db_column] ?? null;
+                    $new_data[$db_column] = $value;
+                    $updates[] = "{$db_column} = ?";
+                    $params[] = $value;
+                }
+            }
+
+            if (empty($updates)) {
+                response(false, null, "Nenhum campo fornecido para atualizar", 400);
+            }
+
+            $updates[] = "updated_at = NOW()";
+            $params[] = $partner_id;
+
+            $db->beginTransaction();
+
+            $sql = "UPDATE om_market_partners SET " . implode(', ', $updates) . " WHERE partner_id = ?";
+            $stmt = $db->prepare($sql);
+            $stmt->execute($params);
+
+            $db->commit();
+
+            // Registro de auditoria
+            om_audit()->log(
+                'partner_edit_details',
+                'partner',
+                $partner_id,
+                $old_data,
+                $new_data,
+                "Detalhes do parceiro '{$partner['name']}' atualizados pelo admin #{$admin_id}. Campos: " . implode(', ', array_keys($new_data))
+            );
+
+            response(true, [
+                'partner_id' => $partner_id,
+                'action' => 'edit_details',
+                'updated_fields' => array_keys($new_data)
+            ], "Detalhes do parceiro atualizados com sucesso");
         }
 
         response(false, null, "Acao POST invalida: {$action}", 400);

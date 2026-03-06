@@ -11,6 +11,7 @@ require_once __DIR__ . "/../config/database.php";
 require_once __DIR__ . "/../helpers/notify.php";
 require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
 require_once __DIR__ . '/../helpers/zapi-whatsapp.php';
+require_once __DIR__ . '/../helpers/eta-calculator.php';
 setCorsHeaders();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -57,8 +58,8 @@ try {
         response(false, null, "Pedido nao esta pendente (status atual: {$pedido['status']})", 409);
     }
 
-    // Buscar categoria do parceiro
-    $stmt = $db->prepare("SELECT categoria FROM om_market_partners WHERE partner_id = ?");
+    // Buscar categoria e dados do parceiro
+    $stmt = $db->prepare("SELECT categoria, name, trade_name, delivery_time_min FROM om_market_partners WHERE partner_id = ?");
     $stmt->execute([$mercado_id]);
     $parceiro = $stmt->fetch();
     $categoria = $parceiro['categoria'] ?? 'mercado';
@@ -107,12 +108,30 @@ try {
         );
     }
 
-    // WhatsApp notification (never breaks the flow)
+    // WhatsApp notification with ETA (never breaks the flow)
     try {
         $customerPhone = $pedido['customer_phone'] ?? '';
         if ($customerPhone) {
-            $waResult = whatsappOrderAccepted($customerPhone, $pedido['order_number']);
-            error_log("[aceitar] WhatsApp pedido #{$pedido['order_number']} phone=****" . substr($customerPhone, -4) . " success=" . ($waResult['success'] ? 'yes' : 'no'));
+            // Calculate ETA for the accepted order
+            $etaMinutes = 0;
+            $etaTime = '';
+            try {
+                $distKm = isset($pedido['distancia_km']) ? (float)$pedido['distancia_km'] : 5.0;
+                $etaMinutes = calculateSmartETA($db, $mercado_id, $distKm, $novo_status);
+                if ($etaMinutes > 0) {
+                    $etaTime = (new DateTime('now', new DateTimeZone('America/Sao_Paulo')))
+                        ->modify("+{$etaMinutes} minutes")
+                        ->format('H:i');
+                }
+            } catch (\Throwable $etaErr) {
+                error_log("[aceitar] ETA calc error: " . $etaErr->getMessage());
+                // Fallback: use partner's delivery_time_min
+                $etaMinutes = (int)($parceiro['delivery_time_min'] ?? 0);
+            }
+
+            $partnerName = $pedido['partner_name'] ?? $parceiro['trade_name'] ?? $parceiro['name'] ?? '';
+            $waResult = whatsappOrderAccepted($customerPhone, $pedido['order_number'], $partnerName, $etaMinutes, $etaTime);
+            error_log("[aceitar] WhatsApp pedido #{$pedido['order_number']} phone=****" . substr($customerPhone, -4) . " eta={$etaMinutes}min success=" . ($waResult['success'] ? 'yes' : 'no'));
         }
     } catch (\Throwable $waErr) {
         error_log("[aceitar] WhatsApp error: " . $waErr->getMessage());

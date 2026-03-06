@@ -426,7 +426,8 @@ try {
         try {
             $customerPhone = $pedido['customer_phone'] ?? '';
             if ($customerPhone) {
-                $waResult = whatsappOrderDelivered($customerPhone, $pedido['order_number']);
+                $deliveredPartnerName = $pedido['mercado_nome'] ?? $pedido['partner_name'] ?? '';
+                $waResult = whatsappOrderDelivered($customerPhone, $pedido['order_number'], $deliveredPartnerName);
                 error_log("[confirmar-entrega] WhatsApp pedido #{$pedido['order_number']} phone=****" . substr($customerPhone, -4) . " success=" . ($waResult['success'] ? 'yes' : 'no'));
 
                 // Send rating request after delivery notification (slight delay)

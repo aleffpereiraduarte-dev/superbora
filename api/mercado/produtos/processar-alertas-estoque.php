@@ -23,7 +23,7 @@ require_once dirname(dirname(dirname(__DIR__))) . '/config.php';
 
 try {
     $pdo = new PDO(
-        "mysql:host=" . DB_HOSTNAME . ";dbname=" . DB_DATABASE . ";charset=utf8mb4",
+        "pgsql:host=" . DB_HOSTNAME . ";port=" . DB_PORT . ";dbname=" . DB_DATABASE . "",
         DB_USERNAME,
         DB_PASSWORD,
         [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]

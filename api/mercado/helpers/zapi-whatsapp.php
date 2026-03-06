@@ -278,24 +278,45 @@ function whatsappOrderCreated(string $phone, string $orderNumber, float $total, 
     return sendWhatsApp($phone, $msg);
 }
 
-function whatsappOrderAccepted(string $phone, string $orderNumber): array {
-    $msg = "✅ *Pedido Confirmado!*\n\n"
-         . "Seu pedido *#{$orderNumber}* foi aceito pelo estabelecimento.\n"
-         . "Ja estamos cuidando dele! 🎉";
+function whatsappOrderAccepted(string $phone, string $orderNumber, string $partnerName = '', int $etaMinutes = 0, string $etaTime = ''): array {
+    $storeInfo = $partnerName ? " da *{$partnerName}*" : '';
+    $msg = "✅ *Pedido Aceito!*\n\n"
+         . "Seu pedido *#{$orderNumber}*{$storeInfo} foi aceito!\n";
+    if ($etaMinutes > 0 && $etaTime) {
+        $msg .= "Previsao de entrega: *~{$etaMinutes} minutos* (por volta das {$etaTime}) 🕐\n";
+    } elseif ($etaMinutes > 0) {
+        $msg .= "Previsao de entrega: *~{$etaMinutes} minutos* 🕐\n";
+    }
+    $msg .= "\nJa estamos cuidando dele! Voce recebe atualizacoes aqui mesmo 📲";
     return sendWhatsApp($phone, $msg);
 }
 
-function whatsappOrderPreparing(string $phone, string $orderNumber): array {
+function whatsappOrderPreparing(string $phone, string $orderNumber, string $partnerName = '', int $prepMinutes = 0): array {
+    $storeInfo = $partnerName ? " na *{$partnerName}*" : '';
     $msg = "👨‍🍳 *Preparando seu pedido!*\n\n"
-         . "Pedido *#{$orderNumber}* esta sendo preparado.\n"
-         . "Logo logo estara pronto! ⏳";
+         . "Pedido *#{$orderNumber}* ta sendo preparado{$storeInfo}!\n";
+    if ($prepMinutes > 0) {
+        $msg .= "Deve ficar pronto em *~{$prepMinutes} minutos* ⏳\n";
+    }
+    $msg .= "\nVoce vai saber assim que sair pra entrega 🚀";
     return sendWhatsApp($phone, $msg);
 }
 
-function whatsappOrderReady(string $phone, string $orderNumber): array {
-    $msg = "🎉 *Pedido Pronto!*\n\n"
-         . "Seu pedido *#{$orderNumber}* esta pronto!\n"
-         . "Estamos buscando um entregador para voce. 🏍️";
+function whatsappOrderReady(string $phone, string $orderNumber, string $partnerName = '', int $deliveryMinutes = 0, bool $isPickup = false): array {
+    $storeInfo = $partnerName ? " na *{$partnerName}*" : '';
+    if ($isPickup) {
+        $msg = "🎉 *Pedido Pronto pra Retirada!*\n\n"
+             . "Seu pedido *#{$orderNumber}*{$storeInfo} ta pronto!\n"
+             . "E so passar la pra retirar 🏃";
+    } else {
+        $msg = "🎉 *Pedido Pronto!*\n\n"
+             . "Seu pedido *#{$orderNumber}*{$storeInfo} ta pronto e saindo pra entrega!\n";
+        if ($deliveryMinutes > 0) {
+            $msg .= "Chega em *~{$deliveryMinutes} minutos* 🏍️\n";
+        } else {
+            $msg .= "Estamos buscando um entregador pra voce 🏍️\n";
+        }
+    }
     return sendWhatsApp($phone, $msg);
 }
 
@@ -306,11 +327,12 @@ function whatsappOrderOnTheWay(string $phone, string $orderNumber): array {
     return sendWhatsApp($phone, $msg);
 }
 
-function whatsappOrderDelivered(string $phone, string $orderNumber): array {
+function whatsappOrderDelivered(string $phone, string $orderNumber, string $partnerName = ''): array {
+    $storeInfo = $partnerName ? " da *{$partnerName}*" : '';
     $msg = "✅ *Pedido Entregue!*\n\n"
-         . "Pedido *#{$orderNumber}* foi entregue com sucesso!\n"
-         . "Obrigado por usar o SuperBora! ⭐\n\n"
-         . "Que tal avaliar sua experiencia no app?";
+         . "Pedido *#{$orderNumber}*{$storeInfo} foi entregue! 😋\n"
+         . "Bom apetite e obrigado por usar o SuperBora! ⭐\n\n"
+         . "Que tal avaliar sua experiencia? Responda com uma nota de 1 a 5!";
     return sendWhatsApp($phone, $msg);
 }
 

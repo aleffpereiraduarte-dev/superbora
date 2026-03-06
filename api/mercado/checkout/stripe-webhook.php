@@ -26,7 +26,7 @@ $sigHeader = $_SERVER['HTTP_STRIPE_SIGNATURE'] ?? '';
 // MANDATORY: Webhook secret must be configured
 if (!$WEBHOOK_SECRET) {
     error_log("[stripe-webhook] REJECTED: STRIPE_WEBHOOK_SECRET not configured");
-    http_response_code(500);
+    http_response_code(400);
     echo json_encode(['error' => 'Webhook secret not configured']);
     exit;
 }
@@ -210,6 +210,6 @@ try {
             error_log("[stripe-webhook] Failed to update event status: " . $updateErr->getMessage());
         }
     }
-    http_response_code(500);
+    http_response_code(400);
     echo json_encode(['error' => 'Internal error']);
 }

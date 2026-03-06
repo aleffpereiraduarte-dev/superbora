@@ -24,6 +24,10 @@
  *   [TRANSFER_HUMAN]         — transfer to human agent
  *   [SWITCH_TO_ORDER]        — switch from support to ordering mode
  *   [REORDER:order_number]   — repeat a previous order (smart reorder)
+ *   [SCHEDULE:datetime]      — schedule order for future delivery
+ *   [SAVE_ADDRESS]           — save new address to customer's saved addresses
+ *   [COUPON:code]            — apply coupon code
+ *   [USE_CASHBACK:value]     — use cashback balance (value or "all")
  */
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -38,6 +42,8 @@ require_once __DIR__ . '/../helpers/ai-safeguards.php';
 require_once __DIR__ . '/../helpers/callcenter-sms.php';
 require_once __DIR__ . '/../helpers/ws-callcenter-broadcast.php';
 require_once __DIR__ . '/../helpers/whatsapp-rating.php';
+require_once __DIR__ . '/../helpers/eta-calculator.php';
+require_once __DIR__ . '/../helpers/cashback.php';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CONSTANTS
@@ -206,11 +212,23 @@ function getDefaultContext(): array
         'address_lng'    => null,
         'payment_method' => null,
         'payment_change' => null,
+        'coupon_code'    => null,
+        'coupon_id'      => null,
+        'coupon_discount'=> 0,
+        'coupon_description' => null,
+        'coupon_free_delivery' => false,
+        'use_cashback'   => 0,
         'notes'          => null,
+        'scheduled_for'  => null,
+        'is_new_address' => false,
         'message_count'  => 0,
         'session_start'  => date('c'),
         'rating_requested_for_order' => null,
         'rating_pending_value'       => null,
+        'audio_count'        => 0,
+        'sent_audio'         => false,
+        'price_sensitive'    => false,
+        'last_mentioned_store' => null,
     ];
 }
 
@@ -326,9 +344,9 @@ function lookupCustomerByPhone(PDO $db, string $phone): ?array
 function getCustomerAddresses(PDO $db, int $customerId): array
 {
     $stmt = $db->prepare("
-        SELECT address_id, label, street, number, complement, neighborhood, city, state, zipcode, lat, lng
-        FROM om_market_customer_addresses
-        WHERE customer_id = ?
+        SELECT address_id, label, street, number, complement, neighborhood, city, state, zipcode, lat, lng, is_default
+        FROM om_customer_addresses
+        WHERE customer_id = ? AND is_active = '1'
         ORDER BY is_default DESC, created_at DESC
         LIMIT 5
     ");
@@ -362,11 +380,11 @@ function getCustomerActiveOrders(PDO $db, int $customerId): array
     $stmt = $db->prepare("
         SELECT o.order_id, o.order_number, o.partner_id, o.partner_name,
                o.total, o.status, o.forma_pagamento, o.delivery_address,
-               o.date_added, o.created_at,
+               o.date_added, o.created_at, o.distancia_km, o.is_pickup,
                EXTRACT(EPOCH FROM (NOW() - o.date_added::timestamp)) / 60 AS minutes_ago
         FROM om_market_orders o
         WHERE o.customer_id = ?
-          AND o.status NOT IN ('entregue', 'cancelado', 'recusado')
+          AND o.status NOT IN ('entregue', 'cancelado', 'recusado', 'retirado')
         ORDER BY o.date_added DESC
         LIMIT 5
     ");
@@ -643,6 +661,359 @@ function getProduct(PDO $db, int $productId): ?array
     return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
 }
 
+/**
+ * Get most ordered items from a store (top sellers / "mais pedidos").
+ * Queries actual order history to find what people order most.
+ *
+ * @return array [['product_id'=>int, 'name'=>string, 'price'=>float, 'order_count'=>int], ...]
+ */
+function getPopularItems(PDO $db, int $partnerId, int $limit = 5): array
+{
+    try {
+        $stmt = $db->prepare("
+            SELECT p.product_id, p.name,
+                   CASE WHEN p.special_price IS NOT NULL AND p.special_price > 0 AND p.special_price < p.price
+                        THEN p.special_price ELSE p.price END AS price,
+                   COUNT(DISTINCT oi.order_id) AS order_count
+            FROM om_market_order_items oi
+            INNER JOIN om_market_products p ON p.product_id = oi.product_id
+            INNER JOIN om_market_orders o ON o.order_id = oi.order_id
+            WHERE o.partner_id = ?
+              AND p.status::text = '1'
+              AND p.quantity > 0
+              AND o.status NOT IN ('cancelado', 'cancelled', 'recusado')
+            GROUP BY p.product_id, p.name, p.price, p.special_price
+            ORDER BY order_count DESC
+            LIMIT ?
+        ");
+        $stmt->execute([$partnerId, $limit]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        return array_map(function ($r) {
+            return [
+                'product_id'  => (int)$r['product_id'],
+                'name'        => $r['name'],
+                'price'       => (float)$r['price'],
+                'order_count' => (int)$r['order_count'],
+            ];
+        }, $rows);
+    } catch (\Exception $e) {
+        error_log(WABOT_LOG_PREFIX . " getPopularItems error: " . $e->getMessage());
+        return [];
+    }
+}
+
+/**
+ * Get complementary item suggestions based on what's already in the cart.
+ * Uses category-based heuristics:
+ *   - Cart has food -> suggest drinks
+ *   - Cart has pizza/burger -> suggest sides (acompanhamentos)
+ *   - Cart has acai/ice cream -> suggest toppings/extras
+ *   - General: suggest items from complementary categories not yet in cart
+ *
+ * @param array $cartItems Items currently in cart [['product_id'=>int, 'name'=>string, ...], ...]
+ * @return array [['product_id'=>int, 'name'=>string, 'price'=>float, 'category'=>string], ...]
+ */
+function getComplementaryItems(PDO $db, int $partnerId, array $cartItems, int $limit = 5): array
+{
+    if (empty($cartItems)) return [];
+
+    try {
+        // Collect product_ids already in cart to exclude
+        $cartProductIds = [];
+        foreach ($cartItems as $item) {
+            if (!empty($item['product_id'])) {
+                $cartProductIds[] = (int)$item['product_id'];
+            }
+        }
+        if (empty($cartProductIds)) return [];
+
+        // Detect what's in cart by analyzing item names and their categories
+        $cartNames = implode(' ', array_map(function ($it) {
+            return mb_strtolower($it['name'] ?? '');
+        }, $cartItems));
+
+        // Build category keywords to search for complementary items
+        $complementaryCategories = [];
+
+        // If cart has main dishes / food -> suggest drinks
+        $hasFoodKeywords = preg_match('/pizza|hambur|lanche|sanduich|prato|refeic|arroz|feij|carne|frango|x-|x burger|hot dog|cachorro|coxinha|pastel|esfiha|salgad/i', $cartNames);
+        if ($hasFoodKeywords) {
+            $complementaryCategories = array_merge($complementaryCategories, [
+                'bebida', 'drink', 'refri', 'suco', 'refrigerante', 'agua',
+                'sobremesa', 'doce', 'sorvete',
+            ]);
+        }
+
+        // If cart has pizza/burger -> suggest sides
+        $hasPizzaBurger = preg_match('/pizza|hambur|lanche|sanduich|x-|x burger|hot dog/i', $cartNames);
+        if ($hasPizzaBurger) {
+            $complementaryCategories = array_merge($complementaryCategories, [
+                'acompanhamento', 'porcao', 'entrada', 'batata', 'onion', 'molho',
+            ]);
+        }
+
+        // If cart has acai/ice cream/dessert -> suggest toppings
+        $hasAcaiIceCream = preg_match('/acai|açaí|sorvete|milk ?shake|sundae|frozen/i', $cartNames);
+        if ($hasAcaiIceCream) {
+            $complementaryCategories = array_merge($complementaryCategories, [
+                'adicional', 'topping', 'extra', 'complemento', 'cobertura', 'calda',
+            ]);
+        }
+
+        // If cart has drinks only -> suggest food
+        $hasDrinksOnly = preg_match('/suco|refri|agua|cerveja|drink|bebida|refrigerante/i', $cartNames)
+                      && !$hasFoodKeywords && !$hasAcaiIceCream;
+        if ($hasDrinksOnly) {
+            $complementaryCategories = array_merge($complementaryCategories, [
+                'lanche', 'porcao', 'entrada', 'salgado', 'petisco',
+            ]);
+        }
+
+        // Default: always include drinks and acompanhamentos if nothing specific matched
+        if (empty($complementaryCategories)) {
+            $complementaryCategories = ['bebida', 'drink', 'acompanhamento', 'sobremesa', 'porcao'];
+        }
+
+        $complementaryCategories = array_unique($complementaryCategories);
+
+        // Build LIKE clauses for category name matching
+        $likeClauses = [];
+        $params = [$partnerId];
+        foreach ($complementaryCategories as $kw) {
+            $likeClauses[] = "LOWER(c.name) LIKE ?";
+            $params[] = '%' . mb_strtolower($kw) . '%';
+        }
+        $likeWhere = '(' . implode(' OR ', $likeClauses) . ')';
+
+        // Exclude cart product_ids
+        $excludePlaceholders = implode(',', array_fill(0, count($cartProductIds), '?'));
+        $params = array_merge($params, $cartProductIds);
+        $params[] = $limit;
+
+        $stmt = $db->prepare("
+            SELECT p.product_id, p.name,
+                   CASE WHEN p.special_price IS NOT NULL AND p.special_price > 0 AND p.special_price < p.price
+                        THEN p.special_price ELSE p.price END AS price,
+                   c.name AS category
+            FROM om_market_products p
+            INNER JOIN om_market_categories c ON c.category_id = p.category_id
+            WHERE p.partner_id = ?
+              AND p.status::text = '1'
+              AND p.quantity > 0
+              AND {$likeWhere}
+              AND p.product_id NOT IN ({$excludePlaceholders})
+            ORDER BY p.sort_order ASC, p.name ASC
+            LIMIT ?
+        ");
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        return array_map(function ($r) {
+            return [
+                'product_id' => (int)$r['product_id'],
+                'name'       => $r['name'],
+                'price'      => (float)$r['price'],
+                'category'   => $r['category'],
+            ];
+        }, $rows);
+    } catch (\Exception $e) {
+        error_log(WABOT_LOG_PREFIX . " getComplementaryItems error: " . $e->getMessage());
+        return [];
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SMART SEARCH (products & stores)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Search products by name/description across all stores or within a specific store.
+ * Returns matching products with their store info for Claude context.
+ */
+function searchProducts(PDO $db, string $query, ?int $partnerId = null, int $limit = 10): array
+{
+    $query = trim($query);
+    if (empty($query) || mb_strlen($query) < 2) return [];
+
+    $pattern = '%' . $query . '%';
+
+    if ($partnerId) {
+        $stmt = $db->prepare("
+            SELECT p.product_id, p.name, p.price, p.special_price,
+                   COALESCE(pa.trade_name, pa.name) AS partner_name,
+                   pa.partner_id, pa.is_open
+            FROM om_market_products p
+            JOIN om_market_partners pa ON pa.partner_id = p.partner_id
+            WHERE p.partner_id = ?
+              AND p.status::text = '1'
+              AND p.quantity > 0
+              AND pa.status::text = '1'
+              AND (p.name ILIKE ? OR p.description ILIKE ?)
+            ORDER BY pa.is_open DESC, p.name ASC
+            LIMIT ?
+        ");
+        $stmt->execute([$partnerId, $pattern, $pattern, $limit]);
+    } else {
+        $stmt = $db->prepare("
+            SELECT p.product_id, p.name, p.price, p.special_price,
+                   COALESCE(pa.trade_name, pa.name) AS partner_name,
+                   pa.partner_id, pa.is_open
+            FROM om_market_products p
+            JOIN om_market_partners pa ON pa.partner_id = p.partner_id
+            WHERE p.status::text = '1'
+              AND p.quantity > 0
+              AND pa.status::text = '1'
+              AND (p.name ILIKE ? OR p.description ILIKE ?)
+            ORDER BY pa.is_open DESC, pa.rating DESC NULLS LAST, p.name ASC
+            LIMIT ?
+        ");
+        $stmt->execute([$pattern, $pattern, $limit]);
+    }
+
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+/**
+ * Search stores by name, trade_name, or categoria.
+ * Returns matching stores for Claude context.
+ */
+function searchStores(PDO $db, string $query, int $limit = 10): array
+{
+    $query = trim($query);
+    if (empty($query) || mb_strlen($query) < 2) return [];
+
+    $pattern = '%' . $query . '%';
+
+    $stmt = $db->prepare("
+        SELECT partner_id, name, trade_name, categoria, is_open,
+               rating, delivery_time_min
+        FROM om_market_partners
+        WHERE status::text = '1'
+          AND (name ILIKE ? OR trade_name ILIKE ? OR categoria ILIKE ?)
+        ORDER BY is_open DESC, rating DESC NULLS LAST
+        LIMIT ?
+    ");
+    $stmt->execute([$pattern, $pattern, $pattern, $limit]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+/**
+ * Format search results as context text for Claude.
+ */
+function formatSearchResultsForPrompt(array $productResults, array $storeResults): string
+{
+    $lines = [];
+
+    if (!empty($storeResults)) {
+        $lines[] = "LOJAS ENCONTRADAS PELA BUSCA:";
+        foreach ($storeResults as $s) {
+            $name = $s['trade_name'] ?: $s['name'];
+            $status = ((int)($s['is_open'] ?? 0) === 1) ? 'Aberta' : 'Fechada';
+            $cat = $s['categoria'] ?? '';
+            $rating = !empty($s['rating']) ? number_format((float)$s['rating'], 1) : '-';
+            $lines[] = "- [{$s['partner_id']}] {$name} ({$cat}) -- {$status} -- nota {$rating}";
+        }
+        $lines[] = "";
+    }
+
+    if (!empty($productResults)) {
+        $lines[] = "PRODUTOS ENCONTRADOS PELA BUSCA:";
+        // Group by store
+        $byStore = [];
+        foreach ($productResults as $p) {
+            $byStore[$p['partner_name']][] = $p;
+        }
+        foreach ($byStore as $storeName => $products) {
+            $storeOpen = ((int)($products[0]['is_open'] ?? 0) === 1) ? 'Aberta' : 'Fechada';
+            $lines[] = "  *{$storeName}* ({$storeOpen}):";
+            foreach ($products as $p) {
+                $price = ((float)($p['special_price'] ?? 0) > 0 && (float)$p['special_price'] < (float)$p['price'])
+                    ? (float)$p['special_price']
+                    : (float)$p['price'];
+                $priceFmt = number_format($price, 2, ',', '.');
+                $lines[] = "    - [{$p['product_id']}] {$p['name']} — R\$ {$priceFmt} (loja_id:{$p['partner_id']})";
+            }
+        }
+        $lines[] = "";
+    }
+
+    return implode("\n", $lines);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TIME-OF-DAY HELPERS (America/Sao_Paulo)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Get time-of-day greeting and context for Sao Paulo timezone.
+ * Returns associative array with greeting, period, hour, day_of_week, is_weekend.
+ */
+function getTimeContext(): array
+{
+    $tz = new \DateTimeZone('America/Sao_Paulo');
+    $now = new \DateTime('now', $tz);
+    $hour = (int)$now->format('G');
+    $dayOfWeek = (int)$now->format('N'); // 1=Mon, 7=Sun
+    $isWeekend = ($dayOfWeek >= 6);
+    $timeStr = $now->format('H:i');
+    $dayName = [
+        1 => 'segunda-feira', 2 => 'terca-feira', 3 => 'quarta-feira',
+        4 => 'quinta-feira', 5 => 'sexta-feira', 6 => 'sabado', 7 => 'domingo',
+    ][$dayOfWeek] ?? '';
+
+    if ($hour >= 6 && $hour < 11) {
+        $period = 'manha';
+        $greeting = 'Bom dia! Que tal um cafe da manha?';
+    } elseif ($hour >= 11 && $hour < 14) {
+        $period = 'almoco';
+        $greeting = 'E ai! Hora do almoco, bora pedir?';
+    } elseif ($hour >= 14 && $hour < 17) {
+        $period = 'tarde';
+        $greeting = 'Boa tarde! Um lanchinho cairia bem, ne?';
+    } elseif ($hour >= 17 && $hour < 22) {
+        $period = 'noite';
+        $greeting = 'Boa noite! Ja pensou no jantar?';
+    } else {
+        $period = 'madrugada';
+        $greeting = 'E ai, bate aquela fome de madrugada?';
+    }
+
+    return [
+        'greeting'    => $greeting,
+        'period'      => $period,
+        'hour'        => $hour,
+        'time_str'    => $timeStr,
+        'day_of_week' => $dayName,
+        'is_weekend'  => $isWeekend,
+    ];
+}
+
+/**
+ * Handle audio messages with friendly, varied responses.
+ * Tracks how many audios the customer has sent in context.
+ */
+function handleAudioMessage(array &$context): string
+{
+    $audioCount = ($context['audio_count'] ?? 0) + 1;
+    $context['audio_count'] = $audioCount;
+    $context['sent_audio'] = true;
+
+    $responses = [
+        "Opa, recebi seu audio! Infelizmente ainda nao consigo ouvir audios, mas manda por texto que eu te ajudo rapidinho!",
+        "Puxa, adoraria ouvir, mas ainda nao consigo processar audios. Me conta por texto o que voce precisa!",
+        "Recebi o audio, mas por enquanto so consigo ler texto. Me escreve aqui que eu resolvo pra voce!",
+        "Eita, audio ainda nao e minha praia! Digita pra mim que eu te ajudo na hora!",
+        "Audio recebido, mas infelizmente nao consigo ouvir ainda. Manda por escrito que a gente resolve!",
+    ];
+
+    // Use modulo to cycle through responses for repeat audio senders
+    $idx = ($audioCount - 1) % count($responses);
+    return $responses[$idx];
+}
+
+
+
 // ═══════════════════════════════════════════════════════════════════════════
 // MESSAGE STORAGE
 // ═══════════════════════════════════════════════════════════════════════════
@@ -764,7 +1135,11 @@ function buildSystemPrompt(
     ?array $stores = null,
     ?array $addresses = null,
     ?array $activeOrders = null,
-    ?array $recentOrders = null
+    ?array $recentOrders = null,
+    ?array $popularItems = null,
+    ?array $complementaryItems = null,
+    string $searchContext = '',
+    ?array $timeCtx = null
 ): string {
     $phone = $conversation['phone'] ?? '';
     $context = json_decode($conversation['ai_context'] ?? '{}', true) ?: [];
@@ -783,7 +1158,7 @@ function buildSystemPrompt(
         $customerProfileBlock .= "\n- Telefone: {$customerInfo['phone']}";
     }
 
-    // ── Active orders summary ──────────────────────────────────────────
+    // ── Active orders summary with ETA ─────────────────────────────────
     $activeOrdersBlock = '';
     if ($activeOrders && count($activeOrders) > 0) {
         $statusLabels = [
@@ -799,8 +1174,25 @@ function buildSystemPrompt(
             $statusLabel = $statusLabels[$ao['status']] ?? $ao['status'];
             $total = number_format((float)$ao['total'], 2, ',', '.');
             $mins = round((float)($ao['minutes_ago'] ?? 0));
-            $activeOrdersBlock .= "\n- Pedido #{$ao['order_number']} | {$ao['partner_name']} | R\$ {$total} | {$statusLabel} | ha {$mins} min";
+
+            // Calculate ETA for each active order
+            $etaInfo = '';
+            try {
+                $distKm = isset($ao['distancia_km']) ? (float)$ao['distancia_km'] : 5.0;
+                $etaMinutes = calculateSmartETA($db, (int)$ao['partner_id'], $distKm, $ao['status']);
+                if ($etaMinutes > 0) {
+                    $etaArrival = (new DateTime('now', new DateTimeZone('America/Sao_Paulo')))
+                        ->modify("+{$etaMinutes} minutes")
+                        ->format('H:i');
+                    $etaInfo = " | ETA: ~{$etaMinutes} min (chega ~{$etaArrival})";
+                }
+            } catch (\Throwable $e) {
+                // Non-critical — skip ETA if calculation fails
+            }
+
+            $activeOrdersBlock .= "\n- Pedido #{$ao['order_number']} | {$ao['partner_name']} | R\$ {$total} | {$statusLabel} | ha {$mins} min{$etaInfo}";
         }
+        $activeOrdersBlock .= "\n\nIMPORTANTE SOBRE ETA: Quando o cliente perguntar 'quanto tempo', 'quando chega', 'demora muito', 'cadê', use o ETA acima para dar uma estimativa. Diga algo como 'Deve chegar em ~X minutos, por volta das HH:MM!' de forma natural.";
     }
 
     // ── Recent orders summary (with items for reorder) ─────────────────
@@ -853,6 +1245,7 @@ INTELIGENCIA CONTEXTUAL:
   * "cancelar"/"cancela" -> ajudar a cancelar pedido ativo
   * "repetir"/"de novo"/"mesmo" -> repetir ultimo pedido
   * Saudacao simples -> cumprimentar e perguntar o que precisa
+  * "cupom"/"desconto"/"cashback"/"promocao" -> perguntar se quer fazer pedido com desconto
   * "atendente"/"humano"/"pessoa" -> transferir para humano
 - Se o cliente muda de assunto no meio, acompanhe naturalmente
 - Entenda abreviacoes comuns: "blz"=beleza, "td"=tudo, "vlw"=valeu, "pdc"=pode crer, "qro"=quero, "n"=nao, "s"=sim, "mt"=muito, "tb"=tambem, "obg"=obrigado, "msg"=mensagem, "qnts"=quantos, "qnt"=quanto, "dps"=depois, "hj"=hoje, "agr"=agora, "vdd"=verdade, "msm"=mesmo, "pq"=porque, "cmg"=comigo, "fds"=fim de semana, "pfv"=por favor
@@ -884,7 +1277,7 @@ PROMPT;
         $savedAddresses = $addresses;
         if (!$savedAddresses && !empty($customerInfo['customer_id'])) {
             try {
-                $addrStmt = $db->prepare("SELECT city FROM om_market_customer_addresses WHERE customer_id = ? AND city IS NOT NULL AND city != '' ORDER BY is_default DESC LIMIT 1");
+                $addrStmt = $db->prepare("SELECT city FROM om_customer_addresses WHERE customer_id = ? AND is_active = '1' AND city IS NOT NULL AND city != '' ORDER BY is_default DESC LIMIT 1");
                 $addrStmt->execute([$customerInfo['customer_id']]);
                 $addrRow = $addrStmt->fetch(PDO::FETCH_ASSOC);
                 if ($addrRow) {
@@ -986,13 +1379,14 @@ PROMPT;
                 $returningHint = "\n\nDICA: Voce conhece esse cliente! Chame pelo nome: \"{$customerName}\".";
             }
 
-            // Build active orders proactive hint
+            // Build active orders proactive hint with ETA
             $proactiveOrderHint = '';
             if ($activeOrders && count($activeOrders) > 0) {
                 $proactiveOrderHint = "\n\n⚡ REGRA PRIORITARIA — PEDIDOS ATIVOS DETECTADOS:";
                 $proactiveOrderHint .= "\nO cliente tem pedido(s) em andamento! Quando ele mandar QUALQUER saudacao simples (oi, ola, e ai, fala, etc.), voce DEVE:";
                 $proactiveOrderHint .= "\n1. Cumprimentar BREVEMENTE (1 linha so)";
-                $proactiveOrderHint .= "\n2. IMEDIATAMENTE informar o status do pedido ativo, de forma natural e detalhada:";
+                $proactiveOrderHint .= "\n2. IMEDIATAMENTE informar o status do pedido ativo COM PREVISAO DE ENTREGA, de forma natural e detalhada:";
+                $firstEtaExample = '';
                 foreach ($activeOrders as $ao) {
                     $statusLabels2 = [
                         'pendente'   => 'ta aguardando a loja aceitar',
@@ -1005,14 +1399,32 @@ PROMPT;
                     $label = $statusLabels2[$ao['status']] ?? $ao['status'];
                     $mins = round((float)($ao['minutes_ago'] ?? 0));
                     $total = number_format((float)$ao['total'], 2, ',', '.');
-                    $proactiveOrderHint .= "\n   - Pedido #{$ao['order_number']} da {$ao['partner_name']} (R\$ {$total}) — {$label} (ha {$mins} min)";
+
+                    // Calculate ETA for proactive hint
+                    $etaHint = '';
+                    try {
+                        $distKm = isset($ao['distancia_km']) ? (float)$ao['distancia_km'] : 5.0;
+                        $etaMins = calculateSmartETA($db, (int)$ao['partner_id'], $distKm, $ao['status']);
+                        if ($etaMins > 0) {
+                            $etaArrival = (new DateTime('now', new DateTimeZone('America/Sao_Paulo')))
+                                ->modify("+{$etaMins} minutes")
+                                ->format('H:i');
+                            $etaHint = " | Previsao: ~{$etaMins} min (chega ~{$etaArrival})";
+                            if (empty($firstEtaExample)) {
+                                $firstEtaExample = ", deve chegar em ~{$etaMins} min (por volta das {$etaArrival})";
+                            }
+                        }
+                    } catch (\Throwable $e) {}
+
+                    $proactiveOrderHint .= "\n   - Pedido #{$ao['order_number']} da {$ao['partner_name']} (R\$ {$total}) — {$label} (ha {$mins} min){$etaHint}";
                 }
                 $proactiveOrderHint .= "\n3. Pergunte se precisa de algo mais com o pedido ou se quer fazer outro";
                 $exFirstStatus = $statusLabels2[$activeOrders[0]['status']] ?? $activeOrders[0]['status'];
                 $exFirstNumber = $activeOrders[0]['order_number'];
                 $exFirstStore = $activeOrders[0]['partner_name'];
-                $proactiveOrderHint .= "\nExemplo: \"Opa {$customerName}! Seu pedido #{$exFirstNumber} da {$exFirstStore} {$exFirstStatus}! Precisa de mais alguma coisa?\"";
-                $proactiveOrderHint .= "\nISTO E OBRIGATORIO — nao pergunte 'o que voce quer' se ele tem pedido ativo. INFORME o status primeiro!";
+                $proactiveOrderHint .= "\nExemplo: \"Opa {$customerName}! Seu pedido #{$exFirstNumber} da {$exFirstStore} {$exFirstStatus}{$firstEtaExample}! Precisa de mais alguma coisa?\"";
+                $proactiveOrderHint .= "\nISTO E OBRIGATORIO — nao pergunte 'o que voce quer' se ele tem pedido ativo. INFORME o status E o tempo estimado primeiro!";
+                $proactiveOrderHint .= "\nSe o cliente perguntar 'quanto tempo', 'quando chega', 'demora?', 'cade meu pedido' -> Use a previsao ETA acima e responda de forma amigavel e especifica.";
             }
 
             // Build recently delivered hint
@@ -1037,7 +1449,8 @@ OBJETIVO: Cumprimentar e PROATIVAMENTE informar o que e relevante para o cliente
 {$deliveredHint}
 
 DETECCAO AUTOMATICA DE INTENCAO:
-1. Se mencionar nome de loja/restaurante -> identifique a loja e use [STORE:id:nome]
+1. Se mencionar nome de loja/restaurante -> identifique a loja e use [STORE:id:nome]. Verifique os RESULTADOS DE BUSCA (se houver) para match mais preciso
+1b. Se mencionar tipo de comida ("pizza", "hamburguer", "acai", "sushi") -> verifique os RESULTADOS DE BUSCA para encontrar lojas/produtos que combinam e sugira opcoes
 2. Se perguntar sobre pedido/status/rastreio -> fale sobre os pedidos ativos (se houver) e NUNCA use marcador nesse caso
 3. Se reclamar de algo -> entre em modo empatico, use [SWITCH_TO_ORDER] para suporte
 4. Se disser "repetir"/"mesmo pedido"/"pedir de novo"/"o de sempre"/"quero o mesmo" -> mostre os ultimos 3 pedidos com os itens e pergunte qual quer repetir. Quando o cliente escolher, use [REORDER:order_number] com o numero do pedido escolhido
@@ -1047,6 +1460,7 @@ DETECCAO AUTOMATICA DE INTENCAO:
 8. Se saudacao simples sem pedidos -> cumprimentar e perguntar o que precisa
 9. Se pedir "atendente"/"humano" -> use [TRANSFER_HUMAN]
 10. Se o cliente informar cidade/bairro/localizacao -> use [CITY:nome_da_cidade] para salvar e mostre lojas da regiao
+11. Se o cliente disser "agendar"/"marcar"/"pra amanha"/"pra depois"/"pra sabado"/"daqui a X horas" -> detectar intencao de agendamento e confirmar: "Pode agendar sim! Vamos montar o pedido e depois definimos o horario certinho"
 {$locationHint}
 {$storeList}
 {$returningHint}
@@ -1054,6 +1468,7 @@ DETECCAO AUTOMATICA DE INTENCAO:
 
 INSTRUCOES:
 - SEMPRE esteja a frente: o cliente mandou "oi"? Voce ja sabe se ele tem pedido ativo. Fale sobre isso PRIMEIRO.
+- Se detectar intencao de agendamento, confirme que pode agendar e siga o fluxo normal de pedido — o horario sera definido na etapa de confirmacao
 - Cumprimente de forma calorosa e BREVE (max 1 linha de saudacao)
 - Se o cliente e recorrente, use o nome dele e seja pessoal
 - Se detectar intencao de pedido direto, pule para o fluxo certo
@@ -1104,6 +1519,7 @@ INSTRUCOES:
 - Se nao sabe a localizacao do cliente, PERGUNTE PRIMEIRO antes de listar lojas
 - Quando o cliente informar cidade/bairro, use [CITY:nome_da_cidade]
 - Tente fazer match entre o que o cliente disse e uma loja da lista (match parcial e por categoria tb)
+- Se houver RESULTADOS DE BUSCA no contexto, USE-OS! Eles contem lojas e produtos que combinam com o que o cliente pediu
 - Se encontrar, confirme o nome e use o marcador [STORE:id:nome]
 - Se a loja estiver FECHADA, avise com empatia e sugira alternativas abertas da mesma categoria
 - Se nao encontrar, peca mais detalhes ou sugira opcoes populares
@@ -1122,15 +1538,102 @@ STEP;
         case STEP_TAKE_ORDER:
             $partnerName = $context['partner_name'] ?? 'a loja';
             $cartSummary = buildCartSummary($items);
+            $cartItemCount = count($items);
+
+            // Build popular items block
+            $popularBlock = '';
+            if ($popularItems && count($popularItems) > 0) {
+                $popLines = [];
+                foreach ($popularItems as $pi) {
+                    $priceFmt = number_format($pi['price'], 2, ',', '.');
+                    $popLines[] = "- [{$pi['product_id']}] {$pi['name']} (R\$ {$priceFmt}) — pedido {$pi['order_count']}x";
+                }
+                $popularBlock = "\n\nMAIS PEDIDOS DESTA LOJA (top sellers):\n" . implode("\n", $popLines);
+            }
+
+            // Build complementary items block
+            $complementaryBlock = '';
+            if ($complementaryItems && count($complementaryItems) > 0) {
+                $compLines = [];
+                foreach ($complementaryItems as $ci) {
+                    $priceFmt = number_format($ci['price'], 2, ',', '.');
+                    $compLines[] = "- [{$ci['product_id']}] {$ci['name']} (R\$ {$priceFmt}) [{$ci['category']}]";
+                }
+                $complementaryBlock = "\n\nSUGESTOES PRA ACOMPANHAR (baseado no carrinho):\n" . implode("\n", $compLines);
+            }
+
+            // Detect combos in menu
+            $comboHint = '';
+            if ($menuText && preg_match_all('/\[(\d+)\]\s+([^\n]*combo[^\n]*)\.\.\.\s*R\$\s*([\d.,]+)/i', $menuText, $comboMatches, PREG_SET_ORDER)) {
+                $comboLines = [];
+                foreach (array_slice($comboMatches, 0, 3) as $cm) {
+                    $comboLines[] = "- [{$cm[1]}] {$cm[2]} — R\$ {$cm[3]}";
+                }
+                if (!empty($comboLines)) {
+                    $comboHint = "\n\nCOMBOS DISPONIVEIS:\n" . implode("\n", $comboLines);
+                    $comboHint .= "\nDICA: Se o cliente pedir itens separados que existem como combo, mencione: \"Tem um combo que sai melhor!\"";
+                }
+            }
+
+            // Build upsell behavior instructions based on cart state
+            $upsellInstructions = '';
+            if ($cartItemCount === 0) {
+                // Empty cart — just show popular items as initial suggestion
+                if (!empty($popularBlock)) {
+                    $upsellInstructions = "\n\nDICA DE VENDA: Se o cliente nao souber o que pedir, sugira os mais pedidos de forma natural: \"O pessoal aqui pede muito [item], quer experimentar?\"";
+                }
+            } elseif ($cartItemCount === 1) {
+                // First item added — suggest complementary
+                $upsellInstructions = "\n\nDICA DE VENDA (1 ITEM NO CARRINHO): Depois de confirmar o item, sugira algo complementar de forma natural e BREVE. Exemplos:";
+                $upsellInstructions .= "\n- Se adicionou comida: \"Vai querer uma bebida pra acompanhar?\"";
+                $upsellInstructions .= "\n- Se adicionou pizza: \"E uma batata ou porcao pra completar?\"";
+                $upsellInstructions .= "\n- Se adicionou acai: \"Quer adicionar algum extra tipo granola ou leite condensado?\"";
+                if (!empty($complementaryBlock)) {
+                    $upsellInstructions .= "\n- Use as SUGESTOES PRA ACOMPANHAR listadas abaixo — sao itens reais do cardapio";
+                }
+                $upsellInstructions .= "\n- Sugira UMA VEZ so. Se o cliente disser nao, respeite e siga em frente.";
+            } else {
+                // 2+ items — lighter touch
+                $upsellInstructions = "\n\nDICA DE VENDA (2+ ITENS NO CARRINHO): O cliente ja tem itens. Pergunte de forma leve: \"Quer mais alguma coisa ou posso fechar?\"";
+                $upsellInstructions .= "\n- NAO fique insistindo em sugestoes — o cliente ja escolheu bastante";
+                $upsellInstructions .= "\n- Se ele disser que acabou, use [NEXT_STEP] sem hesitar";
+            }
+
+            // Fetch available coupons for this store
+            $storeCouponsBlock = '';
+            $storeCoupons = getAvailableCoupons($db, $context['partner_id'] ?? null, $conversation['customer_id'] ?? null);
+            if (!empty($storeCoupons)) {
+                $couponLines = [];
+                foreach ($storeCoupons as $sc) {
+                    $cond = $sc['conditions'] ? " ({$sc['conditions']})" : '';
+                    $couponLines[] = "- *{$sc['code']}*: {$sc['discount_text']}{$cond}";
+                }
+                $storeCouponsBlock = "\n\nCUPONS DISPONIVEIS NESTA LOJA:\n" . implode("\n", $couponLines);
+                $storeCouponsBlock .= "\nDICA: Mencione cupons naturalmente se fizer sentido. Ex: \"Ah, a loja ta com cupom {$storeCoupons[0]['code']} com {$storeCoupons[0]['discount_text']}!\"";
+            }
+
+            // Check if coupon already applied
+            $appliedCouponBlock = '';
+            if (!empty($context['coupon_code'])) {
+                $appliedCouponBlock = "\n\nCUPOM APLICADO: *{$context['coupon_code']}* — " . ($context['coupon_description'] ?? '');
+                if (($context['coupon_discount'] ?? 0) > 0) {
+                    $appliedCouponBlock .= " (desconto: R\$ " . number_format($context['coupon_discount'], 2, ',', '.') . ")";
+                }
+            }
 
             $stepInstructions = <<<STEP
 ETAPA ATUAL: Montar pedido
 
 LOJA: *{$partnerName}*
 {$menuText}
+{$popularBlock}
+{$complementaryBlock}
+{$comboHint}
+{$storeCouponsBlock}
 
 CARRINHO ATUAL:
-{$cartSummary}
+{$cartSummary}{$appliedCouponBlock}
+{$upsellInstructions}
 
 INSTRUCOES:
 - Ajude o cliente a escolher itens do cardapio de forma natural e amigavel
@@ -1138,16 +1641,23 @@ INSTRUCOES:
 - Adicione com [ITEM:product_id:nome:preco:quantidade]
 - Se o produto tem opcoes OBRIGATORIAS, pergunte quais opcoes antes de adicionar
 - Se o cliente quer remover um item, use [REMOVE_ITEM:indice] (indice comeca em 0)
-- Sugira acompanhamentos e combos naturalmente: "Vai querer uma bebida pra acompanhar?"
 - Quando o cliente disser que terminou ("so isso", "e isso", "fecha", "bora", "pode fechar"), use [NEXT_STEP]
 - Mostre o subtotal atualizado quando adicionar/remover itens
 - Se o cliente pedir algo que nao existe, diga de forma leve: "Esse nao tem, mas olha essas opcoes..."
-- IMPORTANTE: Use APENAS product_ids que existem no cardapio acima
+- IMPORTANTE: Use APENAS product_ids que existem no cardapio acima. NUNCA invente itens ou precos.
+- IMPORTANTE: Sugestoes devem vir APENAS dos dados de MAIS PEDIDOS, SUGESTOES PRA ACOMPANHAR ou COMBOS acima. NUNCA invente sugestoes.
 - Se o cliente pedir "o de sempre" ou "o mesmo", verifique no historico de pedidos e sugira
+- Seja natural nas sugestoes — como um garcom amigo, nao como um vendedor insistente
+
+CUPONS E DESCONTOS:
+- Se o cliente mencionar "cupom", "desconto", "codigo promocional" ou similar, peca o codigo e use [COUPON:CODIGO]
+- Se a loja tem cupons disponiveis (listados abaixo), mencione de forma natural: "A loja ta com cupom [CODE] com [desconto]!"
+- Nunca invente cupons — use apenas os listados ou o que o cliente informar
 
 MARCADORES:
 - [ITEM:product_id:nome:preco:qty] — adicionar item (preco unitario como float, ex: 25.90)
 - [REMOVE_ITEM:indice] — remover item pelo indice no carrinho (0-based)
+- [COUPON:CODIGO] — aplicar cupom de desconto (ex: [COUPON:PROMO10])
 - [NEXT_STEP] — finalizar montagem do pedido
 - [TRANSFER_HUMAN] — transferir para humano
 STEP;
@@ -1155,6 +1665,8 @@ STEP;
 
         case STEP_GET_ADDRESS:
             $addressList = '';
+            $defaultAddr = null;
+            $currentDateTime = date('Y-m-d\\TH:i');
             if ($addresses && count($addresses) > 0) {
                 $addrLines = [];
                 foreach ($addresses as $i => $addr) {
@@ -1166,42 +1678,104 @@ STEP;
                         $addr['neighborhood'] ?? '',
                         $addr['city'] ?? '',
                     ]));
-                    $addrLines[] = ($i + 1) . ". *{$label}*: {$fullAddr}";
+                    $isDefault = ((int)($addr['is_default'] ?? 0) === 1);
+                    $defaultTag = $isDefault ? ' (padrao)' : '';
+                    $addrLines[] = ($i + 1) . ". *{$label}*: {$fullAddr}{$defaultTag}";
+                    if ($isDefault) {
+                        $defaultAddr = ['label' => $label, 'full' => $fullAddr, 'index' => $i];
+                    }
                 }
-                $addressList = "\n\nENDERECOS SALVOS:\n" . implode("\n", $addrLines);
+                $newIdx = count($addresses) + 1;
+                $addrLines[] = "{$newIdx}. *Novo endereco*";
+                $addressList = "\n\nENDERECOS SALVOS DO CLIENTE:\n" . implode("\n", $addrLines);
             }
 
             $hasAddresses = $addresses && count($addresses) > 0;
-            $addressHint = $hasAddresses
-                ? "O cliente tem enderecos salvos! Pergunte de forma natural: \"Entrego no mesmo lugar de sempre?\" ou \"Qual endereco?\""
-                : "O cliente nao tem enderecos salvos. Peca o endereco completo de forma amigavel.";
+
+            // Build smart address hint based on context
+            if ($hasAddresses && $defaultAddr) {
+                $addressHint = "O cliente e recorrente e tem um endereco PADRAO salvo! Sugira direto de forma natural:";
+                $addressHint .= "\nExemplo: \"Entrego no mesmo lugar? *{$defaultAddr['label']}* — {$defaultAddr['full']}\"";
+                $addressHint .= "\nSe confirmar ('sim', 'isso', 'la mesmo', 'pode ser'), aceite e use [NEXT_STEP]";
+                $addressHint .= "\nSe quiser outro, mostre a lista numerada acima";
+            } elseif ($hasAddresses) {
+                $addressHint = "O cliente tem enderecos salvos! Pergunte de forma natural: \"Onde entrego?\" e mostre as opcoes numeradas.";
+                $addressHint .= "\nSe disser o numero (1, 2...) ou o label ('casa', 'trabalho'), aceite e use [NEXT_STEP]";
+            } else {
+                $addressHint = "O cliente nao tem enderecos salvos. Peca o endereco de forma amigavel.";
+                $addressHint .= "\nLembre que pode compartilhar a localizacao do WhatsApp!";
+            }
+
+            // Check if scheduling context already set
+            $schedulingHint = '';
+            if (!empty($context['scheduled_for'])) {
+                $schedFmt = date('d/m \\a\\s H:i', strtotime($context['scheduled_for']));
+                $schedulingHint = "\n\nPEDIDO AGENDADO PARA: *{$schedFmt}*. Continue normalmente com o endereco.";
+            }
 
             $stepInstructions = <<<STEP
 ETAPA ATUAL: Endereco de entrega
 
 OBJETIVO: Obter o endereco de entrega do cliente.
 {$addressList}
+{$schedulingHint}
 
 {$addressHint}
 
 INSTRUCOES:
-- Se o cliente tem enderecos salvos, pergunte se quer usar um deles de forma natural (nao robotica)
-- Se o cliente disser o numero (1, 2, etc) ou o label ("casa", "trabalho"), aceite
-- Se nao tem salvos, peca o endereco: "Me manda o endereco de entrega"
-- Aceite localizacao do WhatsApp tambem: "Pode mandar a localizacao pelo WhatsApp tb!"
+- Se o cliente tem endereco padrao, sugira direto: "Entrego no mesmo lugar de sempre? [endereco padrao]"
+- Se o cliente confirmar o padrao (sim, isso, la mesmo, pode ser, esse mesmo), aceite e use [NEXT_STEP]
+- Se o cliente tem enderecos salvos, mostre a lista numerada com opcao de novo endereco no final
+- Se o cliente disser o numero (1, 2, etc) ou o label ("casa", "trabalho"), aceite e use [NEXT_STEP]
+- Se escolher "novo endereco" ou nao tem salvos, peca o endereco: "Me manda o endereco de entrega"
+- Aceite localizacao do WhatsApp tambem: "Ou pode mandar sua localizacao aqui no WhatsApp que eu uso ela!"
+- Quando o cliente digitar um endereco novo, aceite de forma natural:
+  * "Rua Campos Sales, 1650 - Centro" -> aceitar como endereco
+  * Pode receber em partes: rua, depois numero, depois bairro
+  * Se faltar informacao importante (numero, bairro), pergunte: "Qual o numero?"
+  * NAO exija endereco perfeito — se tem rua e numero, ja da pra entregar
+- Se o endereco e NOVO (digitado pelo cliente, nao era dos salvos), use [SAVE_ADDRESS] junto com [NEXT_STEP]
 - Quando tiver o endereco confirmado, use [NEXT_STEP]
+- Tambem pergunte sobre agendamento se ainda nao foi definido: "Quer pra agora ou pra depois?"
+  * Se o cliente quiser agendar, entenda a data/hora natural e use [SCHEDULE:YYYY-MM-DDTHH:MM]
+  * Entenda linguagem natural: "amanha ao meio dia", "sabado as 19h", "daqui a 2 horas", "pra agora"
+  * Converta para formato ISO: [SCHEDULE:2026-03-07T12:00]
+  * "pra agora"/"agora mesmo" -> NAO use SCHEDULE (entrega imediata)
+  * Minimo 30 min no futuro, maximo 7 dias
+  * Se horario invalido: "Precisa ser pelo menos daqui 30 min e no maximo 7 dias"
+
+DATA/HORA ATUAL: {$currentDateTime}
 
 MARCADORES:
 - [NEXT_STEP] — endereco obtido, avancar para pagamento
+- [SCHEDULE:YYYY-MM-DDTHH:MM] — agendar pedido (ex: [SCHEDULE:2026-03-07T12:00])
+- [SAVE_ADDRESS] — salvar endereco novo (use quando endereco foi digitado, nao dos salvos)
 - [TRANSFER_HUMAN] — transferir para humano
 STEP;
             break;
 
         case STEP_GET_PAYMENT:
-            $stepInstructions = <<<STEP
-ETAPA ATUAL: Forma de pagamento
+            // Fetch cashback balance for the customer
+            $cashbackBlock = '';
+            $paymentCustomerId = $conversation['customer_id'] ?? null;
+            if ($paymentCustomerId) {
+                $cbBal = getCustomerCashback($db, (int)$paymentCustomerId);
+                if ($cbBal > 0) {
+                    $cbBalFmt = number_format($cbBal, 2, ',', '.');
+                    $cashbackBlock = "\n\nSALDO DE CASHBACK DO CLIENTE: R\$ {$cbBalFmt}\nMencione isso de forma natural: 'Voce tem R\$ {$cbBalFmt} de cashback! Quer usar no pedido?'";
+                }
+            }
 
-OBJETIVO: Descobrir como o cliente quer pagar.
+            // Check if coupon already applied
+            $paymentCouponBlock = '';
+            if (!empty($context['coupon_code'])) {
+                $paymentCouponBlock = "\n\nCUPOM JA APLICADO: *{$context['coupon_code']}* — " . ($context['coupon_description'] ?? '');
+            }
+
+            $stepInstructions = <<<STEP
+ETAPA ATUAL: Forma de pagamento{$cashbackBlock}{$paymentCouponBlock}
+
+OBJETIVO: Descobrir como o cliente quer pagar e se quer usar cashback.
 
 OPCOES DISPONIVEIS:
 - *PIX* — pagamento instantaneo, link gerado na hora
@@ -1211,11 +1785,16 @@ OPCOES DISPONIVEIS:
 INSTRUCOES:
 - Pergunte de forma natural: "Como quer pagar? PIX, cartao ou dinheiro?"
 - Se o cliente escolher dinheiro, pergunte "Precisa de troco? Se sim, pra quanto?"
+- Se o cliente tiver saldo de cashback (informado abaixo), mencione de forma natural: "Ah, e voce tem R$ X,XX de cashback! Quer usar no pedido?"
+- Se o cliente quiser usar cashback, use [USE_CASHBACK:valor] com o valor que ele quer usar (ou o total do saldo)
 - Quando tiver a forma de pagamento, use [NEXT_STEP]
 - Aceite variacoes: "pix"/"transferencia", "cartao"/"credito"/"debito", "dinheiro"/"na entrega"/"cash"
 - Se o cliente perguntar sobre o PIX, explique: "O link do PIX e gerado automaticamente depois que o pedido for confirmado"
+- Se o cliente mencionar "cupom" ou "desconto" aqui, tambem aceite com [COUPON:CODIGO]
 
 MARCADORES:
+- [COUPON:CODIGO] — aplicar cupom de desconto
+- [USE_CASHBACK:valor] — usar cashback (ex: [USE_CASHBACK:5.50] ou [USE_CASHBACK:all] para usar tudo)
 - [NEXT_STEP] — pagamento definido, ir para confirmacao
 - [TRANSFER_HUMAN] — transferir para humano
 STEP;
@@ -1226,7 +1805,21 @@ STEP;
             $subtotal = calculateSubtotal($items);
             $deliveryFee = (float)($context['delivery_fee'] ?? WABOT_DEFAULT_DELIVERY_FEE);
             $serviceFee = WABOT_SERVICE_FEE;
-            $total = $subtotal + $deliveryFee + $serviceFee;
+
+            // Coupon discount
+            $couponDiscount = (float)($context['coupon_discount'] ?? 0);
+            $couponDesc = $context['coupon_description'] ?? '';
+            $couponCode = $context['coupon_code'] ?? '';
+            $couponFreeDelivery = !empty($context['coupon_free_delivery']);
+            if ($couponFreeDelivery) {
+                $deliveryFee = 0;
+            }
+
+            // Cashback usage
+            $useCashback = (float)($context['use_cashback'] ?? 0);
+
+            $total = max(0, $subtotal - $couponDiscount - $useCashback + $deliveryFee + $serviceFee);
+
             $address = $context['address'] ?? 'Nao informado';
             $payment = formatPaymentLabel($context['payment_method'] ?? '');
             $partnerName = $context['partner_name'] ?? 'a loja';
@@ -1236,9 +1829,62 @@ STEP;
             $serviceFeeFmt = number_format($serviceFee, 2, ',', '.');
             $totalFmt = number_format($total, 2, ',', '.');
 
+            // Build discount lines for the summary
+            $discountLines = '';
+            if ($couponDiscount > 0) {
+                $discountLines .= "\nDesconto (cupom {$couponCode}): -R\$ " . number_format($couponDiscount, 2, ',', '.');
+            }
+            if ($couponFreeDelivery && $couponDiscount <= 0) {
+                $discountLines .= "\nCupom {$couponCode}: *Entrega gratis!*";
+            }
+            if ($useCashback > 0) {
+                $discountLines .= "\nCashback usado: -R\$ " . number_format($useCashback, 2, ',', '.');
+            }
+
             $changeInfo = '';
             if (($context['payment_method'] ?? '') === 'dinheiro' && ($context['payment_change'] ?? 0) > 0) {
                 $changeInfo = "\nTroco para: R\$ " . number_format((float)$context['payment_change'], 2, ',', '.');
+            }
+
+            // Cashback balance hint
+            $cashbackHint = '';
+            $customerId_confirm = $conversation['customer_id'] ?? null;
+            if ($customerId_confirm && $useCashback <= 0) {
+                $cbBalance = getCustomerCashback($db, (int)$customerId_confirm);
+                if ($cbBalance > 0) {
+                    $cbFmt = number_format($cbBalance, 2, ',', '.');
+                    $cashbackHint = "\n\nINFO CASHBACK: O cliente tem R\$ {$cbFmt} de cashback disponivel. Se ele quiser usar, use [USE_CASHBACK:valor].";
+                }
+            }
+
+            // Build last-chance upsell hint for small orders (below R$50)
+            $lastChanceHint = '';
+            if ($total < 50.00 && $popularItems && count($popularItems) > 0) {
+                $cartProductIds = array_map(function ($it) { return (int)($it['product_id'] ?? 0); }, $items);
+                $suggestion = null;
+                foreach ($popularItems as $pi) {
+                    if (!in_array((int)$pi['product_id'], $cartProductIds)) {
+                        $suggestion = $pi;
+                        break;
+                    }
+                }
+                if ($suggestion) {
+                    $sugPriceFmt = number_format($suggestion['price'], 2, ',', '.');
+                    $lastChanceHint = "\n\nULTIMA SUGESTAO (pedido abaixo de R\$50):";
+                    $lastChanceHint .= "\n- Item popular: [{$suggestion['product_id']}] {$suggestion['name']} (R\$ {$sugPriceFmt})";
+                    $lastChanceHint .= "\n- Mencione de forma leve ANTES de confirmar: \"Ah, e a {$partnerName} tem {$suggestion['name']} que o pessoal adora! Quer adicionar? Se nao, confirmo seu pedido!\"";
+                    $lastChanceHint .= "\n- Se o cliente disser sim, adicione com [ITEM:{$suggestion['product_id']}:{$suggestion['name']}:{$suggestion['price']}:1] e mostre resumo atualizado";
+                    $lastChanceHint .= "\n- Se disser nao ou confirmar direto, siga com [CONFIRMED] normalmente";
+                    $lastChanceHint .= "\n- Faca essa sugestao UMA VEZ so — nao insista";
+                }
+            }
+
+            // Build scheduling display for confirmation
+            $schedulingDisplay = '';
+            if (!empty($context['scheduled_for'])) {
+                $schedDt = strtotime($context['scheduled_for']);
+                $schedFmt = date('d/m/Y \a\s H:i', $schedDt);
+                $schedulingDisplay = "\nAgendado para: *{$schedFmt}*";
             }
 
             $stepInstructions = <<<STEP
@@ -1249,24 +1895,33 @@ Loja: *{$partnerName}*
 
 {$cartSummary}
 
-Subtotal: R\$ {$subtotalFmt}
+Subtotal: R\$ {$subtotalFmt}{$discountLines}
 Taxa de entrega: R\$ {$deliveryFeeFmt}
 Taxa de servico: R\$ {$serviceFeeFmt}
 *Total: R\$ {$totalFmt}*
 
 Endereco: {$address}
-Pagamento: {$payment}{$changeInfo}
+Pagamento: {$payment}{$changeInfo}{$schedulingDisplay}
+{$lastChanceHint}
+{$cashbackHint}
 
 INSTRUCOES:
 - Mostre o resumo completo do pedido formatado bonito com WhatsApp formatting
+- Inclua todas as linhas de desconto (cupom e/ou cashback) se houver
+- Se o pedido e agendado, destaque o horario: "Pedido agendado pra *[data/hora]*"
 - Termine com algo tipo "Ta tudo certo? Confirma pra mim!"
 - Se o cliente confirmar (sim, ok, confirma, isso, bora, beleza, manda, fecha, s, etc), use [CONFIRMED]
 - Se quiser alterar algo, ajude a alterar de forma natural
 - Se quiser cancelar, confirme: "Certeza que quer cancelar?"
+- Se o cliente mencionar cupom ou cashback agora, aceite: [COUPON:CODIGO] ou [USE_CASHBACK:valor]
 - NUNCA pressione o cliente — se ele hesitar, ajude
+- IMPORTANTE: Sugestoes de ultimo momento devem vir APENAS dos dados acima. NUNCA invente itens.
 
 MARCADORES:
+- [ITEM:product_id:nome:preco:qty] — adicionar item sugerido de ultimo momento
 - [CONFIRMED] — pedido confirmado, submeter
+- [COUPON:CODIGO] — aplicar cupom de desconto
+- [USE_CASHBACK:valor] — usar cashback (ex: [USE_CASHBACK:5.50] ou [USE_CASHBACK:all])
 - [TRANSFER_HUMAN] — transferir para humano
 STEP;
             break;
@@ -1287,7 +1942,21 @@ STEP;
                     $statusHuman = $statusEmojis[$ao['status']] ?? $ao['status'];
                     $total = number_format((float)$ao['total'], 2, ',', '.');
                     $mins = round((float)($ao['minutes_ago'] ?? 0));
-                    $activeOrdersHint .= "\n- Pedido #{$ao['order_number']} (order_id={$ao['order_id']}) | {$ao['partner_name']} | R\$ {$total} | {$statusHuman} | ha {$mins} min";
+
+                    // Calculate ETA for support context
+                    $supportEtaHint = '';
+                    try {
+                        $distKm = isset($ao['distancia_km']) ? (float)$ao['distancia_km'] : 5.0;
+                        $etaMins = calculateSmartETA($db, (int)$ao['partner_id'], $distKm, $ao['status']);
+                        if ($etaMins > 0) {
+                            $etaArrival = (new DateTime('now', new DateTimeZone('America/Sao_Paulo')))
+                                ->modify("+{$etaMins} minutes")
+                                ->format('H:i');
+                            $supportEtaHint = " | ETA: ~{$etaMins} min (chega ~{$etaArrival})";
+                        }
+                    } catch (\Throwable $e) {}
+
+                    $activeOrdersHint .= "\n- Pedido #{$ao['order_number']} (order_id={$ao['order_id']}) | {$ao['partner_name']} | R\$ {$total} | {$statusHuman} | ha {$mins} min{$supportEtaHint}";
                 }
             }
 
@@ -1298,12 +1967,16 @@ OBJETIVO: Ajudar o cliente com duvidas, status de pedidos, reclamacoes ou cancel
 {$activeOrdersHint}
 
 INSTRUCOES:
-- Para STATUS: Se tiver pedidos ativos, informe o status de forma amigavel e detalhada
-  * "pendente" -> "Seu pedido ta aguardando a loja confirmar, ja ja sai!"
-  * "confirmado/aceito" -> "A loja ja aceitou seu pedido! Vai comecar a preparar"
-  * "preparando" -> "Ta sendo preparado agora! Quase saindo"
-  * "pronto" -> "Seu pedido ta pronto! So aguardando o entregador pegar"
-  * "em_entrega" -> "Ta a caminho! Entregador ja saiu com seu pedido"
+- Para STATUS: Se tiver pedidos ativos, informe o status de forma amigavel e detalhada, SEMPRE incluindo a previsao (ETA) quando disponivel
+  * "pendente" -> "Seu pedido ta aguardando a loja confirmar, deve chegar em ~X minutos!"
+  * "confirmado/aceito" -> "A loja ja aceitou! Previsao de entrega por volta das HH:MM"
+  * "preparando" -> "Ta sendo preparado agora! Deve ficar pronto em uns X minutos e chegar por volta das HH:MM"
+  * "pronto" -> "Seu pedido ta pronto! Deve chegar em ~X minutos"
+  * "em_entrega" -> "Ta a caminho! Deve chegar em ~X minutinhos, por volta das HH:MM"
+- Para perguntas de TEMPO ("quanto tempo", "quando chega", "demora muito", "cade", "tempo estimado"):
+  * Use o ETA da lista de pedidos ativos acima para dar uma estimativa especifica
+  * Responda de forma amigavel: "Deve chegar em ~X minutos, por volta das HH:MM!"
+  * Se estiver demorando mais que o esperado, valide: "Ta demorando um pouquinho mais que o normal, mas ja ta a caminho!"
 - Para RECLAMACOES: Seja MUITO empatica. Valide o sentimento do cliente primeiro.
   * "Poxa, sinto muito que isso aconteceu..."
   * "Entendo sua frustracao, vou resolver isso"
@@ -1340,9 +2013,36 @@ STEP;
     // Build full prompt
     $prompt = $personality . "\n\n" . $stepInstructions;
 
+    // Add time-of-day context
+    if ($timeCtx) {
+        $weekendNote = $timeCtx['is_weekend'] ? ' (fim de semana)' : '';
+        $prompt .= "\n\nCONTEXTO DE HORARIO:";
+        $prompt .= "\n- Agora em SP: {$timeCtx['time_str']} ({$timeCtx['day_of_week']}{$weekendNote})";
+        $prompt .= "\n- Periodo: {$timeCtx['period']}";
+        $prompt .= "\n- Sugestao de saudacao: {$timeCtx['greeting']}";
+        $prompt .= "\n- Use esse contexto para saudacoes e sugestoes naturais (ex: de manha sugira cafe, na hora do almoco sugira pratos, etc.)";
+    }
+
+    // Add search results if available
+    if (!empty($searchContext)) {
+        $prompt .= "\n\nRESULTADOS DE BUSCA (o cliente mencionou algo que encontrou match no banco):\n" . $searchContext;
+        $prompt .= "\nDICA: Use esses resultados para sugerir opcoes ao cliente. Se encontrou lojas, apresente-as. Se encontrou produtos, mencione em quais lojas estao disponiveis.";
+    }
+
     // Add memory context if available
     if (!empty($memoryContext)) {
         $prompt .= "\n\nMEMORIA DE CONVERSAS ANTERIORES (use para personalizar):\n" . $memoryContext;
+    }
+
+    // Add note if customer previously sent audio
+    $context = json_decode($conversation['ai_context'] ?? '{}', true) ?: [];
+    if (!empty($context['sent_audio'])) {
+        $prompt .= "\n\nNOTA: O cliente ja tentou enviar audio anteriormente. Se ele parecer frustrado, seja extra amigavel.";
+    }
+
+    // Multi-turn memory: remember price sensitivity
+    if (!empty($context['price_sensitive'])) {
+        $prompt .= "\n\nNOTA: O cliente demonstrou interesse em precos/promocoes. Destaque opcoes mais em conta e promocoes.";
     }
 
     return $prompt;
@@ -1402,6 +2102,262 @@ function formatPaymentLabel(string $method): string
         'dinheiro' => 'Dinheiro na entrega',
     ];
     return $labels[$method] ?? ($method ?: 'Nao definido');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// COUPON & CASHBACK HELPERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Get a customer's cashback balance.
+ * Uses getCashbackBalance() from helpers/cashback.php.
+ */
+function getCustomerCashback(PDO $db, ?int $customerId): float
+{
+    if (!$customerId || $customerId <= 0) {
+        return 0.0;
+    }
+    try {
+        return getCashbackBalance($db, $customerId);
+    } catch (\Exception $e) {
+        error_log(WABOT_LOG_PREFIX . " Error fetching cashback for customer {$customerId}: " . $e->getMessage());
+        return 0.0;
+    }
+}
+
+/**
+ * Validate a coupon code for a given partner and cart subtotal.
+ * Server-side validation — mirrors carrinho/cupom.php logic.
+ *
+ * @return array{valid: bool, coupon_id: int, discount: float, discount_type: string, description: string, message: string, free_delivery: bool}
+ */
+function wabotValidateCoupon(PDO $db, string $code, ?int $partnerId, float $subtotal, ?int $customerId): array
+{
+    $code = strtoupper(trim(substr($code, 0, 50)));
+    $invalid = fn(string $msg) => [
+        'valid' => false, 'coupon_id' => 0, 'discount' => 0,
+        'discount_type' => '', 'description' => '', 'message' => $msg, 'free_delivery' => false,
+    ];
+
+    if (empty($code)) {
+        return $invalid('Codigo do cupom vazio');
+    }
+
+    try {
+        // Fetch coupon
+        $stmt = $db->prepare("SELECT * FROM om_market_coupons WHERE code = ? AND status = 'active'");
+        $stmt->execute([$code]);
+        $cupom = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$cupom) {
+            return $invalid('Cupom invalido ou expirado');
+        }
+
+        $now = date('Y-m-d H:i:s');
+
+        // Date validation
+        if (!empty($cupom['valid_from']) && $now < $cupom['valid_from']) {
+            return $invalid('Cupom ainda nao esta ativo');
+        }
+        if (!empty($cupom['valid_until']) && $now > $cupom['valid_until']) {
+            return $invalid('Cupom expirado');
+        }
+
+        // Global max uses
+        if (!empty($cupom['max_uses']) && (int)$cupom['max_uses'] > 0) {
+            $stmt = $db->prepare("SELECT COUNT(*) FROM om_market_coupon_usage WHERE coupon_id = ?");
+            $stmt->execute([$cupom['id']]);
+            if ((int)$stmt->fetchColumn() >= (int)$cupom['max_uses']) {
+                return $invalid('Cupom esgotado');
+            }
+        }
+
+        // Per-user max uses
+        if ($customerId && !empty($cupom['max_uses_per_user']) && (int)$cupom['max_uses_per_user'] > 0) {
+            $stmt = $db->prepare("SELECT COUNT(*) FROM om_market_coupon_usage WHERE coupon_id = ? AND customer_id = ?");
+            $stmt->execute([$cupom['id'], $customerId]);
+            if ((int)$stmt->fetchColumn() >= (int)$cupom['max_uses_per_user']) {
+                return $invalid('Voce ja usou este cupom o maximo de vezes permitido');
+            }
+        }
+
+        // Min order value
+        if (!empty($cupom['min_order_value']) && $subtotal < (float)$cupom['min_order_value']) {
+            $minVal = number_format((float)$cupom['min_order_value'], 2, ',', '.');
+            return $invalid("Pedido minimo para este cupom: R\$ {$minVal}");
+        }
+
+        // First order only
+        if (!empty($cupom['first_order_only']) && (int)$cupom['first_order_only'] === 1 && $customerId) {
+            $stmt = $db->prepare("SELECT COUNT(*) FROM om_market_orders WHERE customer_id = ? AND status NOT IN ('cancelado')");
+            $stmt->execute([$customerId]);
+            if ((int)$stmt->fetchColumn() > 0) {
+                return $invalid('Cupom valido apenas para primeiro pedido');
+            }
+        }
+
+        // Partner restriction
+        if (!empty($cupom['specific_partners'])) {
+            $partners = json_decode($cupom['specific_partners'], true);
+            if (is_array($partners) && !empty($partners) && $partnerId && !in_array($partnerId, $partners)) {
+                return $invalid('Cupom nao valido para esta loja');
+            }
+        }
+
+        // Calculate discount
+        $discountType = $cupom['discount_type'] ?? 'percentage';
+        $discountValue = (float)($cupom['discount_value'] ?? 0);
+        $maxDiscount = !empty($cupom['max_discount']) ? (float)$cupom['max_discount'] : null;
+        $desconto = 0;
+        $descricao = '';
+
+        switch ($discountType) {
+            case 'percentage':
+                $desconto = round($subtotal * ($discountValue / 100), 2);
+                if ($maxDiscount && $desconto > $maxDiscount) {
+                    $desconto = $maxDiscount;
+                }
+                $descricao = $discountValue . '% OFF' . ($maxDiscount ? ' (max R$ ' . number_format($maxDiscount, 2, ',', '.') . ')' : '');
+                break;
+            case 'fixed':
+                $desconto = min($discountValue, $subtotal);
+                $descricao = 'R$ ' . number_format($discountValue, 2, ',', '.') . ' OFF';
+                break;
+            case 'free_delivery':
+                $desconto = 0;
+                $descricao = 'Entrega gratis';
+                break;
+            case 'cashback':
+                $desconto = round($subtotal * ($discountValue / 100), 2);
+                if ($maxDiscount && $desconto > $maxDiscount) {
+                    $desconto = $maxDiscount;
+                }
+                $descricao = $discountValue . '% cashback';
+                break;
+            default:
+                $descricao = 'Desconto aplicado';
+        }
+
+        return [
+            'valid'         => true,
+            'coupon_id'     => (int)$cupom['id'],
+            'discount'      => round($desconto, 2),
+            'discount_type' => $discountType,
+            'description'   => $descricao,
+            'message'       => "Cupom *{$code}* aplicado! {$descricao}",
+            'free_delivery' => $discountType === 'free_delivery',
+        ];
+
+    } catch (\Exception $e) {
+        error_log(WABOT_LOG_PREFIX . " Error validating coupon '{$code}': " . $e->getMessage());
+        return $invalid('Erro ao validar cupom');
+    }
+}
+
+/**
+ * Get available coupons for a store (or global coupons).
+ * Returns formatted list suitable for AI prompt context.
+ *
+ * @return array List of available coupons with code, description, discount_text
+ */
+function getAvailableCoupons(PDO $db, ?int $partnerId, ?int $customerId = null): array
+{
+    try {
+        $now = date('Y-m-d H:i:s');
+
+        $stmt = $db->prepare("
+            SELECT
+                c.id, c.code, c.description, c.discount_type, c.discount_value,
+                c.max_discount, c.min_order_value, c.valid_until, c.first_order_only,
+                c.max_uses, c.max_uses_per_user, c.specific_customers,
+                (SELECT COUNT(*) FROM om_market_coupon_usage WHERE coupon_id = c.id) as uses_count
+            FROM om_market_coupons c
+            WHERE c.status = 'active'
+              AND (c.valid_from IS NULL OR c.valid_from <= ?)
+              AND (c.valid_until IS NULL OR c.valid_until >= ?)
+              AND (
+                  c.specific_partners IS NULL
+                  OR c.specific_partners = ''
+                  OR c.specific_partners = '[]'
+                  OR c.specific_partners::jsonb @> ?::jsonb
+              )
+            ORDER BY c.discount_value DESC
+            LIMIT 5
+        ");
+        $stmt->execute([$now, $now, json_encode([$partnerId ?: 0])]);
+        $coupons = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $result = [];
+        foreach ($coupons as $c) {
+            // Skip exhausted coupons
+            if ($c['max_uses'] && (int)$c['uses_count'] >= (int)$c['max_uses']) {
+                continue;
+            }
+
+            // Skip customer-specific coupons not for this customer
+            if (!empty($c['specific_customers']) && $customerId) {
+                $specCustomers = json_decode($c['specific_customers'], true);
+                if (is_array($specCustomers) && !empty($specCustomers) && !in_array($customerId, $specCustomers)) {
+                    continue;
+                }
+            }
+
+            // Skip if customer already used max times
+            if ($customerId && $c['max_uses_per_user'] && (int)$c['max_uses_per_user'] > 0) {
+                $stmtUsage = $db->prepare("SELECT COUNT(*) FROM om_market_coupon_usage WHERE coupon_id = ? AND customer_id = ?");
+                $stmtUsage->execute([$c['id'], $customerId]);
+                if ((int)$stmtUsage->fetchColumn() >= (int)$c['max_uses_per_user']) {
+                    continue;
+                }
+            }
+
+            // Format discount text
+            $discountText = '';
+            switch ($c['discount_type']) {
+                case 'percentage':
+                    $discountText = (int)$c['discount_value'] . '% de desconto';
+                    if ($c['max_discount']) {
+                        $discountText .= ' (max R$ ' . number_format((float)$c['max_discount'], 2, ',', '.') . ')';
+                    }
+                    break;
+                case 'fixed':
+                    $discountText = 'R$ ' . number_format((float)$c['discount_value'], 2, ',', '.') . ' de desconto';
+                    break;
+                case 'free_delivery':
+                    $discountText = 'Frete gratis';
+                    break;
+                case 'cashback':
+                    $discountText = (int)$c['discount_value'] . '% de cashback';
+                    break;
+                default:
+                    $discountText = 'Desconto especial';
+            }
+
+            $conditions = [];
+            if ((float)$c['min_order_value'] > 0) {
+                $conditions[] = 'pedido min. R$ ' . number_format((float)$c['min_order_value'], 2, ',', '.');
+            }
+            if ($c['first_order_only']) {
+                $conditions[] = 'so 1a compra';
+            }
+
+            $result[] = [
+                'code'            => $c['code'],
+                'description'     => $c['description'] ?: $discountText,
+                'discount_text'   => $discountText,
+                'discount_type'   => $c['discount_type'],
+                'discount_value'  => (float)$c['discount_value'],
+                'min_order_value' => (float)$c['min_order_value'],
+                'conditions'      => implode(', ', $conditions),
+            ];
+        }
+
+        return $result;
+
+    } catch (\Exception $e) {
+        error_log(WABOT_LOG_PREFIX . " Error fetching available coupons: " . $e->getMessage());
+        return [];
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1949,9 +2905,124 @@ function processAiResponse(PDO $db, array $conversation, string $aiResponse, str
         $cleanedResponse = str_replace($m[0], '', $cleanedResponse);
     }
 
-    // Update subtotal
+    // Parse [SCHEDULE:datetime] — schedule order for future delivery
+    if (preg_match('/\[SCHEDULE:([^\]]+)\]/', $aiResponse, $m)) {
+        $rawSchedule = trim($m[1]);
+        $markersFound[] = "SCHEDULE:{$rawSchedule}";
+        $cleanedResponse = str_replace($m[0], '', $cleanedResponse);
+
+        // Parse the datetime
+        $scheduledTs = strtotime($rawSchedule);
+        if ($scheduledTs !== false) {
+            $now = time();
+            $minTime = $now + (30 * 60);    // 30 minutes from now
+            $maxTime = $now + (7 * 24 * 3600); // 7 days from now
+
+            if ($scheduledTs < $minTime) {
+                $cleanedResponse .= "\n\n_O horario precisa ser pelo menos 30 minutos no futuro. Pode escolher outro horario?_";
+                error_log(WABOT_LOG_PREFIX . " Schedule rejected: {$rawSchedule} is too soon (min: " . date('c', $minTime) . ")");
+            } elseif ($scheduledTs > $maxTime) {
+                $cleanedResponse .= "\n\n_O agendamento pode ser pra no maximo 7 dias. Pode escolher uma data mais proxima?_";
+                error_log(WABOT_LOG_PREFIX . " Schedule rejected: {$rawSchedule} is too far (max: " . date('c', $maxTime) . ")");
+            } else {
+                $context['scheduled_for'] = date('Y-m-d\TH:i:s', $scheduledTs);
+                $schedFmt = date('d/m \a\s H:i', $scheduledTs);
+                error_log(WABOT_LOG_PREFIX . " Order scheduled for: {$context['scheduled_for']}");
+            }
+        } else {
+            $cleanedResponse .= "\n\n_Nao entendi o horario. Pode falar de outro jeito? Ex: 'amanha as 12h' ou 'sabado as 19:00'_";
+            error_log(WABOT_LOG_PREFIX . " Schedule parse failed: {$rawSchedule}");
+        }
+    }
+
+    // Parse [SAVE_ADDRESS] — flag to save new address after order
+    if (strpos($aiResponse, '[SAVE_ADDRESS]') !== false) {
+        $markersFound[] = 'SAVE_ADDRESS';
+        $context['is_new_address'] = true;
+        $cleanedResponse = str_replace('[SAVE_ADDRESS]', '', $cleanedResponse);
+    }
+
+    // Parse [COUPON:code]
+    if (preg_match('/\[COUPON:([^\]]+)\]/', $aiResponse, $m)) {
+        $couponCode = strtoupper(trim($m[1]));
+        $markersFound[] = "COUPON:{$couponCode}";
+        $cleanedResponse = str_replace($m[0], '', $cleanedResponse);
+
+        $subtotalForCoupon = calculateSubtotal($context['items'] ?? []);
+        $couponResult = wabotValidateCoupon(
+            $db,
+            $couponCode,
+            $context['partner_id'] ?? null,
+            $subtotalForCoupon,
+            $customerId
+        );
+
+        if ($couponResult['valid']) {
+            $context['coupon_code'] = $couponCode;
+            $context['coupon_id'] = $couponResult['coupon_id'];
+            $context['coupon_discount'] = $couponResult['discount'];
+            $context['coupon_description'] = $couponResult['description'];
+            $context['coupon_free_delivery'] = $couponResult['free_delivery'];
+
+            // If free delivery coupon, zero out delivery fee
+            if ($couponResult['free_delivery']) {
+                $context['delivery_fee'] = 0;
+            }
+
+            $cleanedResponse .= "\n\n" . $couponResult['message'];
+            error_log(WABOT_LOG_PREFIX . " Coupon {$couponCode} applied: discount={$couponResult['discount']}, type={$couponResult['discount_type']}");
+        } else {
+            // Invalid coupon — inform customer
+            $cleanedResponse .= "\n\n_" . $couponResult['message'] . "_";
+            error_log(WABOT_LOG_PREFIX . " Coupon {$couponCode} rejected: {$couponResult['message']}");
+        }
+    }
+
+    // Parse [USE_CASHBACK:value]
+    if (preg_match('/\[USE_CASHBACK:([^\]]+)\]/', $aiResponse, $m)) {
+        $cashbackInput = trim($m[1]);
+        $markersFound[] = "USE_CASHBACK:{$cashbackInput}";
+        $cleanedResponse = str_replace($m[0], '', $cleanedResponse);
+
+        if ($customerId) {
+            $cbBalance = getCustomerCashback($db, $customerId);
+
+            if ($cbBalance <= 0) {
+                $cleanedResponse .= "\n\n_Voce nao tem saldo de cashback disponivel._";
+            } else {
+                // Parse amount: "all" means full balance, otherwise parse as float
+                if (strtolower($cashbackInput) === 'all' || strtolower($cashbackInput) === 'tudo' || strtolower($cashbackInput) === 'todo') {
+                    $cashbackAmount = $cbBalance;
+                } else {
+                    $cashbackAmount = (float)str_replace(',', '.', $cashbackInput);
+                }
+
+                // Cap at balance and at subtotal
+                $subtotalForCb = calculateSubtotal($context['items'] ?? []);
+                $couponDiscountForCb = (float)($context['coupon_discount'] ?? 0);
+                $maxCashback = max(0, $subtotalForCb - $couponDiscountForCb);
+                $cashbackAmount = min($cashbackAmount, $cbBalance, $maxCashback);
+
+                if ($cashbackAmount > 0) {
+                    $context['use_cashback'] = round($cashbackAmount, 2);
+                    $cbFmt = number_format($cashbackAmount, 2, ',', '.');
+                    $cleanedResponse .= "\n\nCashback de *R\$ {$cbFmt}* sera aplicado no pedido!";
+                    error_log(WABOT_LOG_PREFIX . " Cashback {$cashbackAmount} will be used (balance: {$cbBalance})");
+                } else {
+                    $cleanedResponse .= "\n\n_Nao foi possivel aplicar cashback neste pedido._";
+                }
+            }
+        } else {
+            $cleanedResponse .= "\n\n_Preciso identificar sua conta para usar cashback._";
+        }
+    }
+
+    // Update subtotal and total with discounts
     $context['subtotal'] = calculateSubtotal($context['items'] ?? []);
-    $context['total'] = $context['subtotal'] + (float)($context['delivery_fee'] ?? WABOT_DEFAULT_DELIVERY_FEE) + WABOT_SERVICE_FEE;
+    $couponDisc = (float)($context['coupon_discount'] ?? 0);
+    $cashbackUse = (float)($context['use_cashback'] ?? 0);
+    $delivFee = !empty($context['coupon_free_delivery']) ? 0 : (float)($context['delivery_fee'] ?? WABOT_DEFAULT_DELIVERY_FEE);
+    $context['total'] = max(0, $context['subtotal'] - $couponDisc - $cashbackUse + $delivFee + WABOT_SERVICE_FEE);
 
     // Clean up response text
     $cleanedResponse = trim(preg_replace('/\n{3,}/', "\n\n", $cleanedResponse));
@@ -2156,10 +3227,37 @@ function submitWhatsAppOrder(PDO $db, array $conversation): array
         ];
     }
 
-    // Calculate fees
+    // Calculate fees and discounts
     $deliveryFee = (float)($context['delivery_fee'] ?? (float)($partner['delivery_fee'] ?? WABOT_DEFAULT_DELIVERY_FEE));
     $serviceFee = WABOT_SERVICE_FEE;
-    $total = round($subtotal + $deliveryFee + $serviceFee, 2);
+
+    // Coupon discount (re-validate server-side at submission time)
+    $couponId = null;
+    $couponDiscount = 0;
+    $couponCode = $context['coupon_code'] ?? null;
+    if ($couponCode && $customerId) {
+        $couponResult = wabotValidateCoupon($db, $couponCode, $partnerId, $subtotal, $customerId);
+        if ($couponResult['valid']) {
+            $couponId = $couponResult['coupon_id'];
+            $couponDiscount = $couponResult['discount'];
+            if ($couponResult['free_delivery']) {
+                $deliveryFee = 0;
+            }
+        } else {
+            error_log(WABOT_LOG_PREFIX . " Coupon {$couponCode} re-validation failed at submit: {$couponResult['message']}");
+        }
+    }
+
+    // Cashback (validate balance server-side)
+    $cashbackDiscount = 0;
+    $useCashback = (float)($context['use_cashback'] ?? 0);
+    if ($useCashback > 0 && $customerId) {
+        $cbBalance = getCustomerCashback($db, $customerId);
+        $maxCb = max(0, $subtotal - $couponDiscount);
+        $cashbackDiscount = min($useCashback, $cbBalance, $maxCb);
+    }
+
+    $total = round(max(0, $subtotal - $couponDiscount - $cashbackDiscount + $deliveryFee + $serviceFee), 2);
 
     // Validate payment method
     $validPayments = ['pix', 'cartao', 'dinheiro', 'credito', 'debito'];
@@ -2224,7 +3322,21 @@ function submitWhatsAppOrder(PDO $db, array $conversation): array
         $timerMinutes = ($dbPaymentMethod === 'pix') ? 5 : 5;
         $timerExpires = date('Y-m-d H:i:s', strtotime("+{$timerMinutes} minutes"));
 
-        // Insert order
+        // Determine scheduling
+        $isScheduled = !empty($context['scheduled_for']) ? 1 : 0;
+        $scheduledDate = null;
+        $scheduledTime = null;
+        if ($isScheduled) {
+            $schedTs = strtotime($context['scheduled_for']);
+            if ($schedTs) {
+                $scheduledDate = date('Y-m-d', $schedTs);
+                $scheduledTime = date('H:i:s', $schedTs);
+            } else {
+                $isScheduled = 0;
+            }
+        }
+
+        // Insert order (with coupon, cashback & scheduling columns)
         $orderStmt = $db->prepare("
             INSERT INTO om_market_orders (
                 order_number, partner_id, partner_name, customer_id,
@@ -2232,8 +3344,10 @@ function submitWhatsAppOrder(PDO $db, array $conversation): array
                 status, subtotal, delivery_fee, service_fee, total,
                 delivery_address, shipping_address,
                 notes, codigo_entrega, forma_pagamento,
+                coupon_id, coupon_discount, cashback_discount,
                 is_pickup, delivery_type, partner_categoria,
                 timer_started, timer_expires,
+                is_scheduled, scheduled_date, scheduled_time,
                 source, date_added
             ) VALUES (
                 ?, ?, ?, ?,
@@ -2241,8 +3355,10 @@ function submitWhatsAppOrder(PDO $db, array $conversation): array
                 'pendente', ?, ?, ?, ?,
                 ?, ?,
                 ?, ?, ?,
+                ?, ?, ?,
                 0, ?, ?,
                 ?, ?,
+                ?, ?, ?,
                 'whatsapp_ai', NOW()
             )
             RETURNING order_id
@@ -2254,8 +3370,10 @@ function submitWhatsAppOrder(PDO $db, array $conversation): array
             $subtotal, $deliveryFee, $serviceFee, $total,
             $address, $address,
             $notes, $codigoEntrega, $dbPaymentMethod,
+            $couponId ?: null, $couponDiscount, $cashbackDiscount,
             $deliveryType, $partner['categoria'] ?? 'mercado',
             $timerStarted, $timerExpires,
+            $isScheduled, $scheduledDate, $scheduledTime,
         ]);
 
         $orderId = (int)$orderStmt->fetchColumn();
@@ -2290,10 +3408,14 @@ function submitWhatsAppOrder(PDO $db, array $conversation): array
         }
 
         // Add timeline entry
+        $timelineDesc = 'Pedido criado via WhatsApp AI';
+        if ($isScheduled && $scheduledDate) {
+            $timelineDesc .= ' (agendado para ' . date('d/m/Y H:i', strtotime($scheduledDate . ' ' . ($scheduledTime ?? '00:00'))) . ')';
+        }
         $db->prepare("
             INSERT INTO om_market_order_timeline (order_id, status, description, created_at)
-            VALUES (?, 'pendente', 'Pedido criado via WhatsApp AI', NOW())
-        ")->execute([$orderId]);
+            VALUES (?, 'pendente', ?, NOW())
+        ")->execute([$orderId, $timelineDesc]);
 
         // Record change_for if paying with cash
         if ($dbPaymentMethod === 'dinheiro' && $paymentChange > 0) {
@@ -2304,15 +3426,51 @@ function submitWhatsAppOrder(PDO $db, array $conversation): array
 
         $db->commit();
 
-        // ── Post-commit: notifications & memory ─────────────────────────
+        // ── Post-commit: coupon usage, cashback debit, notifications & memory ──
+
+        // Record coupon usage (after commit to avoid nested transaction issues)
+        if ($couponId && $customerId) {
+            try {
+                $db->prepare("INSERT INTO om_market_coupon_usage (coupon_id, customer_id, order_id) VALUES (?, ?, ?)")
+                    ->execute([$couponId, $customerId, $orderId]);
+                $db->prepare("UPDATE om_market_coupons SET uses_count = COALESCE(uses_count, 0) + 1 WHERE id = ?")
+                    ->execute([$couponId]);
+            } catch (\Exception $e) {
+                error_log(WABOT_LOG_PREFIX . " Coupon usage recording error: " . $e->getMessage());
+            }
+        }
+
+        // Debit cashback from wallet (uses its own transaction internally)
+        if ($cashbackDiscount > 0 && $customerId) {
+            try {
+                debitCashback($db, $customerId, $orderId, $partnerId, $cashbackDiscount);
+            } catch (\Exception $e) {
+                error_log(WABOT_LOG_PREFIX . " Cashback debit error: " . $e->getMessage());
+            }
+        }
+
+        // Save new address if flagged
+        if ($customerId && !empty($context['is_new_address'])) {
+            $addrLat = !empty($context['address_lat']) ? (float)$context['address_lat'] : null;
+            $addrLng = !empty($context['address_lng']) ? (float)$context['address_lng'] : null;
+            saveCustomerAddress($db, $customerId, $address, $addrLat, $addrLng);
+        }
 
         // Send confirmation WhatsApp to customer
         $totalFmt = number_format($total, 2, ',', '.');
-        $confirmMsg = "✅ *Pedido Confirmado!*\n\n"
+        $confirmMsg = "\xE2\x9C\x85 *Pedido Confirmado!*\n\n"
             . "Numero: *#{$orderNumber}*\n"
             . "Loja: {$partnerName}\n"
             . "Total: *R\$ {$totalFmt}*\n"
-            . "Pagamento: " . formatPaymentLabel($paymentMethod) . "\n\n";
+            . "Pagamento: " . formatPaymentLabel($paymentMethod) . "\n";
+
+        // Add scheduling info to confirmation
+        if ($isScheduled && $scheduledDate) {
+            $schedDisplayFmt = date('d/m/Y \\a\\s H:i', strtotime($scheduledDate . ' ' . ($scheduledTime ?? '00:00')));
+            $confirmMsg .= "Agendado para: *{$schedDisplayFmt}*\n";
+        }
+
+        $confirmMsg .= "\n";
 
         if ($dbPaymentMethod === 'pix') {
             $confirmMsg .= "Aguarde o link PIX para pagamento.\n\n";
@@ -2401,10 +3559,13 @@ function submitWhatsAppOrder(PDO $db, array $conversation): array
 
 /**
  * Try to extract address from the customer message during get_address step.
+ * Handles: numeric selection, label-based selection ("casa", "trabalho"),
+ * and confirmation of default address ("sim", "isso", "la mesmo").
  */
 function tryExtractAddress(string $message, array $context, ?array $addresses): ?string
 {
     $msg = trim($message);
+    $msgLower = mb_strtolower($msg);
 
     // Check if user selected a saved address by number
     if (preg_match('/^(\d)$/', $msg, $m) && $addresses) {
@@ -2422,7 +3583,176 @@ function tryExtractAddress(string $message, array $context, ?array $addresses): 
         }
     }
 
+    // Check if user selected by label name ("casa", "trabalho", etc.)
+    if ($addresses) {
+        foreach ($addresses as $addr) {
+            $label = mb_strtolower($addr['label'] ?? '');
+            if (!empty($label) && ($msgLower === $label || strpos($msgLower, $label) !== false)) {
+                return implode(', ', array_filter([
+                    $addr['street'] ?? '',
+                    $addr['number'] ?? '',
+                    $addr['complement'] ?? '',
+                    $addr['neighborhood'] ?? '',
+                    $addr['city'] ?? '',
+                    $addr['state'] ?? '',
+                ]));
+            }
+        }
+    }
+
+    // Check if user confirmed default address ("sim", "isso", "la mesmo", "pode ser", "esse mesmo")
+    if ($addresses) {
+        $confirmWords = ['sim', 'isso', 'la mesmo', 'pode ser', 'esse mesmo', 'esse', 'la', 'mesmo lugar', 'mesmo endereco', 's', 'ok', 'beleza'];
+        foreach ($confirmWords as $word) {
+            if ($msgLower === $word || $msgLower === $word . '!') {
+                // Find default address
+                foreach ($addresses as $addr) {
+                    if ((int)($addr['is_default'] ?? 0) === 1) {
+                        return implode(', ', array_filter([
+                            $addr['street'] ?? '',
+                            $addr['number'] ?? '',
+                            $addr['complement'] ?? '',
+                            $addr['neighborhood'] ?? '',
+                            $addr['city'] ?? '',
+                            $addr['state'] ?? '',
+                        ]));
+                    }
+                }
+                // If no default, use first address
+                $addr = $addresses[0];
+                return implode(', ', array_filter([
+                    $addr['street'] ?? '',
+                    $addr['number'] ?? '',
+                    $addr['complement'] ?? '',
+                    $addr['neighborhood'] ?? '',
+                    $addr['city'] ?? '',
+                    $addr['state'] ?? '',
+                ]));
+            }
+        }
+    }
+
     return null;
+}
+
+/**
+ * Save a new customer address parsed from conversation.
+ * Parses the full address string into components using simple regex patterns.
+ * Only saves if address doesn't already exist for this customer (by street+number match).
+ */
+function saveCustomerAddress(PDO $db, int $customerId, string $fullAddress, ?float $lat = null, ?float $lng = null): bool
+{
+    if (empty(trim($fullAddress)) || $customerId <= 0) {
+        return false;
+    }
+
+    $address = trim($fullAddress);
+
+    // Parse address components from the full string
+    $street = '';
+    $number = '';
+    $complement = '';
+    $neighborhood = '';
+    $city = '';
+    $state = '';
+
+    // Try to parse: "Rua X, 123, Complemento, Bairro, Cidade - UF"
+    // or "Rua X, 123 - Bairro, Cidade"
+    // or "Rua X 123 Bairro Cidade"
+
+    // Extract number: look for digits after comma or space that look like a street number
+    if (preg_match('/^(.+?)[,\s]+(?:n[uoº.]?\s*)?(\d{1,5}\w?)(.*)$/iu', $address, $m)) {
+        $street = trim($m[1]);
+        $number = trim($m[2]);
+        $rest = trim($m[3], " ,.-");
+
+        // Try to parse the rest: complement, neighborhood, city
+        $parts = preg_split('/[,\-]+/', $rest);
+        $parts = array_map('trim', array_filter($parts));
+
+        if (count($parts) >= 3) {
+            $complement = $parts[0];
+            $neighborhood = $parts[1];
+            $city = $parts[2];
+        } elseif (count($parts) === 2) {
+            $neighborhood = $parts[0];
+            $city = $parts[1];
+        } elseif (count($parts) === 1) {
+            $neighborhood = $parts[0];
+        }
+    } else {
+        // Couldn't parse — store as-is in street
+        $street = $address;
+    }
+
+    // Extract state from city if present (e.g., "Campinas SP" or "Campinas - SP")
+    if ($city && preg_match('/^(.+?)\s*[-\/]?\s*([A-Z]{2})$/i', $city, $stm)) {
+        $city = trim($stm[1]);
+        $state = strtoupper(trim($stm[2]));
+    }
+
+    // Clean up: remove common prefixes from street for comparison
+    $streetClean = preg_replace('/^(rua|r\.|av\.?|avenida|alameda|al\.|travessa|tv\.)\s*/iu', '', mb_strtolower(trim($street)));
+
+    // Check if this address already exists for this customer (by street match)
+    if (!empty($street) && !empty($number)) {
+        try {
+            $checkStmt = $db->prepare("
+                SELECT address_id FROM om_customer_addresses
+                WHERE customer_id = ? AND is_active = '1'
+                AND LOWER(street) LIKE ? AND number = ?
+                LIMIT 1
+            ");
+            $streetPattern = '%' . mb_strtolower(trim($street)) . '%';
+            $checkStmt->execute([$customerId, $streetPattern, $number]);
+            if ($checkStmt->fetch()) {
+                // Address already exists
+                error_log(WABOT_LOG_PREFIX . " Address already exists for customer {$customerId}: {$street}, {$number}");
+                return false;
+            }
+        } catch (\Exception $e) {
+            error_log(WABOT_LOG_PREFIX . " Error checking existing address: " . $e->getMessage());
+        }
+    }
+
+    // Determine if this should be default (only if customer has no addresses)
+    $isDefault = 0;
+    try {
+        $countStmt = $db->prepare("SELECT COUNT(*) FROM om_customer_addresses WHERE customer_id = ? AND is_active = '1'");
+        $countStmt->execute([$customerId]);
+        if ((int)$countStmt->fetchColumn() === 0) {
+            $isDefault = 1;
+        }
+    } catch (\Exception $e) {
+        // Non-critical
+    }
+
+    // Save the address
+    try {
+        $insertStmt = $db->prepare("
+            INSERT INTO om_customer_addresses
+                (customer_id, label, zipcode, street, number, complement, neighborhood, city, state, lat, lng, reference, is_default, is_active, created_at)
+            VALUES (?, 'WhatsApp', '', ?, ?, ?, ?, ?, ?, ?, ?, '', ?, 1, NOW())
+        ");
+        $insertStmt->execute([
+            $customerId,
+            $street ?: $address,
+            $number,
+            $complement,
+            $neighborhood,
+            $city,
+            $state,
+            $lat,
+            $lng,
+            $isDefault,
+        ]);
+
+        error_log(WABOT_LOG_PREFIX . " New address saved for customer {$customerId}: {$street} {$number}, {$neighborhood}, {$city}");
+        return true;
+    } catch (\Exception $e) {
+        error_log(WABOT_LOG_PREFIX . " Error saving address: " . $e->getMessage());
+        return false;
+    }
 }
 
 /**
@@ -2540,6 +3870,15 @@ function handleWhatsAppMessage(
         }
     }
 
+    // ── Handle audio messages ──────────────────────────────────────────
+    if ($messageType === 'audio') {
+        $audioResponse = handleAudioMessage($context);
+        updateConversationContext($db, $conversationId, $context);
+        saveMessage($db, $conversationId, 'outbound', 'ai', $audioResponse);
+        sendWhatsAppResponse($phone, $audioResponse);
+        return;
+    }
+
     // ── Check if conversation is assigned to human agent ─────────────────
     if (($conversation['status'] ?? '') === 'with_agent' && !empty($conversation['agent_id'])) {
         // Don't process with AI — human agent is handling
@@ -2621,6 +3960,16 @@ function handleWhatsAppMessage(
         }
     }
 
+    // ── Track price sensitivity and store memory ──────────────────────
+    $msgLower = mb_strtolower($message);
+    if (preg_match('/preco|pre[cç]o|barato|promo[cç]|desconto|quanto custa|mais em conta|oferta/ui', $msgLower)) {
+        $context['price_sensitive'] = true;
+    }
+    // Remember last mentioned store even if customer changes subject
+    if (!empty($context['partner_name']) && empty($context['last_mentioned_store'])) {
+        $context['last_mentioned_store'] = $context['partner_name'];
+    }
+
     // ── Build Claude context ────────────────────────────────────────────
 
     $step = $context['step'] ?? STEP_GREETING;
@@ -2657,6 +4006,38 @@ function handleWhatsAppMessage(
         $recentOrders = getCustomerRecentOrders($db, $customerId, 5);
     }
 
+    // Get popular items and complementary suggestions for upselling
+    $popularItems = null;
+    $complementaryItems = null;
+    if (!empty($context['partner_id'])) {
+        $partnerId = (int)$context['partner_id'];
+
+        // Load popular items for STEP_TAKE_ORDER and STEP_CONFIRM_ORDER
+        if (in_array($step, [STEP_TAKE_ORDER, STEP_CONFIRM_ORDER])) {
+            $popularItems = getPopularItems($db, $partnerId);
+        }
+
+        // Load complementary suggestions when cart has items in STEP_TAKE_ORDER
+        if ($step === STEP_TAKE_ORDER && !empty($context['items'])) {
+            $complementaryItems = getComplementaryItems($db, $partnerId, $context['items']);
+        }
+    }
+
+    // ── Smart search: find products/stores matching the customer's message ──
+    $searchContext = '';
+    if (in_array($step, [STEP_GREETING, STEP_IDENTIFY_STORE]) && mb_strlen($message) >= 3) {
+        try {
+            $storeSearchResults = searchStores($db, $message, 5);
+            $productSearchResults = searchProducts($db, $message, null, 8);
+            $searchContext = formatSearchResultsForPrompt($productSearchResults, $storeSearchResults);
+        } catch (\Exception $e) {
+            error_log(WABOT_LOG_PREFIX . " Search error: " . $e->getMessage());
+        }
+    }
+
+    // ── Time context (Sao Paulo timezone) ────────────────────────────────
+    $timeCtx = getTimeContext();
+
     // Update context in conversation before Claude call
     $conversation['ai_context'] = json_encode($context, JSON_UNESCAPED_UNICODE);
 
@@ -2670,7 +4051,11 @@ function handleWhatsAppMessage(
         $stores,
         $addresses,
         $activeOrders,
-        $recentOrders
+        $recentOrders,
+        $popularItems,
+        $complementaryItems,
+        $searchContext,
+        $timeCtx
     );
 
     // ── Build message history for Claude ────────────────────────────────
@@ -2819,9 +4204,16 @@ function handleWhatsAppMessage(
             $orderNumber = $submitResult['order_number'];
             $total = number_format($submitResult['total'], 2, ',', '.');
 
-            $successMsg = "Pedido *#{$orderNumber}* enviado com sucesso! 🎉\n\n"
-                . "Total: *R\$ {$total}*\n\n"
-                . "Voce recebera atualizacoes aqui no WhatsApp.\n"
+            $successMsg = "Pedido *#{$orderNumber}* enviado com sucesso! \xF0\x9F\x8E\x89\n\n"
+                . "Total: *R\$ {$total}*\n";
+
+            // Add scheduling info to success message
+            if (!empty($context['scheduled_for'])) {
+                $schedSuccessFmt = date('d/m/Y \\a\\s H:i', strtotime($context['scheduled_for']));
+                $successMsg .= "Agendado para: *{$schedSuccessFmt}*\n";
+            }
+
+            $successMsg .= "\nVoce recebera atualizacoes aqui no WhatsApp.\n"
                 . "Obrigada por escolher a SuperBora!";
 
             // Send the AI response first (confirmation text), then the success message

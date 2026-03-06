@@ -52,7 +52,7 @@ try {
     // Revenue per order
     $stmt = $db->prepare("
         SELECT AVG(total) as avg_total FROM om_market_orders
-        WHERE created_at >= CURRENT_DATE - CAST(? AS INTERVAL) AND status NOT IN ('cancelled','refunded')
+        WHERE created_at >= CURRENT_DATE - CAST(? AS INTERVAL) AND status NOT IN ('cancelled','refunded','cancelado')
     ");
     $stmt->execute([$interval_param]);
     $revenue_per_order = round((float)($stmt->fetch()['avg_total'] ?? 0), 2);
@@ -71,7 +71,7 @@ try {
     $stmt = $db->prepare("
         SELECT COALESCE(SUM(total), 0) as gmv, COUNT(*) as total_orders
         FROM om_market_orders
-        WHERE created_at >= CURRENT_DATE - CAST(? AS INTERVAL) AND status NOT IN ('cancelled','refunded')
+        WHERE created_at >= CURRENT_DATE - CAST(? AS INTERVAL) AND status NOT IN ('cancelled','refunded','cancelado')
     ");
     $stmt->execute([$interval_param]);
     $gmv_row = $stmt->fetch();
@@ -82,7 +82,7 @@ try {
     $stmt = $db->query("
         SELECT COALESCE(SUM(total), 0) as gmv_today, COUNT(*) as orders_today
         FROM om_market_orders
-        WHERE created_at >= CURRENT_DATE AND status NOT IN ('cancelled','refunded')
+        WHERE created_at >= CURRENT_DATE AND status NOT IN ('cancelled','refunded','cancelado')
     ");
     $today = $stmt->fetch();
 
@@ -97,14 +97,14 @@ try {
 
     // Top 10 stores by GMV
     $stmt = $db->prepare("
-        SELECT m.mercado_id, m.nome,
+        SELECT p.partner_id, p.name as nome,
                COUNT(o.order_id) as total_orders,
                COALESCE(SUM(o.total), 0) as gmv,
                COALESCE(AVG(o.total), 0) as avg_ticket
         FROM om_market_orders o
-        JOIN om_mercados m ON m.mercado_id = o.mercado_id
-        WHERE o.created_at >= CURRENT_DATE - CAST(? AS INTERVAL) AND o.status NOT IN ('cancelled','refunded')
-        GROUP BY m.mercado_id, m.nome
+        JOIN om_market_partners p ON p.partner_id = o.partner_id
+        WHERE o.created_at >= CURRENT_DATE - CAST(? AS INTERVAL) AND o.status NOT IN ('cancelled','refunded','cancelado')
+        GROUP BY p.partner_id, p.name
         ORDER BY gmv DESC
         LIMIT 10
     ");
@@ -119,7 +119,7 @@ try {
         FROM om_market_order_items oi
         JOIN om_market_products p ON p.product_id = oi.product_id
         JOIN om_market_orders o ON o.order_id = oi.order_id
-        WHERE o.created_at >= CURRENT_DATE - CAST(? AS INTERVAL) AND o.status NOT IN ('cancelled','refunded')
+        WHERE o.created_at >= CURRENT_DATE - CAST(? AS INTERVAL) AND o.status NOT IN ('cancelled','refunded','cancelado')
         GROUP BY p.product_id, p.name, p.category_id
         ORDER BY total_sold DESC
         LIMIT 10
@@ -136,7 +136,7 @@ try {
                COALESCE(SUM(total), 0) as gmv,
                COUNT(DISTINCT customer_id) as customers
         FROM om_market_orders
-        WHERE created_at >= CURRENT_DATE - CAST(? AS INTERVAL) AND status NOT IN ('cancelled','refunded')
+        WHERE created_at >= CURRENT_DATE - CAST(? AS INTERVAL) AND status NOT IN ('cancelled','refunded','cancelado')
         GROUP BY DATE(created_at)
         ORDER BY date ASC
     ");
@@ -151,7 +151,7 @@ try {
         FROM om_market_orders
         WHERE created_at >= CURRENT_DATE - CAST(? AS INTERVAL)
           AND created_at < CURRENT_DATE - CAST(? AS INTERVAL)
-          AND status NOT IN ('cancelled','refunded')
+          AND status NOT IN ('cancelled','refunded','cancelado')
     ");
     $stmt->execute([$prev_start, $prev_end]);
     $prev = $stmt->fetch();
@@ -160,10 +160,11 @@ try {
 
     // Payment method distribution
     $stmt = $db->prepare("
-        SELECT payment_method, COUNT(*) as count, COALESCE(SUM(total), 0) as total
+        SELECT COALESCE(payment_method, forma_pagamento, 'desconhecido') as payment_method,
+               COUNT(*) as count, COALESCE(SUM(total), 0) as total
         FROM om_market_orders
-        WHERE created_at >= CURRENT_DATE - CAST(? AS INTERVAL) AND status NOT IN ('cancelled','refunded')
-        GROUP BY payment_method
+        WHERE created_at >= CURRENT_DATE - CAST(? AS INTERVAL) AND status NOT IN ('cancelled','refunded','cancelado')
+        GROUP BY COALESCE(payment_method, forma_pagamento, 'desconhecido')
         ORDER BY count DESC
     ");
     $stmt->execute([$interval_param]);

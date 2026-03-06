@@ -111,8 +111,34 @@ try {
                 response(true, null, "IP bloqueado");
                 break;
 
+            case 'unblock_ip':
+                $ip = strip_tags(trim($input['ip'] ?? $value));
+                if (!$ip) response(false, null, "ip obrigatorio", 400);
+                if (!filter_var($ip, FILTER_VALIDATE_IP)) response(false, null, "IP invalido", 400);
+                try {
+                    $db->prepare("DELETE FROM om_blocked_ips WHERE ip_address = ?")->execute([$ip]);
+                } catch (\Exception $e) { /* table may not exist */ }
+                om_audit()->log('delete', 'security', null, null, ['action' => 'unblock_ip', 'ip' => $ip]);
+                response(true, null, "IP desbloqueado");
+                break;
+
+            case 'terminate_session':
+                $session_id = strip_tags(trim($input['session_id'] ?? ''));
+                if (!$session_id) response(false, null, "session_id obrigatorio", 400);
+                try {
+                    $db->prepare("UPDATE om_auth_tokens SET revoked = 1, revoked_at = NOW() WHERE token_id = ? OR jti = ?")->execute([$session_id, $session_id]);
+                } catch (\Exception $e) {
+                    // Try by id
+                    try {
+                        $db->prepare("UPDATE om_auth_tokens SET revoked = 1, revoked_at = NOW() WHERE token_id = ?")->execute([(int)$session_id]);
+                    } catch (\Exception $e2) {}
+                }
+                om_audit()->log('update', 'security', null, null, ['action' => 'terminate_session', 'session_id' => $session_id]);
+                response(true, null, "Sessao encerrada");
+                break;
+
             default:
-                response(false, null, "Action invalida. Use: revoke_token, change_role, block_ip", 400);
+                response(false, null, "Action invalida. Use: revoke_token, change_role, block_ip, unblock_ip, terminate_session", 400);
         }
     } else {
         response(false, null, "Metodo nao permitido", 405);

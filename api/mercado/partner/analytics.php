@@ -175,6 +175,22 @@ try {
     $avgRating = round((float)($ratingData['avg_rating'] ?? 0), 1);
     $totalReviews = (int)($ratingData['total_reviews'] ?? 0);
 
+    // 9. Rating distribution (real data)
+    $stmtDist = $db->prepare("
+        SELECT rating, COUNT(*) as count
+        FROM om_market_reviews
+        WHERE partner_id = ?
+          AND DATE(created_at) BETWEEN ? AND ?
+        GROUP BY rating
+        ORDER BY rating
+    ");
+    $stmtDist->execute([$partnerId, $startDate, $endDate]);
+    $ratingDistribution = ['1' => 0, '2' => 0, '3' => 0, '4' => 0, '5' => 0];
+    foreach ($stmtDist->fetchAll() as $rd) {
+        $star = (string)max(1, min(5, (int)$rd['rating']));
+        $ratingDistribution[$star] = (int)$rd['count'];
+    }
+
     response(true, [
         'period' => $period,
         'date_range' => ['start' => $startDate, 'end' => $endDate],
@@ -190,7 +206,8 @@ try {
         'returning_customers' => $returningCustomers,
         'customer_retention' => $customerRetention,
         'avg_rating' => $avgRating,
-        'total_reviews' => $totalReviews
+        'total_reviews' => $totalReviews,
+        'rating_distribution' => $ratingDistribution
     ]);
 
 } catch (Exception $e) {

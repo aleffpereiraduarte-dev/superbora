@@ -1,8 +1,22 @@
 <?php
+// CLI only - not an HTTP endpoint
+if (php_sapi_name() !== 'cli') {
+    header('Content-Type: application/json');
+    http_response_code(400);
+    echo json_encode(['error' => 'This is a CLI worker. Run: php ' . __FILE__]);
+    exit;
+}
 /**
  * Queue Worker - Processes jobs from Redis queue
  *
  * Run: php /var/www/html/api/mercado/workers/queue-worker.php
+// CLI only - not an HTTP endpoint
+if (php_sapi_name() !== 'cli') {
+    header('Content-Type: application/json');
+    http_response_code(400);
+    echo json_encode(['error' => 'This is a CLI worker. Run: php ' . __FILE__]);
+    exit;
+}
  * Daemon: systemctl start superbora-worker
  *
  * Handles: push_notification, whatsapp, email
@@ -13,7 +27,21 @@ set_time_limit(0);
 ini_set('memory_limit', '128M');
 
 require_once __DIR__ . '/../config/database.php';
+// CLI only - not an HTTP endpoint
+if (php_sapi_name() !== 'cli') {
+    header('Content-Type: application/json');
+    http_response_code(400);
+    echo json_encode(['error' => 'This is a CLI worker. Run: php ' . __FILE__]);
+    exit;
+}
 require_once __DIR__ . '/../config/queue.php';
+// CLI only - not an HTTP endpoint
+if (php_sapi_name() !== 'cli') {
+    header('Content-Type: application/json');
+    http_response_code(400);
+    echo json_encode(['error' => 'This is a CLI worker. Run: php ' . __FILE__]);
+    exit;
+}
 
 $workerPid = getmypid();
 $startTime = time();
@@ -125,6 +153,13 @@ function processNotification(PDO $db, array $payload): void {
 
     // FCM Push via NotificationSender
     require_once __DIR__ . '/../helpers/NotificationSender.php';
+// CLI only - not an HTTP endpoint
+if (php_sapi_name() !== 'cli') {
+    header('Content-Type: application/json');
+    http_response_code(400);
+    echo json_encode(['error' => 'This is a CLI worker. Run: php ' . __FILE__]);
+    exit;
+}
     $sender = NotificationSender::getInstance($db);
 
     if ($userType === 'customer') {
@@ -140,6 +175,13 @@ function processNotification(PDO $db, array $payload): void {
 
 function processInAppNotification(PDO $db, array $payload): void {
     require_once __DIR__ . '/../config/notify.php';
+// CLI only - not an HTTP endpoint
+if (php_sapi_name() !== 'cli') {
+    header('Content-Type: application/json');
+    http_response_code(400);
+    echo json_encode(['error' => 'This is a CLI worker. Run: php ' . __FILE__]);
+    exit;
+}
     sendNotification(
         $db,
         (int)$payload['user_id'],
@@ -152,6 +194,13 @@ function processInAppNotification(PDO $db, array $payload): void {
 
 function processWhatsApp(array $payload): void {
     require_once __DIR__ . '/../helpers/zapi-whatsapp.php';
+// CLI only - not an HTTP endpoint
+if (php_sapi_name() !== 'cli') {
+    header('Content-Type: application/json');
+    http_response_code(400);
+    echo json_encode(['error' => 'This is a CLI worker. Run: php ' . __FILE__]);
+    exit;
+}
 
     $phone = $payload['phone'];
     $type = $payload['type'];
@@ -177,6 +226,13 @@ function processWhatsApp(array $payload): void {
 
 function processEmail(array $payload): void {
     require_once __DIR__ . '/../helpers/EmailService.php';
+// CLI only - not an HTTP endpoint
+if (php_sapi_name() !== 'cli') {
+    header('Content-Type: application/json');
+    http_response_code(400);
+    echo json_encode(['error' => 'This is a CLI worker. Run: php ' . __FILE__]);
+    exit;
+}
 
     $emailService = EmailService::getInstance();
     $to = $payload['to'];
