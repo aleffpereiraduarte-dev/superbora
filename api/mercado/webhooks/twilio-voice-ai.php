@@ -36,6 +36,7 @@ require_once __DIR__ . '/../helpers/claude-client.php';
 require_once __DIR__ . '/../helpers/ws-callcenter-broadcast.php';
 require_once __DIR__ . '/../helpers/voice-tts.php';
 require_once __DIR__ . '/../helpers/ai-safeguards.php';
+require_once __DIR__ . '/../helpers/eta-calculator.php';
 if (file_exists(__DIR__ . '/../helpers/ai-memory.php')) {
     require_once __DIR__ . '/../helpers/ai-memory.php';
 }
@@ -139,6 +140,8 @@ try {
 
     // Load AI context from a separate column or notes JSON
     $aiContext = loadAiContext($db, $callId);
+    $aiContext['customer_phone'] = $callerPhone;
+    $aiContext['customer_id'] = $customerId;
     $step = $aiContext['step'] ?? 'identify_store';
     $conversationHistory = $aiContext['history'] ?? [];
 
@@ -732,12 +735,35 @@ try {
     // -- Load AI memory for returning customers --
     $memoryContext = '';
     $memoryGreetingHint = null;
+    $dietaryRestrictions = $aiContext['dietary_restrictions'] ?? null;
     if (function_exists('aiMemoryBuildContext')) {
         try {
             $memoryContext = aiMemoryBuildContext($db, $callerPhone, $customerId);
             $memoryGreetingHint = aiMemoryGetGreeting($db, $callerPhone, $customerId);
         } catch (Exception $e) {
             error_log("[twilio-voice-ai] Memory load error (non-fatal): " . $e->getMessage());
+        }
+        // Load dietary restrictions from AI memory if not already in context
+        if (empty($dietaryRestrictions) && function_exists('aiMemoryLoad')) {
+            try {
+                $memories = aiMemoryLoad($db, $callerPhone, $customerId);
+                if (!empty($memories['preference']['dietary_restriction']['value'])) {
+                    $dietaryRestrictions = $memories['preference']['dietary_restriction']['value'];
+                    $aiContext['dietary_restrictions'] = $dietaryRestrictions;
+                }
+            } catch (Exception $e) {
+                error_log("[twilio-voice-ai] Dietary load error (non-fatal): " . $e->getMessage());
+            }
+        }
+    }
+
+    // -- Load favorite stores for returning customers --
+    $favoriteStores = [];
+    if ($customerId) {
+        try {
+            $favoriteStores = getVoiceFavoriteStores($db, $customerId, 5);
+        } catch (Exception $e) {
+            error_log("[twilio-voice-ai] Favorite stores load error (non-fatal): " . $e->getMessage());
         }
     }
 
@@ -747,6 +773,58 @@ try {
 
     // Track if AI already did upsell (don't repeat)
     $didUpsell = $aiContext['did_upsell'] ?? false;
+
+    // -- Intelligence features (ported from WhatsApp bot) --
+    $reorderSuggestion = null;
+    if ($customerId && $step === 'identify_store') {
+        try { $reorderSuggestion = getVoiceReorderSuggestion($db, $customerId); } catch (\Exception $e) {}
+    }
+    $callHistory = '';
+    if (!empty($callerPhone) && $turnCount <= 1) {
+        try { $callHistory = getVoiceCallHistory($db, $callerPhone, 3); } catch (\Exception $e) {}
+    }
+    $sentiment = ['mood' => 'neutral', 'confidence' => 0.5, 'signals' => []];
+    if (!empty($userInput)) {
+        try { $sentiment = detectVoiceSentiment($userInput); } catch (\Exception $e) {}
+    }
+    $weatherContext = null;
+    if ($step === 'identify_store') {
+        try { $weatherContext = getVoiceWeatherContext(); } catch (\Exception $e) {}
+    }
+
+    // -- Loyalty tier + learned preferences --
+    $loyaltyTier = null;
+    $learnedPrefs = null;
+    if ($customerId) {
+        try { $loyaltyTier = getVoiceLoyaltyTier($db, $customerId); } catch (\Exception $e) {}
+        try { $learnedPrefs = getVoiceLearnedPreferences($db, $customerId); } catch (\Exception $e) {}
+    }
+
+    // Referral code lookup for frequent customer hint
+    $referralCode = getCustomerReferralCode($db, $customerId);
+
+    // Smart ETA calculation (done here where $db is available, passed via extraData)
+    $smartEtaMin = null;
+    if ($storeId && ($step === 'confirm_order' || $step === 'take_order')) {
+        $etaDistKm = (float)($aiContext['distance_km'] ?? 5.0);
+        try {
+            $smartEtaMin = calculateSmartETA($db, $storeId, $etaDistKm, 'pendente');
+        } catch (Exception $e) {
+            error_log("[twilio-voice-ai] Smart ETA calc error (non-fatal): " . $e->getMessage());
+        }
+    }
+
+    // -- Voice intelligence: recommendations, cart optimization, price tips --
+    $voiceRecs = [];
+    if ($customerId && $storeId && $step === 'take_order') {
+        try { $voiceRecs = getVoiceRecommendations($db, $customerId, $storeId, 3); } catch (\Exception $e) {}
+    }
+    $cartOptTip = null;
+    if ($storeId && !empty($draftItems) && ($step === 'confirm_order' || $step === 'take_order')) {
+        try { $cartOptTip = analyzeVoiceCartOptimizations($db, $draftItems, $storeId); } catch (\Exception $e) {}
+    }
+    // Price tips accumulated during item parsing (stored in context)
+    $priceTips = $aiContext['price_tips'] ?? [];
 
     // -- Build system prompt --
     $extraData = [
@@ -761,6 +839,19 @@ try {
         'turn_count' => $turnCount,
         'did_upsell' => $didUpsell,
         'wants_goodbye' => $aiContext['wants_goodbye'] ?? false,
+        'reorder_suggestion' => $reorderSuggestion,
+        'call_history' => $callHistory,
+        'sentiment' => $sentiment,
+        'weather_context' => $weatherContext,
+        'loyalty_tier' => $loyaltyTier,
+        'learned_prefs' => $learnedPrefs,
+        'favorite_stores' => $favoriteStores,
+        'dietary_restrictions' => $dietaryRestrictions,
+        'referral_code' => $referralCode,
+        'smart_eta' => $smartEtaMin,
+        'voice_recs' => $voiceRecs,
+        'cart_opt_tip' => $cartOptTip,
+        'price_tips' => $priceTips,
     ];
     $systemPrompt = buildSystemPrompt($step, $storeName, $menuText, $draftItems, $address, $paymentMethod, $customerName, $savedAddresses, $storeNames, $lastOrderItems ?? [], $aiContext, $extraData);
 
@@ -968,8 +1059,20 @@ try {
                     . "Mandei um SMS com o resumo. "
                     . "Valeu por pedir pelo SuperBora! Até lá!";
             } else {
+                // Calculate smart ETA for the spoken success message
+                $submitStoreId = $newContext['store_id'] ?? null;
+                $submitDistKm = (float)($newContext['distance_km'] ?? 5.0);
+                $submitEta = 40;
+                if ($submitStoreId) {
+                    try {
+                        $submitEta = calculateSmartETA($db, $submitStoreId, $submitDistKm, 'pendente');
+                    } catch (Exception $e) { /* fallback to 40 */ }
+                }
+                $etaSpoken = spokenETA($submitEta);
+
                 $finalMsg = "Pronto, pedido feito! Número {$orderNumSpoken}, total de {$totalSpoken}. "
-                    . "Mandei um SMS com os detalhes. "
+                    . "Chega em uns {$etaSpoken}! "
+                    . "Vou te mandar SMS quando o restaurante aceitar e quando sair pra entrega. "
                     . "Valeu por pedir pelo SuperBora! Bom apetite!";
             }
 
@@ -1399,6 +1502,661 @@ function findStoresByCep(PDO $db, string $cep): array {
     return $stores;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// INTELLIGENCE FEATURES (ported from WhatsApp bot, adapted for voice)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Smart Reorder Prediction — analyzes order patterns by day/hour/store.
+ * Returns suggestion array or null if confidence too low.
+ */
+function getVoiceReorderSuggestion(PDO $db, int $customerId): ?array
+{
+    $tz = new DateTimeZone('America/Sao_Paulo');
+    $now = new DateTime('now', $tz);
+    $currentDow = (int)$now->format('w');
+    $currentHour = (int)$now->format('G');
+
+    try {
+        $stmt = $db->prepare("
+            SELECT o.order_id, o.partner_id, o.partner_name, o.date_added, o.created_at
+            FROM om_market_orders o
+            WHERE o.customer_id = ?
+              AND o.status IN ('entregue', 'delivered', 'retirado')
+            ORDER BY o.date_added DESC
+            LIMIT 20
+        ");
+        $stmt->execute([$customerId]);
+        $orders = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        if (count($orders) < 3) return null;
+
+        $dowCounts = array_fill(0, 7, 0);
+        $hourCounts = array_fill(0, 24, 0);
+        $storeCounts = [];
+        $totalOrders = count($orders);
+
+        foreach ($orders as $order) {
+            $orderDate = new DateTime($order['date_added'] ?? $order['created_at'], $tz);
+            $dow = (int)$orderDate->format('w');
+            $hour = (int)$orderDate->format('G');
+            $pid = (int)$order['partner_id'];
+
+            $dowCounts[$dow]++;
+            $hourCounts[$hour]++;
+
+            if (!isset($storeCounts[$pid])) {
+                $storeCounts[$pid] = ['count' => 0, 'name' => $order['partner_name'], 'items' => []];
+            }
+            $storeCounts[$pid]['count']++;
+
+            try {
+                $itemStmt = $db->prepare("
+                    SELECT oi.name, oi.quantity FROM om_market_order_items oi
+                    WHERE oi.order_id = ? ORDER BY oi.quantity DESC LIMIT 4
+                ");
+                $itemStmt->execute([$order['order_id']]);
+                foreach ($itemStmt->fetchAll(PDO::FETCH_ASSOC) as $it) {
+                    $key = mb_strtolower(trim($it['name']));
+                    if (!isset($storeCounts[$pid]['items'][$key])) {
+                        $storeCounts[$pid]['items'][$key] = ['name' => $it['name'], 'count' => 0];
+                    }
+                    $storeCounts[$pid]['items'][$key]['count'] += (int)$it['quantity'];
+                }
+            } catch (\Exception $e) { /* non-critical */ }
+        }
+
+        uasort($storeCounts, fn($a, $b) => $b['count'] - $a['count']);
+        $topStore = reset($storeCounts);
+        if (!$topStore || $topStore['count'] < 2) return null;
+
+        $dowScore = $dowCounts[$currentDow] / $totalOrders;
+        $hourScore = 0;
+        for ($h = $currentHour - 2; $h <= $currentHour + 2; $h++) {
+            $hourScore += $hourCounts[(($h % 24) + 24) % 24];
+        }
+        $hourScore /= $totalOrders;
+        $storeScore = $topStore['count'] / $totalOrders;
+        $confidence = ($dowScore * 0.35) + ($hourScore * 0.35) + ($storeScore * 0.30);
+
+        if ($confidence < 0.15) return null;
+
+        $storeItems = $topStore['items'];
+        uasort($storeItems, fn($a, $b) => $b['count'] - $a['count']);
+        $topItems = array_map(fn($i) => $i['name'], array_slice(array_values($storeItems), 0, 3));
+
+        $dayNames = ['domingo', 'segunda', 'terca', 'quarta', 'quinta', 'sexta', 'sabado'];
+        if ($currentHour >= 6 && $currentHour < 12) $period = 'de manha';
+        elseif ($currentHour >= 12 && $currentHour < 18) $period = 'na hora do almoco';
+        elseif ($currentHour >= 18 && $currentHour < 23) $period = 'a noite';
+        else $period = 'de madrugada';
+
+        return [
+            'store_name' => $topStore['name'],
+            'items'      => $topItems,
+            'pattern'    => "Costuma pedir da {$topStore['name']} {$dayNames[$currentDow]} {$period}",
+            'confidence' => round($confidence, 2),
+        ];
+    } catch (\Exception $e) {
+        error_log("[twilio-voice-ai] Reorder prediction error: " . $e->getMessage());
+        return null;
+    }
+}
+
+/**
+ * Voice Call History — summarizes last N calls for conversation continuity.
+ */
+function getVoiceCallHistory(PDO $db, string $phone, int $limit = 3): string
+{
+    $phoneClean = preg_replace('/\D/', '', $phone);
+    if (empty($phoneClean)) return '';
+
+    try {
+        $stmt = $db->prepare("
+            SELECT id, notes, ai_context, created_at, status, store_identified
+            FROM om_callcenter_calls
+            WHERE customer_phone LIKE ?
+              AND status IN ('completed', 'transferred', 'ai_completed')
+            ORDER BY created_at DESC
+            LIMIT ?
+        ");
+        $stmt->execute(['%' . substr($phoneClean, -11), $limit + 1]);
+        $calls = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        if (empty($calls)) return '';
+
+        // Skip current call (most recent)
+        $pastCalls = array_slice($calls, 1, $limit);
+        if (empty($pastCalls)) return '';
+
+        $tz = new DateTimeZone('America/Sao_Paulo');
+        $lines = [];
+
+        foreach ($pastCalls as $call) {
+            $callDate = new DateTime($call['created_at'], $tz);
+            $dateStr = $callDate->format('d/m H:i');
+            $ctx = json_decode($call['ai_context'] ?? '{}', true) ?: [];
+            $storeName = $ctx['store_name'] ?? $call['store_identified'] ?? '';
+            $items = $ctx['items'] ?? [];
+            $step = $ctx['step'] ?? '';
+
+            if (!empty($items) && !empty($storeName)) {
+                $itemNames = array_map(fn($i) => ($i['quantity'] ?? 1) . 'x ' . ($i['name'] ?? '?'), array_slice($items, 0, 3));
+                $summary = "Pediu da {$storeName}: " . implode(', ', $itemNames);
+            } elseif ($step === 'support') {
+                $summary = "Pediu suporte/ajuda";
+            } elseif (!empty($storeName)) {
+                $summary = "Perguntou sobre {$storeName}";
+            } else {
+                $summary = "Ligacao breve";
+            }
+            $lines[] = "- {$dateStr}: {$summary}";
+        }
+
+        return empty($lines) ? '' : "HISTORICO DE LIGACOES:\n" . implode("\n", $lines);
+    } catch (\Exception $e) {
+        error_log("[twilio-voice-ai] Call history error: " . $e->getMessage());
+        return '';
+    }
+}
+
+/**
+ * Voice Sentiment Detection — adapted for speech transcription signals.
+ * Detects: frustrated, hurried, happy, confused, neutral.
+ */
+function detectVoiceSentiment(string $speechText): array
+{
+    $result = ['mood' => 'neutral', 'confidence' => 0.5, 'signals' => []];
+    $msg = $speechText;
+    $msgLower = mb_strtolower($msg);
+    $msgLen = mb_strlen($msg);
+
+    $scores = ['frustrated' => 0.0, 'hurried' => 0.0, 'happy' => 0.0, 'confused' => 0.0];
+
+    // -- Frustrated (voice-adapted: includes spoken frustration cues) --
+    $frustratedWords = [
+        'absurdo', 'demora', 'lixo', 'pessimo', 'horrivel', 'porcaria',
+        'nunca mais', 'ridiculo', 'vergonha', 'nojento', 'raiva',
+        'cansei', 'que saco', 'inferno', 'droga',
+        'cad[eê] meu', 'nao aguento',
+        // Voice-specific frustration signals
+        'escuta', 'olha', 'presta aten[cç][aã]o', 'eu j[aá] falei',
+        'to falando', 'pelo amor de deus', 'meu deus',
+        'n[aã]o [eé] poss[ií]vel', 'de novo n[aã]o',
+    ];
+    $negHits = 0;
+    foreach ($frustratedWords as $w) {
+        if (preg_match('/' . $w . '/ui', $msgLower)) $negHits++;
+    }
+    if ($negHits >= 1) { $scores['frustrated'] += 0.3; $result['signals'][] = 'negative_keyword'; }
+    if ($negHits >= 2) { $scores['frustrated'] += 0.15; $result['signals'][] = 'multiple_negatives'; }
+
+    // Very short curt responses can signal frustration (voice-specific)
+    if ($msgLen > 0 && $msgLen <= 5 && !preg_match('/(sim|n[aã]o|oi|ok)/ui', $msgLower)) {
+        $scores['frustrated'] += 0.1;
+        $result['signals'][] = 'curt_response';
+    }
+
+    // -- Hurried --
+    $hurriedWords = [
+        'r[aá]pido', 'urgente', 'pressa', 'depressa', 'logo',
+        'agora', 'correndo', 'to com fome', 'morrendo de fome',
+        'faz logo', 'manda logo', 'pelo amor', 'sem enrola[cç][aã]o',
+    ];
+    foreach ($hurriedWords as $w) {
+        if (preg_match('/' . $w . '/ui', $msgLower)) {
+            $scores['hurried'] += 0.3; $result['signals'][] = 'impatience_words'; break;
+        }
+    }
+    // Short responses without greetings → hurried (voice-specific: people in a rush speak less)
+    if ($msgLen < 12 && !preg_match('/(oi|ol[aá]|bom dia|boa tarde|boa noite|opa)/ui', $msgLower)) {
+        $scores['hurried'] += 0.1; $result['signals'][] = 'short_no_greeting';
+    }
+
+    // -- Happy --
+    $happyWords = [
+        '[oó]timo', 'maravilha', 'perfeito', 'adorei', 'amei',
+        'top', 'show', 'massa', 'demais', 'sensacional',
+        'excelente', 'obrigad[oa]', 'valeu', 'del[ií]cia',
+        'que bom', 'arrasou', 'nota 10', 'por favor',
+    ];
+    foreach ($happyWords as $w) {
+        if (preg_match('/' . $w . '/ui', $msgLower)) {
+            $scores['happy'] += 0.3; $result['signals'][] = 'positive_keyword'; break;
+        }
+    }
+    // "por favor" = polite (voice-specific)
+    if (preg_match('/por favor/ui', $msgLower)) {
+        $scores['happy'] += 0.1; $result['signals'][] = 'polite';
+    }
+
+    // -- Confused --
+    $confusedWords = [
+        'n[aã]o entendi', 'como assim', 'hein', 'n[aã]o sei',
+        'confus[oa]', 'perdid[oa]', 'que significa', 'como funciona',
+        'pode repetir', 'repete', 'n[aã]o ficou claro', 'como [eé]',
+        'o qu[eê]', 'n[aã]o peguei',
+    ];
+    foreach ($confusedWords as $w) {
+        if (preg_match('/' . $w . '/ui', $msgLower)) {
+            $scores['confused'] += 0.35; $result['signals'][] = 'confusion_keyword'; break;
+        }
+    }
+
+    // Determine winner
+    $maxScore = 0.0;
+    $winningMood = 'neutral';
+    foreach ($scores as $mood => $score) {
+        if ($score > $maxScore) { $maxScore = $score; $winningMood = $mood; }
+    }
+
+    if ($maxScore >= 0.2) {
+        $result['mood'] = $winningMood;
+        $result['confidence'] = min(1.0, round($maxScore, 2));
+    } else {
+        $result['mood'] = 'neutral';
+        $result['confidence'] = round(0.5 + $maxScore, 2);
+    }
+
+    $result['signals'] = array_values(array_unique($result['signals']));
+    return $result;
+}
+
+/**
+ * Weather-Aware Suggestions — pure logic, no API (São Paulo climate).
+ * Returns season, meal type, food suggestions, and natural voice phrase.
+ */
+function getVoiceWeatherContext(): array
+{
+    $tz = new DateTimeZone('America/Sao_Paulo');
+    $now = new DateTime('now', $tz);
+    $month = (int)$now->format('n');
+    $hour = (int)$now->format('G');
+    $dayOfWeek = (int)$now->format('N');
+    $isWeekend = ($dayOfWeek >= 6);
+
+    // Season based on SP climate
+    if ($month >= 6 && $month <= 8) {
+        $season = 'cold';
+    } elseif ($month === 12 || $month <= 2) {
+        $season = ($hour >= 14 && $hour <= 18) ? 'rainy' : 'hot';
+    } elseif ($month >= 3 && $month <= 5) {
+        $season = ($hour >= 18) ? 'cold' : 'mild';
+    } else {
+        $season = ($month === 11 && $hour >= 14) ? 'rainy' : 'mild';
+    }
+
+    // Meal type
+    if ($hour >= 6 && $hour < 10) $mealType = 'breakfast';
+    elseif ($hour >= 10 && $hour < 14) $mealType = 'lunch';
+    elseif ($hour >= 14 && $hour < 17) $mealType = 'snack';
+    elseif ($hour >= 17 && $hour < 22) $mealType = 'dinner';
+    else $mealType = 'snack';
+    if ($isWeekend && $hour >= 9 && $hour < 12) $mealType = 'brunch';
+
+    $seasonSuggestions = [
+        'hot'   => ['acai', 'sorvete', 'salada', 'suco natural', 'poke', 'comida leve'],
+        'cold'  => ['sopa', 'chocolate quente', 'caldo', 'comida caseira', 'canja'],
+        'rainy' => ['pizza', 'hamburguer', 'sopas', 'pastel', 'cafe com bolo'],
+        'mild'  => ['prato do dia', 'marmita', 'salada', 'bowl'],
+    ];
+
+    $mealSuggestions = [
+        'breakfast' => ['cafe', 'pao de queijo', 'tapioca', 'acai'],
+        'brunch'    => ['acai', 'brunch', 'panqueca', 'suco'],
+        'lunch'     => ['marmita', 'prato feito', 'executivo'],
+        'snack'     => ['acai', 'lanche', 'pastel', 'cafe'],
+        'dinner'    => ['pizza', 'hamburguer', 'japonesa', 'churrasco'],
+    ];
+
+    $suggestions = array_unique(array_merge(
+        $seasonSuggestions[$season] ?? [],
+        $mealSuggestions[$mealType] ?? []
+    ));
+
+    // Short voice-friendly phrases
+    $voicePhrases = [
+        'hot'   => 'Ta quente hoje, algo refrescante cai bem!',
+        'cold'  => 'Ta frio, hein? Sopinha ou chocolate quente?',
+        'rainy' => 'Dia de chuva pede um comfort food!',
+        'mild'  => 'Clima gostoso pra qualquer pedido!',
+    ];
+
+    return [
+        'season'      => $season,
+        'meal_type'   => $mealType,
+        'is_weekend'  => $isWeekend,
+        'suggestions' => array_slice($suggestions, 0, 6),
+        'voice_hint'  => $voicePhrases[$season] ?? '',
+    ];
+}
+
+/**
+ * Get customer's favorite stores based on order history and favorites table.
+ */
+function getVoiceFavoriteStores(PDO $db, int $customerId, int $limit = 5): array {
+    try {
+        $stmt = $db->prepare("
+            SELECT p.partner_id, p.name,
+                   COALESCE(oc.cnt, 0) AS order_count,
+                   CASE WHEN f.id IS NOT NULL THEN true ELSE false END AS is_favorited
+            FROM om_market_partners p
+            LEFT JOIN (
+                SELECT partner_id, COUNT(*) AS cnt
+                FROM om_market_orders
+                WHERE customer_id = ? AND status NOT IN ('cancelled','refunded')
+                GROUP BY partner_id
+            ) oc ON oc.partner_id = p.partner_id
+            LEFT JOIN om_market_favorites f ON f.partner_id = p.partner_id AND f.customer_id = ?
+            WHERE p.status = '1'
+              AND (oc.cnt > 0 OR f.id IS NOT NULL)
+            ORDER BY COALESCE(oc.cnt, 0) DESC, f.id DESC NULLS LAST
+            LIMIT ?
+        ");
+        $stmt->execute([$customerId, $customerId, $limit]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Exception $e) {
+        error_log("[twilio-voice-ai] getVoiceFavoriteStores error: " . $e->getMessage());
+        return [];
+    }
+}
+
+/**
+ * Get voice loyalty tier based on 90-day order history.
+ * Bronze (0-4), Prata (5-14), Ouro (15-29 or R$500+), Diamante (30+ or R$1000+)
+ */
+function getVoiceLoyaltyTier(PDO $db, int $customerId): array {
+    $stmt = $db->prepare("
+        SELECT COUNT(*) as orders_90d,
+               COALESCE(SUM(total), 0) as spent_90d
+        FROM om_market_orders
+        WHERE customer_id = ? AND status NOT IN ('cancelled','refunded')
+          AND date_added >= NOW() - INTERVAL '90 days'
+    ");
+    $stmt->execute([$customerId]);
+    $row = $stmt->fetch();
+    $orders = (int)($row['orders_90d'] ?? 0);
+    $spent = (float)($row['spent_90d'] ?? 0);
+
+    if ($orders >= 30 || $spent >= 1000) {
+        return ['tier' => 'Diamante', 'badge' => 'diamante', 'orders_90d' => $orders, 'spent_90d' => $spent];
+    } elseif ($orders >= 15 || $spent >= 500) {
+        return ['tier' => 'Ouro', 'badge' => 'ouro', 'orders_90d' => $orders, 'spent_90d' => $spent];
+    } elseif ($orders >= 5) {
+        return ['tier' => 'Prata', 'badge' => 'prata', 'orders_90d' => $orders, 'spent_90d' => $spent];
+    }
+    return ['tier' => 'Bronze', 'badge' => 'bronze', 'orders_90d' => $orders, 'spent_90d' => $spent];
+}
+
+/**
+ * Auto-learn customer preferences from last 20 orders.
+ * Returns payment preference, common customizations, favorite categories, avg order value.
+ */
+function getVoiceLearnedPreferences(PDO $db, int $customerId): array {
+    $prefs = [
+        'payment_preference' => null,
+        'common_customizations' => [],
+        'favorite_categories' => [],
+        'avg_order_value' => 0,
+    ];
+
+    // Payment preference (most common method in last 20 orders)
+    $stmt = $db->prepare("
+        SELECT forma_pagamento, COUNT(*) as cnt
+        FROM (
+            SELECT forma_pagamento FROM om_market_orders
+            WHERE customer_id = ? AND status NOT IN ('cancelled','refunded')
+              AND forma_pagamento IS NOT NULL AND forma_pagamento != ''
+            ORDER BY date_added DESC LIMIT 20
+        ) sub
+        GROUP BY forma_pagamento ORDER BY cnt DESC LIMIT 1
+    ");
+    $stmt->execute([$customerId]);
+    $topPayment = $stmt->fetch();
+    if ($topPayment && $topPayment['forma_pagamento']) {
+        $prefs['payment_preference'] = $topPayment['forma_pagamento'];
+    }
+
+    // Common customizations from order item notes (recurring "sem cebola" etc.)
+    $stmt = $db->prepare("
+        SELECT notes FROM om_market_order_items
+        WHERE order_id IN (
+            SELECT order_id FROM om_market_orders
+            WHERE customer_id = ? AND status NOT IN ('cancelled','refunded')
+            ORDER BY date_added DESC LIMIT 20
+        ) AND notes IS NOT NULL AND notes != ''
+    ");
+    $stmt->execute([$customerId]);
+    $noteCounts = [];
+    foreach ($stmt->fetchAll() as $row) {
+        $note = mb_strtolower(trim($row['notes']));
+        if (mb_strlen($note) > 2) {
+            $noteCounts[$note] = ($noteCounts[$note] ?? 0) + 1;
+        }
+    }
+    // Keep notes that appeared 2+ times (actual preferences, not one-offs)
+    foreach ($noteCounts as $note => $count) {
+        if ($count >= 2) {
+            $prefs['common_customizations'][] = $note;
+        }
+    }
+
+    // Favorite categories (from partner categories in recent orders)
+    $stmt = $db->prepare("
+        SELECT p.category, COUNT(*) as cnt
+        FROM om_market_orders o
+        JOIN om_market_partners p ON p.partner_id = o.partner_id
+        WHERE o.customer_id = ? AND o.status NOT IN ('cancelled','refunded')
+          AND p.category IS NOT NULL AND p.category != ''
+        GROUP BY p.category ORDER BY cnt DESC LIMIT 3
+    ");
+    $stmt->execute([$customerId]);
+    foreach ($stmt->fetchAll() as $row) {
+        $prefs['favorite_categories'][] = $row['category'];
+    }
+
+    // Average order value
+    $stmt = $db->prepare("
+        SELECT AVG(total) as avg_val
+        FROM (
+            SELECT total FROM om_market_orders
+            WHERE customer_id = ? AND status NOT IN ('cancelled','refunded')
+            ORDER BY date_added DESC LIMIT 20
+        ) sub
+    ");
+    $stmt->execute([$customerId]);
+    $avg = $stmt->fetch();
+    $prefs['avg_order_value'] = round((float)($avg['avg_val'] ?? 0), 2);
+
+    return $prefs;
+}
+
+/**
+ * Convert ETA minutes to spoken Brazilian Portuguese.
+ * E.g. 40 → "quarenta minutinhos", 65 → "uma hora e cinco minutos"
+ */
+function spokenETA(int $minutes): string {
+    if ($minutes <= 0) return 'poucos minutos';
+    $numberWords = [
+        5 => 'cinco', 10 => 'dez', 15 => 'quinze', 20 => 'vinte',
+        25 => 'vinte e cinco', 30 => 'trinta', 35 => 'trinta e cinco',
+        40 => 'quarenta', 45 => 'quarenta e cinco', 50 => 'cinquenta',
+        55 => 'cinquenta e cinco', 60 => 'sessenta',
+    ];
+    // Round to nearest 5
+    $rounded = (int)(round($minutes / 5) * 5);
+    $rounded = max(5, min(120, $rounded));
+    if ($rounded > 60) {
+        $hrs = intdiv($rounded, 60);
+        $rem = $rounded % 60;
+        $hPart = $hrs === 1 ? 'uma hora' : "{$hrs} horas";
+        if ($rem === 0) return $hPart;
+        $mPart = $numberWords[$rem] ?? "{$rem}";
+        return "{$hPart} e {$mPart} minutos";
+    }
+    $word = $numberWords[$rounded] ?? "{$rounded}";
+    return $rounded <= 30 ? "{$word} minutinhos" : "{$word} minutos";
+}
+
+/**
+ * Check if customer has a referral code.
+ */
+function getCustomerReferralCode(PDO $db, ?int $customerId): ?string {
+    if (!$customerId) return null;
+    try {
+        $stmt = $db->prepare("SELECT code FROM referral_codes WHERE user_id = ? AND active = true LIMIT 1");
+        $stmt->execute([$customerId]);
+        $code = $stmt->fetchColumn();
+        return $code ?: null;
+    } catch (Exception $e) {
+        // Table may not exist — non-critical
+        return null;
+    }
+}
+
+/**
+ * Build group order summary for confirmation step (voice-friendly).
+ */
+function buildGroupSummaryForVoice(array $items): string {
+    $byMember = [];
+    $unassigned = [];
+    foreach ($items as $item) {
+        $member = $item['group_member'] ?? null;
+        if ($member) {
+            $byMember[$member][] = ($item['quantity'] ?? 1) . 'x ' . ($item['name'] ?? '?');
+        } else {
+            $unassigned[] = ($item['quantity'] ?? 1) . 'x ' . ($item['name'] ?? '?');
+        }
+    }
+    if (empty($byMember)) return '';
+    $parts = [];
+    foreach ($byMember as $name => $memberItems) {
+        $parts[] = "{$name}: " . implode(', ', $memberItems);
+    }
+    if (!empty($unassigned)) {
+        $parts[] = "Geral: " . implode(', ', $unassigned);
+    }
+    return implode(' | ', $parts);
+}
+
+
+/**
+ * Voice Recommendations — multi-signal scoring for phone ordering.
+ */
+function getVoiceRecommendations(PDO $db, int $customerId, int $partnerId, int $limit = 3): array {
+    try {
+        $hora = (int)date('G');
+        $recs = [];
+        // 1. Purchase history (weight: 40)
+        $stmt = $db->prepare("
+            SELECT oi.product_id, p.name, COALESCE(NULLIF(p.special_price,0), p.price) AS price, COUNT(*) AS buy_count
+            FROM om_market_order_items oi
+            JOIN om_market_orders o ON o.order_id = oi.order_id
+            JOIN om_market_products p ON p.product_id = oi.product_id
+            WHERE o.customer_id = ? AND o.partner_id = ? AND o.status = 'entregue' AND p.status = 1 AND p.quantity > 0
+            GROUP BY oi.product_id, p.name, p.price, p.special_price ORDER BY buy_count DESC LIMIT 5
+        ");
+        $stmt->execute([$customerId, $partnerId]);
+        foreach ($stmt->fetchAll() as $r) {
+            $recs[$r['product_id']] = ['product_id' => (int)$r['product_id'], 'name' => $r['name'], 'price' => (float)$r['price'], 'score' => (int)$r['buy_count'] * 40, 'reason' => "pediu {$r['buy_count']}x"];
+        }
+        // 2. Collaborative filtering (weight: 25)
+        $stmt = $db->prepare("
+            SELECT oi2.product_id, p.name, COALESCE(NULLIF(p.special_price,0), p.price) AS price, COUNT(DISTINCT o2.customer_id) AS co_buyers
+            FROM om_market_orders o1
+            JOIN om_market_order_items oi1 ON oi1.order_id = o1.order_id
+            JOIN om_market_order_items oi2 ON oi2.product_id != oi1.product_id
+            JOIN om_market_orders o2 ON o2.order_id = oi2.order_id AND o2.customer_id != ? AND o2.partner_id = ?
+            JOIN om_market_order_items oi3 ON oi3.order_id = o2.order_id AND oi3.product_id = oi1.product_id
+            JOIN om_market_products p ON p.product_id = oi2.product_id AND p.status = 1 AND p.quantity > 0 AND p.partner_id = ?
+            WHERE o1.customer_id = ? AND o1.partner_id = ? AND o1.status = 'entregue' AND o1.created_at > NOW() - INTERVAL '60 days'
+            GROUP BY oi2.product_id, p.name, p.price, p.special_price ORDER BY co_buyers DESC LIMIT 10
+        ");
+        $stmt->execute([$customerId, $partnerId, $partnerId, $customerId, $partnerId]);
+        $tbStmt = $db->prepare("SELECT COUNT(DISTINCT customer_id) FROM om_market_orders WHERE partner_id = ? AND status = 'entregue' AND created_at > NOW() - INTERVAL '60 days'");
+        $tbStmt->execute([$partnerId]);
+        $totalBuyers = max(1, (int)$tbStmt->fetchColumn());
+        foreach ($stmt->fetchAll() as $r) {
+            $pct = round(((int)$r['co_buyers'] / $totalBuyers) * 100);
+            $pid = (int)$r['product_id'];
+            if (isset($recs[$pid])) { $recs[$pid]['score'] += $pct * 0.25; $recs[$pid]['reason'] .= ", {$pct}% pedem junto"; }
+            else { $recs[$pid] = ['product_id' => $pid, 'name' => $r['name'], 'price' => (float)$r['price'], 'score' => $pct * 25, 'reason' => "{$pct}% dos clientes pedem"]; }
+        }
+        // 3. Time-of-day boost (+15)
+        $timeKw = [];
+        if ($hora >= 6 && $hora < 10) $timeKw = ['café', 'pão', 'tapioca', 'suco', 'vitamina'];
+        elseif ($hora >= 11 && $hora < 14) $timeKw = ['almoço', 'executivo', 'marmita', 'arroz', 'feijão'];
+        elseif ($hora >= 18 && $hora < 23) $timeKw = ['pizza', 'hambúrguer', 'burger', 'lanche', 'sushi'];
+        foreach ($recs as &$rec) { $nl = mb_strtolower($rec['name']); foreach ($timeKw as $kw) { if (mb_strpos($nl, $kw) !== false) { $rec['score'] += 15; break; } } }
+        unset($rec);
+        usort($recs, fn($a, $b) => $b['score'] <=> $a['score']);
+        return array_slice(array_values($recs), 0, $limit);
+    } catch (\Exception $e) { error_log("[twilio-voice-ai] getVoiceRecommendations error: " . $e->getMessage()); return []; }
+}
+
+/**
+ * Voice Price Comparison — find single cheaper alternative at another OPEN store (>15% savings).
+ */
+function findVoiceCheaperAlternatives(PDO $db, string $productName, int $currentPartnerId, float $currentPrice): ?array {
+    if ($currentPrice <= 0 || mb_strlen($productName) < 3) return null;
+    try {
+        $cleanName = mb_strtolower(trim($productName));
+        $cleanName = trim(preg_replace('/\s*\d+\s*(ml|l|g|kg|un|und|pct|pc)\b/i', '', $cleanName));
+        if (mb_strlen($cleanName) < 3) return null;
+        $stmt = $db->prepare("
+            SELECT p.name AS product_name, COALESCE(NULLIF(p.special_price,0), p.price) AS final_price, COALESCE(pa.trade_name, pa.name) AS partner_name
+            FROM om_market_products p JOIN om_market_partners pa ON pa.partner_id = p.partner_id
+            WHERE p.partner_id != ? AND p.status = 1 AND p.quantity > 0 AND pa.status::text = '1' AND pa.is_open = 1
+              AND p.name ILIKE ? AND COALESCE(NULLIF(p.special_price,0), p.price) < ?
+            ORDER BY COALESCE(NULLIF(p.special_price,0), p.price) ASC LIMIT 1
+        ");
+        $stmt->execute([$currentPartnerId, '%' . $cleanName . '%', $currentPrice * 0.85]);
+        $alt = $stmt->fetch();
+        if (!$alt) return null;
+        $altPrice = (float)$alt['final_price'];
+        $savings = round($currentPrice - $altPrice, 2);
+        return ['partner_name' => $alt['partner_name'], 'product_name' => $alt['product_name'], 'price' => $altPrice, 'savings' => $savings,
+            'tip' => "Essa {$cleanName} custa R\$" . number_format($altPrice, 2, ',', '.') . " na {$alt['partner_name']} (economia de R\$" . number_format($savings, 2, ',', '.') . ")"];
+    } catch (\Exception $e) { error_log("[twilio-voice-ai] findVoiceCheaperAlternatives error: " . $e->getMessage()); return null; }
+}
+
+/**
+ * Voice Cart Optimization — returns a SINGLE best tip sentence or null.
+ * Priority: free delivery > min order > combo suggestion.
+ */
+function analyzeVoiceCartOptimizations(PDO $db, array $items, int $partnerId): ?string {
+    if (empty($items)) return null;
+    try {
+        $subtotal = 0;
+        foreach ($items as $item) { $subtotal += ($item['price'] ?? 0) * ($item['quantity'] ?? 1); }
+        $stmt = $db->prepare("SELECT free_delivery_above, min_order_value, delivery_fee FROM om_market_partners WHERE partner_id = ? AND status::text = '1'");
+        $stmt->execute([$partnerId]);
+        $store = $stmt->fetch();
+        if (!$store) return null;
+        $freeAbove = (float)($store['free_delivery_above'] ?? 0);
+        $minOrder = (float)($store['min_order_value'] ?? 0);
+        $deliveryFee = (float)($store['delivery_fee'] ?? 5.0);
+        // Priority 1: Free delivery threshold (within R$15)
+        if ($freeAbove > 0 && $subtotal < $freeAbove && $deliveryFee > 0) {
+            $diff = round($freeAbove - $subtotal, 2);
+            if ($diff <= 15.0) return "Faltam R\$" . number_format($diff, 2, ',', '.') . " pro frete grátis!";
+        }
+        // Priority 2: Min order warning
+        if ($minOrder > 0 && $subtotal < $minOrder) {
+            $diff = round($minOrder - $subtotal, 2);
+            return "Pedido mínimo é R\$" . number_format($minOrder, 2, ',', '.') . ", faltam R\$" . number_format($diff, 2, ',', '.') . ".";
+        }
+        // Priority 3: Combo suggestion
+        if (count($items) >= 2) {
+            $comboStmt = $db->prepare("SELECT name, COALESCE(NULLIF(special_price,0), price) AS price FROM om_market_products WHERE partner_id = ? AND status = 1 AND quantity > 0 AND (LOWER(name) LIKE '%combo%' OR LOWER(name) LIKE '%kit%' OR LOWER(name) LIKE '%promocao%') AND COALESCE(NULLIF(special_price,0), price) < ? ORDER BY price ASC LIMIT 1");
+            $comboStmt->execute([$partnerId, $subtotal]);
+            $combo = $comboStmt->fetch();
+            if ($combo) return "Tem o {$combo['name']} por R\$" . number_format((float)$combo['price'], 2, ',', '.') . ", que pode sair melhor!";
+        }
+        return null;
+    } catch (\Exception $e) { error_log("[twilio-voice-ai] analyzeVoiceCartOptimizations error: " . $e->getMessage()); return null; }
+}
+
 function buildSystemPrompt(
     string $step, ?string $storeName, string $menuText, array $items,
     ?array $address, ?string $payment, ?string $customerName,
@@ -1549,6 +2307,28 @@ function buildSystemPrompt(
         $prompt .= "DICA DE ABORDAGEM: {$memoryHint}\n\n";
     }
 
+    // Call history (from voice calls)
+    $callHistoryCtx = $extraData['call_history'] ?? '';
+    if (!empty($callHistoryCtx)) {
+        $prompt .= "## {$callHistoryCtx}\n";
+        $prompt .= "Use pra continuidade: 'Da ultima vez voce pediu da X, quer de la de novo?'\n\n";
+    }
+
+    // Live sentiment detection
+    $sentiment = $extraData['sentiment'] ?? null;
+    if ($sentiment && $sentiment['mood'] !== 'neutral' && ($sentiment['confidence'] ?? 0) >= 0.25) {
+        $moodRules = [
+            'frustrated' => 'FRUSTRADO → Seja empatica e DIRETA. Zero enrolacao. Resolva rapido.',
+            'hurried'    => 'COM PRESSA → Ultra-curta, pule elogios, va direto ao ponto.',
+            'happy'      => 'FELIZ → Seja animada junto, brinque um pouco!',
+            'confused'   => 'CONFUSO → Reformule com carinho, confirme cada etapa.',
+        ];
+        $moodRule = $moodRules[$sentiment['mood']] ?? '';
+        if ($moodRule) {
+            $prompt .= "ESTADO EMOCIONAL DO CLIENTE: {$moodRule}\n\n";
+        }
+    }
+
     if ($customerName) {
         $prompt .= "CLIENTE: {$customerName}";
         if ($customerStats && (int)$customerStats['total_orders'] > 0) {
@@ -1557,7 +2337,39 @@ function buildSystemPrompt(
             $prompt .= " (cliente fiel: {$orders} pedidos, R\${$value} total)";
             if ($orders >= 20) $prompt .= " [VIP]";
         }
+        $loyaltyTier = $extraData['loyalty_tier'] ?? null;
+        if ($loyaltyTier && in_array($loyaltyTier['tier'], ['Ouro', 'Diamante'])) {
+            $prompt .= "\nCLIENTE VIP ({$loyaltyTier['tier']}) — trate com carinho extra! Mencione naturalmente: 'Como nosso cliente especial, vou ver se consigo algo pra voce!'";
+        } elseif ($loyaltyTier && $loyaltyTier['tier'] === 'Prata') {
+            $prompt .= "\nCliente Prata — bom cliente, seja caloroso!";
+        }
         $prompt .= "\n\n";
+
+        // Referral hint for frequent customers (light touch — just a prompt hint)
+        if ($customerStats && (int)$customerStats['total_orders'] > 5) {
+            $referralCode = $extraData['referral_code'] ?? null;
+            if ($referralCode) {
+                $prompt .= "DICA: Esse cliente é frequente e tem código de indicação ({$referralCode}). Se parecer natural, mencione: 'Sabia que você pode indicar amigos e ganhar cashback? Me manda um zap que eu explico!'\n\n";
+            }
+        }
+    }
+
+    // Learned preferences context (auto-learned from order history)
+    $learnedPrefs = $extraData['learned_prefs'] ?? null;
+    if ($learnedPrefs) {
+        $prefsLines = [];
+        if (!empty($learnedPrefs['common_customizations'])) {
+            $prefsLines[] = "Customizacoes frequentes: " . implode(', ', array_slice($learnedPrefs['common_customizations'], 0, 3));
+        }
+        if (!empty($learnedPrefs['favorite_categories'])) {
+            $prefsLines[] = "Categorias favoritas: " . implode(', ', $learnedPrefs['favorite_categories']);
+        }
+        if ($learnedPrefs['avg_order_value'] > 0) {
+            $prefsLines[] = "Ticket medio: R$" . number_format($learnedPrefs['avg_order_value'], 2, ',', '.');
+        }
+        if (!empty($prefsLines)) {
+            $prompt .= "## PREFERENCIAS APRENDIDAS\n" . implode("\n", $prefsLines) . "\n\n";
+        }
     }
 
     // Step-specific instructions
@@ -1600,11 +2412,44 @@ function buildSystemPrompt(
             $prompt .= "- Sem contexto nenhum: 'quero pedir' → pergunte o tipo de comida ou restaurante\n";
             $prompt .= "- Se já tem CEP/nearby_stores → NÃO peça CEP de novo!\n\n";
 
+            // Favorite stores (from order history + favorites)
+            $favStores = $extraData['favorite_stores'] ?? [];
+            if (!empty($favStores)) {
+                $prompt .= "LOJAS FAVORITAS DO CLIENTE:\n";
+                foreach ($favStores as $i => $fs) {
+                    $n = $i + 1;
+                    $cnt = (int)($fs['order_count'] ?? 0);
+                    $fav = !empty($fs['is_favorited']) ? ' [favorita]' : '';
+                    $prompt .= "{$n}. {$fs['name']} ({$cnt} pedidos){$fav}\n";
+                }
+                $prompt .= "Se o cliente está indeciso, sugira a favorita: 'Quer pedir da {$favStores[0]['name']} como sempre?'\n\n";
+            }
+
             $prompt .= "RESTAURANTES DISPONÍVEIS:\n" . implode("\n", $storeNames) . "\n\n";
 
             if (!empty($extraData['default_address'])) {
                 $da = $extraData['default_address'];
                 $prompt .= "ENDEREÇO SALVO: {$da['neighborhood']}, {$da['city']}\n\n";
+            }
+
+            // Smart Reorder Prediction
+            $reorder = $extraData['reorder_suggestion'] ?? null;
+            if ($reorder && ($reorder['confidence'] ?? 0) >= 0.15) {
+                $prompt .= "SUGESTAO DE REORDER: {$reorder['pattern']}.";
+                if (!empty($reorder['items'])) {
+                    $prompt .= " Itens frequentes: " . implode(', ', $reorder['items']) . ".";
+                }
+                $prompt .= "\nSugira naturalmente: 'Hora da {$reorder['store_name']}, ne? Quer o de sempre?'\n\n";
+            }
+
+            // Weather-Aware Suggestions
+            $weather = $extraData['weather_context'] ?? null;
+            if ($weather && !empty($weather['voice_hint'])) {
+                $prompt .= "CONTEXTO CLIMA: {$weather['voice_hint']}";
+                if (!empty($weather['suggestions'])) {
+                    $prompt .= " Sugira: " . implode(', ', array_slice($weather['suggestions'], 0, 4));
+                }
+                $prompt .= "\nUse naturalmente na conversa (ex: 'Ta frio hoje, uma sopinha cai bem!').\n\n";
             }
 
             $hora = (int)date('H');
@@ -1613,6 +2458,11 @@ function buildSystemPrompt(
             elseif ($hora >= 14 && $hora < 17) $prompt .= "HORÁRIO: Tarde — sugira açaí, lanches, cafeteria, sobremesa\n";
             elseif ($hora >= 18 && $hora < 22) $prompt .= "HORÁRIO: Noite — sugira pizza, hambúrguer, japonês, churrasco\n";
             else $prompt .= "HORÁRIO: Madrugada — sugira o que funciona nesse horário, seja compreensivo\n";
+
+            // Learned category preferences for store suggestions
+            if ($learnedPrefs && !empty($learnedPrefs['favorite_categories'])) {
+                $prompt .= "CATEGORIAS FAVORITAS DO CLIENTE: " . implode(', ', $learnedPrefs['favorite_categories']) . " — priorize sugestoes dessas categorias!\n";
+            }
 
             $prompt .= "\nMARCADORES:\n";
             $prompt .= "- Restaurante identificado: [STORE:id:nome] (ex: [STORE:42:Pizzaria Bella])\n";
@@ -1633,6 +2483,17 @@ function buildSystemPrompt(
                 }
             }
             $prompt .= "\nCARDAPIO:\n{$menuText}\n\n";
+
+            // Dietary restrictions from memory
+            $dietaryCtx = $extraData['dietary_restrictions'] ?? null;
+            if (!empty($dietaryCtx)) {
+                $prompt .= "RESTRICOES ALIMENTARES DO CLIENTE: {$dietaryCtx}\n";
+                $prompt .= "- Avise se algum item pode conter alérgenos incompatíveis. Sugira itens compatíveis.\n";
+                $prompt .= "- Se o cliente pedir algo incompatível, alerte gentilmente: 'Lembrei que você tem restrição com [X]. Esse item pode ter, tá? Quer trocar?'\n";
+                $prompt .= "- Se o cliente mencionar NOVAS restrições, use [DIETARY:texto] pra salvar.\n\n";
+            } else {
+                $prompt .= "Se o cliente mencionar alergia ou restrição alimentar, use [DIETARY:texto] pra salvar (ex: [DIETARY:sem gluten, sem lactose]).\n\n";
+            }
 
             // Repeat order detected
             if (!empty($context['repeat_order']) && !empty($items)) {
@@ -1673,6 +2534,19 @@ function buildSystemPrompt(
                 $popNames = array_map(fn($p) => $p['product_name'], $popularItems);
                 $prompt .= implode(', ', $popNames) . "\n";
                 $prompt .= "- Se o cliente não sabe o que pedir, sugira estes itens populares\n\n";
+            }
+
+            // Personalized recommendations (collaborative filtering)
+            $voiceRecs = $extraData['voice_recs'] ?? [];
+            if (!empty($voiceRecs) && empty($items)) {
+                $prompt .= "RECOMENDACOES PERSONALIZADAS:\n";
+                foreach ($voiceRecs as $i => $rec) {
+                    $n = $i + 1;
+                    $priceFmt = number_format($rec['price'], 2, ',', '.');
+                    $prompt .= "{$n}. {$rec['name']} R\${$priceFmt} ({$rec['reason']})\n";
+                }
+                $prompt .= "Mencione naturalmente: ex 'A Margherita que cê sempre pede tá disponível! E a galera costuma pedir uma Coca junto.'\n";
+                $prompt .= "NÃO liste todas — cite 1-2 que façam sentido no momento.\n\n";
             }
 
             $prompt .= "COMO ANOTAR PEDIDO:\n";
@@ -1736,6 +2610,26 @@ function buildSystemPrompt(
                 $prompt .= "- Mencione o cupom SOMENTE quando o subtotal estiver perto do mínimo: 'Se adicionar mais R$X, você pode usar o cupom [CODE] e ganhar [desconto]!'\n\n";
             }
 
+            // Group/family order mode
+            if (!empty($context['group_order'])) {
+                $prompt .= "MODO GRUPO ATIVO — Pedido coletivo\n";
+                $memberNames = array_map(fn($gm) => $gm['name'], $context['group_members'] ?? []);
+                if (!empty($memberNames)) {
+                    $prompt .= "Membros: " . implode(', ', $memberNames) . "\n";
+                }
+                $currentMember = $context['current_group_member'] ?? 'nenhum';
+                $prompt .= "Anotando pra: {$currentMember}\n";
+                $prompt .= "- Use [GROUP_MEMBER:nome] ao trocar de pessoa\n";
+                $prompt .= "- Pergunte o que cada pessoa quer, um por vez\n";
+                $prompt .= "- Ex: 'Anotado pra Maria! E o João, o que vai querer?'\n\n";
+            } else {
+                $prompt .= "PEDIDO EM GRUPO / FAMÍLIA:\n";
+                $prompt .= "Se o cliente disser 'pedido pra família', 'turma', 'grupo' ou mencionar nomes ('pra mim e pro João'):\n";
+                $prompt .= "- Use [GROUP_MEMBER:nome] antes de cada item pra registrar quem pediu\n";
+                $prompt .= "- Ex: 'Maria quer uma pizza, João quer um hambúrguer — anotado!'\n";
+                $prompt .= "- Pergunte cada pessoa: 'Anotei da Maria! E pro João?'\n\n";
+            }
+
             $prompt .= "MARCADORES:\n";
             $prompt .= "- Para cada item SEM opcoes: [ITEM:product_id:quantidade:preco_total:nome]\n";
             $prompt .= "  Ex: [ITEM:123:2:12.90:Coxinha de Frango]\n";
@@ -1745,7 +2639,15 @@ function buildSystemPrompt(
             $prompt .= "- Para remover: [REMOVE_ITEM:indice_do_item]\n";
             $prompt .= "- Para alterar qtd: [UPDATE_QTY:indice_do_item:nova_qtd]\n";
             $prompt .= "- Para agendar: [SCHEDULE:YYYY-MM-DD HH:MM]\n";
+            $prompt .= "- Trocar membro grupo: [GROUP_MEMBER:nome]\n";
             $prompt .= "- Quando finalizar itens: [NEXT_STEP]\n";
+
+            // Learned customization preferences
+            if ($learnedPrefs && !empty($learnedPrefs['common_customizations'])) {
+                $customs = implode(', ', array_slice($learnedPrefs['common_customizations'], 0, 3));
+                $prompt .= "\nCUSTOMIZACOES FREQUENTES DO CLIENTE: {$customs}\n";
+                $prompt .= "Pergunte naturalmente: 'Sem cebola como sempre?' (use a customizacao relevante pro item)\n";
+            }
             break;
 
         case 'get_address':
@@ -1793,6 +2695,9 @@ function buildSystemPrompt(
             $prompt .= "- Endereço salvo: [ADDRESS:1]\n";
             $prompt .= "- Endereço digitado: [ADDRESS_TEXT:rua, número - bairro, cidade]\n";
             $prompt .= "- Quando tiver endereço → [NEXT_STEP]\n";
+            $prompt .= "- Instrucoes de entrega: [DELIVERY_INSTRUCTIONS:texto]\n\n";
+            $prompt .= "Depois de confirmar o endereco, pergunte: 'Alguma instrucao pro entregador? Tipo portao, campainha, deixar na portaria...'\n";
+            $prompt .= "Se o cliente der instrucoes, inclua [DELIVERY_INSTRUCTIONS:texto]. Se disser que nao, siga em frente.\n";
             break;
 
         case 'get_payment':
@@ -1810,10 +2715,32 @@ function buildSystemPrompt(
             }
             $prompt .= "Opções: Dinheiro, PIX, Cartão (crédito/débito na maquininha)\n";
             $prompt .= "Se dinheiro → pergunte se precisa de troco e pra quanto\n\n";
+            $prompt .= "PAGAMENTO DIVIDIDO:\n";
+            $prompt .= "Se o cliente quiser dividir pagamento (ex: 'metade pix metade dinheiro'), aceite!\n";
+            $prompt .= "Use [SPLIT_PAYMENT:metodo1:valor1:metodo2:valor2]\n";
+            $prompt .= "Ex: 'R\$30 no pix e o resto dinheiro' com total R\$50 → [SPLIT_PAYMENT:pix:30.00:dinheiro:20.00]\n";
+            $prompt .= "Ex: 'metade pix metade cartao' com total R\$60 → [SPLIT_PAYMENT:pix:30.00:credit_card:30.00]\n";
+            $prompt .= "Métodos válidos: pix, dinheiro, credit_card, debit_card\n";
+            $prompt .= "Confirme: 'Combinado! Trinta no PIX e vinte em dinheiro.'\n";
+            $prompt .= "Para pagamento normal (um método só), NÃO use SPLIT_PAYMENT.\n\n";
             $prompt .= "MARCADORES:\n";
             $prompt .= "- [PAYMENT:dinheiro], [PAYMENT:pix], [PAYMENT:credit_card], [PAYMENT:debit_card]\n";
             $prompt .= "- Com troco: [PAYMENT:dinheiro:100]\n";
-            $prompt .= "- Depois → [NEXT_STEP]\n";
+            $prompt .= "- Dividido: [SPLIT_PAYMENT:metodo1:valor1:metodo2:valor2]\n";
+            $prompt .= "- Gorjeta: [TIP:valor] (ex: [TIP:5.00])\n";
+            $prompt .= "- Depois → [NEXT_STEP]\n\n";
+
+            // Learned payment preference
+            if ($learnedPrefs && !empty($learnedPrefs['payment_preference'])) {
+                $prefLabels = ['dinheiro' => 'dinheiro', 'pix' => 'PIX', 'credit_card' => 'cartao de credito', 'debit_card' => 'cartao de debito'];
+                $prefLabel = $prefLabels[$learnedPrefs['payment_preference']] ?? $learnedPrefs['payment_preference'];
+                $prompt .= "PREFERENCIA APRENDIDA: Cliente geralmente paga com {$prefLabel}. Sugira: '{$prefLabel} como sempre?'\n\n";
+            }
+
+            $prompt .= "GORJETA:\n";
+            $prompt .= "Depois de definir o pagamento, pergunte: 'Quer deixar uma gorjeta pro entregador? Tipo dois, cinco, dez reais?'\n";
+            $prompt .= "Se sim, inclua [TIP:valor] (valor entre 1 e 50). Fale por extenso: 'cinco reais de gorjeta'.\n";
+            $prompt .= "Se nao quiser, siga em frente sem insistir.\n";
             break;
 
         case 'confirm_order':
@@ -1840,12 +2767,24 @@ function buildSystemPrompt(
                 $schedTime = $context['scheduled_time'] ?? '12:00';
                 $prompt .= "PEDIDO AGENDADO PARA: {$schedDate} às {$schedTime}\n\n";
             } else {
-                $eta = $storeInfo ? (int)$storeInfo['delivery_time'] : 40;
-                $prompt .= "TEMPO ESTIMADO DE ENTREGA: ~{$eta} minutos\n";
+                // Smart ETA (pre-computed in main flow and passed via extraData)
+                $smartEtaMin = $extraData['smart_eta'] ?? null;
+                $eta = $smartEtaMin ?? ($storeInfo ? (int)$storeInfo['delivery_time'] : 40);
+                $etaSpoken = spokenETA($eta);
+                $prompt .= "TEMPO ESTIMADO DE ENTREGA: ~{$eta} minutos (fale: '{$etaSpoken}')\n";
                 if ($storeInfo && $storeInfo['busy_mode']) {
                     $prompt .= "(Restaurante em modo OCUPADO — tempo pode ser um pouco maior)\n";
                 }
                 $prompt .= "\n";
+            }
+
+            // Group order summary for confirmation
+            if (!empty($context['group_order']) && !empty($context['group_members'])) {
+                $groupSummary = buildGroupSummaryForVoice($items);
+                if ($groupSummary) {
+                    $prompt .= "RESUMO POR PESSOA: {$groupSummary}\n";
+                    $prompt .= "Ao confirmar, diga o resumo por pessoa: 'Então fica: pra Maria [itens], pro João [itens]. Total de [valor]. Posso mandar?'\n\n";
+                }
             }
 
             if ($address) {
@@ -1858,12 +2797,33 @@ function buildSystemPrompt(
                     'credit_card' => 'Cartão de crédito',
                     'debit_card' => 'Cartão de débito',
                 ];
-                $payLabel = $paymentLabels[$payment] ?? $payment;
-                $prompt .= "PAGAMENTO: {$payLabel}\n";
+                // Check for split payment
+                if (!empty($context['payment_split']) && !empty($context['payment_method_2'])) {
+                    $payLabel1 = $paymentLabels[$payment] ?? $payment;
+                    $payLabel2 = $paymentLabels[$context['payment_method_2']] ?? $context['payment_method_2'];
+                    $split = $context['payment_split'];
+                    $prompt .= "PAGAMENTO DIVIDIDO: R$" . number_format((float)$split[0], 2, ',', '.') . " no {$payLabel1} + R$" . number_format((float)$split[1], 2, ',', '.') . " no {$payLabel2}\n";
+                } else {
+                    $payLabel = $paymentLabels[$payment] ?? $payment;
+                    $prompt .= "PAGAMENTO: {$payLabel}\n";
+                }
                 if ($payment === 'dinheiro' && !empty($context['payment_change'])) {
                     $prompt .= "TROCO PARA: R$" . number_format((float)$context['payment_change'], 2, ',', '.') . "\n";
                 }
                 $prompt .= "\n";
+            }
+
+            // Delivery instructions
+            if (!empty($context['delivery_instructions'])) {
+                $prompt .= "INSTRUCOES ENTREGA: {$context['delivery_instructions']}\n";
+            }
+
+            // Tip/gorjeta
+            if (!empty($context['tip']) && (float)$context['tip'] > 0) {
+                $tipVal = (float)$context['tip'];
+                $total += $tipVal;
+                $prompt .= "GORJETA: R$" . number_format($tipVal, 2, ',', '.') . "\n";
+                $prompt .= "TOTAL COM GORJETA: R$" . number_format($total, 2, ',', '.') . "\n";
             }
 
             // Active promos reminder
@@ -1878,6 +2838,22 @@ function buildSystemPrompt(
                         break;
                     }
                 }
+            }
+
+            // Cart optimization tip (free delivery, min order, combo)
+            $cartOptTip = $extraData['cart_opt_tip'] ?? null;
+            if ($cartOptTip) {
+                $prompt .= "\nDICA DE CARRINHO: {$cartOptTip}\n";
+                $prompt .= "Mencione ANTES de pedir confirmação: ex 'Ei, se adicionar mais R\$5 ganha frete grátis! Quer algo a mais?'\n";
+            }
+
+            // Price comparison tips (accumulated during ordering)
+            $priceTips = $extraData['price_tips'] ?? [];
+            if (!empty($priceTips)) {
+                $tip = $priceTips[array_key_last($priceTips)]; // show only the last/best one
+                $prompt .= "\nDICA DE PRECO: {$tip}\n";
+                $prompt .= "Mencione só se fizer sentido: 'Ah, e só pra você saber, [dica]. Quer manter aqui mesmo?'\n";
+                $prompt .= "NÃO force — se o cliente já confirmou, não interrompa com isso.\n";
             }
 
             $prompt .= "\nResuma de forma NATURAL e CURTA (max 3 frases). Leia os itens, total e pergunte se confirma.\n";
@@ -1970,9 +2946,22 @@ function buildSystemPrompt(
                 $prompt .= "Diga: 'Hmm, não achei nenhum pedido nesse número. Pode ser outro telefone? Ou quer fazer um pedido novo?'\n\n";
             }
 
+            // Order modification (post-submit, while still pendente)
+            $prompt .= "MODIFICAÇÃO DE PEDIDO PENDENTE:\n";
+            $prompt .= "Se o pedido mais recente está 'Pendente' (< 5 min), o cliente pode modificar:\n";
+            $prompt .= "- Adicionar item: [MODIFY_ADD_ITEM:product_id:nome:preco:quantidade]\n";
+            $prompt .= "- Remover item: [MODIFY_REMOVE_ITEM:indice] (índice da lista de itens, começa em 0)\n";
+            $prompt .= "- Trocar endereço: [MODIFY_ADDRESS:endereço completo novo]\n";
+            $prompt .= "- Cancelar: [CANCEL_ORDER:SB00123]\n";
+            $prompt .= "Antes de modificar, confirme: 'O pedido ainda tá pendente, dá pra alterar! Quer adicionar ou tirar algo?'\n";
+            $prompt .= "Se o pedido já foi aceito/preparando, diga: 'Putz, o restaurante já aceitou, não dá mais pra mudar.'\n\n";
+
             $prompt .= "MARCADORES:\n";
             $prompt .= "- Cancelar: [CANCEL_ORDER:SB00123] (confirme antes!)\n";
             $prompt .= "- Status: [ORDER_STATUS:SB00123]\n";
+            $prompt .= "- Adicionar item: [MODIFY_ADD_ITEM:product_id:nome:preco:qty]\n";
+            $prompt .= "- Remover item: [MODIFY_REMOVE_ITEM:indice]\n";
+            $prompt .= "- Trocar endereço: [MODIFY_ADDRESS:endereço]\n";
             $prompt .= "- Voltar a pedir: [SWITCH_TO_ORDER]\n";
             $prompt .= "- Transferir: diga 'vou te transferir' (sistema detecta 'atendente' na fala dele)\n";
             break;
@@ -2071,6 +3060,24 @@ function parseAiResponse(string $response, array $context, PDO $db): array {
         $cleaned = preg_replace('/\[PAYMENT:\w+(?::\d+)?\]/', '', $cleaned);
     }
 
+    // Parse [DELIVERY_INSTRUCTIONS:text]
+    if (preg_match('/\[DELIVERY_INSTRUCTIONS:([^\]]+)\]/', $response, $m)) {
+        $instructions = trim($m[1]);
+        if (mb_strlen($instructions) <= 500) {
+            $newContext['delivery_instructions'] = $instructions;
+        }
+        $cleaned = preg_replace('/\[DELIVERY_INSTRUCTIONS:[^\]]+\]/', '', $cleaned);
+    }
+
+    // Parse [TIP:value]
+    if (preg_match('/\[TIP:([\d.]+)\]/', $response, $m)) {
+        $tipValue = (float)$m[1];
+        if ($tipValue >= 0 && $tipValue <= 50) {
+            $newContext['tip'] = $tipValue;
+        }
+        $cleaned = preg_replace('/\[TIP:[\d.]+\]/', '', $cleaned);
+    }
+
     // Parse [REMOVE_ITEM:index]
     if (preg_match_all('/\[REMOVE_ITEM:(\d+)\]/', $response, $matches, PREG_SET_ORDER)) {
         // Remove in reverse order to avoid index shifting
@@ -2145,6 +3152,300 @@ function parseAiResponse(string $response, array $context, PDO $db): array {
         $newContext['address'] = null;
         $newContext['payment_method'] = null;
         $cleaned = str_replace('[SWITCH_TO_ORDER]', '', $cleaned);
+    }
+
+    // Parse [GROUP_MEMBER:name] — switch active group member for group/family orders
+    if (preg_match_all('/\[GROUP_MEMBER:([^\]]+)\]/', $response, $groupMatches, PREG_SET_ORDER)) {
+        foreach ($groupMatches as $gm) {
+            $memberName = trim($gm[1]);
+            $cleaned = str_replace($gm[0], '', $cleaned);
+
+            if (!empty($memberName)) {
+                // Enable group mode if not already
+                if (empty($newContext['group_order'])) {
+                    $newContext['group_order'] = true;
+                    $newContext['group_members'] = $newContext['group_members'] ?? [];
+                }
+
+                // Find or create this member in group_members
+                $found = false;
+                foreach ($newContext['group_members'] as &$existingMember) {
+                    if (mb_strtolower($existingMember['name'], 'UTF-8') === mb_strtolower($memberName, 'UTF-8')) {
+                        $found = true;
+                        break;
+                    }
+                }
+                unset($existingMember);
+
+                if (!$found) {
+                    $newContext['group_members'][] = [
+                        'name' => $memberName,
+                        'items' => [],
+                    ];
+                }
+
+                $newContext['current_group_member'] = $memberName;
+            }
+        }
+
+        // Tag newly added items with the current group member
+        if (!empty($newContext['current_group_member']) && !empty($newContext['items'])) {
+            $currentMember = $newContext['current_group_member'];
+            // Tag items that don't have a group_member yet (newly added this turn)
+            $existingCount = count($context['items'] ?? []);
+            for ($i = $existingCount; $i < count($newContext['items']); $i++) {
+                if (empty($newContext['items'][$i]['group_member'])) {
+                    $newContext['items'][$i]['group_member'] = $currentMember;
+                    // Track in group_members items list
+                    foreach ($newContext['group_members'] as &$gMember) {
+                        if (mb_strtolower($gMember['name'], 'UTF-8') === mb_strtolower($currentMember, 'UTF-8')) {
+                            $gMember['items'][] = $newContext['items'][$i]['name'] ?? '?';
+                            break;
+                        }
+                    }
+                    unset($gMember);
+                }
+            }
+        }
+    }
+
+    // ── SPLIT PAYMENT ─────────────────────────────────────────────────────
+    // Parse [SPLIT_PAYMENT:method1:amount1:method2:amount2]
+    if (preg_match('/\[SPLIT_PAYMENT:([a-z_]+):([\d.]+):([a-z_]+):([\d.]+)\]/', $response, $m)) {
+        $splitMethod1 = trim($m[1]);
+        $splitAmount1 = (float)$m[2];
+        $splitMethod2 = trim($m[3]);
+        $splitAmount2 = (float)$m[4];
+
+        $validSplitMethods = ['pix', 'dinheiro', 'credit_card', 'debit_card'];
+        if (in_array($splitMethod1, $validSplitMethods) && in_array($splitMethod2, $validSplitMethods)) {
+            $newContext['payment_method'] = $splitMethod1;
+            $newContext['payment_method_2'] = $splitMethod2;
+            $newContext['payment_split'] = [$splitAmount1, $splitAmount2];
+            error_log("[twilio-voice-ai] Split payment: {$splitMethod1}:{$splitAmount1} + {$splitMethod2}:{$splitAmount2}");
+        } else {
+            error_log("[twilio-voice-ai] Invalid split payment methods: {$splitMethod1}, {$splitMethod2}");
+        }
+        $cleaned = preg_replace('/\[SPLIT_PAYMENT:[^\]]+\]/', '', $cleaned);
+    }
+
+    // ── DIETARY RESTRICTIONS ────────────────────────────────────────────
+    // Parse [DIETARY:text] — save dietary restrictions from conversation
+    if (preg_match('/\[DIETARY:([^\]]+)\]/', $response, $m)) {
+        $dietaryText = trim($m[1]);
+        if (!empty($dietaryText) && function_exists('aiMemorySave')) {
+            $phone = $newContext['customer_phone'] ?? ($context['customer_phone'] ?? '');
+            $custId = $newContext['customer_id'] ?? ($context['customer_id'] ?? null);
+            try {
+                aiMemorySave($db, $phone, $custId, 'preference', 'dietary_restriction', $dietaryText);
+                $newContext['dietary_restrictions'] = $dietaryText;
+                error_log("[twilio-voice-ai] Dietary saved: {$dietaryText}");
+            } catch (Exception $e) {
+                error_log("[twilio-voice-ai] Dietary save error: " . $e->getMessage());
+            }
+        }
+        $cleaned = preg_replace('/\[DIETARY:[^\]]+\]/', '', $cleaned);
+    }
+
+    // ── ORDER MODIFICATION (POST-SUBMIT) ────────────────────────────────
+    // Parse [MODIFY_ADD_ITEM:product_id:name:price:qty]
+    if (preg_match_all('/\[MODIFY_ADD_ITEM:(\d+):([^:]+):([\d.]+):(\d+)\]/', $response, $matches, PREG_SET_ORDER)) {
+        foreach ($matches as $m) {
+            $cleaned = str_replace($m[0], '', $cleaned);
+            $modifyOrderId = $newContext['modify_order_id'] ?? null;
+            if (!$modifyOrderId) {
+                $custId = $newContext['customer_id'] ?? ($context['customer_id'] ?? null);
+                if ($custId) {
+                    try {
+                        $recentStmt = $db->prepare("
+                            SELECT order_id, partner_id FROM om_market_orders
+                            WHERE customer_id = ? AND status = 'pendente'
+                              AND date_added > NOW() - INTERVAL '5 minutes'
+                            ORDER BY date_added DESC LIMIT 1
+                        ");
+                        $recentStmt->execute([$custId]);
+                        $recentOrd = $recentStmt->fetch();
+                        if ($recentOrd) {
+                            $modifyOrderId = (int)$recentOrd['order_id'];
+                            $newContext['modify_order_id'] = $modifyOrderId;
+                            $newContext['modify_partner_id'] = (int)$recentOrd['partner_id'];
+                        }
+                    } catch (Exception $e) {
+                        error_log("[twilio-voice-ai] MODIFY lookup error: " . $e->getMessage());
+                    }
+                }
+            }
+            if ($modifyOrderId) {
+                $addProductId = (int)$m[1];
+                $addQty = max(1, (int)$m[4]);
+                try {
+                    $db->beginTransaction();
+                    $chkStmt = $db->prepare("SELECT status FROM om_market_orders WHERE order_id = ? FOR UPDATE");
+                    $chkStmt->execute([$modifyOrderId]);
+                    $chkStatus = $chkStmt->fetchColumn();
+                    if ($chkStatus !== 'pendente') {
+                        $db->rollBack();
+                        $cleaned .= ' O pedido já foi aceito e não dá mais pra alterar.';
+                        continue;
+                    }
+                    $prodStmt = $db->prepare("SELECT product_id, name, price, special_price, partner_id FROM om_market_products WHERE product_id = ? AND status::text = '1'");
+                    $prodStmt->execute([$addProductId]);
+                    $addProduct = $prodStmt->fetch(PDO::FETCH_ASSOC);
+                    if (!$addProduct || (int)$addProduct['partner_id'] !== (int)($newContext['modify_partner_id'] ?? 0)) {
+                        $db->rollBack();
+                        $cleaned .= ' Produto não encontrado nessa loja.';
+                        continue;
+                    }
+                    $addPrice = ((float)($addProduct['special_price'] ?? 0) > 0 && (float)$addProduct['special_price'] < (float)$addProduct['price'])
+                        ? (float)$addProduct['special_price'] : (float)$addProduct['price'];
+                    $addItemTotal = round($addPrice * $addQty, 2);
+                    $db->prepare("
+                        INSERT INTO om_market_order_items (order_id, product_id, name, quantity, price, total)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    ")->execute([$modifyOrderId, $addProductId, $addProduct['name'], $addQty, $addPrice, $addItemTotal]);
+                    $db->prepare("
+                        UPDATE om_market_orders SET
+                            subtotal = (SELECT COALESCE(SUM(total), 0) FROM om_market_order_items WHERE order_id = ?),
+                            total = (SELECT COALESCE(SUM(total), 0) FROM om_market_order_items WHERE order_id = ?) + delivery_fee + service_fee - COALESCE(coupon_discount, 0) - COALESCE(cashback_discount, 0)
+                        WHERE order_id = ?
+                    ")->execute([$modifyOrderId, $modifyOrderId, $modifyOrderId]);
+                    $db->prepare("INSERT INTO om_order_timeline (order_id, status, description, actor_type, created_at) VALUES (?, 'pendente', ?, 'system', NOW())")
+                        ->execute([$modifyOrderId, "Item adicionado via telefone IA: {$addQty}x {$addProduct['name']}"]);
+                    $db->commit();
+                    error_log("[twilio-voice-ai] MODIFY: Added {$addQty}x {$addProduct['name']} to order {$modifyOrderId}");
+                } catch (Exception $e) {
+                    if ($db->inTransaction()) $db->rollBack();
+                    error_log("[twilio-voice-ai] MODIFY_ADD_ITEM error: " . $e->getMessage());
+                    $cleaned .= ' Erro ao adicionar item, tente novamente.';
+                }
+            } else {
+                $cleaned .= ' Não encontrei pedido pendente recente pra modificar.';
+            }
+        }
+    }
+
+    // Parse [MODIFY_REMOVE_ITEM:index]
+    if (preg_match_all('/\[MODIFY_REMOVE_ITEM:(\d+)\]/', $response, $matches, PREG_SET_ORDER)) {
+        foreach ($matches as $m) {
+            $removeIdx = (int)$m[1];
+            $cleaned = str_replace($m[0], '', $cleaned);
+            $modifyOrderId = $newContext['modify_order_id'] ?? null;
+            if (!$modifyOrderId) {
+                $custId = $newContext['customer_id'] ?? ($context['customer_id'] ?? null);
+                if ($custId) {
+                    try {
+                        $recentStmt = $db->prepare("
+                            SELECT order_id FROM om_market_orders
+                            WHERE customer_id = ? AND status = 'pendente'
+                              AND date_added > NOW() - INTERVAL '5 minutes'
+                            ORDER BY date_added DESC LIMIT 1
+                        ");
+                        $recentStmt->execute([$custId]);
+                        $recentOrd = $recentStmt->fetch();
+                        if ($recentOrd) {
+                            $modifyOrderId = (int)$recentOrd['order_id'];
+                            $newContext['modify_order_id'] = $modifyOrderId;
+                        }
+                    } catch (Exception $e) {}
+                }
+            }
+            if ($modifyOrderId) {
+                try {
+                    $db->beginTransaction();
+                    $chkStmt = $db->prepare("SELECT status FROM om_market_orders WHERE order_id = ? FOR UPDATE");
+                    $chkStmt->execute([$modifyOrderId]);
+                    $chkStatus = $chkStmt->fetchColumn();
+                    if ($chkStatus !== 'pendente') {
+                        $db->rollBack();
+                        $cleaned .= ' O pedido já foi aceito e não dá mais pra alterar.';
+                        continue;
+                    }
+                    $itemsStmt = $db->prepare("SELECT id, product_id, name, quantity FROM om_market_order_items WHERE order_id = ? ORDER BY id");
+                    $itemsStmt->execute([$modifyOrderId]);
+                    $orderItems = $itemsStmt->fetchAll(PDO::FETCH_ASSOC);
+                    if (!isset($orderItems[$removeIdx])) {
+                        $db->rollBack();
+                        $cleaned .= ' Índice de item inválido.';
+                        continue;
+                    }
+                    if (count($orderItems) <= 1) {
+                        $db->rollBack();
+                        $cleaned .= ' Não posso remover o único item. Se quiser cancelar, me avise.';
+                        continue;
+                    }
+                    $removedItem = $orderItems[$removeIdx];
+                    $db->prepare("UPDATE om_market_products SET quantity = quantity + ? WHERE product_id = ?")->execute([(int)$removedItem['quantity'], (int)$removedItem['product_id']]);
+                    $db->prepare("DELETE FROM om_market_order_items WHERE id = ?")->execute([$removedItem['id']]);
+                    $db->prepare("
+                        UPDATE om_market_orders SET
+                            subtotal = (SELECT COALESCE(SUM(total), 0) FROM om_market_order_items WHERE order_id = ?),
+                            total = (SELECT COALESCE(SUM(total), 0) FROM om_market_order_items WHERE order_id = ?) + delivery_fee + service_fee - COALESCE(coupon_discount, 0) - COALESCE(cashback_discount, 0)
+                        WHERE order_id = ?
+                    ")->execute([$modifyOrderId, $modifyOrderId, $modifyOrderId]);
+                    $db->prepare("INSERT INTO om_order_timeline (order_id, status, description, actor_type, created_at) VALUES (?, 'pendente', ?, 'system', NOW())")
+                        ->execute([$modifyOrderId, "Item removido via telefone IA: {$removedItem['name']}"]);
+                    $db->commit();
+                    error_log("[twilio-voice-ai] MODIFY: Removed {$removedItem['name']} from order {$modifyOrderId}");
+                } catch (Exception $e) {
+                    if ($db->inTransaction()) $db->rollBack();
+                    error_log("[twilio-voice-ai] MODIFY_REMOVE_ITEM error: " . $e->getMessage());
+                    $cleaned .= ' Erro ao remover item, tente novamente.';
+                }
+            } else {
+                $cleaned .= ' Não encontrei pedido pendente recente pra modificar.';
+            }
+        }
+    }
+
+    // Parse [MODIFY_ADDRESS:new_address]
+    if (preg_match('/\[MODIFY_ADDRESS:([^\]]+)\]/', $response, $m)) {
+        $newAddress = trim($m[1]);
+        $cleaned = str_replace($m[0], '', $cleaned);
+        $modifyOrderId = $newContext['modify_order_id'] ?? null;
+        if (!$modifyOrderId) {
+            $custId = $newContext['customer_id'] ?? ($context['customer_id'] ?? null);
+            if ($custId) {
+                try {
+                    $recentStmt = $db->prepare("
+                        SELECT order_id FROM om_market_orders
+                        WHERE customer_id = ? AND status = 'pendente'
+                          AND date_added > NOW() - INTERVAL '5 minutes'
+                        ORDER BY date_added DESC LIMIT 1
+                    ");
+                    $recentStmt->execute([$custId]);
+                    $recentOrd = $recentStmt->fetch();
+                    if ($recentOrd) {
+                        $modifyOrderId = (int)$recentOrd['order_id'];
+                        $newContext['modify_order_id'] = $modifyOrderId;
+                    }
+                } catch (Exception $e) {}
+            }
+        }
+        if ($modifyOrderId && !empty($newAddress)) {
+            try {
+                $db->beginTransaction();
+                $chkStmt = $db->prepare("SELECT status FROM om_market_orders WHERE order_id = ? FOR UPDATE");
+                $chkStmt->execute([$modifyOrderId]);
+                $chkStatus = $chkStmt->fetchColumn();
+                if ($chkStatus !== 'pendente') {
+                    $db->rollBack();
+                    $cleaned .= ' O pedido já foi aceito e não dá mais pra alterar.';
+                } else {
+                    $db->prepare("UPDATE om_market_orders SET delivery_address = ?, shipping_address = ? WHERE order_id = ?")
+                        ->execute([$newAddress, $newAddress, $modifyOrderId]);
+                    $db->prepare("INSERT INTO om_order_timeline (order_id, status, description, actor_type, created_at) VALUES (?, 'pendente', ?, 'system', NOW())")
+                        ->execute([$modifyOrderId, "Endereço alterado via telefone IA para: {$newAddress}"]);
+                    $db->commit();
+                    error_log("[twilio-voice-ai] MODIFY: Address changed on order {$modifyOrderId}");
+                }
+            } catch (Exception $e) {
+                if ($db->inTransaction()) $db->rollBack();
+                error_log("[twilio-voice-ai] MODIFY_ADDRESS error: " . $e->getMessage());
+                $cleaned .= ' Erro ao trocar endereço, tente novamente.';
+            }
+        } else if (!$modifyOrderId) {
+            $cleaned .= ' Não encontrei pedido pendente recente pra modificar.';
+        }
     }
 
     $newContext['cleaned_response'] = trim(preg_replace('/\s+/', ' ', $cleaned));
@@ -2228,10 +3529,22 @@ function submitAiOrder(PDO $db, int $callId, ?int $customerId, ?string $customer
         }
         $deliveryFee = (float)($store['delivery_fee'] ?? 5.00);
         $serviceFee = round($subtotal * 0.08, 2);
-        $total = round($subtotal + $deliveryFee + $serviceFee, 2);
+        $tipAmount = (float)($context['tip'] ?? 0);
+        if ($tipAmount < 0 || $tipAmount > 50) $tipAmount = 0;
+        $total = round($subtotal + $deliveryFee + $serviceFee + $tipAmount, 2);
+        $deliveryInstructions = $context['delivery_instructions'] ?? null;
 
         $deliveryAddress = $address['full'] ?? 'N/A';
         $codigoEntrega = strtoupper(bin2hex(random_bytes(3)));
+
+        // Build order notes (include split payment info if applicable)
+        $orderNotes = "Pedido via IA telefone - call #{$callId}";
+        if (!empty($context['payment_split']) && !empty($context['payment_method_2'])) {
+            $splitPayLabels = ['pix' => 'PIX', 'dinheiro' => 'Dinheiro', 'credit_card' => 'Cartão crédito', 'debit_card' => 'Cartão débito'];
+            $sp1Label = $splitPayLabels[$paymentMethod] ?? $paymentMethod;
+            $sp2Label = $splitPayLabels[$context['payment_method_2']] ?? $context['payment_method_2'];
+            $orderNotes .= " | Pagamento dividido: R$" . number_format($context['payment_split'][0], 2, ',', '.') . " ({$sp1Label}) + R$" . number_format($context['payment_split'][1], 2, ',', '.') . " ({$sp2Label})";
+        }
 
         $db->beginTransaction();
 
@@ -2260,9 +3573,25 @@ function submitAiOrder(PDO $db, int $callId, ?int $customerId, ?string $customer
             $address['street'] ?? '', $address['city'] ?? '', $address['state'] ?? '', $address['zipcode'] ?? '',
             $address['lat'] ?? null, $address['lng'] ?? null,
             $paymentMethod, $codigoEntrega,
-            "Pedido via IA telefone - call #{$callId}",
+            $orderNotes,
         ]);
         $orderId = (int)$stmt->fetch()['order_id'];
+
+        // Append group order info to notes if applicable
+        if (!empty($context['group_order']) && !empty($context['group_members'])) {
+            $groupParts = [];
+            foreach ($context['group_members'] as $gm) {
+                $memberItems = $gm['items'] ?? [];
+                if (!empty($memberItems)) {
+                    $groupParts[] = $gm['name'] . ' (' . implode(', ', $memberItems) . ')';
+                }
+            }
+            if (!empty($groupParts)) {
+                $groupNote = ' | GRUPO: ' . implode('; ', $groupParts);
+                $db->prepare("UPDATE om_market_orders SET notes = notes || ? WHERE order_id = ?")
+                   ->execute([$groupNote, $orderId]);
+            }
+        }
 
         $orderNumber = 'SB' . str_pad($orderId, 5, '0', STR_PAD_LEFT);
         $db->prepare("UPDATE om_market_orders SET order_number = ? WHERE order_id = ?")->execute([$orderNumber, $orderId]);

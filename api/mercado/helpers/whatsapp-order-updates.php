@@ -37,7 +37,7 @@ function sendOrderStatusWhatsApp(PDO $db, int $orderId, string $newStatus, bool 
         // 1. Query order details
         $stmt = $db->prepare("
             SELECT o.order_id, o.order_number, o.customer_id, o.customer_phone,
-                   o.partner_name, o.total, o.distancia_km,
+                   o.partner_name, o.total, o.distancia_km, o.source,
                    p.name as partner_db_name, p.trade_name
             FROM om_market_orders o
             LEFT JOIN om_market_partners p ON o.partner_id = p.partner_id
@@ -91,6 +91,27 @@ function sendOrderStatusWhatsApp(PDO $db, int $orderId, string $newStatus, bool 
 
             error_log("[wa-order-updates] Order #{$orderNumber} status={$newStatus} phone=****"
                 . substr($customerPhone, -4) . " success=" . ($success ? 'yes' : 'no'));
+        }
+
+        // 4b. SMS fallback for phone-originated orders (callcenter_ai / callcenter)
+        $orderSource = $order['source'] ?? '';
+        if (in_array($orderSource, ['callcenter_ai', 'callcenter', 'phone'], true)) {
+            try {
+                $smsHelper = __DIR__ . '/twilio-sms.php';
+                if (file_exists($smsHelper)) {
+                    require_once $smsHelper;
+                    // Strip emojis/markdown for SMS (plain text only)
+                    $smsMessage = preg_replace('/\*([^*]+)\*/', '$1', $message); // remove markdown bold
+                    $smsMessage = preg_replace('/[\x{1F000}-\x{1FFFF}]/u', '', $smsMessage); // strip emojis
+                    $smsMessage = trim($smsMessage);
+                    if (!empty($smsMessage)) {
+                        $smsResult = sendSMS($customerPhone, $smsMessage);
+                        error_log("[wa-order-updates] SMS fallback for {$orderSource} order #{$orderNumber}: " . ($smsResult['success'] ? 'sent' : 'failed'));
+                    }
+                }
+            } catch (\Throwable $smsErr) {
+                error_log("[wa-order-updates] SMS fallback error: " . $smsErr->getMessage());
+            }
         }
 
         // 5. Log to conversation if one exists
