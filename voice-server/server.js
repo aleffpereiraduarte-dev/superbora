@@ -65,50 +65,70 @@ const anthropic = new Anthropic({ apiKey: CLAUDE_API_KEY });
 const activeCalls = new Map();
 
 // ─── System Prompt ──────────────────────────────────────────
-function buildSystemPrompt(customerName, callerPhone) {
+function buildSystemPrompt(callerPhone, customerData) {
     const hora = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: 'numeric', hour12: false });
     const horaNum = parseInt(hora);
     const periodo = horaNum < 12 ? 'manhã' : horaNum < 18 ? 'tarde' : 'noite';
 
+    // Build customer context
+    let customerContext;
+    if (customerData?.found) {
+        const addr = customerData.addresses?.[0];
+        const addrStr = addr ? `${addr.street}, ${addr.number} - ${addr.neighborhood}, ${addr.city}` : null;
+        const recentOrders = customerData.recent_orders?.slice(0, 3)
+            .map(o => `${o.store_name} (${o.date})`)
+            .join(', ');
+        customerContext = `CLIENTE IDENTIFICADO:
+- Nome: ${customerData.name}
+- ID: ${customerData.customer_id}
+${addrStr ? `- Endereço principal: ${addrStr}` : '- Sem endereço salvo'}
+${customerData.addresses?.length > 1 ? `- Total de endereços salvos: ${customerData.addresses.length}` : ''}
+${recentOrders ? `- Pedidos recentes: ${recentOrders}` : '- Primeiro pedido!'}
+${customerData.cashback > 0 ? `- Cashback disponível: R$${customerData.cashback.toFixed(2)}` : ''}
+
+Você JÁ sabe quem é o cliente. NÃO precisa pedir telefone ou usar lookup_customer.`;
+    } else {
+        customerContext = `CLIENTE NOVO (telefone ${callerPhone} não cadastrado).
+Trate normalmente — pergunte o nome de forma natural e a cidade pra entrega.
+NÃO diga "não encontrei seu telefone" ou "não está cadastrado". Seja natural.
+Exemplo: "Me diz seu nome pra eu te ajudar melhor?" e depois "E pra qual cidade seria a entrega?"`;
+    }
+
     return `Você é a Bora, assistente virtual do SuperBora — um app de delivery de comida como iFood.
-Você está atendendo uma ligação telefônica. O cliente pode querer fazer pedido, ver status, ou pedir ajuda.
+Você está atendendo uma ligação telefônica. Seja simpática, natural e eficiente como uma atendente humana.
 
-REGRAS OBRIGATÓRIAS:
-- Fale em português brasileiro, informal e calorosa
-- NUNCA use emojis, bullets, asteriscos, ou qualquer formatação — sua fala será convertida em áudio
+PERSONALIDADE:
+- Fale como uma pessoa real — calorosa, simpática, brasileira
+- Não seja robótica. Varie suas respostas. Use expressões naturais como "beleza", "ótimo", "perfeito", "pode deixar"
+- Se o cliente falar algo engraçado, dê risada ("haha")
+- Demonstre entusiasmo com os produtos: "esse é muito bom!", "ótima escolha!"
+
+REGRAS TÉCNICAS:
+- NUNCA use emojis, bullets, asteriscos, ou formatação — sua fala vira áudio
 - Fale números por extenso: "doze reais e cinquenta" não "R$12,50"
-- Respostas CURTAS — máximo 2-3 frases por vez. É uma conversa por telefone
-- Confirme cada item antes de adicionar ao pedido
-- SEMPRE confirme o pedido completo antes de usar submit_order
-- Se o cliente pedir atendente humano, use transfer_to_agent IMEDIATAMENTE
-- Use as ferramentas para buscar dados reais — NUNCA invente preços, produtos ou lojas
-- NUNCA busque restaurante usando a frase do cliente como nome. "Quero pedir pizza" NÃO é o nome de um restaurante
+- Respostas CURTAS — máximo 2-3 frases por vez. É conversa por telefone, não texto
+- NUNCA invente preços, produtos ou lojas — use as ferramentas
+- "Quero pizza" é TIPO DE COMIDA, não nome de restaurante
 
-FLUXO PARA PEDIDO NOVO (siga esta ordem!):
-1. PRIMEIRO: Use lookup_customer com o telefone do cliente para saber quem é
-2. DEPOIS: Verifique se o cliente tem endereço salvo. Se tiver, pergunte "Entrega no endereço X?" Se não tiver, pergunte a cidade/bairro
-3. ENTÃO: Use get_nearby_stores com a cidade do endereço de entrega para ver lojas disponíveis na região
-4. Se o cliente mencionar tipo de comida (pizza, hambúrguer, açaí), filtre por categoria na busca
-5. Apresente as opções de lojas ABERTAS na região: nome e tipo
-6. Quando escolher a loja: use get_store_menu para carregar o cardápio
-7. Monte o pedido com add_to_order, confirme tudo
-8. Peça forma de pagamento e finalize com submit_order
+${customerContext}
 
-OUTROS FLUXOS:
-- Status de pedido: use lookup_customer → check_order_status
-- Dúvida ou problema: responda se souber, senão use transfer_to_agent
+FLUXO PARA PEDIDO:
+1. Se o cliente quer pedir algo:
+   - Cliente conhecido COM endereço: Pergunte "Entrega no endereço X?" → busque lojas na cidade
+   - Cliente conhecido SEM endereço: Pergunte a cidade/bairro pra entrega
+   - Cliente novo: Pergunte nome → pergunte cidade pra entrega
+2. Use get_nearby_stores com a cidade. Se mencionou tipo de comida, filtre por food_type
+3. Apresente 2-3 lojas abertas de forma natural: "Tem a Pizzaria Napoli que é muito boa, tem o Burger House..."
+4. Quando escolher loja: use get_store_menu → ofereça itens populares
+5. Monte o pedido com add_to_order, confirme cada item
+6. No final: confirme tudo, peça pagamento, use submit_order
 
-DICAS:
-- Ao listar lojas, diga nome, tipo (pizzaria, mercado, etc.) e se está aberta
-- Ao listar produtos, diga nome e preço por extenso
-- Ao confirmar pedido, liste todos os itens e diga o total por extenso
-- Se o cliente já tem endereço salvo, use-o direto — não peça de novo
-- Não precisa cumprimentar de novo — o sistema já deu boas-vindas
-- Se disser "quero pizza", "quero um lanche", etc., entenda como TIPO DE COMIDA, não nome de loja
+FLUXO PARA STATUS: use check_order_status com o customer_id
+DÚVIDA/PROBLEMA: responda se souber, senão use transfer_to_agent
+ATENDENTE: se pedir humano, use transfer_to_agent IMEDIATAMENTE
 
-Horário atual: ${horaNum}h (${periodo})
-Telefone do cliente: ${callerPhone}
-${customerName ? `Nome do cliente: ${customerName}` : 'Cliente não identificado'}`;
+Horário: ${horaNum}h (${periodo})
+Telefone: ${callerPhone}`;
 }
 
 // ─── Tool Definitions ───────────────────────────────────────
@@ -668,20 +688,14 @@ async function getClaudeResponse(callState) {
     return 'Desculpa, deu um probleminha. Pode repetir o que você precisa?';
 }
 
-// ─── Quick Customer Lookup (for greeting) ───────────────────
+// ─── Full Customer Lookup (for greeting + context) ──────────
 
-async function quickLookup(phone) {
+async function fullCustomerLookup(phone) {
     try {
-        const suffix = phone.replace(/\D/g, '').slice(-11);
-        if (suffix.length < 8) return null;
-        const result = await pool.query(
-            `SELECT customer_id, name FROM om_customers
-             WHERE REPLACE(REPLACE(phone, '+', ''), '-', '') LIKE $1 LIMIT 1`,
-            ['%' + suffix]
-        );
-        return result.rows[0] || null;
+        const result = await lookupCustomer(phone);
+        return result;
     } catch {
-        return null;
+        return { found: false };
     }
 }
 
@@ -772,9 +786,9 @@ app.post('/incoming-call', async (req, reply) => {
 
     console.log(`[voice] Incoming call from ${callerPhone} | CallSid: ${callSid}`);
 
-    // Quick customer lookup for personalized greeting
-    const customer = await quickLookup(callerPhone);
-    const firstName = customer?.name?.split(' ')[0];
+    // Full customer lookup — name, addresses, recent orders
+    const customerData = await fullCustomerLookup(callerPhone);
+    const firstName = customerData?.found ? customerData.name?.split(' ')[0] : null;
 
     const hora = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: 'numeric', hour12: false });
     const horaNum = parseInt(hora);
@@ -785,12 +799,13 @@ app.post('/incoming-call', async (req, reply) => {
         : `${periodo}! Aqui é a Bora, do SuperBora. Como posso te ajudar?`;
 
     // Create call record
+    const customer = customerData?.found ? { customer_id: customerData.customer_id, name: customerData.name } : null;
     createCallRecord(callSid, callerPhone, customer);
 
-    // Build WebSocket URL with customer context
+    // Pass full customer data via URL params (JSON-encoded for the WS handler)
     const wsParams = new URLSearchParams({
         phone: callerPhone,
-        ...(customer && { name: customer.name, cid: String(customer.customer_id) })
+        cd: JSON.stringify(customerData || { found: false })
     });
     const wsUrl = `wss://${WS_HOST}/voice/ws?${wsParams}`;
 
@@ -833,25 +848,33 @@ app.register(async (fastify) => {
                 case 'setup': {
                     const params = new URL(req.url, 'http://localhost').searchParams;
                     const callerPhone = params.get('phone') || msg.from || '';
-                    const customerName = params.get('name') || null;
-                    const customerId = params.get('cid') ? parseInt(params.get('cid')) : null;
+
+                    // Parse full customer data from URL
+                    let customerData = { found: false };
+                    try {
+                        customerData = JSON.parse(params.get('cd') || '{}');
+                    } catch { /* ignore parse errors */ }
 
                     callState = {
                         callSid: msg.callSid,
                         streamSid: msg.streamSid,
                         callerPhone,
-                        customer: customerId ? { customer_id: customerId, name: customerName } : null,
+                        customer: customerData?.found ? {
+                            customer_id: customerData.customer_id,
+                            name: customerData.name,
+                            addresses: customerData.addresses
+                        } : null,
                         store: null,
                         items: [],
                         history: [],
-                        systemPrompt: buildSystemPrompt(customerName, callerPhone),
+                        systemPrompt: buildSystemPrompt(callerPhone, customerData),
                         transferRequested: false,
                         orderSubmitted: false,
                         startTime: Date.now()
                     };
 
                     activeCalls.set(msg.callSid, callState);
-                    console.log(`[voice] Call setup: ${msg.callSid} | ${callerPhone} | ${customerName || 'unknown'}`);
+                    console.log(`[voice] Call setup: ${msg.callSid} | ${callerPhone} | ${customerData?.name || 'new customer'}`);
                     break;
                 }
 
