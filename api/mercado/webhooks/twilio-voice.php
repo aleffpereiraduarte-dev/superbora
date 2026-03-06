@@ -79,6 +79,7 @@ error_log("[twilio-voice] Inbound call from {$callerPhone} | CallSid: {$callSid}
 $routeUrl = str_replace('twilio-voice.php', 'twilio-voice-route.php', $fullUrl);
 
 require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . '/../helpers/voice-tts.php';
 $db = getDB();
 
 // Look up customer
@@ -96,6 +97,7 @@ $periodo = $hora < 12 ? 'Bom dia' : ($hora < 18 ? 'Boa tarde' : 'Boa noite');
 // Check saved addresses for context
 $hasAddress = false;
 $savedCity = '';
+$activeOrder = null;
 if ($cust && $cust['customer_id']) {
     $addrStmt = $db->prepare("SELECT city, neighborhood FROM om_customer_addresses WHERE customer_id = ? AND is_active = '1' ORDER BY is_default DESC LIMIT 1");
     $addrStmt->execute([$cust['customer_id']]);
@@ -104,10 +106,23 @@ if ($cust && $cust['customer_id']) {
         $hasAddress = true;
         $savedCity = $addr['city'] ?? '';
     }
+
+    // Check for active orders
+    try {
+        $actStmt = $db->prepare("
+            SELECT o.order_number, o.status, p.name as partner_name
+            FROM om_market_orders o
+            JOIN om_market_partners p ON p.partner_id = o.partner_id
+            WHERE o.customer_id = ? AND o.status IN ('pending','accepted','preparing','ready','delivering','em_preparo','saiu_entrega')
+            ORDER BY o.date_added DESC LIMIT 1
+        ");
+        $actStmt->execute([$cust['customer_id']]);
+        $activeOrder = $actStmt->fetch();
+    } catch (Exception $e) {}
 }
 
 // Build SSML greeting — natural, warm, conversational
-$ssml = '<speak>';
+$ssml = '';
 
 if ($cust && $cust['name']) {
     $firstName = explode(' ', trim($cust['name']))[0];
@@ -137,59 +152,57 @@ if ($cust && $cust['name']) {
         $orderCount = (int)$cntStmt->fetch()['cnt'];
     } catch (Exception $e) {}
 
-    if ($recentOrder && $daysSinceOrder < 3) {
-        // Very recent order — casual reconnection
-        $ssml .= "<prosody rate=\"medium\" pitch=\"+5%\">{$periodo}, {$firstName}!</prosody> ";
-        $ssml .= '<break time="300ms"/>';
+    if ($activeOrder) {
+        // Customer has an active order — proactively mention it
+        $statusLabels = ['pending' => 'esperando confirmação', 'accepted' => 'foi aceito', 'preparing' => 'tá sendo preparado', 'em_preparo' => 'tá sendo preparado', 'ready' => 'tá pronto', 'delivering' => 'tá a caminho', 'saiu_entrega' => 'tá a caminho'];
+        $statusText = $statusLabels[$activeOrder['status']] ?? 'em andamento';
+        $ssml .= "{$periodo}, {$firstName}! Aqui é a Bora, do SuperBora. ";
+        $ssml .= "Vi aqui que seu pedido da {$activeOrder['partner_name']} {$statusText}. ";
+        $ssml .= "É sobre esse pedido que você tá ligando, ou quer fazer um pedido novo?";
+    } elseif ($recentOrder && $daysSinceOrder < 3) {
+        $ssml .= "{$periodo}, {$firstName}! ";
         $ssml .= "Que bom te ouvir de novo! ";
-        $ssml .= "Da ultima vez voce pediu da <emphasis level=\"moderate\">{$recentOrder['partner_name']}</emphasis>. ";
-        $ssml .= '<break time="200ms"/>';
-        $ssml .= "Quer repetir, ou ta afim de algo diferente hoje?";
+        $ssml .= "Da última vez você pediu da {$recentOrder['partner_name']}. ";
+        $ssml .= "Quer repetir o pedido, pedir algo diferente, ou tem alguma dúvida?";
     } elseif ($recentOrder && $orderCount >= 5) {
-        // Loyal customer
-        $ssml .= "<prosody rate=\"medium\" pitch=\"+5%\">{$periodo}, {$firstName}!</prosody> ";
-        $ssml .= '<break time="300ms"/>';
-        $ssml .= "Que bom falar com voce! Aqui e a Bora, do SuperBora. ";
-        $ssml .= '<break time="200ms"/>';
-        $ssml .= "Me conta, de onde voce quer pedir hoje?";
+        $ssml .= "{$periodo}, {$firstName}! ";
+        $ssml .= "Que bom falar com você! Aqui é a Bora, do SuperBora. ";
+        $ssml .= "Me conta, o que vai ser hoje?";
     } elseif ($recentOrder) {
-        // Returning but not super frequent
-        $ssml .= "<prosody rate=\"medium\" pitch=\"+5%\">{$periodo}, {$firstName}!</prosody> ";
-        $ssml .= '<break time="300ms"/>';
-        $ssml .= "Aqui e a Bora, sua assistente do SuperBora. ";
-        $ssml .= '<break time="200ms"/>';
-        $ssml .= "Me diz, o que voce ta com vontade de comer?";
+        $ssml .= "{$periodo}, {$firstName}! ";
+        $ssml .= "Aqui é a Bora, do SuperBora. ";
+        $ssml .= "Me fala, o que você tá precisando?";
     } else {
-        // Known customer but no orders
-        $ssml .= "<prosody rate=\"medium\" pitch=\"+5%\">{$periodo}, {$firstName}!</prosody> ";
-        $ssml .= '<break time="300ms"/>';
-        $ssml .= "Aqui e a Bora, do SuperBora. Vou te ajudar a pedir sua comida rapidinho. ";
-        $ssml .= '<break time="200ms"/>';
+        $ssml .= "{$periodo}, {$firstName}! ";
+        $ssml .= "Aqui é a Bora, do SuperBora. ";
         if (!$hasAddress) {
-            $ssml .= "Pra comecar, me fala seu CEP ou o bairro onde voce ta, pra eu ver os restaurantes que entregam ai.";
+            $ssml .= "Posso te ajudar a fazer um pedido, tirar uma dúvida, o que você precisar! ";
+            $ssml .= "Se quiser pedir, me fala seu CEP ou bairro que eu vejo os restaurantes pra você.";
         } else {
-            $ssml .= "Me conta, de qual restaurante voce quer pedir, ou o que ta com vontade?";
+            $ssml .= "Me fala, o que você tá precisando?";
         }
     }
 } else {
-    // New customer — need CEP to find stores
-    $ssml .= "<prosody rate=\"medium\" pitch=\"+5%\">{$periodo}!</prosody> ";
-    $ssml .= '<break time="300ms"/>';
-    $ssml .= "Aqui e a Bora, sua assistente do SuperBora. Vou te ajudar a pedir comida de um jeitinho bem facil. ";
-    $ssml .= '<break time="400ms"/>';
-    $ssml .= "Pra comecar, me fala seu CEP ou o bairro onde voce ta, pra eu encontrar os restaurantes que entregam na sua regiao.";
+    $ssml .= "{$periodo}! ";
+    $ssml .= "Aqui é a Bora, do SuperBora. ";
+    $ssml .= "Posso te ajudar a fazer um pedido, tirar uma dúvida, o que você precisar! ";
+    $ssml .= "Se quiser pedir, me fala seu CEP ou bairro que eu acho os restaurantes pra você.";
 }
 
-$ssml .= '<break time="300ms"/>';
-$ssml .= ' <prosody rate="slow" volume="soft">Se preferir falar com uma pessoa, e so dizer atendente ou apertar zero.</prosody>';
-$ssml .= '</speak>';
+$ssml .= '<break time="500ms"/>';
+$ssml .= 'Ou se preferir falar com uma pessoa, é só dizer atendente ou apertar zero.';
+// end of ssml (no </speak> - Twilio doesn't use it inside <Say>)
 
-// Create call record early
-$db->prepare("
-    INSERT INTO om_callcenter_calls (twilio_call_sid, customer_phone, customer_id, customer_name, direction, status, started_at)
-    VALUES (?, ?, ?, ?, 'inbound', 'ai_handling', NOW())
-    ON CONFLICT (twilio_call_sid) DO NOTHING
-")->execute([$callSid, $callerPhone, $cust['customer_id'] ?? null, $cust['name'] ?? null]);
+// Create call record early — wrapped in try/catch to not break greeting on DB issues
+try {
+    $db->prepare("
+        INSERT INTO om_callcenter_calls (twilio_call_sid, customer_phone, customer_id, customer_name, direction, status, started_at)
+        VALUES (?, ?, ?, ?, 'inbound', 'ai_handling', NOW())
+        ON CONFLICT (twilio_call_sid) DO NOTHING
+    ")->execute([$callSid, $callerPhone, $cust['customer_id'] ?? null, $cust['name'] ?? null]);
+} catch (Exception $e) {
+    error_log("[twilio-voice] DB insert failed (non-fatal): " . $e->getMessage());
+}
 
 // Broadcast incoming call
 try {
@@ -202,15 +215,20 @@ try {
     ]);
 } catch (Exception $e) {}
 
+// Strip SSML tags for OpenAI TTS (it uses plain text)
+$plainText = preg_replace('/<[^>]+>/', ' ', $ssml);
+$plainText = preg_replace('/\s+/', ' ', trim($plainText));
+
+$routeEsc = htmlspecialchars($routeUrl);
+
 echo '<?xml version="1.0" encoding="UTF-8"?>';
-?>
-<Response>
-    <Gather input="speech dtmf" timeout="8" numDigits="1" language="pt-BR" action="<?= htmlspecialchars($routeUrl) ?>" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">
-        <Say voice="Polly.Camila" language="pt-BR"><?= $ssml ?></Say>
-    </Gather>
-    <!-- No input fallback: gentler re-prompt -->
-    <Gather input="speech dtmf" timeout="6" numDigits="1" language="pt-BR" action="<?= htmlspecialchars($routeUrl) ?>" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">
-        <Say voice="Polly.Camila" language="pt-BR"><speak>Oi, to aqui! <break time="200ms"/> Me fala o nome do restaurante, o que voce quer comer, ou seu CEP pra eu te ajudar. <break time="200ms"/> Ou aperta zero pra falar com alguem.</speak></Say>
-    </Gather>
-    <Redirect method="POST"><?= htmlspecialchars($routeUrl) ?>?Digits=0&amp;noInput=1</Redirect>
-</Response>
+echo '<Response>';
+echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . $routeEsc . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
+echo ttsSayOrPlay($plainText);
+echo '</Gather>';
+// Fallback re-prompt
+echo '<Gather input="speech dtmf" timeout="6" language="pt-BR" action="' . $routeEsc . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
+echo ttsSayOrPlay("Oi, tô aqui! Me fala o que você precisa. Pode ser um pedido, uma dúvida, o que for! Ou aperta zero pra falar com alguém.");
+echo '</Gather>';
+echo '<Redirect method="POST">' . $routeEsc . '?Digits=0&amp;noInput=1</Redirect>';
+echo '</Response>';

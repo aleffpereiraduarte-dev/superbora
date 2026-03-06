@@ -3,23 +3,105 @@
  * Voice TTS Helper — Ultra-natural speech synthesis
  *
  * Priority:
- *   1. ElevenLabs (best quality, native Brazilian voice)
+ *   1. ElevenLabs streaming (best quality, native Brazilian voice, lowest latency)
  *   2. OpenAI TTS (excellent quality, multilingual)
  *   3. Google Neural2 via Twilio <Say> (fallback)
+ *
+ * Features:
+ *   - Pre-cached common phrases for instant playback
+ *   - Streaming ElevenLabs endpoint for minimal latency
+ *   - Voice settings tuned for Brazilian Portuguese phone conversations
+ *   - Emotion-aware TTS (happy, empathetic, excited, neutral)
+ *   - Concatenation for instant-start playback with dynamic content
  *
  * Usage:
  *   require_once __DIR__ . '/voice-tts.php';
  *   echo ttsSayOrPlay("Oi, tudo bem?");
+ *   echo ttsWithEmotion("Que ótimo! Pedido confirmado!", 'happy');
+ *   echo ttsConcatPlay(["Oi", "Maria! Tudo bem?"]);
  */
 
 // Default ElevenLabs voice ID — "Valentina" Brazilian Portuguese
 // Can be overridden in .env with ELEVENLABS_VOICE_ID
 define('TTS_ELEVENLABS_DEFAULT_VOICE', 'cgSgspJ2msm6clMCkdW9'); // Rachel - good multilingual
 
+// Cache version — bump to invalidate all cached audio
+define('TTS_CACHE_VERSION', 'v4');
+
+// Voice settings tuned for Brazilian Portuguese phone conversations
+define('TTS_VOICE_SETTINGS_DEFAULT', [
+    'stability'         => 0.35,  // Slightly more expressive for natural PT-BR
+    'similarity_boost'  => 0.85,  // High voice consistency
+    'style'             => 0.25,  // Moderate expressiveness
+    'use_speaker_boost' => true,  // Enhanced clarity for phone audio
+]);
+
+// Emotion presets — adjust voice settings per emotional context
+define('TTS_EMOTION_PRESETS', [
+    'neutral' => [
+        'stability'         => 0.35,
+        'similarity_boost'  => 0.85,
+        'style'             => 0.25,
+        'use_speaker_boost' => true,
+    ],
+    'happy' => [
+        'stability'         => 0.25,  // More expressive variation
+        'similarity_boost'  => 0.85,
+        'style'             => 0.50,  // Higher style for upbeat tone
+        'use_speaker_boost' => true,
+    ],
+    'empathetic' => [
+        'stability'         => 0.50,  // Calmer, more steady voice
+        'similarity_boost'  => 0.85,
+        'style'             => 0.15,  // Subdued style for sensitivity
+        'use_speaker_boost' => true,
+    ],
+    'excited' => [
+        'stability'         => 0.20,  // Most dynamic variation
+        'similarity_boost'  => 0.85,
+        'style'             => 0.60,  // Maximum expressiveness
+        'use_speaker_boost' => true,
+    ],
+]);
+
+// Common phrases for pre-caching — instant playback, no API wait
+define('TTS_COMMON_PHRASES', [
+    'oi_tudo_bem'           => 'Oi, tudo bem?',
+    'ola_bom_dia'           => 'Olá, bom dia!',
+    'ola_boa_tarde'         => 'Olá, boa tarde!',
+    'ola_boa_noite'         => 'Olá, boa noite!',
+    'anotado'               => 'Anotado!',
+    'mais_alguma_coisa'     => 'Mais alguma coisa?',
+    'vou_conferir'          => 'Vou conferir.',
+    'um_momento'            => 'Um momento, por favor.',
+    'entendi'               => 'Entendi!',
+    'certo'                 => 'Certo!',
+    'pode_deixar'           => 'Pode deixar!',
+    'obrigada'              => 'Obrigada!',
+    'de_nada'               => 'De nada!',
+    'pronto'                => 'Pronto!',
+    'so_um_instante'        => 'Só um instante.',
+    'pedido_confirmado'     => 'Pedido confirmado!',
+    'pedido_a_caminho'      => 'Seu pedido está a caminho!',
+    'pedido_entregue'       => 'Pedido entregue! Obrigada pela preferência!',
+    'algo_mais'             => 'Posso ajudar com algo mais?',
+    'desculpe'              => 'Desculpe pelo transtorno.',
+    'vou_verificar'         => 'Vou verificar para você.',
+    'aguarde'               => 'Aguarde um momento, por favor.',
+    'oi'                    => 'Oi!',
+    'tchau'                 => 'Tchau, tenha um ótimo dia!',
+    'obrigada_preferencia'  => 'Obrigada pela preferência!',
+    'com_certeza'           => 'Com certeza!',
+    'infelizmente'          => 'Infelizmente não temos esse produto no momento.',
+    'valor_total'           => 'O valor total do seu pedido é',
+    'endereco_entrega'      => 'Qual o endereço de entrega?',
+    'forma_pagamento'       => 'Qual a forma de pagamento?',
+]);
+
 /**
  * Generate TwiML: <Play> with high-quality TTS, or <Say> fallback
  */
-function ttsSayOrPlay(string $text): string {
+function ttsSayOrPlay(string $text, string $emotion = 'neutral'): string {
     $clean = preg_replace('/<[^>]+>/', ' ', $text);
     $clean = preg_replace('/\s+/', ' ', trim($clean));
 
@@ -27,23 +109,84 @@ function ttsSayOrPlay(string $text): string {
         return '';
     }
 
-    $hash = md5($clean . '_v3');
+    // Check if this is a common pre-cached phrase (instant playback)
+    $commonKey = ttsMatchCommonPhrase($clean);
+    if ($commonKey !== null) {
+        $url = ttsCommonPhraseUrl($commonKey);
+        if ($url !== null) {
+            return '<Play>' . htmlspecialchars($url, ENT_XML1 | ENT_QUOTES, 'UTF-8') . '</Play>';
+        }
+    }
+
+    $hash = md5($clean . '_' . TTS_CACHE_VERSION . '_' . $emotion);
     $encoded = rtrim(base64_encode($clean), '=');
     $scheme = 'https';
     $host = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? 'superbora.com.br';
-    $url = $scheme . '://' . $host . '/api/mercado/webhooks/audio.php?h=' . $hash . '&t=' . urlencode($encoded);
+    $url = $scheme . '://' . $host . '/api/mercado/webhooks/audio.php?h=' . $hash
+         . '&t=' . urlencode($encoded)
+         . ($emotion !== 'neutral' ? '&e=' . urlencode($emotion) : '');
 
     return '<Play>' . htmlspecialchars($url, ENT_XML1 | ENT_QUOTES, 'UTF-8') . '</Play>';
 }
 
 /**
+ * Emotion-aware TTS — adjusts voice settings based on emotional context
+ *
+ * Emotions:
+ *   'happy'      → Higher style, lower stability — confirmations, greetings
+ *   'empathetic'  → Higher stability, lower style — complaints, problems
+ *   'excited'    → Lowest stability, highest style — promos, upsells
+ *   'neutral'    → Default balanced settings
+ *
+ * @param string $text    Text to synthesize
+ * @param string $emotion One of: neutral, happy, empathetic, excited
+ * @return string TwiML <Play> or <Say> tag
+ */
+function ttsWithEmotion(string $text, string $emotion = 'neutral'): string {
+    // Validate emotion
+    if (!isset(TTS_EMOTION_PRESETS[$emotion])) {
+        $emotion = 'neutral';
+    }
+
+    return ttsSayOrPlay($text, $emotion);
+}
+
+/**
+ * Concatenation for speed — generates <Play> tags for multiple short segments.
+ * The first segment plays immediately (ideally pre-cached) while subsequent
+ * segments generate in parallel. This eliminates perceived wait time.
+ *
+ * Example:
+ *   ttsConcatPlay(["Oi", "Maria! Tudo bem?"])
+ *   → Pre-cached "Oi!" plays instantly, "Maria! Tudo bem?" generates while it plays
+ *
+ * @param array  $parts   Array of text segments to concatenate
+ * @param string $emotion Emotion preset for dynamic (non-cached) segments
+ * @return string Multiple TwiML <Play> tags concatenated
+ */
+function ttsConcatPlay(array $parts, string $emotion = 'neutral'): string {
+    $twiml = '';
+    foreach ($parts as $part) {
+        $part = trim($part);
+        if (empty($part)) continue;
+        $twiml .= ttsSayOrPlay($part, $emotion);
+    }
+    return $twiml;
+}
+
+/**
  * Called by audio.php to generate/serve audio on demand
  */
-function ttsServeAudio(string $hash, string $encodedText): bool {
+function ttsServeAudio(string $hash, string $encodedText, string $emotion = 'neutral'): bool {
     $text = base64_decode($encodedText);
     if (empty($text)) return false;
 
-    $expectedHash = md5($text . '_v3');
+    // Validate emotion
+    if (!isset(TTS_EMOTION_PRESETS[$emotion])) {
+        $emotion = 'neutral';
+    }
+
+    $expectedHash = md5($text . '_' . TTS_CACHE_VERSION . '_' . $emotion);
     if ($hash !== $expectedHash) return false;
 
     $audioDir = __DIR__ . '/../webhooks/audio';
@@ -60,8 +203,11 @@ function ttsServeAudio(string $hash, string $encodedText): bool {
         return true;
     }
 
-    // Try ElevenLabs first
-    $audio = ttsElevenLabs($text);
+    // Resolve voice settings for this emotion
+    $voiceSettings = TTS_EMOTION_PRESETS[$emotion] ?? TTS_VOICE_SETTINGS_DEFAULT;
+
+    // Try ElevenLabs streaming first (lowest latency)
+    $audio = ttsElevenLabs($text, $voiceSettings);
 
     // Fallback to OpenAI
     if (!$audio) {
@@ -83,26 +229,36 @@ function ttsServeAudio(string $hash, string $encodedText): bool {
 }
 
 /**
- * ElevenLabs TTS — Most natural voice, native Brazilian accent
+ * ElevenLabs TTS — Streaming endpoint for lowest latency
+ *
+ * Uses /v1/text-to-speech/{voice_id}/stream with optimize_streaming_latency=3
+ * for minimum first-byte time. Voice settings tuned for Brazilian Portuguese
+ * phone conversations.
+ *
+ * @param string     $text          Text to synthesize
+ * @param array|null $voiceSettings Override voice settings (stability, similarity_boost, etc.)
+ * @return string|null MP3 audio data or null on failure
  */
-function ttsElevenLabs(string $text): ?string {
+function ttsElevenLabs(string $text, ?array $voiceSettings = null): ?string {
     $apiKey = $_ENV['ELEVENLABS_API_KEY'] ?? getenv('ELEVENLABS_API_KEY') ?: '';
     if (empty($apiKey)) return null;
 
     $voiceId = $_ENV['ELEVENLABS_VOICE_ID'] ?? getenv('ELEVENLABS_VOICE_ID') ?: TTS_ELEVENLABS_DEFAULT_VOICE;
 
+    // Use provided settings or defaults tuned for PT-BR phone conversations
+    $settings = $voiceSettings ?? TTS_VOICE_SETTINGS_DEFAULT;
+
     $payload = json_encode([
         'text' => $text,
         'model_id' => 'eleven_multilingual_v2',
-        'voice_settings' => [
-            'stability' => 0.4,
-            'similarity_boost' => 0.8,
-            'style' => 0.3,
-            'use_speaker_boost' => true,
-        ],
+        'voice_settings' => $settings,
+        'optimize_streaming_latency' => 3,  // Minimum latency mode
     ]);
 
-    $ch = curl_init("https://api.elevenlabs.io/v1/text-to-speech/{$voiceId}");
+    // Use streaming endpoint for faster first-byte delivery
+    $url = "https://api.elevenlabs.io/v1/text-to-speech/{$voiceId}/stream";
+
+    $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_POST => true,
         CURLOPT_POSTFIELDS => $payload,
@@ -112,7 +268,7 @@ function ttsElevenLabs(string $text): ?string {
             'Accept: audio/mpeg',
         ],
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 15,
+        CURLOPT_TIMEOUT => 20,         // Slightly longer for streaming
         CURLOPT_CONNECTTIMEOUT => 5,
     ]);
 
@@ -122,11 +278,11 @@ function ttsElevenLabs(string $text): ?string {
     curl_close($ch);
 
     if ($httpCode !== 200 || empty($response) || strlen($response) < 100) {
-        error_log("[voice-tts] ElevenLabs failed: HTTP {$httpCode} | {$error}");
+        error_log("[voice-tts] ElevenLabs streaming failed: HTTP {$httpCode} | {$error}");
         return null;
     }
 
-    error_log("[voice-tts] ElevenLabs OK: " . strlen($response) . " bytes");
+    error_log("[voice-tts] ElevenLabs streaming OK: " . strlen($response) . " bytes");
     return $response;
 }
 
@@ -172,10 +328,112 @@ function ttsOpenAI(string $text): ?string {
     return $response;
 }
 
+// ─── Pre-cached Common Phrases ──────────────────────────────────────────────
+
 /**
- * Remove old cached audio files
+ * Pre-generate audio for all common phrases.
+ * Call this from a cron job or deploy script to warm the cache:
+ *
+ *   php -r "require 'helpers/voice-tts.php'; ttsPrecacheCommon();"
+ *
+ * Files are stored with a 'common_' prefix and never expire via ttsCleanupOldFiles().
+ * Regeneration is skipped if the file already exists and is valid.
+ *
+ * @param bool $force Force regeneration even if files exist
+ * @return array Summary: ['generated' => int, 'skipped' => int, 'failed' => int]
+ */
+function ttsPrecacheCommon(bool $force = false): array {
+    $audioDir = __DIR__ . '/../webhooks/audio';
+    if (!is_dir($audioDir)) @mkdir($audioDir, 0755, true);
+
+    $stats = ['generated' => 0, 'skipped' => 0, 'failed' => 0];
+
+    foreach (TTS_COMMON_PHRASES as $key => $phrase) {
+        $filePath = $audioDir . '/common_' . $key . '_' . TTS_CACHE_VERSION . '.mp3';
+
+        // Skip if already cached and valid (unless forced)
+        if (!$force && file_exists($filePath) && filesize($filePath) > 100) {
+            $stats['skipped']++;
+            error_log("[voice-tts] Precache skip (exists): {$key}");
+            continue;
+        }
+
+        // Generate with neutral emotion and default voice settings
+        $audio = ttsElevenLabs($phrase, TTS_VOICE_SETTINGS_DEFAULT);
+        if (!$audio) {
+            $audio = ttsOpenAI($phrase);
+        }
+
+        if ($audio && strlen($audio) > 100) {
+            @file_put_contents($filePath, $audio);
+            $stats['generated']++;
+            error_log("[voice-tts] Precached: {$key} (" . strlen($audio) . " bytes)");
+        } else {
+            $stats['failed']++;
+            error_log("[voice-tts] Precache FAILED: {$key}");
+        }
+
+        // Brief pause to respect API rate limits
+        usleep(250000); // 250ms between requests
+    }
+
+    error_log("[voice-tts] Precache complete: " . json_encode($stats));
+    return $stats;
+}
+
+/**
+ * Check if a text matches a common pre-cached phrase.
+ * Uses normalized comparison (lowercase, no extra whitespace, no trailing punctuation variance).
+ *
+ * @param string $text The input text to match
+ * @return string|null The common phrase key, or null if no match
+ */
+function ttsMatchCommonPhrase(string $text): ?string {
+    $normalized = mb_strtolower(trim($text), 'UTF-8');
+    // Remove trailing punctuation for fuzzy matching
+    $stripped = rtrim($normalized, '!?.,;: ');
+
+    foreach (TTS_COMMON_PHRASES as $key => $phrase) {
+        $phraseNorm = mb_strtolower(trim($phrase), 'UTF-8');
+        $phraseStripped = rtrim($phraseNorm, '!?.,;: ');
+
+        if ($normalized === $phraseNorm || $stripped === $phraseStripped) {
+            return $key;
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Get the URL for a pre-cached common phrase audio file.
+ * Returns null if the file doesn't exist (not yet pre-cached).
+ *
+ * @param string $key The common phrase key (from TTS_COMMON_PHRASES)
+ * @return string|null Full URL to the cached audio, or null
+ */
+function ttsCommonPhraseUrl(string $key): ?string {
+    $audioDir = __DIR__ . '/../webhooks/audio';
+    $filePath = $audioDir . '/common_' . $key . '_' . TTS_CACHE_VERSION . '.mp3';
+
+    if (!file_exists($filePath) || filesize($filePath) < 100) {
+        return null;
+    }
+
+    $scheme = 'https';
+    $host = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? 'superbora.com.br';
+
+    return $scheme . '://' . $host . '/api/mercado/webhooks/audio/common_' . $key . '_' . TTS_CACHE_VERSION . '.mp3';
+}
+
+// ─── Cache Maintenance ──────────────────────────────────────────────────────
+
+/**
+ * Remove old cached audio files.
+ * Preserves common_* pre-cached files — only removes dynamic tts_* files.
  */
 function ttsCleanupOldFiles(string $dir): void {
+    // Only clean dynamic files, never pre-cached common_ files
     $files = @glob($dir . '/tts_*.mp3');
     if (!$files || count($files) <= 300) return;
 
@@ -185,4 +443,32 @@ function ttsCleanupOldFiles(string $dir): void {
         if ($toDelete-- <= 0) break;
         @unlink($file);
     }
+}
+
+/**
+ * Remove stale common phrase cache files from previous cache versions.
+ * Safe to run anytime — only removes files that don't match the current TTS_CACHE_VERSION.
+ *
+ * @return int Number of stale files removed
+ */
+function ttsCleanupStaleCommon(): int {
+    $audioDir = __DIR__ . '/../webhooks/audio';
+    $files = @glob($audioDir . '/common_*.mp3');
+    if (!$files) return 0;
+
+    $removed = 0;
+    $suffix = '_' . TTS_CACHE_VERSION . '.mp3';
+
+    foreach ($files as $file) {
+        if (!str_ends_with(basename($file), $suffix)) {
+            @unlink($file);
+            $removed++;
+        }
+    }
+
+    if ($removed > 0) {
+        error_log("[voice-tts] Cleaned {$removed} stale common cache files");
+    }
+
+    return $removed;
 }

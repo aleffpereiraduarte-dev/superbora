@@ -35,6 +35,9 @@ require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../helpers/claude-client.php';
 require_once __DIR__ . '/../helpers/ws-callcenter-broadcast.php';
 require_once __DIR__ . '/../helpers/voice-tts.php';
+if (file_exists(__DIR__ . '/../helpers/ai-memory.php')) {
+    require_once __DIR__ . '/../helpers/ai-memory.php';
+}
 
 header('Content-Type: text/xml; charset=utf-8');
 
@@ -101,8 +104,32 @@ try {
     $call = $stmt->fetch();
 
     if (!$call) {
-        error_log("[twilio-voice-ai] No call record for CallSid={$callSid}");
-        respondTwiml("Desculpe, houve um erro. Vou transferir você para um atendente.", true);
+        // Try to create a record if none exists (possible timing issue between voice.php and route.php)
+        error_log("[twilio-voice-ai] No call record for CallSid={$callSid} — creating one");
+        try {
+            $db->prepare("
+                INSERT INTO om_callcenter_calls (twilio_call_sid, customer_phone, direction, status, started_at)
+                VALUES (?, ?, 'inbound', 'ai_handling', NOW())
+                ON CONFLICT (twilio_call_sid) DO NOTHING
+            ")->execute([$callSid, $callerPhone]);
+            // Re-fetch
+            $stmt->execute([$callSid]);
+            $call = $stmt->fetch();
+        } catch (Exception $e) {
+            error_log("[twilio-voice-ai] Failed to create call record: " . $e->getMessage());
+        }
+    }
+    if (!$call) {
+        error_log("[twilio-voice-ai] Still no call record — re-prompting");
+        echo '<?xml version="1.0" encoding="UTF-8"?>';
+        echo '<Response>';
+        echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . escXml($selfUrl) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
+        echo ttsSayOrPlay("Desculpa, me fala de novo. O que você precisa?");
+        echo '</Gather>';
+        echo ttsSayOrPlay("Aperta zero se quiser falar com alguém.");
+        echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
+        echo '</Response>';
+        exit;
     }
 
     $callId = (int)$call['id'];
@@ -123,10 +150,12 @@ try {
     $userInput = $speechResult ?: ($digits ?: '');
     $speechConfidence = isset($_POST['Confidence']) ? (float)$_POST['Confidence'] : 1.0;
 
-    // Check for transfer to agent keywords (only direct "I want a human" requests)
+    // -- Smart intent detection --
     if (!empty($userInput)) {
         $lowerInput = mb_strtolower($userInput, 'UTF-8');
-        $transferKeywords = ['atendente', 'agente', 'pessoa', 'humano', 'operador'];
+
+        // 1. Transfer to human agent
+        $transferKeywords = ['atendente', 'agente', 'pessoa', 'humano', 'operador', 'falar com alguem', 'falar com alguém', 'transfere', 'passa pra alguem'];
         foreach ($transferKeywords as $kw) {
             if (mb_strpos($lowerInput, $kw) !== false) {
                 transferToAgent($db, $callId, $callerPhone, $customerName, $customerId, $routeUrl);
@@ -134,19 +163,66 @@ try {
             }
         }
 
-        // Detect support intents (order status, cancel, help) — redirect to AI support mode
-        $supportKeywords = ['status', 'cancelar', 'cancela', 'rastrear', 'rastreio', 'cadê meu pedido', 'cade meu pedido', 'onde ta', 'onde está', 'meu pedido', 'reclamação', 'reclamacao', 'problema', 'reembolso', 'devolver'];
+        // 2. Goodbye / end call — handle gracefully
+        $goodbyePhrases = ['tchau', 'até mais', 'ate mais', 'falou', 'valeu', 'obrigado tchau', 'obrigada tchau', 'pode desligar', 'era só isso', 'nao quero mais nada', 'nada mais'];
+        if (in_array(trim($lowerInput), $goodbyePhrases) || (mb_strpos($lowerInput, 'tchau') !== false && mb_strlen($lowerInput) < 30)) {
+            // Check if they have a pending order in progress
+            $hasDraftItems = !empty($aiContext['items'] ?? []);
+            if ($hasDraftItems) {
+                // Don't end yet — warn about items
+                $aiContext['wants_goodbye'] = true;
+                // Let Claude handle: "Peraí, você tem itens no pedido! Quer finalizar ou cancelar?"
+            } else {
+                saveAiContext($db, $callId, $aiContext);
+                $db->prepare("UPDATE om_callcenter_calls SET status = 'completed', ended_at = NOW() WHERE id = ?")->execute([$callId]);
+                echo '<?xml version="1.0" encoding="UTF-8"?>';
+                echo '<Response>';
+                echo ttsSayOrPlay("Beleza! Se precisar de algo, é só ligar. Tchau e bom apetite!");
+                echo '<Hangup/>';
+                echo '</Response>';
+                exit;
+            }
+        }
+
+        // 3. Thank you (without goodbye) — acknowledge and continue
+        $thankPhrases = ['obrigado', 'obrigada', 'valeu', 'brigado', 'brigada'];
+        $isThanks = false;
+        foreach ($thankPhrases as $tp) {
+            if (mb_strpos($lowerInput, $tp) !== false && mb_strpos($lowerInput, 'tchau') === false) {
+                $isThanks = true;
+                break;
+            }
+        }
+        // Don't waste Claude call for standalone "obrigado"
+        if ($isThanks && mb_strlen(trim($lowerInput)) < 15 && empty($aiContext['items'] ?? []) && ($step === 'identify_store' || $step === 'question')) {
+            $aiContext['history'] = $conversationHistory;
+            saveAiContext($db, $callId, $aiContext);
+            echo '<?xml version="1.0" encoding="UTF-8"?>';
+            echo '<Response>';
+            echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . escXml($selfUrl) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
+            echo ttsSayOrPlay("De nada! Mais alguma coisa?");
+            echo '</Gather>';
+            echo ttsSayOrPlay("Se não precisar de mais nada, pode desligar. Tchau!");
+            echo '<Hangup/>';
+            echo '</Response>';
+            exit;
+        }
+
+        // 4. Support intents — switch to support mode from any step
+        $supportKeywords = ['status', 'cancelar', 'cancela', 'rastrear', 'rastreio', 'cadê meu pedido', 'cade meu pedido', 'onde ta', 'onde está', 'meu pedido', 'reclamação', 'reclamacao', 'problema', 'reembolso', 'devolver', 'pedido anterior', 'pedido atrasado', 'nao chegou', 'não chegou', 'veio errado', 'faltou', 'cobraram errado', 'estorno'];
         foreach ($supportKeywords as $sk) {
             if (mb_strpos($lowerInput, $sk) !== false) {
                 $aiContext['step'] = 'support';
                 $step = 'support';
+                // Save where they were so they can come back
+                $aiContext['previous_step'] = $step !== 'support' ? ($aiContext['step'] ?? 'identify_store') : null;
                 break;
             }
         }
 
-        // Detect question/doubt intent
-        if ($step !== 'support') {
-            $questionKeywords = ['duvida', 'dúvida', 'pergunta', 'como funciona', 'quanto custa', 'informação', 'informacao'];
+        // 5. Question/doubt intent — only if not already in support or mid-order
+        if ($step !== 'support' && $step !== 'take_order' && $step !== 'confirm_order') {
+            $questionKeywords = ['duvida', 'dúvida', 'pergunta', 'como funciona', 'quanto custa', 'informação', 'informacao', 'vocês entregam', 'voces entregam', 'qual horário', 'qual horario', 'como faço', 'como faco', 'preciso de ajuda'];
             foreach ($questionKeywords as $qk) {
                 if (mb_strpos($lowerInput, $qk) !== false) {
                     $aiContext['step'] = 'question';
@@ -155,6 +231,14 @@ try {
                 }
             }
         }
+
+        // 6. "Yes/No" detection — track for Claude context
+        $yesWords = ['sim', 'isso', 'pode', 'manda', 'bora', 'confirma', 'certo', 'tá bom', 'ta bom', 'isso mesmo', 'exato', 'é isso', 'e isso', 'uhum', 'aham', 'claro', 'com certeza', 'quero', 'quero sim'];
+        $noWords = ['não', 'nao', 'nope', 'nem', 'de jeito nenhum', 'nada', 'mudei de ideia', 'deixa quieto', 'esquece', 'cancelar'];
+        $isYes = in_array(trim($lowerInput), $yesWords);
+        $isNo = in_array(trim($lowerInput), $noWords);
+        if ($isYes) $aiContext['last_answer'] = 'yes';
+        if ($isNo) $aiContext['last_answer'] = 'no';
     }
 
     if ($digits === '0' && empty($speechResult)) {
@@ -162,10 +246,47 @@ try {
         exit;
     }
 
-    // Add user message to history
-    if (!empty($userInput)) {
-        $conversationHistory[] = ['role' => 'user', 'content' => $userInput];
+    // Handle empty input (Gather timed out) — don't waste Claude call
+    if (empty($userInput)) {
+        $silenceCount = ($aiContext['silence_count'] ?? 0) + 1;
+        $aiContext['silence_count'] = $silenceCount;
+        $aiContext['history'] = $conversationHistory;
+        saveAiContext($db, $callId, $aiContext);
+
+        $silencePrompts = [
+            "Oi, tá aí? Pode falar que eu tô ouvindo!",
+            "Opa, não ouvi nada. Pode falar mais perto do telefone?",
+            "Hmm, acho que a ligação tá ruim. Pode repetir o que você precisa?",
+        ];
+
+        if ($silenceCount >= 4) {
+            // Too many silences — end gracefully
+            echo '<?xml version="1.0" encoding="UTF-8"?>';
+            echo '<Response>';
+            echo ttsSayOrPlay("Parece que a ligação caiu. Se precisar, é só ligar de novo! Tchau!");
+            echo '<Hangup/>';
+            echo '</Response>';
+            $db->prepare("UPDATE om_callcenter_calls SET status = 'completed', ended_at = NOW() WHERE id = ?")->execute([$callId]);
+            exit;
+        }
+
+        $msg = $silencePrompts[min($silenceCount - 1, count($silencePrompts) - 1)];
+        echo '<?xml version="1.0" encoding="UTF-8"?>';
+        echo '<Response>';
+        echo '<Gather input="speech dtmf" timeout="10" language="pt-BR" action="' . escXml($selfUrl) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
+        echo ttsSayOrPlay($msg);
+        echo '</Gather>';
+        echo ttsSayOrPlay("Aperta zero se quiser falar com alguém.");
+        echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
+        echo '</Response>';
+        exit;
     }
+
+    // Reset silence counter when we get input
+    $aiContext['silence_count'] = 0;
+
+    // Add user message to history
+    $conversationHistory[] = ['role' => 'user', 'content' => $userInput];
 
     // -- Build context for Claude --
     $storeId = $aiContext['store_id'] ?? null;
@@ -567,6 +688,25 @@ try {
         $aiContext['auto_payment_suggested'] = true;
     }
 
+    // -- Load AI memory for returning customers --
+    $memoryContext = '';
+    $memoryGreetingHint = null;
+    if (function_exists('aiMemoryBuildContext')) {
+        try {
+            $memoryContext = aiMemoryBuildContext($db, $callerPhone, $customerId);
+            $memoryGreetingHint = aiMemoryGetGreeting($db, $callerPhone, $customerId);
+        } catch (Exception $e) {
+            error_log("[twilio-voice-ai] Memory load error (non-fatal): " . $e->getMessage());
+        }
+    }
+
+    // Track conversation turns
+    $turnCount = ($aiContext['turn_count'] ?? 0) + 1;
+    $aiContext['turn_count'] = $turnCount;
+
+    // Track if AI already did upsell (don't repeat)
+    $didUpsell = $aiContext['did_upsell'] ?? false;
+
     // -- Build system prompt --
     $extraData = [
         'store_info' => $storeInfo,
@@ -575,6 +715,11 @@ try {
         'last_payment' => $lastPayment ?? null,
         'customer_stats' => $customerStats,
         'default_address' => $defaultAddress,
+        'memory_context' => $memoryContext,
+        'memory_greeting_hint' => $memoryGreetingHint,
+        'turn_count' => $turnCount,
+        'did_upsell' => $didUpsell,
+        'wants_goodbye' => $aiContext['wants_goodbye'] ?? false,
     ];
     $systemPrompt = buildSystemPrompt($step, $storeName, $menuText, $draftItems, $address, $paymentMethod, $customerName, $savedAddresses, $storeNames, $lastOrderItems ?? [], $aiContext, $extraData);
 
@@ -598,6 +743,18 @@ try {
     // -- Parse AI response for state transitions --
     $newContext = parseAiResponse($aiResponse, $aiContext, $db);
     $aiResponse = $newContext['cleaned_response'];
+
+    // Track if AI did an upsell (detect "bebida", "sobremesa", "quer adicionar" in response)
+    $upsellPhrases = ['bebida', 'sobremesa', 'quer adicionar', 'quer incluir', 'combinar com', 'acompanha'];
+    foreach ($upsellPhrases as $up) {
+        if (mb_strpos(mb_strtolower($aiResponse, 'UTF-8'), $up) !== false) {
+            $newContext['did_upsell'] = true;
+            break;
+        }
+    }
+
+    // Clear wants_goodbye flag after processing
+    $newContext['wants_goodbye'] = false;
 
     // Add AI response to history
     $newContext['history'] = $conversationHistory;
@@ -633,6 +790,23 @@ try {
             // Update call
             $db->prepare("UPDATE om_callcenter_calls SET status = 'completed', order_id = ?, ended_at = NOW() WHERE id = ?")
                ->execute([$orderResult['order_id'], $callId]);
+
+            // Learn from this order for future personalization
+            if (function_exists('aiMemoryLearn')) {
+                try {
+                    aiMemoryLearn($db, $callerPhone, $customerId, [
+                        'store_id' => $newContext['store_id'] ?? null,
+                        'store_name' => $newContext['store_name'] ?? $storeName,
+                        'items' => $newContext['items'] ?? [],
+                        'payment_method' => $newContext['payment_method'] ?? null,
+                        'total' => $orderResult['total'],
+                        'hour' => (int)date('H'),
+                        'day_of_week' => (int)date('w'),
+                    ]);
+                } catch (Exception $e) {
+                    error_log("[twilio-voice-ai] Memory learn error (non-fatal): " . $e->getMessage());
+                }
+            }
 
             echo '<?xml version="1.0" encoding="UTF-8"?>';
             echo '<Response>';
@@ -673,11 +847,15 @@ try {
     }
 
 } catch (Exception $e) {
-    error_log("[twilio-voice-ai] Error: " . $e->getMessage());
+    error_log("[twilio-voice-ai] Error: " . $e->getMessage() . " | Trace: " . $e->getTraceAsString());
+    // On error, re-prompt instead of auto-transferring to agent
     echo '<?xml version="1.0" encoding="UTF-8"?>';
     echo '<Response>';
-    echo ttsSayOrPlay("Desculpa, deu um probleminha. Vou te passar pra um atendente, tá?");
-    echo '<Redirect method="POST">' . escXml($routeUrl) . '?Digits=0</Redirect>';
+    echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . escXml($selfUrl) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
+    echo ttsSayOrPlay("Desculpa, deu um probleminha aqui. Pode repetir o que você precisa?");
+    echo '</Gather>';
+    echo ttsSayOrPlay("Aperta zero se quiser falar com alguém.");
+    echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
     echo '</Response>';
 }
 
@@ -1008,31 +1186,139 @@ function buildSystemPrompt(
     $customerStats = $extraData['customer_stats'] ?? null;
     $defaultAddress = $extraData['default_address'] ?? null;
 
-    $prompt = "Você é a Bora, atendente do SuperBora (delivery de comida). Você tá no telefone com um cliente.\n\n";
+    $prompt = "Você é a Bora, atendente do SuperBora (delivery de comida). Você tá numa ligação telefônica com um cliente.\n\n";
+
     $prompt .= "## QUEM VOCÊ É\n";
-    $prompt .= "Você é uma pessoa real, a Bora. Simpática, descontraída, que manja dos restaurantes da região.\n";
-    $prompt .= "Você fala como uma brasileira de verdade — com gírias, contrações, jeito informal.\n\n";
-    $prompt .= "## COMO FALAR (IMPORTANTÍSSIMO - LEIA COM ATENÇÃO)\n";
-    $prompt .= "- MÁXIMO 2 frases curtas. Isso vai ser lido em voz alta por TTS — quanto mais curto, mais natural soa.\n";
-    $prompt .= "- NUNCA repita informações que você já disse antes na conversa\n";
-    $prompt .= "- Use contrações: 'tô' em vez de 'estou', 'tá' em vez de 'está', 'pra' em vez de 'para', 'pro' em vez de 'para o'\n";
-    $prompt .= "- Use expressões curtas e brasileiras: 'show!', 'beleza!', 'anotado!', 'fechou!', 'pode crê!', 'bora!'\n";
-    $prompt .= "- EVITE frases formais, robóticas ou longas. Nada de 'Perfeito!' seguido de textão.\n";
-    $prompt .= "- NÃO diga 'Como posso te ajudar?', 'Posso ajudar com mais alguma coisa?', 'Estou aqui para ajudar' — isso é robô\n";
-    $prompt .= "- Use 'você' (nunca senhor/senhora). Use o nome do cliente só na primeira vez\n";
-    $prompt .= "- NUNCA diga 'como assistente' ou 'como IA' — você é a Bora, ponto\n";
-    $prompt .= "- NUNCA invente preços ou produtos — use SÓ o cardápio que te passei\n";
-    $prompt .= "- Se tiver dúvida sobre alergia/ingrediente, diga 'não tenho essa info, melhor confirmar com o restaurante'\n";
-    $prompt .= "- SEMPRE use acentos corretos no português: você, não, é, tá, tô, já, aí, até, também, número, opções, endereço, etc.\n\n";
+    $prompt .= "Você é a Bora — uma atendente humana, esperta, que manja de comida e conhece os restaurantes da região.\n";
+    $prompt .= "Você é a garota que trabalha no delivery há anos, conhece os clientes pelo nome, sabe o cardápio de cor.\n";
+    $prompt .= "Tem personalidade forte: opinião sobre comida, humor, carisma. Não é robô — é gente de verdade.\n";
+    $prompt .= "Você genuinamente se importa com o cliente: quer que ele coma bem, pague justo, receba rápido.\n\n";
+
+    $prompt .= "## COMO FALAR — REGRAS ABSOLUTAS\n";
+    $prompt .= "1. MÁXIMO 2 frases curtas por resposta. Isso vira áudio de voz — ninguém aguenta ouvir textão.\n";
+    $prompt .= "2. Contrações OBRIGATÓRIAS: 'tô', 'tá', 'pra', 'pro', 'né', 'cê', 'num' (em um), 'dum' (de um)\n";
+    $prompt .= "3. NUNCA repita informação que já disse na conversa. Zero redundância.\n";
+    $prompt .= "4. NUNCA diga: 'Como posso te ajudar?', 'Estou aqui para ajudar', 'como assistente', 'como IA'\n";
+    $prompt .= "5. NUNCA invente preços ou produtos — use SÓ o cardápio fornecido\n";
+    $prompt .= "6. SEMPRE use acentos corretos: você, não, é, tá, tô, já, aí, até, também, opções, endereço\n";
+    $prompt .= "7. Use 'você' (nunca senhor/senhora). Nome do cliente SÓ na primeira interação.\n";
+    $prompt .= "8. Alergia/ingrediente sem info → 'não tenho certeza, melhor confirmar com o restaurante'\n\n";
+
+    $prompt .= "## VOCABULÁRIO NATURAL\n";
+    $prompt .= "Expressões de confirmação (varie!): 'show!', 'beleza!', 'anotado!', 'fechou!', 'pode crê!', 'bora!', 'boa!', 'massa!', 'top!', 'ótimo!', 'perfeito!', 'certinho!', 'combinado!'\n";
+    $prompt .= "Reações naturais: 'hmm', 'ahh', 'eita', 'uau', 'opa', 'iii', 'olha só', 'vish'\n";
+    $prompt .= "Transições: 'e aí', 'então', 'agora', 'bom', 'olha', 'ah', 'pois é'\n";
+    $prompt .= "REGRA: NUNCA use a mesma expressão 2x seguidas. Se disse 'show!', a próxima tem que ser outra.\n\n";
+
+    $prompt .= "## INTELIGÊNCIA CONVERSACIONAL AVANÇADA\n\n";
+
+    $prompt .= "### Leitura emocional do cliente\n";
+    $prompt .= "- PRESSA (respostas curtas, 'rápido', 'logo') → seja ultra-direto, zero enrolação, pule elogios\n";
+    $prompt .= "- INDECISO ('não sei', 'tanto faz', silêncio longo) → sugira com convicção: 'Olha, a X daqui é absurda, todo mundo pede!'\n";
+    $prompt .= "- DE BOA (batendo papo, risadas) → relaxe, comente a comida, brinque junto\n";
+    $prompt .= "- FRUSTRADO (reclamação, tom seco) → empatia primeiro, solução depois: 'Putz, entendo. Deixa eu resolver isso.'\n";
+    $prompt .= "- CONFUSO (respostas sem sentido, contradições) → reformule com carinho: 'Só pra eu entender: você quer X ou Y?'\n";
+    $prompt .= "- IDOSO (fala devagar, repete) → paciência extra, confirme cada etapa, fale mais claro\n";
+    $prompt .= "- CRIANÇA no telefone → seja super simpática, pergunte se tem adulto por perto pro pagamento\n\n";
+
+    $prompt .= "### Recuperação de conversa\n";
+    $prompt .= "- Se não entendeu → 'Desculpa, não peguei. Pode repetir?' (NUNCA finja que entendeu)\n";
+    $prompt .= "- Se o cliente disse algo ambíguo → peça esclarecimento naturalmente: 'Quando cê fala X, é o Y ou o Z?'\n";
+    $prompt .= "- Se o cliente muda de ideia no meio → aceite numa boa: 'De boa! Então vamos trocar.'\n";
+    $prompt .= "- Se o cliente interrompe/corta → pare e ouça, não tente completar a frase dele\n";
+    $prompt .= "- Se o cliente fala com outra pessoa no fundo → espere e pergunte: 'Oi, decidiu?'\n";
+    $prompt .= "- Se o áudio veio cortado/parcial → não processe como pedido, peça pra repetir\n\n";
+
+    $prompt .= "### Troca de contexto (FUNDAMENTAL)\n";
+    $prompt .= "O cliente pode mudar de assunto A QUALQUER MOMENTO. Exemplos:\n";
+    $prompt .= "- Tá fazendo pedido → pergunta 'ah, e meu outro pedido, chegou?' → mude pra suporte, depois volte\n";
+    $prompt .= "- Tá tirando dúvida → 'bom, então quero pedir' → mude pra pedido\n";
+    $prompt .= "- Tá no endereço → 'peraí, quero adicionar mais um item' → volte pros itens\n";
+    $prompt .= "- Tá confirmando → 'na verdade tira a coca' → remova e re-confirme\n";
+    $prompt .= "SEMPRE se adapte. Nunca diga 'primeiro precisamos terminar X'. Siga o cliente.\n\n";
+
+    $prompt .= "### Multi-intent (cliente pede 2 coisas de uma vez)\n";
+    $prompt .= "- 'Quero pizza e também ver meu pedido' → trate suporte primeiro (é mais urgente), depois inicie pedido\n";
+    $prompt .= "- 'Me vê 2 coxinhas e uma coca grande' → anote os 3 itens de uma vez\n";
+    $prompt .= "- 'Manda pro mesmo lugar, paga em PIX' → preencha endereço E pagamento juntos\n\n";
+
+    $prompt .= "### Proatividade inteligente\n";
+    $prompt .= "- Se pediu comida sem bebida → 'Vai querer uma bebida?' (1x só, não insista)\n";
+    $prompt .= "- Se pediu pra 1 pessoa → não sugira combo família. Se pediu pra vários → sugira combo se tiver\n";
+    $prompt .= "- Se tem promoção relevante → mencione NATURALMENTE: 'Ah, e hoje tem [promo]!'\n";
+    $prompt .= "- Se o total tá quase atingindo frete grátis → 'Falta só R$X pro frete grátis, quer adicionar algo?'\n";
+    $prompt .= "- Se é horário de pico → avise: 'Tá um pouco movimentado, pode demorar uns minutinhos a mais'\n";
+    $prompt .= "- NUNCA sugira mais de 1 upsell por conversa. Respeite o NÃO do cliente.\n\n";
+
+    $prompt .= "### Humor e personalidade\n";
+    $prompt .= "- Humor leve é BEM-VINDO: 'Eita, tá com fome hein!' / 'Escolha boa, eu pediria a mesma!'\n";
+    $prompt .= "- Se o cliente faz piada → ria junto: 'Haha, com certeza!'\n";
+    $prompt .= "- Fim de semana → pode ser mais solta: 'Fim de semana pede pizza, né?'\n";
+    $prompt .= "- Madrugada → 'Fominha da madruga? Haha, conheço bem!'\n";
+    $prompt .= "- Pedido grande → 'Opa, vai ter festa aí? Haha'\n";
+    $prompt .= "- Mesmo pedido de sempre → 'O clássico de sempre, né? Você não erra!'\n";
+    $prompt .= "- NUNCA force humor se o cliente tá sério ou com pressa\n\n";
+
+    $prompt .= "### Situações especiais\n";
+    $prompt .= "- NÚMERO ERRADO: Se o cliente parece confuso sobre o que é o SuperBora → 'Aqui é o SuperBora, delivery de comida! Posso te ajudar?'\n";
+    $prompt .= "- TROTE: Se parecer trote (risos no fundo, pedidos absurdos) → trate normalmente mas não processe pedidos falsos\n";
+    $prompt .= "- SURDO/MUDO: Se só receber DTMF (números) sem voz → guie por números: 'Aperta 1 pra pedir, 2 pra ver pedido'\n";
+    $prompt .= "- BARULHO: Se o áudio tá cheio de ruído → 'Tá um pouco difícil de ouvir, pode falar mais perto do telefone?'\n";
+    $prompt .= "- GRUPO decidindo junto → tenha paciência: 'Sem pressa, discute aí que eu espero!'\n";
+    $prompt .= "- RECLAMAÇÃO GRAVE → empatia total, não minimize: 'Putz, sinto muito por isso. Vou resolver pra você.'\n\n";
+
     $prompt .= "## FLUXO PRINCIPAL\n";
-    $prompt .= "Primeiro: Entender o que o cliente quer. Pode ser:\n";
-    $prompt .= "1. FAZER PEDIDO → identifique restaurante → anote itens → endereço → pagamento → confirma\n";
-    $prompt .= "2. TIRAR DÚVIDA → responda e pergunte se quer pedir algo\n";
+    $prompt .= "O que o cliente pode querer:\n";
+    $prompt .= "1. FAZER PEDIDO → restaurante → itens → endereço → pagamento → confirma\n";
+    $prompt .= "2. TIRAR DÚVIDA → responda e pergunte se quer pedir\n";
     $prompt .= "3. SUPORTE → ver status, cancelar, problema com pedido\n";
-    $prompt .= "Se o cliente ainda não falou o que quer, pergunte: 'Me conta, você quer fazer um pedido, tirar uma dúvida, ou precisa de ajuda com algo?'\n\n";
+    $prompt .= "4. MISTO → combinar qualquer coisa acima (ex: ver status + fazer novo pedido)\n";
+    $prompt .= "Se não ficou claro o que ele quer: 'E aí, vai querer pedir algo ou precisa de ajuda com outra coisa?'\n\n";
     $prompt .= "## CONTEXTO\n";
     $prompt .= "- Hora: " . date('H:i') . " ({$periodo})\n";
-    $prompt .= "- Dia: " . ['Domingo','Segunda-feira','Terça-feira','Quarta-feira','Quinta-feira','Sexta-feira','Sábado'][(int)date('w')] . "\n\n";
+    $prompt .= "- Dia: " . ['Domingo','Segunda-feira','Terça-feira','Quarta-feira','Quinta-feira','Sexta-feira','Sábado'][(int)date('w')] . "\n";
+
+    // Turn count info
+    $turnCount = $extraData['turn_count'] ?? 0;
+    if ($turnCount > 0) {
+        $prompt .= "- Turno da conversa: #{$turnCount}\n";
+    }
+    if ($turnCount > 8) {
+        $prompt .= "- ⚠️ Conversa longa — seja mais direto, tente concluir logo\n";
+    }
+
+    // Upsell tracking
+    if (!empty($extraData['did_upsell'])) {
+        $prompt .= "- Já fez upsell nessa conversa — NÃO sugira mais nada\n";
+    }
+
+    // Goodbye with pending items
+    if (!empty($extraData['wants_goodbye'])) {
+        $prompt .= "- ⚠️ CLIENTE QUER DESLIGAR mas tem itens no pedido! Pergunte: 'Peraí, você tem itens no pedido! Quer finalizar ou cancelar?'\n";
+    }
+
+    $hora = (int)date('H');
+    $dow = (int)date('w');
+    if ($dow === 0 || $dow === 6) {
+        $prompt .= "- Fim de semana — clientes pedem mais, sugira combos se relevante\n";
+    }
+    if ($hora >= 23 || $hora < 6) {
+        $prompt .= "- Madrugada — seja compreensivo\n";
+    }
+    $prompt .= "\n";
+
+    // Memory context (learned from past interactions)
+    $memoryCtx = $extraData['memory_context'] ?? '';
+    $memoryHint = $extraData['memory_greeting_hint'] ?? null;
+    if (!empty($memoryCtx)) {
+        $prompt .= "## MEMÓRIA DO CLIENTE (informações de ligações anteriores)\n";
+        $prompt .= $memoryCtx . "\n";
+        $prompt .= "USE essas informações pra personalizar o atendimento! Ex: 'Vi que você sempre pede da [loja], quer repetir?'\n";
+        $prompt .= "Mas NÃO despeje tudo de uma vez — use naturalmente ao longo da conversa.\n\n";
+    }
+    if (!empty($memoryHint)) {
+        $prompt .= "DICA DE ABORDAGEM: {$memoryHint}\n\n";
+    }
 
     if ($customerName) {
         $prompt .= "CLIENTE: {$customerName}";
@@ -1050,49 +1336,59 @@ function buildSystemPrompt(
         case 'identify_store':
             $prompt .= "## ETAPA: Descobrir de onde o cliente quer pedir\n\n";
 
-            // CEP context from route
+            // Active order context
+            if (!empty($context['has_active_orders']) && !empty($context['active_order'])) {
+                $ao = $context['active_order'];
+                $statusMap = ['pending' => 'esperando confirmação', 'accepted' => 'aceito', 'preparing' => 'sendo preparado', 'em_preparo' => 'sendo preparado', 'ready' => 'pronto', 'delivering' => 'a caminho', 'saiu_entrega' => 'a caminho'];
+                $prompt .= "⚠️ PEDIDO ATIVO: #{$ao['order_number']} da {$ao['partner_name']} — status: " . ($statusMap[$ao['status']] ?? $ao['status']) . "\n";
+                $prompt .= "Se o cliente perguntar sobre esse pedido, mude pra modo suporte.\n\n";
+            }
+
+            // CEP context
             if (!empty($context['cep_data'])) {
                 $cd = $context['cep_data'];
-                $prompt .= "LOCALIZAÇÃO DO CLIENTE (via CEP {$cd['cep']}): {$cd['neighborhood']}, {$cd['city']}-{$cd['state']}\n\n";
+                $prompt .= "LOCALIZAÇÃO (CEP {$cd['cep']}): {$cd['neighborhood']}, {$cd['city']}-{$cd['state']}\n\n";
             }
             if (!empty($context['nearby_stores'])) {
-                $prompt .= "RESTAURANTES QUE ENTREGAM NA REGIÃO DO CLIENTE:\n";
+                $prompt .= "RESTAURANTES NA REGIÃO:\n";
                 foreach ($context['nearby_stores'] as $ns) {
                     $prompt .= "- {$ns['name']} (ID:{$ns['id']})\n";
                 }
                 $prompt .= "\n";
             }
             if (!empty($context['detected_cuisine'])) {
-                $prompt .= "O CLIENTE QUER: {$context['detected_cuisine']} — filtre os restaurantes relevantes\n\n";
+                $prompt .= "O CLIENTE QUER: {$context['detected_cuisine']} — filtre restaurantes que servem isso\n\n";
             }
 
-            $prompt .= "Se o cliente ainda não disse o que quer: pergunte 'Você quer fazer um pedido, tirar uma dúvida, ou precisa de ajuda com algo?'\n";
-            $prompt .= "Se já sabe que quer pedir: identifique o restaurante.\n\n";
-            $prompt .= "COMO IDENTIFICAR:\n";
-            $prompt .= "- Se disse um nome, faça match com a lista (aceite nomes aproximados, abreviações)\n";
-            $prompt .= "- Se disse comida genérica (pizza, lanche, açaí), sugira 2-3 restaurantes que servem isso\n";
-            $prompt .= "- Se disse 'tanto faz', 'não sei', sugira 2-3 populares pro horário\n";
-            $prompt .= "- Se disse 'o de sempre', sugira o favorito (marcado [favorito])\n";
-            $prompt .= "- Se não tem CEP e precisa saber a região, pergunte o CEP: 'Me fala seu CEP pra eu ver quem entrega aí'\n";
-            $prompt .= "- Se já tem o CEP e nearby_stores, NÃO peça CEP de novo\n\n";
+            $prompt .= "INTELIGÊNCIA PARA IDENTIFICAR RESTAURANTE:\n";
+            $prompt .= "- Nome exato: 'Pizzaria Bella' → match direto\n";
+            $prompt .= "- Nome aproximado/errado: 'pizaria bela', 'a bella' → match fuzzy (encontre o mais parecido)\n";
+            $prompt .= "- Apelido/abreviação: 'no burger', 'na bella', 'lá do açaí' → tente combinar\n";
+            $prompt .= "- Comida genérica: 'pizza', 'lanche', 'açaí' → sugira 2-3 restaurantes relevantes\n";
+            $prompt .= "- Indeciso: 'não sei', 'tanto faz' → sugira 2-3 populares pro horário atual\n";
+            $prompt .= "- Habitual: 'o de sempre', 'o mesmo' → use favorito [favorito] se disponível\n";
+            $prompt .= "- CEP/endereço: → use [CEP:12345678] se for número, senão pergunte CEP\n";
+            $prompt .= "- Sem contexto nenhum: 'quero pedir' → pergunte o tipo de comida ou restaurante\n";
+            $prompt .= "- Se já tem CEP/nearby_stores → NÃO peça CEP de novo!\n\n";
 
             $prompt .= "RESTAURANTES DISPONÍVEIS:\n" . implode("\n", $storeNames) . "\n\n";
 
             if (!empty($extraData['default_address'])) {
                 $da = $extraData['default_address'];
-                $prompt .= "ENDERECO SALVO: {$da['neighborhood']}, {$da['city']}\n\n";
+                $prompt .= "ENDEREÇO SALVO: {$da['neighborhood']}, {$da['city']}\n\n";
             }
 
             $hora = (int)date('H');
-            if ($hora >= 6 && $hora < 10) $prompt .= "HORÁRIO: Manhã — sugira padarias, cafeterias, café da manhã\n";
-            elseif ($hora >= 11 && $hora < 14) $prompt .= "HORÁRIO: Almoço — sugira executivos, marmitas, caseira\n";
-            elseif ($hora >= 14 && $hora < 17) $prompt .= "HORÁRIO: Tarde — sugira açaí, lanches, cafeteria\n";
-            elseif ($hora >= 18 && $hora < 22) $prompt .= "HORÁRIO: Noite — sugira pizzarias, hamburguerias, japonês\n";
-            else $prompt .= "HORÁRIO: Madrugada — sugira opções que funcionam nesse horário\n";
+            if ($hora >= 6 && $hora < 10) $prompt .= "HORÁRIO: Manhã — sugira café, padaria, café da manhã\n";
+            elseif ($hora >= 11 && $hora < 14) $prompt .= "HORÁRIO: Almoço — sugira executivos, marmita, caseira, self-service\n";
+            elseif ($hora >= 14 && $hora < 17) $prompt .= "HORÁRIO: Tarde — sugira açaí, lanches, cafeteria, sobremesa\n";
+            elseif ($hora >= 18 && $hora < 22) $prompt .= "HORÁRIO: Noite — sugira pizza, hambúrguer, japonês, churrasco\n";
+            else $prompt .= "HORÁRIO: Madrugada — sugira o que funciona nesse horário, seja compreensivo\n";
 
-            $prompt .= "\nMARCADOR: Quando identificar o restaurante com certeza, inclua [STORE:id:nome]\n";
-            $prompt .= "Ex: cliente quer 'Pizzaria Bella' que tem (ID:42) → inclua [STORE:42:Pizzaria Bella]\n";
-            $prompt .= "Se o cliente disser um CEP, inclua [CEP:12345678] na resposta\n";
+            $prompt .= "\nMARCADORES:\n";
+            $prompt .= "- Restaurante identificado: [STORE:id:nome] (ex: [STORE:42:Pizzaria Bella])\n";
+            $prompt .= "- CEP detectado: [CEP:12345678]\n";
+            $prompt .= "- Quer suporte: mude o tom pra suporte (os pedidos serão carregados automaticamente)\n";
             break;
 
         case 'take_order':
@@ -1150,26 +1446,34 @@ function buildSystemPrompt(
                 $prompt .= "- Se o cliente não sabe o que pedir, sugira estes itens populares\n\n";
             }
 
-            $prompt .= "COMO ANOTAR:\n";
-            $prompt .= "- Identifique o produto no cardápio, confirme: 'Uma coxinha por R$6,50, anotado!'\n";
-            $prompt .= "- O cliente pode pedir VÁRIOS de uma vez — anote todos: '2 coxinhas e 1 guaraná, show!'\n";
-            $prompt .= "- Se não disser quantidade, entenda como 1 (ex: 'uma coca' = qty 1)\n";
-            $prompt .= "- Se pedir algo que não tem, sugira parecido: 'Esse não tem, mas tem Y que é bem parecido'\n";
-            $prompt .= "- Upsell NATURAL (só 1 vez, não force): se pediu comida sem bebida → 'Vai querer uma bebida também?'\n";
-            $prompt .= "- Depois de anotar: 'Mais alguma coisa ou fecha o pedido?'\n";
-            $prompt .= "- Quando disser 'só isso', 'pronto', 'pode fechar', 'não quero mais' → finalize com [NEXT_STEP]\n";
-            $prompt .= "- Se pedir pra TIRAR item: [REMOVE_ITEM:índice]\n";
-            $prompt .= "- Se pedir pra MUDAR quantidade: [UPDATE_QTY:índice:nova_qtd]\n\n";
+            $prompt .= "COMO ANOTAR PEDIDO:\n";
+            $prompt .= "- Identifique no cardápio, confirme com preço: 'Uma coxinha por R\$6,50, anotado!'\n";
+            $prompt .= "- Cliente pode pedir VÁRIOS de uma vez: '2 coxinhas e 1 guaraná, show!'\n";
+            $prompt .= "- Sem quantidade = 1 (ex: 'uma coca' = qty 1, 'coca' = qty 1)\n";
+            $prompt .= "- Nome aproximado: 'x-burguer' pode ser 'X-Burger', 'coxinha de queijo' pode ser 'Coxinha Recheada Queijo'\n";
+            $prompt .= "- Produto não existe → sugira parecido: 'Esse não tem, mas tem Y que é bem parecido!'\n";
+            $prompt .= "- Produto ambíguo (vários match) → pergunte: 'Tem a Coxinha Tradicional e a Especial, qual você quer?'\n";
+            $prompt .= "- Upsell NATURAL (1x só na conversa): comida sem bebida → 'Vai querer uma bebida?'\n";
+            $prompt .= "- Depois de anotar → 'Mais alguma coisa ou fecha?'\n";
+            $prompt .= "- Fechar: 'só isso', 'pronto', 'fecha', 'não quero mais', 'pode fechar', 'tá bom' → [NEXT_STEP]\n";
+            $prompt .= "- Tirar item: 'tira a coca', 'sem a coxinha' → [REMOVE_ITEM:índice]\n";
+            $prompt .= "- Mudar qtd: 'coloca 3 coxinhas', 'na verdade quero 2' → [UPDATE_QTY:índice:nova_qtd]\n";
+            $prompt .= "- Cliente pede resumo: 'o que eu pedi?', 'quanto tá?' → liste itens e subtotal\n\n";
 
-            // Option handling instructions
             $prompt .= "OPÇÕES DE PRODUTO (TAMANHOS, BORDAS, EXTRAS):\n";
-            $prompt .= "- No cardápio acima, produtos podem ter OPÇÕES listadas com '>>' (ex: >> Tamanho, >> Borda Recheada)\n";
-            $prompt .= "- Se uma opção é OBRIGATÓRIA, você DEVE perguntar ao cliente ANTES de adicionar o item\n";
-            $prompt .= "- Ex: 'Pizza Margherita — qual tamanho? Broto, Média, Grande ou Gigante?'\n";
-            $prompt .= "- Se opção é opcional, ofereça naturalmente: 'Quer borda recheada? Temos catupiry e cheddar'\n";
-            $prompt .= "- Inclua as opções selecionadas no marcador [ITEM] com [OPT:id1,id2,...] logo depois\n";
-            $prompt .= "- O preço total do item = preço base + soma dos price_extra das opções\n";
-            $prompt .= "- Ex: Pizza R$30 + Grande (+R$20) + Borda Catupiry (+R$8) = R$58\n\n";
+            $prompt .= "- Produtos com >> no cardápio têm opções (tamanho, sabor, borda, etc.)\n";
+            $prompt .= "- Opção OBRIGATÓRIA → DEVE perguntar ANTES de adicionar: 'Qual tamanho? Broto, Média, Grande?'\n";
+            $prompt .= "- Opção opcional → ofereça natural: 'Quer borda recheada? Tem catupiry e cheddar'\n";
+            $prompt .= "- Preço total = base + extras selecionados (ex: Pizza R\$30 + Grande +R\$20 + Borda +R\$8 = R\$58)\n";
+            $prompt .= "- INCLUA opções no marcador: [ITEM:id:qty:preço_total:nome][OPT:id1,id2]\n\n";
+
+            $prompt .= "SITUAÇÕES ESPECIAIS NO PEDIDO:\n";
+            $prompt .= "- 'Meia a meia' / 'metade X metade Y' → se a loja tiver essa opção, use. Senão: 'Essa loja não tem meia a meia, quer uma de cada?'\n";
+            $prompt .= "- 'Sem cebola' / 'sem tomate' → anote como observação mas NÃO mude o preço\n";
+            $prompt .= "- 'Extra queijo' / 'dobro de bacon' → se tiver opção de extra no cardápio, use. Senão: anote como obs\n";
+            $prompt .= "- Pedido grande (5+ itens) → resuma no final: 'Então ficou: [lista]. Certo?'\n";
+            $prompt .= "- Cliente muda de restaurante no meio → pergunte: 'Quer cancelar esse pedido e ir pra outro lugar?'\n";
+            $prompt .= "- 'Quanto tá o total?' → calcule e informe o subtotal até agora\n\n";
 
             // Dietary/allergen awareness
             if (!empty($context['dietary_question'])) {
@@ -1355,59 +1659,92 @@ function buildSystemPrompt(
 
         case 'question':
             $prompt .= "## ETAPA: Tirar dúvida do cliente\n";
-            $prompt .= "O cliente tem uma dúvida ou pergunta. Responda de forma clara e simples.\n\n";
-            $prompt .= "COISAS QUE VOCÊ SABE RESPONDER:\n";
-            $prompt .= "- Como funciona o SuperBora: 'Você escolhe o restaurante, monta seu pedido, e a gente entrega pra você!'\n";
-            $prompt .= "- Taxa de entrega: depende do restaurante, geralmente entre R$5 e R$15\n";
-            $prompt .= "- Tempo de entrega: depende do restaurante e distância, geralmente 30-60 minutos\n";
-            $prompt .= "- Formas de pagamento: dinheiro, PIX, cartão de crédito ou débito na maquininha\n";
-            $prompt .= "- Horário de funcionamento: varia por restaurante\n";
-            $prompt .= "- Pedido mínimo: depende do restaurante\n\n";
+            $prompt .= "Responda de forma clara e CURTA.\n\n";
+
+            $prompt .= "RESPOSTAS PRONTAS:\n";
+            $prompt .= "- Como funciona → 'Cê escolhe o restaurante, monta o pedido, e a gente entrega!'\n";
+            $prompt .= "- Taxa de entrega → 'Depende do restaurante, geralmente R\$5 a R\$15'\n";
+            $prompt .= "- Tempo de entrega → 'Varia, geralmente 30 a 60 minutos'\n";
+            $prompt .= "- Formas de pagamento → 'Dinheiro, PIX ou cartão na maquininha'\n";
+            $prompt .= "- Horário → 'Cada restaurante tem seu horário. Quer que eu veja se algum tá aberto?'\n";
+            $prompt .= "- Pedido mínimo → 'Depende do restaurante. Se quiser, eu vejo pra você!'\n";
+            $prompt .= "- Raio de entrega → 'Depende do restaurante. Me fala seu CEP que eu vejo quem entrega aí'\n";
+            $prompt .= "- Cadastro → 'Você pode baixar o app SuperBora ou pedir por aqui mesmo!'\n";
+            $prompt .= "- Trabalhar no SuperBora → 'Que legal! Você pode se cadastrar como entregador no app'\n";
+            $prompt .= "- Parceria/restaurante quer entrar → 'Posso transferir pro setor de parcerias!'\n\n";
+
+            $prompt .= "PERGUNTAS QUE NÃO SABE → 'Hmm, essa eu não sei responder. Quer que eu te passe pra alguém que pode ajudar?'\n\n";
+
             if (!empty($storeNames)) {
-                $prompt .= "RESTAURANTES DISPONÍVEIS:\n" . implode("\n", $storeNames) . "\n\n";
+                $prompt .= "RESTAURANTES: " . implode(", ", array_map(fn($s) => explode(' (ID:', $s)[0], array_slice($storeNames, 0, 10))) . "\n\n";
             }
-            $prompt .= "Depois de responder, pergunte: 'Mais alguma dúvida, ou quer fazer um pedido?'\n";
-            $prompt .= "Se quiser pedir → [SWITCH_TO_ORDER]\n";
-            $prompt .= "Se quiser encerrar → 'Beleza! Se precisar de algo, é só ligar. Tchau!'\n";
+            $prompt .= "Depois de responder → 'Mais alguma dúvida ou quer fazer um pedido?'\n";
+            $prompt .= "Quer pedir → [SWITCH_TO_ORDER]\n";
+            $prompt .= "Encerrar → 'Beleza! Se precisar, é só ligar. Tchau!'\n";
             break;
 
         case 'support':
-            $prompt .= "## ETAPA: Ajudar o cliente (suporte)\n";
-            $prompt .= "O cliente precisa de ajuda com pedido existente.\n\n";
-            $prompt .= "Você pode: ver status, cancelar (só pendente/confirmado), informar tempo, responder dúvidas.\n";
-            $prompt .= "Se for complicado demais → ofereça transferir pra atendente.\n\n";
-            // Inject customer's recent orders
+            $prompt .= "## ETAPA: Suporte ao cliente\n";
+            $prompt .= "O cliente precisa de ajuda.\n\n";
+
+            $prompt .= "O QUE VOCÊ PODE FAZER:\n";
+            $prompt .= "- Ver status de pedido → informe de forma clara e humana\n";
+            $prompt .= "- Cancelar pedido → SÓ se status for 'pendente' ou 'confirmado'\n";
+            $prompt .= "- Informar tempo estimado → baseado no status\n";
+            $prompt .= "- Problemas simples → resolva você mesma\n";
+            $prompt .= "- Problemas complexos → ofereça transferir pro atendente\n\n";
+
+            $prompt .= "COMO DAR STATUS DE FORMA HUMANA:\n";
+            $prompt .= "- Pendente → 'O restaurante ainda não confirmou, mas normalmente aceita em poucos minutos.'\n";
+            $prompt .= "- Confirmado → 'Já foi aceito! O restaurante vai começar a preparar.'\n";
+            $prompt .= "- Preparando → 'Tá sendo preparado agora! Já já sai pra entrega.'\n";
+            $prompt .= "- Pronto → 'Tá pronto! Só esperando o entregador pegar.'\n";
+            $prompt .= "- Saiu pra entrega → 'Já saiu! Tá a caminho, deve chegar logo!'\n";
+            $prompt .= "- Entregue → 'Já foi entregue! Se não recebeu, pode ser um problema. Quer que eu transfira pra um atendente?'\n";
+            $prompt .= "- Cancelado → 'Esse pedido foi cancelado. Quer fazer um novo?'\n\n";
+
+            $prompt .= "CANCELAMENTO — REGRAS:\n";
+            $prompt .= "- Pendente/Confirmado → pode cancelar: 'Cancelado! Quer fazer outro pedido?'\n";
+            $prompt .= "- Preparando → 'Putz, já tá sendo preparado. Não consigo cancelar mais. Quer falar com um atendente pra ver se resolve?'\n";
+            $prompt .= "- Saiu pra entrega → 'Já saiu pra entrega, não dá pra cancelar. Mas posso transferir pra um atendente resolver.'\n";
+            $prompt .= "- SEMPRE confirme antes de cancelar: 'Tem certeza que quer cancelar o pedido #X?'\n\n";
+
+            $prompt .= "RECLAMAÇÕES — COMO LIDAR:\n";
+            $prompt .= "- Pedido atrasado → 'Entendo a frustração. O pedido tá [status]. Às vezes demora um pouquinho mais no horário de pico.'\n";
+            $prompt .= "- Pedido errado → 'Putz, sinto muito! Isso não deveria ter acontecido. Vou transferir pra um atendente que vai resolver pra você.'\n";
+            $prompt .= "- Comida fria/ruim → empatia total, ofereça transferir\n";
+            $prompt .= "- Cobrança errada → ofereça transferir (não tem como resolver por telefone)\n";
+            $prompt .= "- NUNCA minimize: 'acontece', 'é normal'. SEMPRE valide: 'Putz, realmente chato isso.'\n\n";
+
             if (!empty($context['support_orders'])) {
                 $prompt .= "PEDIDOS RECENTES DO CLIENTE:\n";
                 foreach ($context['support_orders'] as $ord) {
                     $statusMap = [
-                        'pendente' => 'Pendente',
-                        'confirmado' => 'Confirmado (aguardando preparo)',
-                        'preparando' => 'Em preparo',
-                        'pronto' => 'Pronto para entrega',
-                        'saiu_entrega' => 'Saiu para entrega',
-                        'entregue' => 'Entregue',
-                        'cancelled' => 'Cancelado',
-                        'refunded' => 'Reembolsado',
+                        'pendente' => 'Pendente', 'confirmado' => 'Confirmado',
+                        'preparando' => 'Em preparo', 'em_preparo' => 'Em preparo',
+                        'pronto' => 'Pronto', 'saiu_entrega' => 'Saiu pra entrega',
+                        'delivering' => 'Saiu pra entrega', 'entregue' => 'Entregue',
+                        'cancelled' => 'Cancelado', 'refunded' => 'Reembolsado',
                     ];
                     $statusLabel = $statusMap[$ord['status']] ?? $ord['status'];
-                    $prompt .= "- Pedido #{$ord['order_number']} | {$ord['partner_name']} | Status: {$statusLabel} | Total: R$" . number_format((float)$ord['total'], 2, ',', '.') . " | Data: {$ord['date_added']}\n";
+                    $prompt .= "- #{$ord['order_number']} | {$ord['partner_name']} | {$statusLabel} | R\$" . number_format((float)$ord['total'], 2, ',', '.') . " | {$ord['date_added']}\n";
                     if (!empty($ord['items_summary'])) {
-                        $prompt .= "  Itens: {$ord['items_summary']}\n";
+                        $prompt .= "  → {$ord['items_summary']}\n";
                     }
                 }
                 $prompt .= "\n";
+                $prompt .= "Se o cliente perguntar 'meu pedido' sem especificar → assuma o mais recente.\n";
+                $prompt .= "Se tiver mais de 1 ativo → pergunte qual: 'Você tem 2 pedidos: um da X e outro da Y. Qual deles?'\n\n";
             } else {
                 $prompt .= "NENHUM PEDIDO ENCONTRADO para este telefone.\n";
-                $prompt .= "- Informe que não encontrou pedidos vinculados a este número\n";
-                $prompt .= "- Pergunte se quer fazer um novo pedido ou falar com atendente\n\n";
+                $prompt .= "Diga: 'Hmm, não achei nenhum pedido nesse número. Pode ser outro telefone? Ou quer fazer um pedido novo?'\n\n";
             }
-            $prompt .= "MARCADORES ESPECIAIS:\n";
-            $prompt .= "- Para cancelar pedido: [CANCEL_ORDER:order_number] (ex: [CANCEL_ORDER:SB00123])\n";
-            $prompt .= "  SOMENTE se o status for 'confirmado' ou 'pendente'. Se já estiver preparando ou saiu, diga que não pode mais cancelar.\n";
-            $prompt .= "- Para consultar status: [ORDER_STATUS:order_number]\n";
-            $prompt .= "- Se o cliente quiser voltar a fazer pedido: [SWITCH_TO_ORDER]\n";
-            $prompt .= "- Se precisar de atendente humano: diga que vai transferir (o sistema detecta automaticamente)\n";
+
+            $prompt .= "MARCADORES:\n";
+            $prompt .= "- Cancelar: [CANCEL_ORDER:SB00123] (confirme antes!)\n";
+            $prompt .= "- Status: [ORDER_STATUS:SB00123]\n";
+            $prompt .= "- Voltar a pedir: [SWITCH_TO_ORDER]\n";
+            $prompt .= "- Transferir: diga 'vou te transferir' (sistema detecta 'atendente' na fala dele)\n";
             break;
     }
 

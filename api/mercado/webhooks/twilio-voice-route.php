@@ -91,7 +91,12 @@ if (!empty($speechResult)) {
         if (mb_strpos($speechLower, $keyword) !== false) { $wantsAgent = true; break; }
     }
 }
-if ($noInput === '1' && empty($digits) && empty($speechResult)) $wantsAgent = true;
+// Only transfer to agent on explicit noInput if there was truly no interaction at all
+// Don't auto-transfer — let AI handle the re-prompt
+if ($noInput === '1' && empty($digits) && empty($speechResult)) {
+    // Instead of transferring to agent, redirect to AI which will re-prompt naturally
+    $wantsAgent = false;
+}
 
 try {
     $db = getDB();
@@ -303,11 +308,11 @@ try {
         }
     }
 
-    // Try to match store by name
+    // Try to match store by name — multi-strategy fuzzy matching
     $storeIdentified = null;
     $storeId = null;
     if (!$wantsSupport && !$detectedCep && empty($detectedCuisine) && !empty($speechResult)) {
-        // Fuzzy match: try exact-ish match first, then broader
+        // Strategy 1: Exact substring match (fastest)
         $storeStmt = $db->prepare("
             SELECT partner_id, name FROM om_market_partners
             WHERE status = '1' AND LOWER(name) LIKE ?
@@ -315,6 +320,51 @@ try {
         ");
         $storeStmt->execute(['%' . $speechLower . '%']);
         $store = $storeStmt->fetch();
+
+        // Strategy 2: Word-by-word fuzzy match (for misspellings like "pizaria bela" → "Pizzaria Bella")
+        if (!$store) {
+            $allStoresForMatch = $db->query("SELECT partner_id, name FROM om_market_partners WHERE status = '1' AND name != '' LIMIT 50")->fetchAll();
+            $speechWords = preg_split('/\s+/', $speechLower);
+            $bestMatch = null;
+            $bestScore = 0;
+
+            foreach ($allStoresForMatch as $s) {
+                $storeLower = mb_strtolower($s['name'], 'UTF-8');
+                $storeWords = preg_split('/\s+/', $storeLower);
+                $score = 0;
+
+                foreach ($speechWords as $sw) {
+                    if (mb_strlen($sw) < 3) continue; // Skip short words
+                    foreach ($storeWords as $stw) {
+                        if (mb_strlen($stw) < 3) continue;
+                        // Exact word match
+                        if ($sw === $stw) { $score += 3; continue 2; }
+                        // Word starts with same 3+ chars
+                        $prefix = mb_substr($sw, 0, 3);
+                        if (mb_strpos($stw, $prefix) === 0 || mb_strpos($sw, mb_substr($stw, 0, 3)) === 0) {
+                            $score += 2;
+                            continue 2;
+                        }
+                        // Levenshtein-like: similar enough (within 2 edits for words > 4 chars)
+                        if (mb_strlen($sw) > 4 && mb_strlen($stw) > 4) {
+                            $lev = levenshtein($sw, $stw);
+                            if ($lev <= 2) { $score += 2; continue 2; }
+                        }
+                    }
+                }
+
+                // Need at least 2 points to be a match (1 good word match)
+                if ($score > $bestScore && $score >= 2) {
+                    $bestScore = $score;
+                    $bestMatch = $s;
+                }
+            }
+
+            if ($bestMatch) {
+                $store = $bestMatch;
+            }
+        }
+
         if ($store) {
             $storeIdentified = $store['name'];
             $storeId = (int)$store['partner_id'];
@@ -349,6 +399,12 @@ try {
             'detected_cuisine' => $detectedCuisine,
             'wants_order' => !empty($wantsOrder),
             'wants_question' => $wantsQuestion,
+            'has_active_orders' => $hasActiveOrders,
+            'active_order' => $activeOrderInfo ? [
+                'order_number' => $activeOrderInfo['order_number'],
+                'status' => $activeOrderInfo['status'],
+                'partner_name' => $activeOrderInfo['partner_name'],
+            ] : null,
         ]
     ];
 
@@ -377,6 +433,27 @@ try {
 
     error_log("[twilio-voice-route] AI: call_id={$callId} store={$storeIdentified} cep={$detectedCep} cuisine={$detectedCuisine} support={$wantsSupport}");
 
+    // -- Check for active orders (for returning customers) --
+    $hasActiveOrders = false;
+    $activeOrderInfo = null;
+    if ($customerId) {
+        try {
+            $activeStmt = $db->prepare("
+                SELECT o.order_number, o.status, p.name as partner_name
+                FROM om_market_orders o
+                JOIN om_market_partners p ON p.partner_id = o.partner_id
+                WHERE o.customer_id = ? AND o.status IN ('pending','accepted','preparing','ready','delivering','em_preparo','saiu_entrega')
+                ORDER BY o.date_added DESC LIMIT 1
+            ");
+            $activeStmt->execute([$customerId]);
+            $activeOrder = $activeStmt->fetch();
+            if ($activeOrder) {
+                $hasActiveOrders = true;
+                $activeOrderInfo = $activeOrder;
+            }
+        } catch (Exception $e) {}
+    }
+
     // -- Build Response --
     $firstName = $customerName ? explode(' ', trim($customerName))[0] : null;
     $ssml = '';
@@ -391,9 +468,18 @@ try {
         $ssml .= "Tô aqui pra tirar sua dúvida. Pode perguntar, que eu te ajudo!";
     } elseif (!empty($wantsOrder) && !$storeId && !$detectedCep) {
         // Wants to order but hasn't said store or CEP yet
-        $ssml .= "Perfeito" . ($firstName ? ", {$firstName}" : "") . "! Vamos montar seu pedido. ";
-        $ssml .= '<break time="200ms"/>';
-        $ssml .= "Me fala o nome do restaurante que você quer, ou se preferir, me diz seu CEP que eu mostro as opções perto de você.";
+        $ssml .= "Perfeito" . ($firstName ? ", {$firstName}" : "") . "! ";
+        if ($hasActiveOrders && $activeOrderInfo) {
+            $statusLabels = ['pending' => 'esperando confirmação', 'accepted' => 'foi aceito', 'preparing' => 'tá sendo preparado', 'em_preparo' => 'tá sendo preparado', 'ready' => 'tá pronto', 'delivering' => 'tá a caminho', 'saiu_entrega' => 'tá a caminho'];
+            $statusText = $statusLabels[$activeOrderInfo['status']] ?? 'em andamento';
+            $ssml .= "Vi que você tem um pedido da {$activeOrderInfo['partner_name']} que {$statusText}. ";
+            $ssml .= '<break time="200ms"/>';
+            $ssml .= "Quer saber desse pedido, ou fazer um novo?";
+        } else {
+            $ssml .= "Vamos montar seu pedido. ";
+            $ssml .= '<break time="200ms"/>';
+            $ssml .= "Me fala o nome do restaurante que você quer, ou se preferir, me diz seu CEP que eu mostro as opções perto de você.";
+        }
     } elseif ($storeIdentified) {
         $ssml .= "Show" . ($firstName ? ", {$firstName}" : "") . "! ";
         $ssml .= "Encontrei a {$storeIdentified} pra você. ";
@@ -444,17 +530,34 @@ try {
         $ssml .= "Hmm, {$label}! Ótima escolha";
         $ssml .= ($firstName ? ", {$firstName}" : "") . "! ";
         $ssml .= '<break time="200ms"/>';
-        $ssml .= "Vou procurar as melhores opções pra você. Me dá um segundinho.";
+        if ($hasActiveOrders && $activeOrderInfo) {
+            $statusLabels = ['pending' => 'esperando confirmação', 'accepted' => 'foi aceito', 'preparing' => 'tá sendo preparado', 'em_preparo' => 'tá sendo preparado', 'ready' => 'tá pronto', 'delivering' => 'tá a caminho', 'saiu_entrega' => 'tá a caminho'];
+            $statusText = $statusLabels[$activeOrderInfo['status']] ?? 'em andamento';
+            $ssml .= "Ah, e vi que você tem um pedido da {$activeOrderInfo['partner_name']} que {$statusText}. ";
+            $ssml .= '<break time="200ms"/>';
+            $ssml .= "Quer saber sobre esse pedido, ou fazer um pedido novo de {$label}?";
+        } else {
+            $ssml .= "Vou procurar as melhores opções de {$label} pra você. Me fala seu CEP ou o nome do restaurante que você gosta!";
+        }
     } else {
         // No clear match — be helpful, not negative
         $ssml .= ($firstName ? "{$firstName}, " : "");
-        if (!empty($speechResult) && mb_strlen($speechResult) > 3) {
+        if ($hasActiveOrders && $activeOrderInfo && !empty($speechResult)) {
+            // Has active order — maybe they're asking about it
+            $statusLabels = ['pending' => 'esperando confirmação', 'accepted' => 'foi aceito', 'preparing' => 'tá sendo preparado', 'em_preparo' => 'tá sendo preparado', 'ready' => 'tá pronto', 'delivering' => 'tá a caminho', 'saiu_entrega' => 'tá a caminho'];
+            $statusText = $statusLabels[$activeOrderInfo['status']] ?? 'em andamento';
+            $ssml .= "vi que você tem um pedido da {$activeOrderInfo['partner_name']} que {$statusText}. ";
+            $ssml .= '<break time="200ms"/>';
+            $ssml .= "É sobre esse pedido que você tá ligando, ou quer fazer um pedido novo?";
+        } elseif (!empty($speechResult) && mb_strlen($speechResult) > 3) {
             $ssml .= "Hmm, não encontrei um restaurante com esse nome. ";
+            $ssml .= '<break time="200ms"/>';
+            $ssml .= "Pode me falar o nome do restaurante, o tipo de comida que você quer, ou seu CEP pra eu ver as opções?";
         } else {
             $ssml .= "Não consegui entender direito. ";
+            $ssml .= '<break time="200ms"/>';
+            $ssml .= "Pode me falar o nome do restaurante, o tipo de comida que você quer, ou seu CEP pra eu ver as opções?";
         }
-        $ssml .= '<break time="200ms"/>';
-        $ssml .= "Pode me falar o nome do restaurante, o tipo de comida que você quer, ou seu CEP pra eu ver as opções?";
     }
 
     // end ssml
@@ -469,15 +572,24 @@ try {
     echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . htmlspecialchars($aiUrl) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
     echo ttsSayOrPlay($plainSsml);
     echo '</Gather>';
+    // Fallback re-prompt if first Gather times out (user didn't speak)
+    echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . htmlspecialchars($aiUrl) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
     echo ttsSayOrPlay("Oi, tô aqui ainda! Pode falar o nome do restaurante ou o que você quer comer.");
+    echo '</Gather>';
+    // If both Gathers time out, go to AI anyway (it will re-prompt naturally)
     echo '<Redirect method="POST">' . htmlspecialchars($aiUrl) . '</Redirect>';
     echo '</Response>';
 
 } catch (Exception $e) {
-    error_log("[twilio-voice-route] Error: " . $e->getMessage());
+    error_log("[twilio-voice-route] Error: " . $e->getMessage() . " | Trace: " . $e->getTraceAsString());
+    // On error, redirect to AI handler which will re-prompt — don't hang up
+    $aiUrlFallback = str_replace('twilio-voice-route.php', 'twilio-voice-ai.php', $scheme . '://' . $host . strtok($_SERVER['REQUEST_URI'] ?? '', '?'));
     echo '<?xml version="1.0" encoding="UTF-8"?>';
     echo '<Response>';
-    echo ttsSayOrPlay("Ih, desculpa! Deu um probleminha aqui. Vou te passar pra um atendente, tá?");
-    echo '<Hangup/>';
+    echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . htmlspecialchars($aiUrlFallback) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
+    echo ttsSayOrPlay("Desculpa, deu um probleminha. Me fala de novo, o que você precisa?");
+    echo '</Gather>';
+    echo ttsSayOrPlay("Aperta zero se quiser falar com alguém.");
+    echo '<Redirect method="POST">' . htmlspecialchars($aiUrlFallback) . '</Redirect>';
     echo '</Response>';
 }
