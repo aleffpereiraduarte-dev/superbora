@@ -867,8 +867,8 @@ app.post('/incoming-call', async (req, reply) => {
     const periodo = horaNum < 12 ? 'Bom dia' : horaNum < 18 ? 'Boa tarde' : 'Boa noite';
 
     const greeting = firstName
-        ? `${periodo}, ${firstName}! Aqui é a Bora, do SuperBora. Como posso te ajudar?`
-        : `${periodo}! Aqui é a Bora, do SuperBora. Como posso te ajudar?`;
+        ? `${periodo}, ${firstName}! Aqui é a Bora, do SuperBora. Posso te ajudar a fazer um pedido, ver o status de uma entrega, tirar dúvidas, fazer uma reclamação ou dar sugestões. O que você precisa?`
+        : `${periodo}! Aqui é a Bora, assistente virtual do SuperBora. Posso te ajudar a fazer um pedido, ver o status de uma entrega, tirar dúvidas, fazer uma reclamação ou dar sugestões. Como posso te ajudar?`;
 
     // Create call record
     const customer = customerData?.found ? { customer_id: customerData.customer_id, name: customerData.name } : null;
