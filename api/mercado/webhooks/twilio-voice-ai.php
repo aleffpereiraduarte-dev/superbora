@@ -98,10 +98,10 @@ if (!empty($authToken) && !empty($twilioSignature)) {
 }
 
 // -- Parse Input --
-$callSid = $_POST['CallSid'] ?? '';
+$callSid = $_POST['CallSid'] ?? $_GET['CallSid'] ?? '';
 $speechResult = $_POST['SpeechResult'] ?? '';
 $digits = $_POST['Digits'] ?? '';
-$callerPhone = $_POST['From'] ?? '';
+$callerPhone = $_POST['From'] ?? $_GET['From'] ?? '';
 
 error_log("[twilio-voice-ai] CallSid={$callSid} Speech=\"{$speechResult}\" Digits={$digits}");
 
@@ -377,7 +377,19 @@ try {
         exit;
     }
 
+    // Check if this is a CEP processing redirect (we already said "um minutinho")
+    $cepProcessingAi = $_GET['cep_processing'] ?? $_POST['cep_processing'] ?? '';
+    $cepFromRedirectAi = $_GET['cep_val'] ?? $_POST['cep_val'] ?? '';
+
     // Handle empty input (Gather timed out) — don't waste Claude call
+    // BUT skip silence detection if this is a CEP processing redirect
+    $isCepRedirect = false;
+    if (empty($userInput) && $cepProcessingAi === '1' && !empty($cepFromRedirectAi)) {
+        // CEP redirect — inject CEP as user input so the flow continues
+        $userInput = $cepFromRedirectAi;
+        $speechResult = $cepFromRedirectAi;
+        $isCepRedirect = true;
+    }
     if (empty($userInput)) {
         $silenceCount = ($aiContext['silence_count'] ?? 0) + 1;
         $aiContext['silence_count'] = $silenceCount;
@@ -417,7 +429,7 @@ try {
     $aiContext['silence_count'] = 0;
 
     // Add user message to history
-    $conversationHistory[] = ['role' => 'user', 'content' => $userInput];
+    $conversationHistory[] = ['role' => 'user', 'content' => $isCepRedirect ? "Meu CEP é {$userInput}" : $userInput];
 
     // -- Build context for Claude --
     $storeId = $aiContext['store_id'] ?? null;
@@ -522,6 +534,28 @@ try {
         if (strlen($digitsOnly) !== 8 && preg_match('/(\d{5})\s*-?\s*(\d{3})/', $userInput, $cepM)) {
             $digitsOnly = $cepM[1] . $cepM[2];
         }
+
+        // If CEP detected and NOT a redirect — say "um minutinho" and redirect back
+        if (strlen($digitsOnly) === 8 && preg_match('/^[0-9]{5}/', $digitsOnly) && $cepProcessingAi !== '1') {
+            // Save history first so we don't lose context
+            $aiContext['history'] = $conversationHistory;
+            saveAiContext($db, $callId, $aiContext);
+
+            $redirectUrl = $selfUrl . '?cep_processing=1&cep_val=' . urlencode($digitsOnly);
+
+            echo '<?xml version="1.0" encoding="UTF-8"?>';
+            echo '<Response>';
+            echo ttsSayOrPlay('Um minutinho, tô buscando!');
+            echo '<Redirect method="POST">' . escXml($redirectUrl) . '</Redirect>';
+            echo '</Response>';
+            exit;
+        }
+
+        // Use CEP from redirect if available
+        if ($cepProcessingAi === '1' && !empty($cepFromRedirectAi)) {
+            $digitsOnly = preg_replace('/\D/', '', $cepFromRedirectAi);
+        }
+
         if (strlen($digitsOnly) === 8 && preg_match('/^[0-9]{5}/', $digitsOnly)) {
             $ctx = stream_context_create(['http' => ['timeout' => 3], 'ssl' => ['verify_peer' => false]]);
             $json = @file_get_contents("https://viacep.com.br/ws/{$digitsOnly}/json/", false, $ctx);
@@ -1117,6 +1151,54 @@ try {
     // -- Parse AI response for state transitions --
     $newContext = parseAiResponse($aiResponse, $aiContext, $db);
     $aiResponse = $newContext['cleaned_response'];
+
+    // -- Fallback store matching: if Claude didn't output [STORE:id:name] but user said a store name --
+    if ($step === 'identify_store' && empty($newContext['store_id']) && !empty($userInput)) {
+        $inputLower = mb_strtolower($userInput, 'UTF-8');
+        // Try exact match against nearby stores or all stores
+        $candidateStores = $aiContext['nearby_stores'] ?? [];
+        if (empty($candidateStores)) {
+            try {
+                $allStFallback = $db->query("SELECT partner_id AS id, name FROM om_market_partners WHERE status = '1' AND name != '' LIMIT 50")->fetchAll();
+                $candidateStores = $allStFallback;
+            } catch (Exception $e) {}
+        }
+        foreach ($candidateStores as $cs) {
+            $csLower = mb_strtolower($cs['name'], 'UTF-8');
+            // Check if user input contains the store name or vice versa
+            if (mb_strpos($inputLower, $csLower) !== false || mb_strpos($csLower, $inputLower) !== false) {
+                $newContext['store_id'] = (int)$cs['id'];
+                $newContext['store_name'] = $cs['name'];
+                $newContext['step'] = 'take_order';
+                try {
+                    $db->prepare("UPDATE om_callcenter_calls SET store_identified = ? WHERE id = ?")
+                       ->execute([$cs['name'], $callId]);
+                } catch (Exception $e) {}
+                error_log("[twilio-voice-ai] Fallback store match: '{$userInput}' → {$cs['name']} (ID:{$cs['id']})");
+                break;
+            }
+            // Fuzzy: word-by-word match (at least 1 word with 3+ chars matching)
+            $inputWords = preg_split('/\s+/', $inputLower);
+            $storeWords = preg_split('/\s+/', $csLower);
+            foreach ($inputWords as $iw) {
+                if (mb_strlen($iw) < 3) continue;
+                foreach ($storeWords as $sw) {
+                    if (mb_strlen($sw) < 3) continue;
+                    if ($iw === $sw || (mb_strlen($iw) > 4 && mb_strlen($sw) > 4 && levenshtein($iw, $sw) <= 2)) {
+                        $newContext['store_id'] = (int)$cs['id'];
+                        $newContext['store_name'] = $cs['name'];
+                        $newContext['step'] = 'take_order';
+                        try {
+                            $db->prepare("UPDATE om_callcenter_calls SET store_identified = ? WHERE id = ?")
+                               ->execute([$cs['name'], $callId]);
+                        } catch (Exception $e) {}
+                        error_log("[twilio-voice-ai] Fallback fuzzy store match: '{$userInput}' → {$cs['name']} (ID:{$cs['id']})");
+                        break 3;
+                    }
+                }
+            }
+        }
+    }
 
     // -- Validate AI response (language, length, content safety) --
     $validationContext = array_merge($aiContext, [

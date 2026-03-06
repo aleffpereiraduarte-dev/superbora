@@ -60,8 +60,8 @@ if (!empty($authToken) && !empty($twilioSignature)) {
 // -- Parse Input --
 $digits = $_POST['Digits'] ?? $_GET['Digits'] ?? '';
 $speechResult = $_POST['SpeechResult'] ?? '';
-$callerPhone = $_POST['From'] ?? '';
-$callSid = $_POST['CallSid'] ?? '';
+$callerPhone = $_POST['From'] ?? $_GET['From'] ?? '';
+$callSid = $_POST['CallSid'] ?? $_GET['CallSid'] ?? '';
 $noInput = $_GET['noInput'] ?? '';
 
 error_log("[twilio-voice-route] CallSid={$callSid} Digits={$digits} Speech={$speechResult} Phone={$callerPhone}");
@@ -244,7 +244,15 @@ try {
     $detectedCep = null;
     $cepData = null;
     $nearbyStores = [];
-    if (!empty($speechResult)) {
+
+    // Check if this is a CEP processing redirect (we already said "um minutinho")
+    $cepProcessing = $_GET['cep_processing'] ?? $_POST['cep_processing'] ?? '';
+    $cepFromRedirect = $_GET['cep'] ?? $_POST['cep'] ?? '';
+    if ($cepProcessing === '1' && !empty($cepFromRedirect)) {
+        $detectedCep = preg_replace('/\D/', '', $cepFromRedirect);
+    }
+
+    if (!$detectedCep && !empty($speechResult)) {
         // Extract numbers from speech — CEP is 8 digits
         $digitsOnly = preg_replace('/\D/', '', $speechResult);
         if (strlen($digitsOnly) === 8 && preg_match('/^[0-9]{5}/', $digitsOnly)) {
@@ -255,9 +263,24 @@ try {
         if (!$detectedCep && preg_match('/(\d{5})\s*-?\s*(\d{3})/', $speechResult, $cepMatch)) {
             $detectedCep = $cepMatch[1] . $cepMatch[2];
         }
+
+        // If CEP detected from speech (not from redirect), say "um minutinho" and redirect
+        if ($detectedCep && $cepProcessing !== '1') {
+            $redirectUrl = $selfUrl . '?cep_processing=1&cep=' . urlencode($detectedCep);
+            // Carry forward POST params via query string
+            if ($callSid) $redirectUrl .= '&CallSid=' . urlencode($callSid);
+            if ($callerPhone) $redirectUrl .= '&From=' . urlencode($callerPhone);
+
+            echo '<?xml version="1.0" encoding="UTF-8"?>';
+            echo '<Response>';
+            echo ttsSayOrPlay('Um minutinho, tô buscando os restaurantes perto de você!');
+            echo '<Redirect method="POST">' . htmlspecialchars($redirectUrl, ENT_XML1 | ENT_QUOTES, 'UTF-8') . '</Redirect>';
+            echo '</Response>';
+            exit;
+        }
     }
 
-    // Look up CEP if detected
+    // Look up CEP if detected (either from speech processing or redirect)
     if ($detectedCep) {
         // Try ViaCEP with short timeout
         $ctx = stream_context_create(['http' => ['timeout' => 3], 'ssl' => ['verify_peer' => false]]);
