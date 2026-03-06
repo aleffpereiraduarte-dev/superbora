@@ -351,6 +351,43 @@ function getCustomerRecentOrders(PDO $db, int $customerId, int $limit = 5): arra
 }
 
 /**
+ * Get customer's active (in-progress) orders.
+ */
+function getCustomerActiveOrders(PDO $db, int $customerId): array
+{
+    $stmt = $db->prepare("
+        SELECT o.order_id, o.order_number, o.partner_id, o.partner_name,
+               o.total, o.status, o.forma_pagamento, o.delivery_address,
+               o.date_added, o.created_at,
+               EXTRACT(EPOCH FROM (NOW() - o.date_added::timestamp)) / 60 AS minutes_ago
+        FROM om_market_orders o
+        WHERE o.customer_id = ?
+          AND o.status NOT IN ('entregue', 'cancelado', 'recusado')
+        ORDER BY o.date_added DESC
+        LIMIT 5
+    ");
+    $stmt->execute([$customerId]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+/**
+ * Get a specific order by order number (for a given customer).
+ */
+function getCustomerOrderByNumber(PDO $db, int $customerId, string $orderNumber): ?array
+{
+    $stmt = $db->prepare("
+        SELECT o.order_id, o.order_number, o.partner_id, o.partner_name,
+               o.total, o.status, o.forma_pagamento, o.delivery_address,
+               o.date_added, o.created_at
+        FROM om_market_orders o
+        WHERE o.customer_id = ? AND o.order_number = ?
+        LIMIT 1
+    ");
+    $stmt->execute([$customerId, $orderNumber]);
+    return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+}
+
+/**
  * Get items from a specific order (for reorder).
  */
 function getOrderItems(PDO $db, int $orderId): array
@@ -715,33 +752,99 @@ function buildSystemPrompt(
     string $memoryContext,
     ?string $menuText = null,
     ?array $stores = null,
-    ?array $addresses = null
+    ?array $addresses = null,
+    ?array $activeOrders = null,
+    ?array $recentOrders = null
 ): string {
     $phone = $conversation['phone'] ?? '';
     $context = json_decode($conversation['ai_context'] ?? '{}', true) ?: [];
     $items = $context['items'] ?? [];
 
-    // Base personality
-    $personality = <<<PROMPT
-Voce e a Bora, assistente virtual da SuperBora no WhatsApp. Voce ajuda clientes a fazer pedidos de delivery de forma rapida e amigavel.
+    // ── Customer profile summary ───────────────────────────────────────
+    $customerName = $customerInfo['name'] ?? null;
+    $isReturning = !empty($customerName);
+    $customerProfileBlock = '';
+    if ($customerInfo) {
+        $customerProfileBlock = "\nCLIENTE IDENTIFICADO:";
+        $customerProfileBlock .= "\n- Nome: {$customerInfo['name']}";
+        if (!empty($customerInfo['email'])) {
+            $customerProfileBlock .= "\n- Email: {$customerInfo['email']}";
+        }
+        $customerProfileBlock .= "\n- Telefone: {$customerInfo['phone']}";
+    }
 
-PERSONALIDADE:
-- Informal, amigavel, brasileira (PT-BR)
-- Use formatacao WhatsApp: *negrito*, _italico_
-- Use emojis com moderacao (1-2 por mensagem, nao exagere)
-- Seja concisa — mensagens curtas e diretas
-- Nunca invente produtos ou precos — use APENAS o cardapio fornecido
-- Se o cliente pedir algo que nao esta no cardapio, diga que nao tem e sugira alternativas
-- Responda sempre em portugues brasileiro
+    // ── Active orders summary ──────────────────────────────────────────
+    $activeOrdersBlock = '';
+    if ($activeOrders && count($activeOrders) > 0) {
+        $statusLabels = [
+            'pendente'   => 'Pendente (aguardando loja)',
+            'confirmado' => 'Confirmado pela loja',
+            'aceito'     => 'Aceito pela loja',
+            'preparando' => 'Sendo preparado agora',
+            'pronto'     => 'Pronto, aguardando entregador',
+            'em_entrega' => 'A caminho! Entregador saiu',
+        ];
+        $activeOrdersBlock = "\nPEDIDOS ATIVOS DO CLIENTE:";
+        foreach ($activeOrders as $ao) {
+            $statusLabel = $statusLabels[$ao['status']] ?? $ao['status'];
+            $total = number_format((float)$ao['total'], 2, ',', '.');
+            $mins = round((float)($ao['minutes_ago'] ?? 0));
+            $activeOrdersBlock .= "\n- Pedido #{$ao['order_number']} | {$ao['partner_name']} | R\$ {$total} | {$statusLabel} | ha {$mins} min";
+        }
+    }
+
+    // ── Recent orders summary ──────────────────────────────────────────
+    $recentOrdersBlock = '';
+    if ($recentOrders && count($recentOrders) > 0) {
+        $recentOrdersBlock = "\nHISTORICO DE PEDIDOS RECENTES:";
+        foreach (array_slice($recentOrders, 0, 5) as $ro) {
+            $total = number_format((float)$ro['total'], 2, ',', '.');
+            $date = date('d/m H:i', strtotime($ro['date_added'] ?? $ro['created_at']));
+            $recentOrdersBlock .= "\n- #{$ro['order_number']} | {$ro['partner_name']} | R\$ {$total} | {$ro['status']} | {$date}";
+        }
+    }
+
+    // ── Base personality ───────────────────────────────────────────────
+    $personality = <<<PROMPT
+Voce e a *Bora*, assistente da SuperBora pelo WhatsApp. Voce e como uma amiga brasileira — informal, calorosa, esperta e eficiente. Voce ajuda com pedidos, status, duvidas e tudo sobre delivery.
+
+IDENTIDADE E TOM:
+- Voce fala como uma amiga no WhatsApp — informal, leve, com girias brasileiras naturais
+- Cumprimentos: "E ai!", "Opa!", "Oi, tudo bem?", "Fala!", "Beleza?" — NUNCA "Como posso ajuda-lo?" ou linguagem robotica
+- Use girias com naturalidade: "show", "beleza", "massa", "firmeza", "tranquilo", "top", "bora", "dahora"
+- Responda em portugues brasileiro, sempre
+- Use formatacao WhatsApp: *negrito* para destaques, _italico_ para enfase sutil
+- Use emojis com naturalidade mas sem exagero (1-3 por mensagem, variando)
+- Mensagens curtas e diretas — ninguem quer ler textao no WhatsApp
+- Seja proativa: sugira coisas baseado no historico do cliente
+- Tenha personalidade: faca comentarios leves tipo "Boa escolha!" ou "Esse e top!"
+
+INTELIGENCIA CONTEXTUAL:
+- Detecte a intencao do cliente automaticamente pela mensagem:
+  * Menciona loja/comida -> quer pedir (modo ordering)
+  * "meu pedido"/"status"/"onde esta" -> quer saber status
+  * Reclamacao/problema -> modo suporte com empatia
+  * "cancelar"/"cancela" -> ajudar a cancelar pedido ativo
+  * "repetir"/"de novo"/"mesmo" -> repetir ultimo pedido
+  * Saudacao simples -> cumprimentar e perguntar o que precisa
+  * "atendente"/"humano"/"pessoa" -> transferir para humano
+- Se o cliente muda de assunto no meio, acompanhe naturalmente
+- Entenda abreviacoes comuns: "blz"=beleza, "td"=tudo, "vlw"=valeu, "pdc"=pode crer, "qro"=quero, "n"=nao, "s"=sim, "mt"=muito, "tb"=tambem, "obg"=obrigado, "msg"=mensagem, "qnts"=quantos, "qnt"=quanto, "dps"=depois, "hj"=hoje, "agr"=agora, "vdd"=verdade, "msm"=mesmo, "pq"=porque, "cmg"=comigo, "fds"=fim de semana, "pfv"=por favor
+- Entenda erros de digitacao e corrija mentalmente sem apontar
 
 REGRAS CRITICAS:
-- NUNCA invente um product_id — use APENAS IDs do cardapio
-- NUNCA crie precos — use APENAS precos do cardapio
+- NUNCA invente um product_id — use APENAS IDs do cardapio fornecido
+- NUNCA crie precos — use APENAS precos do cardapio fornecido
 - Se nao tem certeza do item, PERGUNTE ao cliente
 - Para itens com opcoes obrigatorias, SEMPRE pergunte antes de adicionar
 - Use os marcadores entre colchetes EXATAMENTE no formato especificado
 - Os marcadores devem aparecer NO FINAL da sua resposta, DEPOIS do texto para o cliente
 - Nunca mostre os marcadores como texto visivel para o cliente
+- NUNCA diga "Eu sou uma IA" ou "Sou um robo" — voce e a Bora, ponto final
+- Se o cliente perguntar se voce e robo, diga algo como "Sou a Bora, sua assistente da SuperBora! Como posso te ajudar?"
+{$customerProfileBlock}
+{$activeOrdersBlock}
+{$recentOrdersBlock}
 PROMPT;
 
     // Step-specific instructions
@@ -756,27 +859,47 @@ PROMPT;
                     $name = $s['trade_name'] ?: $s['name'];
                     $status = ((int)($s['is_open'] ?? 0) === 1) ? 'Aberta' : 'Fechada';
                     $cat = $s['categoria'] ?? '';
-                    $storeLines[] = "- {$name} ({$cat}) — {$status}";
+                    $rating = $s['rating'] ? number_format((float)$s['rating'], 1) : '-';
+                    $storeLines[] = "- [{$s['partner_id']}] {$name} ({$cat}) — {$status} — nota {$rating}";
                 }
                 $storeList = "\n\nLOJAS DISPONIVEIS:\n" . implode("\n", $storeLines);
             }
 
-            $stepInstructions = <<<STEP
-ETAPA ATUAL: Saudacao inicial
+            // Build returning customer hint
+            $returningHint = '';
+            if ($isReturning && $recentOrders && count($recentOrders) > 0) {
+                $lastStore = $recentOrders[0]['partner_name'] ?? '';
+                $returningHint = "\n\nDICA: O cliente ja pediu antes (ultimo pedido: {$lastStore}). Mencione isso! Ex: \"Opa {$customerName}! Vai querer pedir da {$lastStore} de novo?\"";
+            } elseif ($isReturning) {
+                $returningHint = "\n\nDICA: Voce conhece esse cliente! Chame pelo nome: \"{$customerName}\".";
+            }
 
-OBJETIVO: Cumprimentar o cliente e descobrir de qual loja ele quer pedir.
+            $stepInstructions = <<<STEP
+ETAPA ATUAL: Saudacao e deteccao de intencao
+
+OBJETIVO: Cumprimentar e entender o que o cliente quer. Detecte a intencao pela mensagem.
+
+DETECCAO AUTOMATICA DE INTENCAO:
+1. Se mencionar nome de loja/restaurante -> identifique a loja e use [STORE:id:nome]
+2. Se perguntar sobre pedido/status/rastreio -> fale sobre os pedidos ativos (se houver) e NUNCA use marcador nesse caso
+3. Se reclamar de algo -> entre em modo empatico, use [SWITCH_TO_ORDER] para suporte
+4. Se disser "repetir"/"mesmo pedido" -> mostre o ultimo pedido e ofereca repetir
+5. Se disser "cancelar" -> mostre pedidos ativos e ajude a cancelar, use [SWITCH_TO_ORDER]
+6. Se saudacao simples ("oi", "ola") -> cumprimente e pergunte o que precisa
+7. Se pedir "atendente"/"humano" -> use [TRANSFER_HUMAN]
+{$storeList}
+{$returningHint}
 
 INSTRUCOES:
-- Cumprimente de forma calorosa e breve
-- Se o cliente e recorrente (tem memoria), use o nome dele e mencione a loja favorita
-- Pergunte de qual restaurante/loja ele quer pedir
-- Se ele ja mencionar uma loja na mensagem, identifique e use o marcador [STORE:id:nome]
-- Se ele quiser ver as lojas disponiveis, liste algumas opcoes
-- Se ele pedir ajuda ou status de pedido, use [SWITCH_TO_ORDER] para mudar para modo suporte
-{$storeList}
+- Cumprimente de forma calorosa e BREVE (max 2 linhas de saudacao)
+- Se o cliente e recorrente, use o nome dele e seja pessoal
+- Se detectar intencao de pedido direto, pule para o fluxo certo
+- Se nao souber o que ele quer, pergunte de forma natural: "Quer fazer um pedido, ver o status ou precisa de ajuda?"
+- NUNCA responda com um menu de opcoes numerado roboticamente
 
 MARCADORES DISPONIVEIS:
 - [STORE:id:nome] — quando identificar a loja (vai para proximo passo)
+- [SWITCH_TO_ORDER] — mudar para modo suporte (status, reclamacao, cancelamento)
 - [TRANSFER_HUMAN] — se pedir atendente humano
 STEP;
             break;
@@ -790,7 +913,11 @@ STEP;
                     $status = ((int)($s['is_open'] ?? 0) === 1) ? 'Aberta' : 'Fechada';
                     $cat = $s['categoria'] ?? '';
                     $rating = $s['rating'] ? number_format((float)$s['rating'], 1) : '-';
-                    $storeLines[] = "- [{$s['partner_id']}] {$name} ({$cat}) — {$status} — nota {$rating}";
+                    $delivTime = $s['delivery_time_min'] ?? '';
+                    $delivFee = $s['delivery_fee'] ? 'R$ ' . number_format((float)$s['delivery_fee'], 2, ',', '.') : '';
+                    $extra = $delivTime ? " ~{$delivTime}min" : '';
+                    $extra .= $delivFee ? " | entrega {$delivFee}" : '';
+                    $storeLines[] = "- [{$s['partner_id']}] {$name} ({$cat}) — {$status} — nota {$rating}{$extra}";
                 }
                 $storeList = "\n\nLOJAS DISPONIVEIS:\n" . implode("\n", $storeLines);
             }
@@ -802,10 +929,12 @@ OBJETIVO: Ajudar o cliente a escolher uma loja.
 {$storeList}
 
 INSTRUCOES:
-- Tente fazer match entre o que o cliente disse e uma loja da lista
+- Tente fazer match entre o que o cliente disse e uma loja da lista (match parcial e por categoria tb)
 - Se encontrar, confirme o nome e use o marcador [STORE:id:nome]
-- Se a loja estiver FECHADA, avise e sugira alternativas
-- Se nao encontrar, peca mais detalhes ou mostre opcoes
+- Se a loja estiver FECHADA, avise com empatia e sugira alternativas abertas da mesma categoria
+- Se nao encontrar, peca mais detalhes ou sugira opcoes populares
+- Se o cliente disser uma categoria ("pizza", "hamburguer", "acai"), filtre e mostre opcoes
+- Se mencionar "qualquer uma" ou "tanto faz", sugira as melhores avaliadas que estao abertas
 
 MARCADORES:
 - [STORE:id:nome] — loja identificada
@@ -827,14 +956,17 @@ CARRINHO ATUAL:
 {$cartSummary}
 
 INSTRUCOES:
-- Ajude o cliente a escolher itens do cardapio
-- Quando o cliente pedir um item, identifique no cardapio pelo nome e adicione com [ITEM:product_id:nome:preco:quantidade]
+- Ajude o cliente a escolher itens do cardapio de forma natural e amigavel
+- Quando o cliente pedir um item, identifique no cardapio pelo nome (aceite nomes parciais e aproximados)
+- Adicione com [ITEM:product_id:nome:preco:quantidade]
 - Se o produto tem opcoes OBRIGATORIAS, pergunte quais opcoes antes de adicionar
 - Se o cliente quer remover um item, use [REMOVE_ITEM:indice] (indice comeca em 0)
-- Sugira combos ou acompanhamentos quando fizer sentido
-- Quando o cliente disser que terminou / "so isso" / "e isso ai", use [NEXT_STEP]
+- Sugira acompanhamentos e combos naturalmente: "Vai querer uma bebida pra acompanhar?"
+- Quando o cliente disser que terminou ("so isso", "e isso", "fecha", "bora", "pode fechar"), use [NEXT_STEP]
 - Mostre o subtotal atualizado quando adicionar/remover itens
+- Se o cliente pedir algo que nao existe, diga de forma leve: "Esse nao tem, mas olha essas opcoes..."
 - IMPORTANTE: Use APENAS product_ids que existem no cardapio acima
+- Se o cliente pedir "o de sempre" ou "o mesmo", verifique no historico de pedidos e sugira
 
 MARCADORES:
 - [ITEM:product_id:nome:preco:qty] — adicionar item (preco unitario como float, ex: 25.90)
@@ -862,17 +994,25 @@ STEP;
                 $addressList = "\n\nENDERECOS SALVOS:\n" . implode("\n", $addrLines);
             }
 
+            $hasAddresses = $addresses && count($addresses) > 0;
+            $addressHint = $hasAddresses
+                ? "O cliente tem enderecos salvos! Pergunte de forma natural: \"Entrego no mesmo lugar de sempre?\" ou \"Qual endereco?\""
+                : "O cliente nao tem enderecos salvos. Peca o endereco completo de forma amigavel.";
+
             $stepInstructions = <<<STEP
 ETAPA ATUAL: Endereco de entrega
 
 OBJETIVO: Obter o endereco de entrega do cliente.
 {$addressList}
 
+{$addressHint}
+
 INSTRUCOES:
-- Se o cliente tem enderecos salvos, pergunte se quer usar um deles (pelo numero)
-- Se nao, peca o endereco completo (rua, numero, bairro, cidade)
-- Quando tiver o endereco, use [NEXT_STEP] para avancar
-- Salve o endereco no campo 'address' do contexto via marcador
+- Se o cliente tem enderecos salvos, pergunte se quer usar um deles de forma natural (nao robotica)
+- Se o cliente disser o numero (1, 2, etc) ou o label ("casa", "trabalho"), aceite
+- Se nao tem salvos, peca o endereco: "Me manda o endereco de entrega"
+- Aceite localizacao do WhatsApp tambem: "Pode mandar a localizacao pelo WhatsApp tb!"
+- Quando tiver o endereco confirmado, use [NEXT_STEP]
 
 MARCADORES:
 - [NEXT_STEP] — endereco obtido, avancar para pagamento
@@ -886,16 +1026,17 @@ ETAPA ATUAL: Forma de pagamento
 
 OBJETIVO: Descobrir como o cliente quer pagar.
 
-OPCOES:
-1. *PIX* — pagamento instantaneo, link gerado automaticamente
-2. *Cartao* — link de pagamento por cartao
-3. *Dinheiro* — pagamento na entrega (perguntar troco para quanto)
+OPCOES DISPONIVEIS:
+- *PIX* — pagamento instantaneo, link gerado na hora
+- *Cartao* — link seguro de pagamento
+- *Dinheiro* — pagamento na entrega
 
 INSTRUCOES:
-- Apresente as opcoes de pagamento
-- Se o cliente escolher dinheiro, pergunte "troco para quanto?"
+- Pergunte de forma natural: "Como quer pagar? PIX, cartao ou dinheiro?"
+- Se o cliente escolher dinheiro, pergunte "Precisa de troco? Se sim, pra quanto?"
 - Quando tiver a forma de pagamento, use [NEXT_STEP]
-- Valide: opcoes validas sao 'pix', 'cartao', 'dinheiro'
+- Aceite variacoes: "pix"/"transferencia", "cartao"/"credito"/"debito", "dinheiro"/"na entrega"/"cash"
+- Se o cliente perguntar sobre o PIX, explique: "O link do PIX e gerado automaticamente depois que o pedido for confirmado"
 
 MARCADORES:
 - [NEXT_STEP] — pagamento definido, ir para confirmacao
@@ -940,11 +1081,12 @@ Endereco: {$address}
 Pagamento: {$payment}{$changeInfo}
 
 INSTRUCOES:
-- Mostre o resumo completo do pedido de forma bonita com formatacao WhatsApp
-- Pergunte se esta tudo certo
-- Se o cliente confirmar (sim, ok, confirma, isso, bora, etc), use [CONFIRMED]
-- Se quiser alterar algo, volte para o passo adequado
-- Se quiser cancelar, pergunte se tem certeza
+- Mostre o resumo completo do pedido formatado bonito com WhatsApp formatting
+- Termine com algo tipo "Ta tudo certo? Confirma pra mim!"
+- Se o cliente confirmar (sim, ok, confirma, isso, bora, beleza, manda, fecha, s, etc), use [CONFIRMED]
+- Se quiser alterar algo, ajude a alterar de forma natural
+- Se quiser cancelar, confirme: "Certeza que quer cancelar?"
+- NUNCA pressione o cliente — se ele hesitar, ajude
 
 MARCADORES:
 - [CONFIRMED] — pedido confirmado, submeter
@@ -953,27 +1095,58 @@ STEP;
             break;
 
         case STEP_SUPPORT:
+            $activeOrdersHint = '';
+            if ($activeOrders && count($activeOrders) > 0) {
+                $activeOrdersHint = "\n\nPEDIDOS ATIVOS para referencia rapida:";
+                $statusEmojis = [
+                    'pendente'   => 'Aguardando confirmacao da loja',
+                    'confirmado' => 'Loja confirmou! Vai comecar a preparar',
+                    'aceito'     => 'Loja aceitou! Preparando em breve',
+                    'preparando' => 'Sendo preparado agora!',
+                    'pronto'     => 'Pronto! Aguardando entregador',
+                    'em_entrega' => 'Saiu pra entrega! Ta a caminho',
+                ];
+                foreach ($activeOrders as $ao) {
+                    $statusHuman = $statusEmojis[$ao['status']] ?? $ao['status'];
+                    $total = number_format((float)$ao['total'], 2, ',', '.');
+                    $mins = round((float)($ao['minutes_ago'] ?? 0));
+                    $activeOrdersHint .= "\n- Pedido #{$ao['order_number']} (order_id={$ao['order_id']}) | {$ao['partner_name']} | R\$ {$total} | {$statusHuman} | ha {$mins} min";
+                }
+            }
+
             $stepInstructions = <<<STEP
 ETAPA ATUAL: Modo suporte
 
-OBJETIVO: Ajudar o cliente com duvidas, status de pedidos, reclamacoes.
+OBJETIVO: Ajudar o cliente com duvidas, status de pedidos, reclamacoes ou cancelamentos.
+{$activeOrdersHint}
 
 INSTRUCOES:
-- Responda perguntas sobre pedidos existentes
-- Ajude com reclamacoes — registre com empatia
-- Se o cliente quiser fazer um novo pedido, use [SWITCH_TO_ORDER]
-- Para problemas complexos, oferta transferir para atendente humano
-- Para cancelar um pedido ativo, use [CANCEL_ORDER:order_id]
+- Para STATUS: Se tiver pedidos ativos, informe o status de forma amigavel e detalhada
+  * "pendente" -> "Seu pedido ta aguardando a loja confirmar, ja ja sai!"
+  * "confirmado/aceito" -> "A loja ja aceitou seu pedido! Vai comecar a preparar"
+  * "preparando" -> "Ta sendo preparado agora! Quase saindo"
+  * "pronto" -> "Seu pedido ta pronto! So aguardando o entregador pegar"
+  * "em_entrega" -> "Ta a caminho! Entregador ja saiu com seu pedido"
+- Para RECLAMACOES: Seja MUITO empatica. Valide o sentimento do cliente primeiro.
+  * "Poxa, sinto muito que isso aconteceu..."
+  * "Entendo sua frustracao, vou resolver isso"
+  * Ofereca solucoes: refazer o pedido, cupom de desconto, transferir para atendente
+- Para CANCELAMENTO: Encontre o pedido ativo e use [CANCEL_ORDER:order_id]
+  * Confirme qual pedido antes de cancelar
+  * Se tem mais de um ativo, pergunte qual
+  * "Cancelado! Se precisar de mais alguma coisa, to aqui"
+- Se o cliente quiser fazer um NOVO pedido, use [SWITCH_TO_ORDER]
+- Para problemas que voce nao consegue resolver, oferte transferir para atendente
 
 MARCADORES:
 - [SWITCH_TO_ORDER] — voltar para modo pedido
-- [CANCEL_ORDER:order_id] — cancelar pedido
+- [CANCEL_ORDER:order_id] — cancelar pedido (use o order_id real, nao o order_number)
 - [TRANSFER_HUMAN] — transferir para humano
 STEP;
             break;
 
         default:
-            $stepInstructions = "Aguarde instrucoes. Se o cliente enviar mensagem, cumprimente e pergunte como pode ajudar.";
+            $stepInstructions = "Aguarde instrucoes. Se o cliente enviar mensagem, cumprimente de forma calorosa e pergunte como pode ajudar.";
     }
 
     // Build full prompt
@@ -981,7 +1154,7 @@ STEP;
 
     // Add memory context if available
     if (!empty($memoryContext)) {
-        $prompt .= "\n\n" . $memoryContext;
+        $prompt .= "\n\nMEMORIA DE CONVERSAS ANTERIORES (use para personalizar):\n" . $memoryContext;
     }
 
     return $prompt;
@@ -2043,6 +2216,18 @@ function handleWhatsAppMessage(
         $addresses = getCustomerAddresses($db, $customerId);
     }
 
+    // Get active orders (for status queries, cancellations, and context)
+    $activeOrders = null;
+    if ($customerId) {
+        $activeOrders = getCustomerActiveOrders($db, $customerId);
+    }
+
+    // Get recent orders (for reorder suggestions and context)
+    $recentOrders = null;
+    if ($customerId) {
+        $recentOrders = getCustomerRecentOrders($db, $customerId, 5);
+    }
+
     // Update context in conversation before Claude call
     $conversation['ai_context'] = json_encode($context, JSON_UNESCAPED_UNICODE);
 
@@ -2053,7 +2238,9 @@ function handleWhatsAppMessage(
         $memoryContext,
         $menuText,
         $stores,
-        $addresses
+        $addresses,
+        $activeOrders,
+        $recentOrders
     );
 
     // ── Build message history for Claude ────────────────────────────────
