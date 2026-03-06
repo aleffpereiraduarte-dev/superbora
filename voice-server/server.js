@@ -88,10 +88,11 @@ ${customerData.cashback > 0 ? `- Cashback disponível: R$${customerData.cashback
 
 Você JÁ sabe quem é o cliente. NÃO precisa pedir telefone ou usar lookup_customer.`;
     } else {
-        customerContext = `CLIENTE NOVO (telefone ${callerPhone} não cadastrado).
-Trate normalmente — pergunte o nome de forma natural e a cidade pra entrega.
-NÃO diga "não encontrei seu telefone" ou "não está cadastrado". Seja natural.
-Exemplo: "Me diz seu nome pra eu te ajudar melhor?" e depois "E pra qual cidade seria a entrega?"`;
+        customerContext = `CLIENTE NOVO (telefone ${callerPhone} não encontrado no cadastro).
+NÃO use lookup_customer — já foi verificado e o cliente não está cadastrado.
+NÃO diga "não encontrei seu telefone" ou "não está cadastrado". Isso é rude.
+Seja natural e acolhedora. Pergunte o nome com carinho e depois a cidade ou CEP pra entrega.
+Exemplo de primeira resposta: "Claro! Me diz seu nome pra eu te ajudar melhor?"`;
     }
 
     return `Você é a Bora, assistente virtual do SuperBora — um app de delivery de comida como iFood.
@@ -732,10 +733,13 @@ async function getClaudeResponse(callState) {
 
         if (toolBlocks.length === 0) {
             // No tool calls — return the text
-            return response.content
+            const text = response.content
                 .filter(b => b.type === 'text')
                 .map(b => b.text)
-                .join(' ');
+                .join(' ')
+                .trim();
+            // Never return empty response — ask to repeat
+            return text || 'Oi, como posso te ajudar?';
         }
 
         // Execute tools
