@@ -115,13 +115,23 @@ ${customerContext}
 FLUXO PARA PEDIDO:
 1. Se o cliente quer pedir algo:
    - Cliente conhecido COM endereço: Pergunte "Entrega no endereço X?" → busque lojas na cidade
-   - Cliente conhecido SEM endereço: Pergunte a cidade/bairro pra entrega
-   - Cliente novo: Pergunte nome → pergunte cidade pra entrega
-2. Use get_nearby_stores com a cidade. Se mencionou tipo de comida, filtre por food_type
-3. Apresente 2-3 lojas abertas de forma natural: "Tem a Pizzaria Napoli que é muito boa, tem o Burger House..."
-4. Quando escolher loja: use get_store_menu → ofereça itens populares
-5. Monte o pedido com add_to_order, confirme cada item
-6. No final: confirme tudo, peça pagamento, use submit_order
+   - Cliente conhecido SEM endereço: Pergunte a cidade ou CEP pra entrega
+   - Cliente novo: Pergunte nome → pergunte cidade ou CEP pra entrega
+2. Se informar CEP: use lookup_cep para descobrir cidade e bairro automaticamente
+3. Use get_nearby_stores com a cidade. Se mencionou tipo de comida, filtre por food_type
+4. Apresente 2-3 lojas abertas de forma natural: "Tem a Pizzaria Napoli que é muito boa, tem o Burger House..."
+5. Se o cliente pedir por NOME de loja: use search_stores. Se encontrar a mesma loja em cidades diferentes, pergunte qual.
+6. Quando escolher loja: use get_store_menu → ofereça itens populares
+7. Monte o pedido com add_to_order, confirme cada item
+8. No final: confirme tudo, peça pagamento, use submit_order
+
+SOBRE CEP:
+- O cliente pode falar o CEP por extenso (ex: "três cinco zero um cinco dois dois zero") — reconheça e use lookup_cep
+- Se der erro no CEP, peça o endereço normal: cidade e bairro
+
+SOBRE LOJAS COM MESMO NOME:
+- Se search_stores retornar multiple_cities=true, pergunte "Encontrei esse restaurante em duas cidades. Qual seria?"
+- Sempre use a cidade do endereço de entrega do cliente no filtro quando possível
 
 FLUXO PARA STATUS: use check_order_status com o customer_id
 DÚVIDA/PROBLEMA: responda se souber, senão use transfer_to_agent
@@ -145,12 +155,24 @@ const TOOLS = [
         }
     },
     {
-        name: 'search_stores',
-        description: 'Busca uma loja ESPECÍFICA por nome (ex: "Burger King", "Pizzaria Napoli"). NÃO use para buscar por tipo de comida — use get_nearby_stores para isso.',
+        name: 'lookup_cep',
+        description: 'Busca endereço completo a partir de um CEP. Use quando o cliente informar o CEP para entrega.',
         input_schema: {
             type: 'object',
             properties: {
-                name: { type: 'string', description: 'Nome exato ou parcial do restaurante/loja' }
+                cep: { type: 'string', description: 'CEP (só números, 8 dígitos)' }
+            },
+            required: ['cep']
+        }
+    },
+    {
+        name: 'search_stores',
+        description: 'Busca uma loja ESPECÍFICA por nome (ex: "Burger King", "Pizzaria Napoli"). Se houver mais de uma loja com o mesmo nome, retorna todas com a cidade para o cliente escolher.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                name: { type: 'string', description: 'Nome exato ou parcial do restaurante/loja' },
+                city: { type: 'string', description: 'Cidade para filtrar (opcional — use a cidade do endereço de entrega do cliente se disponível)' }
             },
             required: ['name']
         }
@@ -263,7 +285,8 @@ async function executeTool(name, input, callState) {
                 }
                 return result;
             }
-            case 'search_stores': return await searchStores(input.name);
+            case 'lookup_cep': return await lookupCep(input.cep);
+            case 'search_stores': return await searchStores(input.name, input.city);
             case 'get_nearby_stores': return await getNearbyStores(input.city, input.category, input.food_type);
             case 'get_store_menu': {
                 const menu = await getStoreMenu(input.partner_id);
@@ -335,22 +358,67 @@ async function lookupCustomer(phone) {
     };
 }
 
-async function searchStores(name) {
-    const result = await pool.query(
-        `SELECT partner_id, name, city, neighborhood, categoria,
-                rating, delivery_time_min, delivery_fee, min_order_value, is_open
-         FROM om_market_partners
-         WHERE status = '1'
-           AND (name ILIKE $1 OR nome ILIKE $1)
-         ORDER BY is_open DESC, rating DESC NULLS LAST
-         LIMIT 10`,
-        ['%' + name + '%']
-    );
+async function lookupCep(cep) {
+    const cleanCep = cep.replace(/\D/g, '');
+    if (cleanCep.length !== 8) {
+        return { error: 'CEP deve ter 8 dígitos' };
+    }
+    try {
+        const resp = await fetch(`https://viacep.com.br/ws/${cleanCep}/json/`);
+        const data = await resp.json();
+        if (data.erro) {
+            return { found: false, message: 'CEP não encontrado. Peça o endereço por extenso.' };
+        }
+        return {
+            found: true,
+            street: data.logradouro || '',
+            neighborhood: data.bairro || '',
+            city: data.localidade || '',
+            state: data.uf || '',
+            cep: cleanCep
+        };
+    } catch (e) {
+        return { error: 'Não consegui consultar o CEP. Peça o endereço por extenso.' };
+    }
+}
+
+async function searchStores(name, city) {
+    let query = `SELECT partner_id, name, city, neighborhood, categoria,
+                        rating, delivery_time_min, delivery_fee, min_order_value, is_open
+                 FROM om_market_partners
+                 WHERE status = '1'
+                   AND (name ILIKE $1 OR nome ILIKE $1)`;
+    const params = ['%' + name + '%'];
+
+    if (city) {
+        query += ` AND city ILIKE $2`;
+        params.push('%' + city + '%');
+    }
+
+    query += ` ORDER BY is_open DESC, rating DESC NULLS LAST LIMIT 10`;
+
+    const result = await pool.query(query, params);
+
+    // If multiple stores with same name in different cities, flag it
+    const cities = [...new Set(result.rows.map(s => s.city).filter(Boolean))];
+    const needsDisambiguation = cities.length > 1 && !city;
+
     return {
         stores: result.rows.map(s => ({
-            ...s, is_open: s.is_open === 1, tipo: s.categoria
+            partner_id: s.partner_id,
+            name: s.name,
+            city: s.city,
+            neighborhood: s.neighborhood,
+            tipo: s.categoria,
+            is_open: s.is_open === 1,
+            rating: s.rating,
+            delivery_fee: parseFloat(s.delivery_fee || 0),
+            delivery_time: s.delivery_time_min
         })),
-        count: result.rows.length
+        count: result.rows.length,
+        multiple_cities: needsDisambiguation,
+        cities_found: needsDisambiguation ? cities : undefined,
+        hint: needsDisambiguation ? `Encontrei "${name}" em ${cities.join(' e ')}. Pergunte de qual cidade.` : undefined
     };
 }
 
