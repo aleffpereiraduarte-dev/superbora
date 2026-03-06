@@ -1507,7 +1507,7 @@ function transferToAgent(PDO $db, int $callId, string $phone, ?string $name, ?in
     echo '<?xml version="1.0" encoding="UTF-8"?>';
     echo '<Response>';
     echo ttsSayOrPlay($queueMsg);
-    echo '<Play loop="0">http://com.twilio.music.classical.s3.amazonaws.com/MARminimum_-_Pachelbels_Canon.mp3</Play>';
+    echo '<Play loop="0">http://com.twilio.music.pop-rock.s3.amazonaws.com/Ab0-3.mp3</Play>';
     echo '</Response>';
 }
 
