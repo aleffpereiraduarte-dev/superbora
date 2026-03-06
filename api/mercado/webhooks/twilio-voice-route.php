@@ -24,6 +24,7 @@ if (file_exists(__DIR__ . '/../../../.env')) {
 
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../helpers/ws-callcenter-broadcast.php';
+require_once __DIR__ . '/../helpers/voice-tts.php';
 
 header('Content-Type: text/xml; charset=utf-8');
 
@@ -74,6 +75,15 @@ $aiUrl = str_replace('twilio-voice-route.php', 'twilio-voice-ai.php', $selfUrl);
 // -- Check if user wants an agent --
 $wantsAgent = false;
 if ($digits === '0') $wantsAgent = true;
+
+// If digits look like a CEP (8 digits), treat as speech for CEP detection
+if (strlen($digits) >= 5 && strlen($digits) <= 8 && ctype_digit($digits) && $digits !== '0') {
+    // User typed a CEP or partial CEP on keypad — inject as speech
+    if (empty($speechResult)) {
+        $speechResult = $digits;
+    }
+    $wantsAgent = false; // definitely not wanting an agent
+}
 if (!empty($speechResult)) {
     $speechLower = mb_strtolower($speechResult, 'UTF-8');
     $agentKeywords = ['atendente', 'agente', 'pessoa', 'humano', 'operador', 'falar com alguem', 'falar com gente'];
@@ -129,12 +139,12 @@ try {
         $position = (int)$posStmt->fetch()['pos'];
 
         $waitMsg = $position <= 1
-            ? "Voce vai ser atendido rapidinho."
+            ? "Você vai ser atendido rapidinho."
             : "Tem " . ($position - 1) . " pessoa na sua frente. Tempo estimado: uns " . ($position * 2) . " minutinhos.";
 
         echo '<?xml version="1.0" encoding="UTF-8"?>';
         echo '<Response>';
-        echo '<Say voice="Polly.Camila" language="pt-BR"><speak>Ta bom! <break time="200ms"/> Vou te passar pra um atendente agora. <break time="200ms"/> ' . htmlspecialchars($waitMsg) . '</speak></Say>';
+        echo ttsSayOrPlay('Tá bom! Vou te passar pra um atendente agora. ' . $waitMsg);
         echo '<Play loop="0">http://com.twilio.music.classical.s3.amazonaws.com/MARminimum_-_Pachelbels_Canon.mp3</Play>';
         echo '</Response>';
         exit;
@@ -143,12 +153,25 @@ try {
     // -- Analyze speech for intent --
     $speechLower = mb_strtolower($speechResult ?? '', 'UTF-8');
 
-    // Detect support intent
+    // Detect support/question intent
     $wantsSupport = false;
+    $wantsQuestion = false;
     if (!empty($speechResult)) {
         $supportKeywords = ['status', 'cancelar', 'cancela', 'rastrear', 'rastreio', 'cadê meu pedido', 'cade meu pedido', 'onde ta', 'onde está', 'meu pedido', 'reclamação', 'reclamacao', 'problema', 'reembolso'];
         foreach ($supportKeywords as $sk) {
             if (mb_strpos($speechLower, $sk) !== false) { $wantsSupport = true; break; }
+        }
+        $questionKeywords = ['duvida', 'dúvida', 'pergunta', 'saber', 'informação', 'informacao', 'horario', 'horário', 'funciona', 'entrega', 'taxa', 'preco', 'preço', 'quanto custa', 'como funciona', 'ajuda'];
+        if (!$wantsSupport) {
+            foreach ($questionKeywords as $qk) {
+                if (mb_strpos($speechLower, $qk) !== false) { $wantsQuestion = true; break; }
+            }
+        }
+        // Detect explicit "quero pedir" / "fazer pedido"
+        $wantsOrder = false;
+        $orderKeywords = ['quero pedir', 'fazer pedido', 'fazer um pedido', 'pedir comida', 'quero comer', 'to com fome', 'tô com fome'];
+        foreach ($orderKeywords as $ok) {
+            if (mb_strpos($speechLower, $ok) !== false) { $wantsOrder = true; break; }
         }
     }
 
@@ -171,10 +194,10 @@ try {
 
     // Look up CEP if detected
     if ($detectedCep) {
-        $ctx = stream_context_create(['http' => ['timeout' => 4]]);
+        // Try ViaCEP with short timeout
+        $ctx = stream_context_create(['http' => ['timeout' => 3], 'ssl' => ['verify_peer' => false]]);
         $json = @file_get_contents("https://viacep.com.br/ws/{$detectedCep}/json/", false, $ctx);
         if ($json) {
-            @file_put_contents("/tmp/viacep_{$detectedCep}.json", $json);
             $data = json_decode($json, true);
             if ($data && empty($data['erro'])) {
                 $cepData = [
@@ -187,34 +210,68 @@ try {
             }
         }
 
-        // Find stores that deliver to this CEP
-        if ($cepData) {
-            $cep3 = substr($detectedCep, 0, 3);
-            $cep5 = substr($detectedCep, 0, 5);
-            $allStores = $db->query("SELECT partner_id, name, cep, cep_inicio, cep_fim, rating FROM om_market_partners WHERE status = '1' ORDER BY rating DESC NULLS LAST LIMIT 50")->fetchAll();
-            foreach ($allStores as $p) {
-                $inicio = preg_replace('/\D/', '', $p['cep_inicio'] ?? '');
-                $fim = preg_replace('/\D/', '', $p['cep_fim'] ?? '');
-                if ($inicio && $fim) {
-                    $len = strlen($inicio);
-                    $check = $len === 5 ? $cep5 : ($len === 3 ? $cep3 : $detectedCep);
-                    if (intval($check) >= intval($inicio) && intval($check) <= intval($fim)) {
-                        $nearbyStores[] = ['id' => (int)$p['partner_id'], 'name' => $p['name']];
-                        continue;
+        // If ViaCEP failed or CEP not found, try with 000 suffix (user may have said 5 digits)
+        if (!$cepData && strlen($detectedCep) === 8) {
+            $cepBase = substr($detectedCep, 0, 5) . '000';
+            if ($cepBase !== $detectedCep) {
+                $json2 = @file_get_contents("https://viacep.com.br/ws/{$cepBase}/json/", false, $ctx);
+                if ($json2) {
+                    $data2 = json_decode($json2, true);
+                    if ($data2 && empty($data2['erro'])) {
+                        $cepData = [
+                            'street' => '',
+                            'neighborhood' => $data2['bairro'] ?? '',
+                            'city' => $data2['localidade'] ?? '',
+                            'state' => $data2['uf'] ?? '',
+                            'cep' => $detectedCep,
+                        ];
                     }
                 }
-                $partnerCep = preg_replace('/\D/', '', $p['cep'] ?? '');
-                if ($partnerCep && substr($partnerCep, 0, 3) === $cep3) {
+            }
+        }
+
+        // Find stores that deliver to this CEP
+        $cep3 = substr($detectedCep, 0, 3);
+        $cep5 = substr($detectedCep, 0, 5);
+        $allStores = $db->query("SELECT partner_id, name, cep, cep_inicio, cep_fim, city, rating FROM om_market_partners WHERE status = '1' AND name != '' ORDER BY rating DESC NULLS LAST LIMIT 50")->fetchAll();
+
+        foreach ($allStores as $p) {
+            $inicio = preg_replace('/\D/', '', $p['cep_inicio'] ?? '');
+            $fim = preg_replace('/\D/', '', $p['cep_fim'] ?? '');
+            if ($inicio && $fim) {
+                $len = strlen($inicio);
+                $check = $len === 5 ? $cep5 : ($len === 3 ? $cep3 : $detectedCep);
+                if (intval($check) >= intval($inicio) && intval($check) <= intval($fim)) {
                     $nearbyStores[] = ['id' => (int)$p['partner_id'], 'name' => $p['name']];
+                    continue;
                 }
             }
-            // If no CEP-based match, just get all active stores
-            if (empty($nearbyStores)) {
-                foreach ($allStores as $p) {
+            // Match by CEP prefix (first 3 digits = same city area)
+            $partnerCep = preg_replace('/\D/', '', $p['cep'] ?? '');
+            if ($partnerCep && substr($partnerCep, 0, 3) === $cep3) {
+                $nearbyStores[] = ['id' => (int)$p['partner_id'], 'name' => $p['name']];
+                continue;
+            }
+            // Match by city name if ViaCEP resolved
+            if ($cepData && !empty($cepData['city']) && !empty($p['city'])) {
+                $cepCity = mb_strtolower(trim($cepData['city']), 'UTF-8');
+                $storeCity = mb_strtolower(trim($p['city']), 'UTF-8');
+                if ($cepCity === $storeCity || mb_strpos($cepCity, $storeCity) !== false || mb_strpos($storeCity, $cepCity) !== false) {
                     $nearbyStores[] = ['id' => (int)$p['partner_id'], 'name' => $p['name']];
                 }
             }
         }
+
+        // If still no match, show all active stores as options
+        if (empty($nearbyStores)) {
+            foreach ($allStores as $p) {
+                if (!empty(trim($p['name']))) {
+                    $nearbyStores[] = ['id' => (int)$p['partner_id'], 'name' => $p['name']];
+                }
+            }
+        }
+
+        error_log("[twilio-voice-route] CEP={$detectedCep} cepData=" . ($cepData ? $cepData['city'] : 'null') . " nearbyStores=" . count($nearbyStores));
     }
 
     // Detect food type / cuisine
@@ -269,10 +326,14 @@ try {
     $initialStep = 'identify_store';
     if ($wantsSupport) {
         $initialStep = 'support';
+    } elseif ($wantsQuestion) {
+        $initialStep = 'question';
     } elseif ($storeId) {
         $initialStep = 'take_order';
-    } elseif ($detectedCep && $cepData) {
-        $initialStep = 'identify_store'; // but with CEP context
+    } elseif ($detectedCep && !empty($nearbyStores)) {
+        $initialStep = 'identify_store'; // with CEP context
+    } elseif (!empty($wantsOrder)) {
+        $initialStep = 'identify_store'; // wants to order, need store/CEP
     }
 
     $aiContext = [
@@ -286,13 +347,15 @@ try {
             'cep_data' => $cepData,
             'nearby_stores' => $nearbyStores,
             'detected_cuisine' => $detectedCuisine,
+            'wants_order' => !empty($wantsOrder),
+            'wants_question' => $wantsQuestion,
         ]
     ];
 
     // Populate history with context
     if ($storeIdentified) {
         $aiContext['_ai_context']['history'][] = ['role' => 'user', 'content' => $speechResult];
-        $aiContext['_ai_context']['history'][] = ['role' => 'assistant', 'content' => "Show! Encontrei a {$storeIdentified}. O que voce vai querer?"];
+        $aiContext['_ai_context']['history'][] = ['role' => 'assistant', 'content' => "Show! Encontrei a {$storeIdentified}. O que você vai querer?"];
     } elseif (!empty($speechResult)) {
         $aiContext['_ai_context']['history'][] = ['role' => 'user', 'content' => $speechResult];
     }
@@ -316,73 +379,97 @@ try {
 
     // -- Build Response --
     $firstName = $customerName ? explode(' ', trim($customerName))[0] : null;
-    $ssml = '<speak>';
+    $ssml = '';
 
     if ($wantsSupport) {
         $ssml .= "Entendi" . ($firstName ? ", {$firstName}" : "") . ". ";
         $ssml .= '<break time="200ms"/>';
         $ssml .= "Vou dar uma olhada nos seus pedidos. Me conta o que precisa: ver o status, cancelar, ou alguma outra coisa?";
+    } elseif ($wantsQuestion) {
+        $ssml .= "Claro" . ($firstName ? ", {$firstName}" : "") . "! ";
+        $ssml .= '<break time="200ms"/>';
+        $ssml .= "Tô aqui pra tirar sua dúvida. Pode perguntar, que eu te ajudo!";
+    } elseif (!empty($wantsOrder) && !$storeId && !$detectedCep) {
+        // Wants to order but hasn't said store or CEP yet
+        $ssml .= "Perfeito" . ($firstName ? ", {$firstName}" : "") . "! Vamos montar seu pedido. ";
+        $ssml .= '<break time="200ms"/>';
+        $ssml .= "Me fala o nome do restaurante que você quer, ou se preferir, me diz seu CEP que eu mostro as opções perto de você.";
     } elseif ($storeIdentified) {
-        $ssml .= '<prosody rate="medium">';
         $ssml .= "Show" . ($firstName ? ", {$firstName}" : "") . "! ";
-        $ssml .= "Encontrei a <emphasis level=\"moderate\">{$storeIdentified}</emphasis> pra voce. ";
-        $ssml .= '<break time="200ms"/>';
-        $ssml .= "O que voce vai querer?";
-        $ssml .= '</prosody>';
-    } elseif ($detectedCep && $cepData && !empty($nearbyStores)) {
-        $bairro = $cepData['neighborhood'] ?: $cepData['city'];
-        $ssml .= "Achei! ";
-        $ssml .= '<break time="200ms"/>';
-        $ssml .= "Voce ta na regiao de <emphasis level=\"moderate\">{$bairro}</emphasis>" . ($cepData['city'] ? ", {$cepData['city']}" : "") . ". ";
+        $ssml .= "Encontrei a {$storeIdentified} pra você. ";
+        $ssml .= '<break time="300ms"/>';
+        $ssml .= "O que você vai querer?";
+    } elseif ($detectedCep && !empty($nearbyStores)) {
+        // CEP detected with stores found (cepData may or may not be available)
+        if ($cepData && $cepData['neighborhood']) {
+            $bairro = $cepData['neighborhood'];
+            $ssml .= "Achei! Você tá na região de {$bairro}";
+            $ssml .= ($cepData['city'] ? ", {$cepData['city']}" : "") . ". ";
+        } elseif ($cepData && $cepData['city']) {
+            $ssml .= "Achei! Você tá em {$cepData['city']}. ";
+        } else {
+            $ssml .= "Anotei seu CEP! ";
+        }
         $ssml .= '<break time="300ms"/>';
         $count = count($nearbyStores);
         if ($count <= 3) {
             $names = array_map(fn($s) => $s['name'], $nearbyStores);
-            $ssml .= "Tenho " . implode(', ', array_slice($names, 0, -1));
-            if (count($names) > 1) $ssml .= " e " . end($names);
-            else $ssml .= $names[0];
-            $ssml .= " entregando ai. Qual voce quer?";
+            if (count($names) > 1) {
+                $ssml .= "Tenho " . implode(', ', array_slice($names, 0, -1)) . " e " . end($names);
+            } else {
+                $ssml .= "Tenho " . $names[0];
+            }
+            $ssml .= " entregando aí. Qual você quer?";
         } else {
-            // Pick top 3 by variety
             $top3 = array_slice($nearbyStores, 0, 3);
             $names = array_map(fn($s) => $s['name'], $top3);
-            $ssml .= "Tenho varias opcoes, como " . implode(', ', $names) . " e mais " . ($count - 3) . ". ";
+            $ssml .= "Tenho várias opções, como " . implode(', ', $names) . " e mais " . ($count - 3) . ". ";
             $ssml .= '<break time="200ms"/>';
-            $ssml .= "Qual te interessa, ou me fala o que voce ta com vontade?";
+            $ssml .= "Qual te interessa, ou me fala o que você tá com vontade?";
         }
-    } elseif ($detectedCep && $cepData && empty($nearbyStores)) {
-        $ssml .= "Encontrei seu endereco na regiao de {$cepData['neighborhood']}, {$cepData['city']}. ";
+    } elseif ($detectedCep && empty($nearbyStores)) {
+        // CEP detected but no stores matched at all — shouldn't happen due to fallback
+        $ssml .= "Anotei seu CEP. ";
         $ssml .= '<break time="200ms"/>';
-        $ssml .= "Vou ver quais restaurantes entregam ai. Me fala o nome do lugar ou o que voce quer comer.";
+        $ssml .= "Me fala o nome do restaurante ou o tipo de comida que você quer.";
     } elseif ($detectedCuisine) {
         $cuisineLabels = [
             'pizza' => 'pizza', 'hamburguer' => 'um lanche', 'japonesa' => 'comida japonesa',
-            'acai' => 'acai', 'brasileira' => 'comida caseira', 'sobremesa' => 'sobremesa',
-            'saudavel' => 'algo saudavel', 'mexicana' => 'comida mexicana', 'chinesa' => 'comida chinesa',
-            'arabe' => 'comida arabe', 'italiana' => 'comida italiana', 'cafe' => 'cafe',
+            'acai' => 'açaí', 'brasileira' => 'comida caseira', 'sobremesa' => 'sobremesa',
+            'saudavel' => 'algo saudável', 'mexicana' => 'comida mexicana', 'chinesa' => 'comida chinesa',
+            'arabe' => 'comida árabe', 'italiana' => 'comida italiana', 'cafe' => 'café',
             'bebida' => 'bebida',
         ];
         $label = $cuisineLabels[$detectedCuisine] ?? $detectedCuisine;
-        $ssml .= "Hmm, {$label}! Otima escolha";
+        $ssml .= "Hmm, {$label}! Ótima escolha";
         $ssml .= ($firstName ? ", {$firstName}" : "") . "! ";
         $ssml .= '<break time="200ms"/>';
-        $ssml .= "Vou procurar as melhores opcoes pra voce. Me da um segundinho.";
+        $ssml .= "Vou procurar as melhores opções pra você. Me dá um segundinho.";
     } else {
+        // No clear match — be helpful, not negative
         $ssml .= ($firstName ? "{$firstName}, " : "");
-        $ssml .= "Desculpa, nao encontrei esse restaurante. ";
+        if (!empty($speechResult) && mb_strlen($speechResult) > 3) {
+            $ssml .= "Hmm, não encontrei um restaurante com esse nome. ";
+        } else {
+            $ssml .= "Não consegui entender direito. ";
+        }
         $ssml .= '<break time="200ms"/>';
-        $ssml .= "Pode repetir o nome, ou me fala o tipo de comida que voce quer? Tipo pizza, lanche, japonesa...";
+        $ssml .= "Pode me falar o nome do restaurante, o tipo de comida que você quer, ou seu CEP pra eu ver as opções?";
     }
 
-    $ssml .= '</speak>';
+    // end ssml
+
+    // Strip SSML tags for OpenAI TTS
+    $plainSsml = preg_replace('/<[^>]+>/', ' ', $ssml);
+    $plainSsml = preg_replace('/\s+/', ' ', trim($plainSsml));
 
     // Respond
     echo '<?xml version="1.0" encoding="UTF-8"?>';
     echo '<Response>';
-    echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . htmlspecialchars($aiUrl) . '" method="POST" speechTimeout="auto" numDigits="1" enhanced="true" speechModel="phone_call">';
-    echo '<Say voice="Polly.Camila" language="pt-BR">' . $ssml . '</Say>';
+    echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . htmlspecialchars($aiUrl) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
+    echo ttsSayOrPlay($plainSsml);
     echo '</Gather>';
-    echo '<Say voice="Polly.Camila" language="pt-BR"><speak>Oi, to aqui ainda! <break time="200ms"/> Pode falar o nome do restaurante ou o que voce quer comer.</speak></Say>';
+    echo ttsSayOrPlay("Oi, tô aqui ainda! Pode falar o nome do restaurante ou o que você quer comer.");
     echo '<Redirect method="POST">' . htmlspecialchars($aiUrl) . '</Redirect>';
     echo '</Response>';
 
@@ -390,7 +477,7 @@ try {
     error_log("[twilio-voice-route] Error: " . $e->getMessage());
     echo '<?xml version="1.0" encoding="UTF-8"?>';
     echo '<Response>';
-    echo '<Say voice="Polly.Camila" language="pt-BR"><speak>Ih, desculpa! Deu um probleminha aqui. <break time="200ms"/> Vou te passar pra um atendente, ta?</speak></Say>';
+    echo ttsSayOrPlay("Ih, desculpa! Deu um probleminha aqui. Vou te passar pra um atendente, tá?");
     echo '<Hangup/>';
     echo '</Response>';
 }
