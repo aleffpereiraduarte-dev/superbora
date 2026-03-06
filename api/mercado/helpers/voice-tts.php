@@ -26,7 +26,7 @@
 define('TTS_ELEVENLABS_DEFAULT_VOICE', 'cgSgspJ2msm6clMCkdW9'); // Rachel - good multilingual
 
 // Cache version — bump to invalidate all cached audio
-define('TTS_CACHE_VERSION', 'v4');
+define('TTS_CACHE_VERSION', 'v5');
 
 // Voice settings tuned for Brazilian Portuguese phone conversations
 define('TTS_VOICE_SETTINGS_DEFAULT', [
@@ -253,6 +253,7 @@ function ttsElevenLabs(string $text, ?array $voiceSettings = null): ?string {
         'model_id' => 'eleven_multilingual_v2',
         'voice_settings' => $settings,
         'optimize_streaming_latency' => 3,  // Minimum latency mode
+        'speed' => 1.15,  // Slightly faster for natural phone conversations
     ]);
 
     // Use streaming endpoint for faster first-byte delivery
@@ -298,7 +299,7 @@ function ttsOpenAI(string $text): ?string {
         'input' => $text,
         'voice' => 'nova',
         'response_format' => 'mp3',
-        'speed' => 1.0,
+        'speed' => 1.15,  // Slightly faster for natural phone conversations
     ]);
 
     $ch = curl_init('https://api.openai.com/v1/audio/speech');

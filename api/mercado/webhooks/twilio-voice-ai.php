@@ -113,7 +113,7 @@ $routeUrl = str_replace('twilio-voice-ai.php', 'twilio-voice-route.php', $selfUr
 
 try {
     $db = getDB();
-    $claude = new ClaudeClient('claude-sonnet-4-20250514', 45, 0);
+    $claude = new ClaudeClient('claude-sonnet-4-20250514', 12, 0);
 
     // -- Get call record and AI context --
     $stmt = $db->prepare("
@@ -1108,7 +1108,7 @@ try {
     }
 
     // Voice-specific instruction: keep responses SHORT
-    $optimized['prompt'] .= "\n\n## LEMBRETE CRITICO PARA VOZ\nIsso é uma LIGACAO TELEFONICA. Responda em NO MAXIMO 2 frases curtas. Ninguem quer ouvir texto longo no telefone.\n";
+    $optimized['prompt'] .= "\n\n## LEMBRETE CRITICO PARA VOZ\nIsso é LIGACAO TELEFONICA. MAXIMO 2 frases curtas e diretas. Seja breve — fale só o essencial. Nada de listas longas.\n";
 
     // -- Append language modifier and A/B tone to system prompt --
     $langModifier = '';

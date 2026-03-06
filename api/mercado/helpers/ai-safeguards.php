@@ -1311,17 +1311,17 @@ function optimizeClaudeRequest(string $systemPrompt, array $history, array $aiCo
     $step = $aiContext['step'] ?? 'identify_store';
     $optimized = aiSafeguardOptimizePrompt($systemPrompt, $history, $step);
 
-    // Step-based max_tokens (phone = shorter responses)
+    // Step-based max_tokens (phone = shorter responses — keep it FAST)
     $maxTokensByStep = [
-        'greeting'       => 200,
-        'identify_store' => 250,
-        'take_order'     => 350,
-        'get_address'    => 200,
-        'get_payment'    => 200,
-        'confirm_order'  => 400,
-        'submit_order'   => 200,
-        'support'        => 350,
-        'question'       => 350,
+        'greeting'       => 150,
+        'identify_store' => 180,
+        'take_order'     => 250,
+        'get_address'    => 150,
+        'get_payment'    => 150,
+        'confirm_order'  => 300,
+        'submit_order'   => 150,
+        'support'        => 250,
+        'question'       => 250,
     ];
 
     return [
