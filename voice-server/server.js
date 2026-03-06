@@ -731,8 +731,11 @@ function sendOrderSMS(phone, orderNumber, storeName, items, total) {
 async function getClaudeResponse(callState) {
     const messages = callState.history;
     let maxLoops = 6;
+    const startTime = Date.now();
 
     while (maxLoops-- > 0) {
+        console.log(`[voice] ${callState.callSid} Claude request (loop ${6 - maxLoops}, msgs: ${messages.length}, elapsed: ${Date.now() - startTime}ms)`);
+
         const response = await anthropic.messages.create({
             model: CLAUDE_MODEL,
             max_tokens: 300,
@@ -740,6 +743,8 @@ async function getClaudeResponse(callState) {
             messages,
             tools: TOOLS,
         });
+
+        console.log(`[voice] ${callState.callSid} Claude response: stop=${response.stop_reason}, blocks=${response.content.length}, elapsed=${Date.now() - startTime}ms`);
 
         const toolBlocks = response.content.filter(b => b.type === 'tool_use');
 
@@ -753,6 +758,7 @@ async function getClaudeResponse(callState) {
                 .map(b => b.text)
                 .join(' ')
                 .trim();
+            console.log(`[voice] ${callState.callSid} Final text (${(Date.now() - startTime)}ms): "${(text || '').slice(0, 80)}"`);
             // Never return empty response — ask to repeat
             return text || 'Oi, como posso te ajudar?';
         }
@@ -760,8 +766,9 @@ async function getClaudeResponse(callState) {
         // Execute tools
         const toolResults = [];
         for (const tu of toolBlocks) {
-            console.log(`[voice] Tool call: ${tu.name}(${JSON.stringify(tu.input).slice(0, 100)})`);
+            console.log(`[voice] ${callState.callSid} Tool: ${tu.name}(${JSON.stringify(tu.input).slice(0, 120)})`);
             const result = await executeTool(tu.name, tu.input, callState);
+            console.log(`[voice] ${callState.callSid} Tool result: ${JSON.stringify(result).slice(0, 150)}`);
             toolResults.push({
                 type: 'tool_result',
                 tool_use_id: tu.id,
@@ -772,6 +779,7 @@ async function getClaudeResponse(callState) {
         // Loop to get Claude's response with tool results
     }
 
+    console.log(`[voice] ${callState.callSid} Max loops exhausted after ${Date.now() - startTime}ms`);
     return 'Desculpa, deu um probleminha. Pode repetir o que você precisa?';
 }
 
@@ -820,11 +828,31 @@ async function finalizeCall(callSid, status, summary) {
 
 async function transferCall(callSid) {
     try {
+        // Find online agents to ring their softphones
+        let agentClients = '';
+        try {
+            const agentsResult = await dbQuery(
+                `SELECT id FROM om_callcenter_agents WHERE status IN ('online', 'busy') ORDER BY id`
+            );
+            if (agentsResult.rows.length > 0) {
+                agentClients = agentsResult.rows
+                    .map(a => `<Client>agent_${a.id}</Client>`)
+                    .join('\n                ');
+            }
+        } catch (e) {
+            console.error('[voice] Agent lookup for transfer failed:', e.message);
+        }
+
+        // Fallback: ring all known agent identities
+        if (!agentClients) {
+            agentClients = '<Client>agent_5</Client>';
+        }
+
         const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Calls/${callSid}.json`;
         const twiml = `<Response>
             <Say language="pt-BR" voice="Polly.Camila">Transferindo para um atendente. Aguarde um momento.</Say>
             <Dial timeout="60" callerId="${process.env.TWILIO_PHONE || '+17432285380'}">
-                <Client>agent</Client>
+                ${agentClients}
             </Dial>
             <Say language="pt-BR" voice="Polly.Camila">Desculpe, nenhum atendente disponível. Tente novamente mais tarde.</Say>
             <Hangup/>
@@ -839,7 +867,7 @@ async function transferCall(callSid) {
             },
             body: new URLSearchParams({ Twiml: twiml })
         });
-        console.log(`[voice] Transfer initiated for ${callSid}`);
+        console.log(`[voice] Transfer initiated for ${callSid} → ${agentClients.match(/agent_\d+/g)?.join(', ')}`);
     } catch (e) {
         console.error('[voice] Transfer failed:', e.message);
     }
@@ -906,7 +934,9 @@ app.post('/incoming-call', async (req, reply) => {
             ttsProvider="ElevenLabs"
             voice="${ELEVENLABS_VOICE_ID}"
             transcriptionProvider="google"
+            speechModel="phone_call"
             interruptible="true"
+            interruptByDtmf="true"
             dtmfDetection="true"
             profanityFilter="false"
         />
@@ -967,41 +997,76 @@ app.register(async (fastify) => {
 
                 // ── Caller spoke (transcribed text) ──
                 case 'prompt': {
-                    if (!callState) return;
+                    if (!callState) {
+                        console.log('[voice] Prompt received but no callState — ignoring');
+                        return;
+                    }
 
-                    const userText = msg.voicePrompt || '';
-                    if (!userText.trim()) return;
+                    const userText = (msg.voicePrompt || '').trim();
+                    if (!userText) {
+                        console.log(`[voice] ${callState.callSid} Empty prompt — ignoring`);
+                        return;
+                    }
+
+                    // ── Noise filter: reject garbage transcriptions ──
+                    // Single characters, very short noise, or common STT artifacts
+                    const cleaned = userText.replace(/[^a-záàâãéèêíïóôõúüçñ\s]/gi, '').trim();
+                    const wordCount = cleaned.split(/\s+/).filter(w => w.length > 1).length;
+                    const isNoise = (
+                        userText.length <= 2 ||                    // "a", "ã", "hm"
+                        (userText.length <= 4 && wordCount === 0) || // random short noise
+                        /^[hmúãah]+$/i.test(cleaned) ||            // "hm", "ã", "ah", "uh"
+                        /^(ok|tá|tô|é|aí|oi|eh|ah|hã|hum)$/i.test(cleaned)  // filler words alone
+                    );
+
+                    if (isNoise) {
+                        console.log(`[voice] ${callState.callSid} Noise filtered: "${userText}"`);
+                        return;
+                    }
 
                     console.log(`[voice] ${callState.callSid} User: "${userText}"`);
 
                     // Add user message to history
                     callState.history.push({ role: 'user', content: userText });
 
-                    try {
-                        const aiResponse = await getClaudeResponse(callState);
-                        console.log(`[voice] ${callState.callSid} AI: "${aiResponse.slice(0, 100)}..."`);
+                    // Helper to safely send to socket
+                    const safeSend = (text) => {
+                        try {
+                            if (socket.readyState === 1) { // WebSocket.OPEN
+                                socket.send(JSON.stringify({ type: 'text', token: text, last: true }));
+                                return true;
+                            }
+                            console.log(`[voice] ${callState.callSid} Socket not open (state=${socket.readyState}), cannot send`);
+                            return false;
+                        } catch (e) {
+                            console.error(`[voice] ${callState.callSid} Send error:`, e.message);
+                            return false;
+                        }
+                    };
 
-                        // Send response to ConversationRelay → ElevenLabs → caller
-                        socket.send(JSON.stringify({
-                            type: 'text',
-                            token: aiResponse,
-                            last: true
-                        }));
+                    try {
+                        // Timeout protection: 20s max for entire Claude response cycle
+                        const timeoutPromise = new Promise((_, reject) =>
+                            setTimeout(() => reject(new Error('Claude timeout (20s)')), 20000)
+                        );
+                        const aiResponse = await Promise.race([
+                            getClaudeResponse(callState),
+                            timeoutPromise
+                        ]);
+
+                        console.log(`[voice] ${callState.callSid} AI: "${aiResponse.slice(0, 100)}"`);
+                        safeSend(aiResponse);
 
                         // Handle transfer after response
                         if (callState.transferRequested) {
                             setTimeout(() => {
                                 transferCall(callState.callSid);
                                 finalizeCall(callState.callSid, 'transferred', `Transferido: ${callState.transferReason}`);
-                            }, 3000); // Wait for goodbye message to play
+                            }, 3000);
                         }
                     } catch (err) {
-                        console.error(`[voice] ${callState.callSid} Claude error:`, err.message);
-                        socket.send(JSON.stringify({
-                            type: 'text',
-                            token: 'Desculpa, deu um probleminha. Pode repetir?',
-                            last: true
-                        }));
+                        console.error(`[voice] ${callState.callSid} Error:`, err.message, err.stack?.split('\n')[1] || '');
+                        safeSend('Desculpa, deu um probleminha aqui. Pode repetir o que você precisa?');
                     }
                     break;
                 }

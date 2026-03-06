@@ -36,8 +36,9 @@ try {
 
         $escaped = str_replace(['%', '_'], ['\\%', '\\_'], $q);
         $like = '%' . $escaped . '%';
+        $city = trim($_GET['city'] ?? '');
 
-        $stmt = $db->prepare("
+        $sql = "
             SELECT
                 p.partner_id AS id,
                 p.name,
@@ -54,14 +55,25 @@ try {
                 p.delivery_time_min,
                 p.delivery_time_max
             FROM om_market_partners p
-            WHERE p.name ILIKE ? OR p.city ILIKE ?
+            WHERE (p.name ILIKE ? OR p.city ILIKE ?)
+        ";
+        $params = [$like, $like];
+
+        if ($city) {
+            $cityEscaped = str_replace(['%', '_'], ['\\%', '\\_'], $city);
+            $sql .= " AND p.city ILIKE ?";
+            $params[] = '%' . $cityEscaped . '%';
+        }
+
+        $sql .= "
             ORDER BY
                 CASE WHEN p.status = '1' THEN 0 ELSE 1 END,
                 p.rating DESC NULLS LAST,
                 p.name ASC
             LIMIT 20
-        ");
-        $stmt->execute([$like, $like]);
+        ";
+        $stmt = $db->prepare($sql);
+        $stmt->execute($params);
         $stores = $stmt->fetchAll();
 
         // Determine open/closed status based on horarios

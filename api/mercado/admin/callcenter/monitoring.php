@@ -321,7 +321,7 @@ try {
                        (SELECT COUNT(*) FROM om_callcenter_wa_messages m WHERE m.conversation_id = w.id) AS turn_count
                 FROM om_callcenter_whatsapp w
                 WHERE w.status = 'bot'
-                HAVING (SELECT COUNT(*) FROM om_callcenter_wa_messages m WHERE m.conversation_id = w.id) > 15
+                  AND (SELECT COUNT(*) FROM om_callcenter_wa_messages m WHERE m.conversation_id = w.id) > 15
             ")->fetchAll();
             foreach ($longConvos as $r) {
                 $alerts[] = [

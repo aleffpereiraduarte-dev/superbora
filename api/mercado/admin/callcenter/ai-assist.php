@@ -48,8 +48,8 @@ try {
         $stmt = $db->prepare("
             SELECT c.name AS category, p.name, p.price, p.description
             FROM om_market_products p
-            JOIN om_market_categories c ON c.id = p.category_id
-            WHERE p.partner_id = ? AND p.status = 'active'
+            JOIN om_market_categories c ON c.category_id = p.category_id
+            WHERE p.partner_id = ? AND p.status = 1
             ORDER BY c.sort_order, p.sort_order
             LIMIT 100
         ");

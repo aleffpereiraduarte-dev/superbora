@@ -96,6 +96,11 @@ function getActiveABConfig(PDO $db, string $phone, string $channel): ?array
     return empty($configs) ? null : $configs;
 }
 
+// Guard: only run admin endpoint when this file is the entry point
+if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') !== 'ab-testing.php') {
+    return; // loaded via require_once from webhook — only expose getActiveABConfig()
+}
+
 try {
     $db = getDB();
     OmAuth::getInstance()->setDb($db);
