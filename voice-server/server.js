@@ -82,20 +82,29 @@ REGRAS OBRIGATÓRIAS:
 - SEMPRE confirme o pedido completo antes de usar submit_order
 - Se o cliente pedir atendente humano, use transfer_to_agent IMEDIATAMENTE
 - Use as ferramentas para buscar dados reais — NUNCA invente preços, produtos ou lojas
-- Se não encontrar algo, diga que não encontrou
+- NUNCA busque restaurante usando a frase do cliente como nome. "Quero pedir pizza" NÃO é o nome de um restaurante
 
-FLUXO NATURAL:
-1. Se for pedido novo: pergunte de qual loja → busque com search_stores → peça pra escolher → carregue o cardápio com get_store_menu → ofereça itens populares → monte o pedido com add_to_order → confirme tudo → peça endereço e pagamento → finalize com submit_order
-2. Se for status de pedido: use check_order_status
-3. Se for dúvida ou problema: responda se souber, senão use transfer_to_agent
+FLUXO PARA PEDIDO NOVO (siga esta ordem!):
+1. PRIMEIRO: Use lookup_customer com o telefone do cliente para saber quem é
+2. DEPOIS: Verifique se o cliente tem endereço salvo. Se tiver, pergunte "Entrega no endereço X?" Se não tiver, pergunte a cidade/bairro
+3. ENTÃO: Use get_nearby_stores com a cidade do endereço de entrega para ver lojas disponíveis na região
+4. Se o cliente mencionar tipo de comida (pizza, hambúrguer, açaí), filtre por categoria na busca
+5. Apresente as opções de lojas ABERTAS na região: nome e tipo
+6. Quando escolher a loja: use get_store_menu para carregar o cardápio
+7. Monte o pedido com add_to_order, confirme tudo
+8. Peça forma de pagamento e finalize com submit_order
+
+OUTROS FLUXOS:
+- Status de pedido: use lookup_customer → check_order_status
+- Dúvida ou problema: responda se souber, senão use transfer_to_agent
 
 DICAS:
-- Se o cliente mencionar um tipo de comida (pizza, hambúrguer), busque lojas desse tipo
-- Ao listar lojas, diga nome, nota e se está aberta
-- Ao listar produtos, diga nome e preço (por extenso)
+- Ao listar lojas, diga nome, tipo (pizzaria, mercado, etc.) e se está aberta
+- Ao listar produtos, diga nome e preço por extenso
 - Ao confirmar pedido, liste todos os itens e diga o total por extenso
-- Se o cliente tiver endereço salvo, ofereça usar o endereço salvo
+- Se o cliente já tem endereço salvo, use-o direto — não peça de novo
 - Não precisa cumprimentar de novo — o sistema já deu boas-vindas
+- Se disser "quero pizza", "quero um lanche", etc., entenda como TIPO DE COMIDA, não nome de loja
 
 Horário atual: ${horaNum}h (${periodo})
 Telefone do cliente: ${callerPhone}
@@ -117,13 +126,26 @@ const TOOLS = [
     },
     {
         name: 'search_stores',
-        description: 'Busca restaurantes e lojas por nome, tipo de comida ou bairro. Retorna lista com nome, avaliação, tempo de entrega e taxa.',
+        description: 'Busca uma loja ESPECÍFICA por nome (ex: "Burger King", "Pizzaria Napoli"). NÃO use para buscar por tipo de comida — use get_nearby_stores para isso.',
         input_schema: {
             type: 'object',
             properties: {
-                query: { type: 'string', description: 'Nome do restaurante, tipo de comida (pizza, hamburguer), ou bairro' }
+                name: { type: 'string', description: 'Nome exato ou parcial do restaurante/loja' }
             },
-            required: ['query']
+            required: ['name']
+        }
+    },
+    {
+        name: 'get_nearby_stores',
+        description: 'Lista lojas disponíveis para entrega em uma cidade. Pode filtrar por tipo (restaurante, supermercado, farmacia, padaria, etc.) ou tipo de comida (pizza, hamburguer, açaí, sushi, etc.). USE ESTA FERRAMENTA quando o cliente quer fazer um pedido e você precisa saber quais lojas atendem na região dele.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                city: { type: 'string', description: 'Cidade de entrega (ex: Governador Valadares, São Paulo, Guarulhos)' },
+                category: { type: 'string', description: 'Filtro opcional: restaurante, supermercado, farmacia, padaria, petshop, conveniencia, loja, mercado' },
+                food_type: { type: 'string', description: 'Filtro opcional por tipo de comida: pizza, hamburguer, sushi, açaí, espetinho, churrasco' }
+            },
+            required: ['city']
         }
     },
     {
@@ -210,8 +232,19 @@ const TOOLS = [
 async function executeTool(name, input, callState) {
     try {
         switch (name) {
-            case 'lookup_customer': return await lookupCustomer(input.phone);
-            case 'search_stores': return await searchStores(input.query);
+            case 'lookup_customer': {
+                const result = await lookupCustomer(input.phone);
+                if (result.found) {
+                    callState.customer = {
+                        customer_id: result.customer_id,
+                        name: result.name,
+                        addresses: result.addresses
+                    };
+                }
+                return result;
+            }
+            case 'search_stores': return await searchStores(input.name);
+            case 'get_nearby_stores': return await getNearbyStores(input.city, input.category, input.food_type);
             case 'get_store_menu': {
                 const menu = await getStoreMenu(input.partner_id);
                 // Track selected store
@@ -241,7 +274,7 @@ async function executeTool(name, input, callState) {
 async function lookupCustomer(phone) {
     const suffix = phone.replace(/\D/g, '').slice(-11);
     const custResult = await pool.query(
-        `SELECT customer_id, name, email, phone, cashback_balance
+        `SELECT customer_id, name, email, phone
          FROM om_customers
          WHERE REPLACE(REPLACE(phone, '+', ''), '-', '') LIKE $1
          LIMIT 1`,
@@ -252,8 +285,8 @@ async function lookupCustomer(phone) {
     }
     const c = custResult.rows[0];
     const addrResult = await pool.query(
-        `SELECT address_id, label, street, number, complement, neighborhood, city, cep
-         FROM om_customer_addresses WHERE customer_id = $1 AND is_active = '1'
+        `SELECT address_id, label, street, number, complement, neighborhood, city, state, zipcode, is_default
+         FROM om_customer_addresses WHERE customer_id = $1 AND is_active = 1
          ORDER BY is_default DESC`, [c.customer_id]
     );
     const ordersResult = await pool.query(
@@ -264,35 +297,88 @@ async function lookupCustomer(phone) {
          WHERE o.customer_id = $1 ORDER BY o.date_added DESC LIMIT 5`,
         [c.customer_id]
     );
+    // Get cashback balance
+    let cashback = 0;
+    try {
+        const cbResult = await pool.query(
+            `SELECT balance FROM om_cashback_wallet WHERE customer_id = $1`, [c.customer_id]
+        );
+        if (cbResult.rows.length > 0) cashback = parseFloat(cbResult.rows[0].balance || 0);
+    } catch(e) { /* cashback table may not exist */ }
     return {
         found: true,
         customer_id: c.customer_id,
         name: c.name,
-        cashback: parseFloat(c.cashback_balance || 0),
+        cashback,
         addresses: addrResult.rows,
         recent_orders: ordersResult.rows
     };
 }
 
-async function searchStores(query) {
+async function searchStores(name) {
     const result = await pool.query(
-        `SELECT partner_id, name, description, city, neighborhood,
-                rating, delivery_time_min, delivery_fee, minimum_order,
-                CASE WHEN is_open = '1' OR is_open::text = 'true' THEN true ELSE false END as is_open
+        `SELECT partner_id, name, city, neighborhood, categoria,
+                rating, delivery_time_min, delivery_fee, min_order_value, is_open
          FROM om_market_partners
-         WHERE is_active = '1'
-           AND (name ILIKE $1 OR description ILIKE $1 OR category ILIKE $1)
+         WHERE status = '1'
+           AND (name ILIKE $1 OR nome ILIKE $1)
          ORDER BY is_open DESC, rating DESC NULLS LAST
          LIMIT 10`,
-        ['%' + query + '%']
+        ['%' + name + '%']
     );
-    return { stores: result.rows, count: result.rows.length };
+    return {
+        stores: result.rows.map(s => ({
+            ...s, is_open: s.is_open === 1, tipo: s.categoria
+        })),
+        count: result.rows.length
+    };
+}
+
+async function getNearbyStores(city, category, foodType) {
+    let query = `SELECT partner_id, name, city, neighborhood, categoria,
+                        rating, delivery_time_min, delivery_fee, min_order_value, is_open,
+                        description
+                 FROM om_market_partners
+                 WHERE status = '1' AND city ILIKE $1`;
+    const params = ['%' + city + '%'];
+    let paramIdx = 2;
+
+    if (category) {
+        query += ` AND categoria ILIKE $${paramIdx}`;
+        params.push('%' + category + '%');
+        paramIdx++;
+    }
+
+    if (foodType) {
+        query += ` AND (name ILIKE $${paramIdx} OR description ILIKE $${paramIdx} OR categoria ILIKE $${paramIdx})`;
+        params.push('%' + foodType + '%');
+        paramIdx++;
+    }
+
+    query += ` ORDER BY is_open DESC, rating DESC NULLS LAST LIMIT 15`;
+
+    const result = await pool.query(query, params);
+    return {
+        city,
+        stores: result.rows.map(s => ({
+            partner_id: s.partner_id,
+            name: s.name,
+            tipo: s.categoria,
+            neighborhood: s.neighborhood,
+            is_open: s.is_open === 1,
+            rating: s.rating,
+            delivery_fee: parseFloat(s.delivery_fee || 0),
+            delivery_time: s.delivery_time_min
+        })),
+        count: result.rows.length,
+        message: result.rows.length === 0 ? `Nenhuma loja encontrada em ${city}` : null
+    };
 }
 
 async function getStoreMenu(partnerId) {
     // Get store info
     const storeResult = await pool.query(
-        `SELECT name, delivery_fee, delivery_time_min, minimum_order, is_open
+        `SELECT name, delivery_fee, delivery_time_min, min_order_value, is_open
          FROM om_market_partners WHERE partner_id = $1`, [partnerId]
     );
     const store = storeResult.rows[0];
@@ -300,12 +386,12 @@ async function getStoreMenu(partnerId) {
 
     // Get products grouped by category
     const prodResult = await pool.query(
-        `SELECT p.product_id, p.name, p.description, p.price, p.is_available,
+        `SELECT p.id as product_id, p.name, p.description, p.price, p.available,
                 pc.name as category_name
          FROM om_market_products p
-         JOIN om_market_product_categories pc ON pc.category_id = p.category_id
-         WHERE p.partner_id = $1 AND p.is_active = '1'
-         ORDER BY pc.sort_order, p.sort_order`,
+         LEFT JOIN om_market_categories pc ON pc.category_id = p.category_id
+         WHERE p.partner_id = $1 AND p.status = 1
+         ORDER BY pc.sort_order NULLS LAST, p.sort_order NULLS LAST`,
         [partnerId]
     );
 
@@ -314,7 +400,7 @@ async function getStoreMenu(partnerId) {
     for (const p of prodResult.rows) {
         const cat = p.category_name || 'Outros';
         if (!menu[cat]) menu[cat] = [];
-        if (p.is_available === '1' || p.is_available === true) {
+        if (p.available === 1 || p.available === null) {
             menu[cat].push({
                 product_id: p.product_id,
                 name: p.name,
@@ -328,7 +414,7 @@ async function getStoreMenu(partnerId) {
         store_name: store.name,
         delivery_fee: parseFloat(store.delivery_fee || 0),
         delivery_time: store.delivery_time_min,
-        minimum_order: parseFloat(store.minimum_order || 0),
+        min_order_value: parseFloat(store.min_order_value || 0),
         is_open: store.is_open === '1' || store.is_open === true,
         menu
     };
@@ -438,21 +524,44 @@ async function submitOrder(callState, input) {
         // Generate order number
         const orderNumber = 'SB' + Date.now().toString(36).toUpperCase();
 
+        // Fetch address by ID, or use first saved address
+        let addr = {};
+        if (input.address_id) {
+            const addrResult = await client.query(
+                `SELECT street, number, complement, neighborhood, city, state, zipcode
+                 FROM om_customer_addresses WHERE address_id = $1`,
+                [input.address_id]
+            );
+            if (addrResult.rows.length > 0) addr = addrResult.rows[0];
+        } else if (callState.customer.addresses?.length > 0) {
+            addr = callState.customer.addresses[0];
+        }
+
         const orderResult = await client.query(
             `INSERT INTO om_market_orders (
                 customer_id, partner_id, order_number, status,
+                customer_name, customer_phone,
                 subtotal, delivery_fee, service_fee, total,
-                payment_method, payment_change,
-                delivery_address_id, source, notes, date_added
-            ) VALUES ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, $9, $10, 'voice_ai', $11, NOW())
+                payment_method, change_for,
+                delivery_address, shipping_address, shipping_number, shipping_complement,
+                shipping_neighborhood, shipping_city, shipping_state, shipping_cep,
+                source, notes, date_added
+            ) VALUES ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, $9, $10, $11,
+                      $12, $13, $14, $15, $16, $17, $18, $19,
+                      'voice_ai', $20, NOW())
             RETURNING order_id, order_number`,
             [
                 callState.customer.customer_id,
                 callState.store.partner_id,
                 orderNumber,
+                callState.customer.name || '',
+                callState.callerPhone,
                 subtotal, deliveryFee, serviceFee, total,
-                input.payment_method, input.change_for || null,
-                input.address_id || null,
+                input.payment_method || 'dinheiro',
+                input.change_for || null,
+                addr.street ? `${addr.street}, ${addr.number || 'S/N'} - ${addr.neighborhood || ''}, ${addr.city || ''}` : '',
+                addr.street || '', addr.number || '', addr.complement || '',
+                addr.neighborhood || '', addr.city || '', addr.state || 'SP', addr.zipcode || '',
                 'Pedido feito por telefone via IA'
             ]
         );
@@ -462,10 +571,10 @@ async function submitOrder(callState, input) {
         for (const item of callState.items) {
             await client.query(
                 `INSERT INTO om_market_order_products (
-                    order_id, product_id, name, price, quantity, options, notes
+                    order_id, product_id, name, price, quantity, total, notes
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
                 [order_id, item.product_id, item.product_name, item.price, item.quantity,
-                 JSON.stringify([]), item.notes || '']
+                 item.price * item.quantity, item.notes || '']
             );
         }
 
