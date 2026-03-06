@@ -215,7 +215,7 @@ echo ttsSayOrPlay($fullGreeting);
 echo '</Gather>';
 // Fallback re-prompt — shorter and friendlier
 echo '<Gather input="speech dtmf" timeout="6" language="pt-BR" action="' . $routeEsc . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
-echo ttsSayOrPlay("Oi, tô aqui! Me fala o que você precisa, ou aperta zero pra falar com alguém.");
+echo ttsSayOrPlay("Pode falar ou digitar, tô te escutando! Se preferir falar com uma pessoa, aperta zero.");
 echo '</Gather>';
 echo '<Redirect method="POST">' . $routeEsc . '?Digits=0&amp;noInput=1</Redirect>';
 echo '</Response>';

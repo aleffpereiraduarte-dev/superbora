@@ -622,7 +622,7 @@ try {
             $ssml .= "Pode repetir o nome do restaurante, ou me diz o tipo de comida?";
         } elseif (empty($speechResult) && !empty($noInput)) {
             // Timeout — customer didn't speak, offer DTMF options
-            $ssml .= "Não te ouvi. Se quiser, aperta 1 pra fazer um pedido, 2 pra ver seu pedido, ou zero pra falar com alguém.";
+            $ssml .= "Pode falar ou digitar, tô te escutando! Aperta 1 pra fazer um pedido, 2 pra ver seu pedido, ou zero pra falar com uma pessoa.";
         } else {
             // Very short/empty speech — retry with clarity
             $ssml .= "Não peguei direito. Pode falar o nome do restaurante ou o que você quer comer?";
@@ -645,7 +645,7 @@ try {
     echo '</Gather>';
     // Fallback re-prompt with DTMF option for timeout
     echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . $aiUrlEsc . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
-    echo ttsSayOrPlay("Oi, tô aqui! Aperta 1 pra pedir, 2 pra ver pedido, ou fala o que você precisa.");
+    echo ttsSayOrPlay("Pode falar ou digitar, tô te escutando! Aperta 1 pra pedir, 2 pra ver pedido, ou zero pra falar com uma pessoa.");
     echo '</Gather>';
     // If both Gathers time out, go to AI anyway (it will re-prompt naturally)
     echo '<Redirect method="POST">' . $aiUrlEsc . '</Redirect>';
@@ -661,7 +661,7 @@ try {
     echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . $aiUrlFbEsc . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
     echo ttsSayOrPlay("Desculpa, deu um probleminha. Me fala de novo, o que você precisa?");
     echo '</Gather>';
-    echo ttsSayOrPlay("Aperta zero se quiser falar com alguém.");
+    echo ttsSayOrPlay("Pode falar ou digitar, tô te escutando! Se preferir falar com uma pessoa, aperta zero.");
     echo '<Redirect method="POST">' . $aiUrlFbEsc . '</Redirect>';
     echo '</Response>';
 }

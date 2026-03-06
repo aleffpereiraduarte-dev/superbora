@@ -148,7 +148,7 @@ try {
         echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . escXml($selfUrl) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
         echo ttsSayOrPlay("Desculpa, me fala de novo. O que você precisa?");
         echo '</Gather>';
-        echo ttsSayOrPlay("Aperta zero se quiser falar com alguém.");
+        echo ttsSayOrPlay("Pode falar ou digitar, tô te escutando! Aperta zero se quiser falar com uma pessoa.");
         echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
         echo '</Response>';
         exit;
@@ -475,9 +475,9 @@ try {
         saveAiContext($db, $callId, $aiContext);
 
         $silencePrompts = [
-            "Oi, tá aí? Pode falar que eu tô ouvindo!",
-            "Opa, não ouvi nada. Pode falar mais perto do telefone?",
-            "Hmm, acho que a ligação tá ruim. Pode repetir o que você precisa?",
+            "Pode falar ou digitar, tô te escutando!",
+            "Opa, não ouvi nada. Pode falar ou digitar que eu tô aqui te ouvindo!",
+            "Hmm, acho que a ligação tá ruim. Pode repetir? Tô aqui te escutando!",
         ];
 
         if ($silenceCount >= 4) {
@@ -497,7 +497,7 @@ try {
         echo '<Gather input="speech dtmf" timeout="10" language="pt-BR" action="' . escXml($selfUrl) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
         echo ttsSayOrPlay($msg);
         echo '</Gather>';
-        echo ttsSayOrPlay("Aperta zero se quiser falar com alguém.");
+        echo ttsSayOrPlay("Pode falar ou digitar, tô te escutando! Aperta zero se quiser falar com uma pessoa.");
         echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
         echo '</Response>';
         exit;
@@ -1213,7 +1213,7 @@ try {
             echo '<Gather input="speech dtmf" timeout="10" language="pt-BR" action="' . escXml($selfUrl) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
             echo $degradedResponse;
             echo '</Gather>';
-            echo buildTwilioSay('Aperta zero se quiser falar com alguém.');
+            echo buildTwilioSay('Pode falar ou digitar, tô te escutando! Aperta zero se quiser falar com uma pessoa.');
             echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
             echo '</Response>';
             exit;
@@ -1498,7 +1498,7 @@ try {
     echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . escXml($selfUrl) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
     echo $degradedTwiml;
     echo '</Gather>';
-    echo buildTwilioSay('Aperta zero se quiser falar com alguém.');
+    echo buildTwilioSay('Pode falar ou digitar, tô te escutando! Aperta zero se quiser falar com uma pessoa.');
     echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
     echo '</Response>';
 }
