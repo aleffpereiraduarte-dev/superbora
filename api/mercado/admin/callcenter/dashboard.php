@@ -389,7 +389,260 @@ try {
         ]);
     }
 
-    response(false, null, "View invalida. Valores: realtime, today, history, agent_performance", 400);
+    // =================== CALLS BY HOUR ===================
+    if ($view === 'calls_by_hour') {
+        $date = $_GET['date'] ?? date('Y-m-d');
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+            response(false, null, "Formato de data invalido", 400);
+        }
+
+        $stmt = $db->prepare("
+            SELECT
+                EXTRACT(HOUR FROM created_at)::int AS hour,
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE status IN ('completed', 'ai_handling')) AS answered,
+                COUNT(*) FILTER (WHERE status = 'missed') AS missed,
+                COUNT(*) FILTER (WHERE status = 'ai_handling') AS ai_handled
+            FROM om_callcenter_calls
+            WHERE created_at::date = ?
+            GROUP BY EXTRACT(HOUR FROM created_at)
+            ORDER BY hour
+        ");
+        $stmt->execute([$date]);
+        $rows = $stmt->fetchAll();
+
+        $hours = array_fill(0, 24, ['total' => 0, 'answered' => 0, 'missed' => 0, 'ai_handled' => 0]);
+        foreach ($rows as $r) {
+            $h = (int)$r['hour'];
+            $hours[$h] = [
+                'total' => (int)$r['total'],
+                'answered' => (int)$r['answered'],
+                'missed' => (int)$r['missed'],
+                'ai_handled' => (int)$r['ai_handled'],
+            ];
+        }
+
+        response(true, ['date' => $date, 'hours' => $hours]);
+    }
+
+    // =================== AI PERFORMANCE ===================
+    if ($view === 'ai_performance') {
+        $from = $_GET['from'] ?? date('Y-m-d', strtotime('-7 days'));
+        $to = $_GET['to'] ?? date('Y-m-d');
+
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $from) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)) {
+            response(false, null, "Formato de data invalido", 400);
+        }
+
+        // AI call stats
+        $aiStats = $db->prepare("
+            SELECT
+                COUNT(*) AS total_ai_calls,
+                COUNT(*) FILTER (WHERE order_id IS NOT NULL) AS ai_orders_completed,
+                COUNT(*) FILTER (WHERE status = 'completed' AND order_id IS NULL AND agent_id IS NULL) AS ai_resolved_no_order,
+                COUNT(*) FILTER (WHERE agent_id IS NOT NULL) AS ai_transferred_to_agent,
+                COUNT(*) FILTER (WHERE status = 'missed') AS ai_abandoned,
+                COALESCE(AVG(duration_seconds) FILTER (WHERE duration_seconds > 0), 0)::int AS avg_duration,
+                COUNT(*) FILTER (WHERE ai_sentiment = 'positive') AS sentiment_positive,
+                COUNT(*) FILTER (WHERE ai_sentiment = 'neutral') AS sentiment_neutral,
+                COUNT(*) FILTER (WHERE ai_sentiment = 'negative') AS sentiment_negative,
+                COUNT(*) FILTER (WHERE ai_sentiment = 'frustrated') AS sentiment_frustrated
+            FROM om_callcenter_calls
+            WHERE created_at::date >= ? AND created_at::date <= ?
+              AND (status = 'ai_handling' OR (status = 'completed' AND notes::text LIKE '%ai_context%'))
+        ");
+        $aiStats->execute([$from, $to]);
+        $ai = $aiStats->fetch();
+
+        // AI daily breakdown
+        $dailyAi = $db->prepare("
+            SELECT
+                created_at::date AS date,
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE order_id IS NOT NULL) AS orders,
+                COUNT(*) FILTER (WHERE agent_id IS NOT NULL) AS transfers,
+                COUNT(*) FILTER (WHERE status = 'missed') AS abandoned
+            FROM om_callcenter_calls
+            WHERE created_at::date >= ? AND created_at::date <= ?
+              AND (status = 'ai_handling' OR (status = 'completed' AND notes::text LIKE '%ai_context%'))
+            GROUP BY created_at::date
+            ORDER BY date
+        ");
+        $dailyAi->execute([$from, $to]);
+        $dailyRows = $dailyAi->fetchAll();
+
+        foreach ($dailyRows as &$d) {
+            $d['total'] = (int)$d['total'];
+            $d['orders'] = (int)$d['orders'];
+            $d['transfers'] = (int)$d['transfers'];
+            $d['abandoned'] = (int)$d['abandoned'];
+        }
+        unset($d);
+
+        // Common stores ordered via AI
+        $topStores = $db->prepare("
+            SELECT store_identified AS store, COUNT(*) AS count
+            FROM om_callcenter_calls
+            WHERE created_at::date >= ? AND created_at::date <= ?
+              AND store_identified IS NOT NULL AND store_identified != ''
+            GROUP BY store_identified
+            ORDER BY count DESC
+            LIMIT 10
+        ");
+        $topStores->execute([$from, $to]);
+        $stores = $topStores->fetchAll();
+
+        $totalAi = (int)$ai['total_ai_calls'];
+        $aiOrders = (int)$ai['ai_orders_completed'];
+        $aiTransfers = (int)$ai['ai_transferred_to_agent'];
+
+        response(true, [
+            'period' => ['from' => $from, 'to' => $to],
+            'totals' => [
+                'total_ai_calls' => $totalAi,
+                'ai_orders_completed' => $aiOrders,
+                'ai_resolved_no_order' => (int)$ai['ai_resolved_no_order'],
+                'ai_transferred_to_agent' => $aiTransfers,
+                'ai_abandoned' => (int)$ai['ai_abandoned'],
+                'avg_duration_seconds' => (int)$ai['avg_duration'],
+                'success_rate' => $totalAi > 0 ? round(($aiOrders / $totalAi) * 100, 1) : 0,
+                'transfer_rate' => $totalAi > 0 ? round(($aiTransfers / $totalAi) * 100, 1) : 0,
+            ],
+            'sentiment' => [
+                'positive' => (int)$ai['sentiment_positive'],
+                'neutral' => (int)$ai['sentiment_neutral'],
+                'negative' => (int)$ai['sentiment_negative'],
+                'frustrated' => (int)$ai['sentiment_frustrated'],
+            ],
+            'daily' => $dailyRows,
+            'top_stores' => $stores,
+        ]);
+    }
+
+    // =================== CALLS LIST ===================
+    if ($view === 'calls') {
+        $page = max(1, (int)($_GET['page'] ?? 1));
+        $limit = min(100, max(10, (int)($_GET['limit'] ?? 20)));
+        $offset = ($page - 1) * $limit;
+
+        $conditions = ['1=1'];
+        $params = [];
+
+        if (!empty($_GET['from'])) {
+            $conditions[] = 'c.created_at::date >= ?';
+            $params[] = $_GET['from'];
+        }
+        if (!empty($_GET['to'])) {
+            $conditions[] = 'c.created_at::date <= ?';
+            $params[] = $_GET['to'];
+        }
+        if (!empty($_GET['direction'])) {
+            $conditions[] = 'c.direction = ?';
+            $params[] = $_GET['direction'];
+        }
+        if (!empty($_GET['status'])) {
+            $conditions[] = 'c.status = ?';
+            $params[] = $_GET['status'];
+        }
+        if (!empty($_GET['agent_id'])) {
+            $conditions[] = 'c.agent_id = ?';
+            $params[] = (int)$_GET['agent_id'];
+        }
+        if (isset($_GET['has_order']) && $_GET['has_order'] !== '') {
+            if ($_GET['has_order'] === '1') {
+                $conditions[] = 'c.order_id IS NOT NULL';
+            } else {
+                $conditions[] = 'c.order_id IS NULL';
+            }
+        }
+        if (!empty($_GET['search'])) {
+            $search = '%' . $_GET['search'] . '%';
+            $conditions[] = '(c.customer_name ILIKE ? OR c.customer_phone ILIKE ? OR c.twilio_call_sid ILIKE ?)';
+            $params[] = $search;
+            $params[] = $search;
+            $params[] = $search;
+        }
+
+        $where = implode(' AND ', $conditions);
+
+        // Count
+        $countStmt = $db->prepare("SELECT COUNT(*) FROM om_callcenter_calls c WHERE {$where}");
+        $countStmt->execute($params);
+        $total = (int)$countStmt->fetchColumn();
+
+        // Fetch
+        $params[] = $limit;
+        $params[] = $offset;
+        $stmt = $db->prepare("
+            SELECT
+                c.id, c.twilio_call_sid, c.customer_phone, c.customer_id, c.customer_name,
+                c.agent_id, a.display_name AS agent_name,
+                c.direction, c.status, c.duration_seconds, c.recording_url,
+                c.ai_summary, c.ai_sentiment, c.ai_tags,
+                c.order_id, c.store_identified, c.callback_requested,
+                c.wait_time_seconds, c.started_at, c.ended_at, c.created_at
+            FROM om_callcenter_calls c
+            LEFT JOIN om_callcenter_agents a ON a.id = c.agent_id
+            WHERE {$where}
+            ORDER BY c.created_at DESC
+            LIMIT ? OFFSET ?
+        ");
+        $stmt->execute($params);
+        $calls = $stmt->fetchAll();
+
+        foreach ($calls as &$call) {
+            $call['id'] = (int)$call['id'];
+            $call['duration_seconds'] = (int)($call['duration_seconds'] ?? 0);
+            $call['wait_time_seconds'] = (int)($call['wait_time_seconds'] ?? 0);
+            $call['callback_requested'] = (bool)($call['callback_requested'] ?? false);
+            if ($call['ai_tags']) {
+                $call['ai_tags'] = json_decode($call['ai_tags'], true) ?: [];
+            } else {
+                $call['ai_tags'] = [];
+            }
+        }
+        unset($call);
+
+        response(true, [
+            'calls' => $calls,
+            'pagination' => [
+                'page' => $page,
+                'limit' => $limit,
+                'total' => $total,
+                'total_pages' => ceil($total / $limit),
+            ],
+        ]);
+    }
+
+    // =================== ORDERS BY DAY ===================
+    if ($view === 'orders_by_day') {
+        $from = $_GET['from'] ?? date('Y-m-d', strtotime('-7 days'));
+        $to = $_GET['to'] ?? date('Y-m-d');
+
+        $stmt = $db->prepare("
+            SELECT
+                date_added::date AS date,
+                COUNT(*) AS total_orders,
+                COALESCE(SUM(total), 0) AS revenue
+            FROM om_market_orders
+            WHERE source = 'callcenter'
+              AND date_added::date >= ? AND date_added::date <= ?
+            GROUP BY date_added::date
+            ORDER BY date
+        ");
+        $stmt->execute([$from, $to]);
+        $rows = $stmt->fetchAll();
+
+        foreach ($rows as &$r) {
+            $r['total_orders'] = (int)$r['total_orders'];
+            $r['revenue'] = round((float)$r['revenue'], 2);
+        }
+        unset($r);
+
+        response(true, ['period' => ['from' => $from, 'to' => $to], 'days' => $rows]);
+    }
+
+    response(false, null, "View invalida. Valores: realtime, today, history, agent_performance, calls_by_hour, ai_performance, calls, orders_by_day", 400);
 
 } catch (Exception $e) {
     error_log("[admin/callcenter/dashboard] Erro: " . $e->getMessage());
