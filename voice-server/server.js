@@ -52,11 +52,26 @@ const pool = new pg.Pool({
     user: process.env.DB_USER || 'love1',
     password: process.env.DB_PASS || process.env.DB_PASSWORD,
     database: process.env.DB_NAME || process.env.DB_DATABASE || 'love1',
-    max: 10,
-    idleTimeoutMillis: 30000,
+    max: 5,
+    idleTimeoutMillis: 10000,
+    connectionTimeoutMillis: 5000,
+    allowExitOnIdle: true,
 });
 
 pool.on('error', (err) => console.error('[voice] Pool error:', err.message));
+
+// Resilient query wrapper — retries once on connection errors
+async function dbQuery(text, params) {
+    try {
+        return await pool.query(text, params);
+    } catch (err) {
+        if (err.message.includes('terminated') || err.message.includes('Connection') || err.code === 'ECONNRESET') {
+            console.log('[voice] DB retry after connection error');
+            return await pool.query(text, params);
+        }
+        throw err;
+    }
+}
 
 // ─── Claude Client ──────────────────────────────────────────
 const anthropic = new Anthropic({ apiKey: CLAUDE_API_KEY });
@@ -317,7 +332,7 @@ async function executeTool(name, input, callState) {
 
 async function lookupCustomer(phone) {
     const suffix = phone.replace(/\D/g, '').slice(-11);
-    const custResult = await pool.query(
+    const custResult = await dbQuery(
         `SELECT customer_id, name, email, phone
          FROM om_customers
          WHERE REPLACE(REPLACE(phone, '+', ''), '-', '') LIKE $1
@@ -328,12 +343,12 @@ async function lookupCustomer(phone) {
         return { found: false };
     }
     const c = custResult.rows[0];
-    const addrResult = await pool.query(
+    const addrResult = await dbQuery(
         `SELECT address_id, label, street, number, complement, neighborhood, city, state, zipcode, is_default
          FROM om_customer_addresses WHERE customer_id = $1 AND is_active = 1
          ORDER BY is_default DESC`, [c.customer_id]
     );
-    const ordersResult = await pool.query(
+    const ordersResult = await dbQuery(
         `SELECT o.order_number, o.status, o.total, p.name as store_name,
                 TO_CHAR(o.date_added, 'DD/MM') as date
          FROM om_market_orders o
@@ -344,7 +359,7 @@ async function lookupCustomer(phone) {
     // Get cashback balance
     let cashback = 0;
     try {
-        const cbResult = await pool.query(
+        const cbResult = await dbQuery(
             `SELECT balance FROM om_cashback_wallet WHERE customer_id = $1`, [c.customer_id]
         );
         if (cbResult.rows.length > 0) cashback = parseFloat(cbResult.rows[0].balance || 0);
@@ -398,7 +413,7 @@ async function searchStores(name, city) {
 
     query += ` ORDER BY is_open DESC, rating DESC NULLS LAST LIMIT 10`;
 
-    const result = await pool.query(query, params);
+    const result = await dbQuery(query, params);
 
     // If multiple stores with same name in different cities, flag it
     const cities = [...new Set(result.rows.map(s => s.city).filter(Boolean))];
@@ -446,7 +461,7 @@ async function getNearbyStores(city, category, foodType) {
 
     query += ` ORDER BY is_open DESC, rating DESC NULLS LAST LIMIT 15`;
 
-    const result = await pool.query(query, params);
+    const result = await dbQuery(query, params);
     return {
         city,
         stores: result.rows.map(s => ({
@@ -466,7 +481,7 @@ async function getNearbyStores(city, category, foodType) {
 
 async function getStoreMenu(partnerId) {
     // Get store info
-    const storeResult = await pool.query(
+    const storeResult = await dbQuery(
         `SELECT name, delivery_fee, delivery_time_min, min_order_value, is_open
          FROM om_market_partners WHERE partner_id = $1`, [partnerId]
     );
@@ -474,7 +489,7 @@ async function getStoreMenu(partnerId) {
     if (!store) return { error: 'Loja não encontrada' };
 
     // Get products grouped by category
-    const prodResult = await pool.query(
+    const prodResult = await dbQuery(
         `SELECT p.id as product_id, p.name, p.description, p.price, p.available,
                 pc.name as category_name
          FROM om_market_products p
@@ -560,7 +575,7 @@ function getOrderSummary(callState) {
 }
 
 async function checkOrderStatus(customerId) {
-    const result = await pool.query(
+    const result = await dbQuery(
         `SELECT o.order_number, o.status, o.total, p.name as store_name,
                 TO_CHAR(o.date_added, 'HH24:MI') as time
          FROM om_market_orders o
@@ -775,7 +790,7 @@ async function fullCustomerLookup(phone) {
 
 async function createCallRecord(callSid, phone, customer) {
     try {
-        await pool.query(
+        await dbQuery(
             `INSERT INTO om_callcenter_calls
              (twilio_call_sid, customer_phone, customer_id, customer_name, direction, status, started_at)
              VALUES ($1, $2, $3, $4, 'inbound', 'ai_handling', NOW())
@@ -789,7 +804,7 @@ async function createCallRecord(callSid, phone, customer) {
 
 async function finalizeCall(callSid, status, summary) {
     try {
-        await pool.query(
+        await dbQuery(
             `UPDATE om_callcenter_calls
              SET status = $2, ai_summary = $3, ended_at = NOW(),
                  duration_seconds = EXTRACT(EPOCH FROM (NOW() - started_at))::int
