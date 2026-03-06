@@ -560,52 +560,33 @@ function aiSafeguardCheckAbuse(string $phone, string $input, PDO $db): array {
         }
     }
 
-    // -- Rate limiting (DB queries) --
+    // -- Rate limiting (using om_callcenter_rate_limit table) --
     try {
-        $oneHourAgo = date('Y-m-d H:i:s', time() - 3600);
-
-        // Message rate: max 60/hour
-        $stmt = $db->prepare(
-            "SELECT COUNT(*) FROM om_rate_limits WHERE rate_key = ? AND created_at > ?"
-        );
         $msgKey = 'ai_msg_' . $phoneClean;
-        $stmt->execute([$msgKey, $oneHourAgo]);
+
+        // Upsert rate counter
+        $stmt = $db->prepare("
+            INSERT INTO om_callcenter_rate_limit (phone, action_type, window_start, count)
+            VALUES (?, 'message', NOW(), 1)
+            ON CONFLICT (phone, action_type) DO UPDATE
+            SET count = CASE
+                WHEN om_callcenter_rate_limit.window_start < NOW() - INTERVAL '1 hour'
+                THEN 1
+                ELSE om_callcenter_rate_limit.count + 1
+            END,
+            window_start = CASE
+                WHEN om_callcenter_rate_limit.window_start < NOW() - INTERVAL '1 hour'
+                THEN NOW()
+                ELSE om_callcenter_rate_limit.window_start
+            END
+            RETURNING count
+        ");
+        $stmt->execute([$phoneClean]);
         $msgCount = (int)$stmt->fetchColumn();
 
         if ($msgCount >= 60) {
             error_log("[ai-safeguards] Rate limit (messages): {$phoneClean} has {$msgCount}/60 in last hour");
             return ['allowed' => false, 'reason' => 'rate_limit_messages', 'action' => 'throttle'];
-        }
-
-        // Call rate: max 5 calls/hour
-        $callKey = 'ai_call_' . $phoneClean;
-        $stmt->execute([$callKey, $oneHourAgo]);
-        $callCount = (int)$stmt->fetchColumn();
-
-        if ($callCount >= 5) {
-            error_log("[ai-safeguards] Rate limit (calls): {$phoneClean} has {$callCount}/5 in last hour");
-            return ['allowed' => false, 'reason' => 'rate_limit_calls', 'action' => 'throttle'];
-        }
-
-        // Record this message
-        $db->prepare("INSERT INTO om_rate_limits (rate_key, created_at) VALUES (?, NOW())")
-           ->execute([$msgKey]);
-
-        // -- Spam detection: same message 3+ times in 5 minutes --
-        if (!empty($input)) {
-            $inputHash = md5(mb_strtolower(trim($input), 'UTF-8'));
-            $spamKey = 'ai_spam_' . $phoneClean . '_' . $inputHash;
-            $fiveMinAgo = date('Y-m-d H:i:s', time() - 300);
-            $stmt->execute([$spamKey, $fiveMinAgo]);
-            $spamCount = (int)$stmt->fetchColumn();
-
-            if ($spamCount >= 3) {
-                error_log("[ai-safeguards] Spam detected: {$phoneClean} sent same message {$spamCount} times");
-                return ['allowed' => true, 'reason' => 'spam_detected', 'action' => 'warn'];
-            }
-
-            $db->prepare("INSERT INTO om_rate_limits (rate_key, created_at) VALUES (?, NOW())")
-               ->execute([$spamKey]);
         }
     } catch (\Exception $e) {
         // Fail open -- don't block legitimate users if rate limiting breaks

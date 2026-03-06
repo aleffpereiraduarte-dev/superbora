@@ -378,10 +378,10 @@ function getActiveStores(PDO $db, int $limit = 20): array
     $stmt = $db->prepare("
         SELECT p.partner_id, p.name, p.trade_name, p.categoria, p.is_open,
                p.delivery_fee, p.min_order_value, p.delivery_time_min,
-               p.rating, p.total_reviews
+               p.rating, p.total_orders
         FROM om_market_partners p
         WHERE p.status::text = '1'
-        ORDER BY p.is_open DESC, p.rating DESC NULLS LAST, p.total_reviews DESC NULLS LAST
+        ORDER BY p.is_open DESC, p.rating DESC NULLS LAST, p.total_orders DESC NULLS LAST
         LIMIT ?
     ");
     $stmt->execute([$limit]);
