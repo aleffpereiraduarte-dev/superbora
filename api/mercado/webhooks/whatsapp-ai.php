@@ -13,6 +13,7 @@
  *
  * Order flow steps:
  *   greeting -> identify_store -> take_order -> get_address -> get_payment -> confirm_order -> submit_order
+ *   modify_order (post-submit modification of pendente orders within 5 minutes)
  *
  * AI Markers parsed from Claude responses:
  *   [STORE:id:name]          — store identified
@@ -29,6 +30,14 @@
  *   [SAVE_ADDRESS]           — save new address to customer's saved addresses
  *   [COUPON:code]            — apply coupon code
  *   [USE_CASHBACK:value]     — use cashback balance (value or "all")
+ *   [SPLIT_PAYMENT:m1:v1:m2:v2] — split payment between two methods
+ *   [DIETARY:text]            — save dietary restrictions/allergies
+ *   [MODIFY_ADD_ITEM:product_id:name:price:qty] — add item to existing pendente order
+ *   [MODIFY_REMOVE_ITEM:index]  — remove item from existing pendente order
+ *   [MODIFY_ADDRESS:address]    — change delivery address on existing pendente order
+ *   [MODIFY_PAYMENT:method]     — change payment method on existing pendente order
+ *   [MODIFY_CANCEL]             — cancel the existing pendente order
+ *   [MODIFY_CONFIRM]            — confirm modifications are done
  */
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -68,6 +77,7 @@ define('STEP_GET_PAYMENT', 'get_payment');
 define('STEP_CONFIRM_ORDER', 'confirm_order');
 define('STEP_SUBMIT_ORDER', 'submit_order');
 define('STEP_SUPPORT', 'support');
+define('STEP_MODIFY_ORDER', 'modify_order');
 define('STEP_COMPLETED', 'completed');
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -212,6 +222,8 @@ function getDefaultContext(): array
         'address_lat'    => null,
         'address_lng'    => null,
         'payment_method' => null,
+        'payment_method_2' => null,
+        'payment_split' => null,
         'payment_change' => null,
         'coupon_code'    => null,
         'coupon_id'      => null,
@@ -230,6 +242,12 @@ function getDefaultContext(): array
         'sent_audio'         => false,
         'price_sensitive'    => false,
         'last_mentioned_store' => null,
+        'items_rated'        => false,
+        'item_rating_order_id' => null,
+        'referral_code'      => null,
+        'dietary_restrictions' => null,
+        'delivery_instructions' => '',
+        'tip'                => 0,
     ];
 }
 
@@ -432,6 +450,40 @@ function getOrderItems(PDO $db, int $orderId): array
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+/**
+ * Get customer's favorite stores.
+ * Uses om_market_favorites (explicit favorites) UNION with stores they've ordered from.
+ * Returns partner info with open/closed status.
+ */
+function getCustomerFavoriteStores(PDO $db, int $customerId, int $limit = 10): array
+{
+    try {
+        $stmt = $db->prepare("
+            SELECT DISTINCT p.partner_id, p.name, p.trade_name, p.categoria,
+                   p.is_open, p.rating, p.delivery_fee, p.delivery_time_min
+            FROM om_market_partners p
+            WHERE p.status::text = '1'
+              AND (
+                  p.partner_id IN (
+                      SELECT partner_id FROM om_market_favorites
+                      WHERE customer_id = ? AND partner_id IS NOT NULL
+                  )
+                  OR p.partner_id IN (
+                      SELECT DISTINCT partner_id FROM om_market_orders
+                      WHERE customer_id = ? AND status IN ('entregue', 'retirado')
+                  )
+              )
+            ORDER BY p.is_open DESC, p.rating DESC NULLS LAST
+            LIMIT ?
+        ");
+        $stmt->execute([$customerId, $customerId, $limit]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (\Exception $e) {
+        error_log(WABOT_LOG_PREFIX . " Error fetching favorite stores: " . $e->getMessage());
+        return [];
+    }
+}
+
 // STORE & MENU
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1547,6 +1599,28 @@ PROMPT;
         }
     }
 
+    // ── Fetch customer's favorite stores for prompt context ──────────
+    $favoritesBlock = '';
+    if ($customerInfo && !empty($customerInfo['customer_id'])) {
+        try {
+            $favStores = getCustomerFavoriteStores($db, (int)$customerInfo['customer_id'], 5);
+            if (!empty($favStores)) {
+                $favLines = [];
+                foreach ($favStores as $fs) {
+                    $fsName = $fs['trade_name'] ?: $fs['name'];
+                    $fsStatus = ((int)($fs['is_open'] ?? 0) === 1) ? 'Aberta' : 'Fechada';
+                    $fsCat = $fs['categoria'] ?? '';
+                    $fsRating = !empty($fs['rating']) ? number_format((float)$fs['rating'], 1) : '-';
+                    $favLines[] = "- [{$fs['partner_id']}] {$fsName} ({$fsCat}) — {$fsStatus} — nota {$fsRating}";
+                }
+                $favoritesBlock = "\n\nLOJAS FAVORITAS DO CLIENTE:\n" . implode("\n", $favLines);
+                $favoritesBlock .= "\nDICA: Se o cliente nao souber o que pedir, sugira as favoritas dele! O cliente pode digitar 'favoritos' pra ver a lista completa.";
+            }
+        } catch (\Exception $e) {
+            // Non-critical
+        }
+    }
+
     switch ($step) {
         case STEP_GREETING:
             // Only show stores if we know the customer's location
@@ -1580,6 +1654,20 @@ PROMPT;
                 $returningHint = "\n\nDICA: O cliente ja pediu antes (ultimo pedido: {$lastStore}). Mencione isso! Ex: \"Opa {$customerName}! Vai querer pedir da {$lastStore} de novo?\"";
             } elseif ($isReturning) {
                 $returningHint = "\n\nDICA: Voce conhece esse cliente! Chame pelo nome: \"{$customerName}\".";
+            }
+
+            // Build referral hint
+            $referralHint = '';
+            if (!empty($context['referral_code'])) {
+                $referralHint = "\n\nINDICACAO: O cliente tem codigo de indicacao *{$context['referral_code']}*. Se surgir oportunidade natural, lembre que ele pode indicar amigos e ganhar cashback!";
+            }
+
+            // Build dietary restrictions hint
+            $dietaryHint = '';
+            if (!empty($context['dietary_restrictions'])) {
+                $dietaryHint = "\n\nRESTRICOES ALIMENTARES DO CLIENTE: {$context['dietary_restrictions']}";
+                $dietaryHint .= "\n- Considere isso ao sugerir lojas e produtos";
+                $dietaryHint .= "\n- Se o cliente pedir algo possivelmente incompativel, alerte gentilmente";
             }
 
             // Build active orders proactive hint with ETA
@@ -1664,10 +1752,14 @@ DETECCAO AUTOMATICA DE INTENCAO:
 9. Se pedir "atendente"/"humano" -> use [TRANSFER_HUMAN]
 10. Se o cliente informar cidade/bairro/localizacao -> use [CITY:nome_da_cidade] para salvar e mostre lojas da regiao
 11. Se o cliente disser "agendar"/"marcar"/"pra amanha"/"pra depois"/"pra sabado"/"daqui a X horas" -> detectar intencao de agendamento e confirmar: "Pode agendar sim! Vamos montar o pedido e depois definimos o horario certinho"
+12. Se o cliente disser "favoritos"/"minhas lojas"/"meus favoritos" -> responda com as lojas favoritas dele (listadas acima se houver) e diga que pode digitar o nome da loja pra pedir
 {$locationHint}
 {$storeList}
 {$returningHint}
+{$referralHint}
+{$dietaryHint}
 {$promoBlock}
+{$favoritesBlock}
 
 INSTRUCOES:
 - SEMPRE esteja a frente: o cliente mandou "oi"? Voce ja sabe se ele tem pedido ativo. Fale sobre isso PRIMEIRO.
@@ -1686,6 +1778,7 @@ MARCADORES DISPONIVEIS:
 - [CITY:nome_da_cidade] — quando o cliente informar cidade/bairro/localizacao
 - [SWITCH_TO_ORDER] — mudar para modo suporte (status, reclamacao, cancelamento)
 - [TRANSFER_HUMAN] — se pedir atendente humano
+- [DIETARY:restricoes_texto] — quando o cliente mencionar restricoes alimentares/alergias (ex: [DIETARY:vegetariano, sem gluten]). Salva automaticamente.
 STEP;
             break;
 
@@ -1718,6 +1811,7 @@ OBJETIVO: Ajudar o cliente a escolher uma loja.
 {$identifyLocationHint}
 {$storeList}
 {$promoBlock}
+{$favoritesBlock}
 
 INSTRUCOES:
 - Se nao sabe a localizacao do cliente, PERGUNTE PRIMEIRO antes de listar lojas
@@ -1826,6 +1920,16 @@ STEP;
                 }
             }
 
+            // Build dietary restrictions warning for ordering
+            $dietaryBlockTakeOrder = '';
+            if (!empty($context['dietary_restrictions'])) {
+                $dietaryBlockTakeOrder = "\n\nRESTRICOES ALIMENTARES DO CLIENTE: *{$context['dietary_restrictions']}*";
+                $dietaryBlockTakeOrder .= "\n- Avise se algum item do cardapio pode conter alergenos relevantes";
+                $dietaryBlockTakeOrder .= "\n- Sugira apenas itens compativeis com as restricoes";
+                $dietaryBlockTakeOrder .= "\n- Se o cliente pedir algo possivelmente incompativel, alerte gentilmente: 'Esse item pode conter [alergeno], tudo bem pra voce?'";
+                $dietaryBlockTakeOrder .= "\n- NAO invente informacoes nutricionais — se nao tiver certeza, diga: 'Nao tenho certeza se esse item contem [alergeno], quer que eu confirme?'";
+            }
+
             $stepInstructions = <<<STEP
 ETAPA ATUAL: Montar pedido
 
@@ -1839,6 +1943,7 @@ LOJA: *{$partnerName}*
 CARRINHO ATUAL:
 {$cartSummary}{$appliedCouponBlock}
 {$upsellInstructions}
+{$dietaryBlockTakeOrder}
 
 INSTRUCOES:
 - Ajude o cliente a escolher itens do cardapio de forma natural e amigavel
@@ -1877,6 +1982,7 @@ MARCADORES:
 - [COUPON:CODIGO] — aplicar cupom de desconto (ex: [COUPON:PROMO10])
 - [NEXT_STEP] — finalizar montagem do pedido
 - [TRANSFER_HUMAN] — transferir para humano
+- [DIETARY:restricoes_texto] — quando o cliente mencionar restricoes alimentares/alergias durante o pedido
 STEP;
             break;
 
@@ -1952,7 +2058,12 @@ INSTRUCOES:
   * Se faltar informacao importante (numero, bairro), pergunte: "Qual o numero?"
   * NAO exija endereco perfeito — se tem rua e numero, ja da pra entregar
 - Se o endereco e NOVO (digitado pelo cliente, nao era dos salvos), use [SAVE_ADDRESS] junto com [NEXT_STEP]
-- Quando tiver o endereco confirmado, use [NEXT_STEP]
+- Quando tiver o endereco confirmado, pergunte naturalmente sobre instrucoes de entrega:
+  "Alguma instrucao pro entregador? Tipo portao, campainha, referencia..."
+  * Se o cliente der instrucoes, use [DELIVERY_INSTRUCTIONS:texto] (ex: [DELIVERY_INSTRUCTIONS:Portao azul, tocar campainha 2x])
+  * Se disser que nao tem ("nao", "nada", "ta de boa"), siga em frente sem o marcador
+  * Se o cliente ja incluiu instrucoes junto com o endereco, extraia e use o marcador
+- Depois das instrucoes (ou se nao tiver), use [NEXT_STEP]
 - Tambem pergunte sobre agendamento se ainda nao foi definido: "Quer pra agora ou pra depois?"
   * Se o cliente quiser agendar, entenda a data/hora natural e use [SCHEDULE:YYYY-MM-DDTHH:MM]
   * Entenda linguagem natural: "amanha ao meio dia", "sabado as 19h", "daqui a 2 horas", "pra agora"
@@ -1967,6 +2078,7 @@ MARCADORES:
 - [NEXT_STEP] — endereco obtido, avancar para pagamento
 - [SCHEDULE:YYYY-MM-DDTHH:MM] — agendar pedido (ex: [SCHEDULE:2026-03-07T12:00])
 - [SAVE_ADDRESS] — salvar endereco novo (use quando endereco foi digitado, nao dos salvos)
+- [DELIVERY_INSTRUCTIONS:texto] — instrucoes de entrega (ex: [DELIVERY_INSTRUCTIONS:Portao azul, campainha 2x])
 - [TRANSFER_HUMAN] — transferir para humano
 STEP;
             break;
@@ -2004,14 +2116,29 @@ INSTRUCOES:
 - Se o cliente escolher dinheiro, pergunte "Precisa de troco? Se sim, pra quanto?"
 - Se o cliente tiver saldo de cashback (informado abaixo), mencione de forma natural: "Ah, e voce tem R$ X,XX de cashback! Quer usar no pedido?"
 - Se o cliente quiser usar cashback, use [USE_CASHBACK:valor] com o valor que ele quer usar (ou o total do saldo)
-- Quando tiver a forma de pagamento, use [NEXT_STEP]
+- Quando tiver a forma de pagamento, pergunte sobre gorjeta de forma leve e natural:
+  "Quer deixar uma gorjeta pro entregador? Opcoes: R$2, R$5, R$10, ou outro valor. Pode pular tambem!"
+  * Se o cliente quiser dar gorjeta, use [TIP:valor] (ex: [TIP:5.00])
+  * Se nao quiser ("nao", "pular", "sem gorjeta"), siga em frente sem o marcador
+  * Aceite valores entre R$1 e R$50
+- Depois da gorjeta (ou se nao quiser), use [NEXT_STEP]
 - Aceite variacoes: "pix"/"transferencia", "cartao"/"credito"/"debito", "dinheiro"/"na entrega"/"cash"
 - Se o cliente perguntar sobre o PIX, explique: "O link do PIX e gerado automaticamente depois que o pedido for confirmado"
 - Se o cliente mencionar "cupom" ou "desconto" aqui, tambem aceite com [COUPON:CODIGO]
+- PAGAMENTO DIVIDIDO: Se o cliente quiser dividir o pagamento entre dois metodos (ex: "metade pix metade dinheiro", "R\$30 no pix e o resto cartao", "divide pix e dinheiro"), aceite!
+  * Use o marcador [SPLIT_PAYMENT:metodo1:valor1:metodo2:valor2]
+  * Exemplo: cliente diz "R\$30 no pix e o resto dinheiro" e o total e R\$50 -> [SPLIT_PAYMENT:pix:30.00:dinheiro:20.00]
+  * Exemplo: "metade pix metade cartao" e total R\$60 -> [SPLIT_PAYMENT:pix:30.00:cartao:30.00]
+  * Metodos validos: pix, cartao, dinheiro
+  * Os valores devem somar o total do pedido (com tolerancia de R\$1)
+  * Se o cliente nao especificar valores, divida igualmente
+  * Para pagamento normal (um metodo so), NAO use SPLIT_PAYMENT
 
 MARCADORES:
 - [COUPON:CODIGO] — aplicar cupom de desconto
 - [USE_CASHBACK:valor] — usar cashback (ex: [USE_CASHBACK:5.50] ou [USE_CASHBACK:all] para usar tudo)
+- [TIP:valor] — gorjeta pro entregador (ex: [TIP:5.00])
+- [SPLIT_PAYMENT:metodo1:valor1:metodo2:valor2] — dividir pagamento (ex: [SPLIT_PAYMENT:pix:30.00:dinheiro:20.00])
 - [NEXT_STEP] — pagamento definido, ir para confirmacao
 - [TRANSFER_HUMAN] — transferir para humano
 STEP;
@@ -2035,10 +2162,22 @@ STEP;
             // Cashback usage
             $useCashback = (float)($context['use_cashback'] ?? 0);
 
-            $total = max(0, $subtotal - $couponDiscount - $useCashback + $deliveryFee + $serviceFee);
+            // Tip for delivery driver
+            $tipAmount = (float)($context['tip'] ?? 0);
+
+            $total = max(0, $subtotal - $couponDiscount - $useCashback + $deliveryFee + $serviceFee + $tipAmount);
 
             $address = $context['address'] ?? 'Nao informado';
-            $payment = formatPaymentLabel($context['payment_method'] ?? '');
+            // Build payment display — handle split payment
+            if (!empty($context['payment_split']) && !empty($context['payment_method_2'])) {
+                $splitAmounts = $context['payment_split'];
+                $payment = 'R$ ' . number_format($splitAmounts[0], 2, ',', '.') . ' no '
+                    . formatPaymentLabel($context['payment_method'] ?? '')
+                    . ' + R$ ' . number_format($splitAmounts[1], 2, ',', '.') . ' em '
+                    . formatPaymentLabel($context['payment_method_2']);
+            } else {
+                $payment = formatPaymentLabel($context['payment_method'] ?? '');
+            }
             $partnerName = $context['partner_name'] ?? 'a loja';
 
             $subtotalFmt = number_format($subtotal, 2, ',', '.');
@@ -2056,6 +2195,9 @@ STEP;
             }
             if ($useCashback > 0) {
                 $discountLines .= "\nCashback usado: -R\$ " . number_format($useCashback, 2, ',', '.');
+            }
+            if ($tipAmount > 0) {
+                $discountLines .= "\nGorjeta pro entregador: R\$ " . number_format($tipAmount, 2, ',', '.');
             }
 
             $changeInfo = '';
@@ -2104,6 +2246,39 @@ STEP;
                 $schedulingDisplay = "\nAgendado para: *{$schedFmt}*";
             }
 
+            // Build delivery instructions display
+            $deliveryInstructionsDisplay = '';
+            if (!empty($context['delivery_instructions'])) {
+                $deliveryInstructionsDisplay = "\nInstrucoes de entrega: " . $context['delivery_instructions'];
+            }
+
+            // Calculate ETA for display during confirmation
+            $etaDisplay = '';
+            $confirmPartnerId = (int)($context['partner_id'] ?? 0);
+            if ($confirmPartnerId > 0 && empty($context['scheduled_for'])) {
+                try {
+                    $distKm = 5.0; // default distance estimate
+                    if (!empty($context['address_lat']) && !empty($context['address_lng'])) {
+                        $pLocStmt = $db->prepare("SELECT latitude, longitude FROM om_market_partners WHERE partner_id = ?");
+                        $pLocStmt->execute([$confirmPartnerId]);
+                        $pLoc = $pLocStmt->fetch(PDO::FETCH_ASSOC);
+                        if ($pLoc && $pLoc['latitude'] && $pLoc['longitude']) {
+                            $dLat = deg2rad((float)$pLoc['latitude'] - (float)$context['address_lat']);
+                            $dLon = deg2rad((float)$pLoc['longitude'] - (float)$context['address_lng']);
+                            $a = sin($dLat/2) * sin($dLat/2) + cos(deg2rad((float)$context['address_lat'])) * cos(deg2rad((float)$pLoc['latitude'])) * sin($dLon/2) * sin($dLon/2);
+                            $distKm = 6371 * 2 * atan2(sqrt($a), sqrt(1 - $a));
+                        }
+                    }
+                    $etaMins = calculateSmartETA($db, $confirmPartnerId, $distKm, 'pendente');
+                    if ($etaMins > 0) {
+                        $etaMax = $etaMins + 10;
+                        $etaDisplay = "\nTempo estimado de entrega: *{$etaMins}-{$etaMax} min*";
+                    }
+                } catch (\Throwable $e) {
+                    error_log(WABOT_LOG_PREFIX . " ETA calculation error at confirm: " . $e->getMessage());
+                }
+            }
+
             $stepInstructions = <<<STEP
 ETAPA ATUAL: Confirmacao do pedido
 
@@ -2117,13 +2292,14 @@ Taxa de entrega: R\$ {$deliveryFeeFmt}
 Taxa de servico: R\$ {$serviceFeeFmt}
 *Total: R\$ {$totalFmt}*
 
-Endereco: {$address}
-Pagamento: {$payment}{$changeInfo}{$schedulingDisplay}
+Endereco: {$address}{$deliveryInstructionsDisplay}
+Pagamento: {$payment}{$changeInfo}{$schedulingDisplay}{$etaDisplay}
 {$lastChanceHint}
 {$cashbackHint}
 
 INSTRUCOES:
 - Mostre o resumo completo do pedido formatado bonito com WhatsApp formatting
+- Se houver tempo estimado de entrega, mencione naturalmente: "Chega em aproximadamente X-Y min"
 - Inclua todas as linhas de desconto (cupom e/ou cashback) se houver
 - Se o pedido e agendado, destaque o horario: "Pedido agendado pra *[data/hora]*"
 - Termine com algo tipo "Ta tudo certo? Confirma pra mim!"
@@ -2208,6 +2384,123 @@ INSTRUCOES:
 MARCADORES:
 - [SWITCH_TO_ORDER] — voltar para modo pedido
 - [CANCEL_ORDER:order_id] — cancelar pedido (use o order_id real, nao o order_number)
+- [TRANSFER_HUMAN] — transferir para humano
+STEP;
+            break;
+
+        case STEP_MODIFY_ORDER:
+            $modifyOrderId = (int)($context['modify_order_id'] ?? 0);
+            $modifyOrderNumber = $context['modify_order_number'] ?? '???';
+            $modifyPartnerName = $context['modify_partner_name'] ?? 'a loja';
+            $modifyPartnerId = (int)($context['modify_partner_id'] ?? 0);
+
+            // Fetch current order details
+            $modifyOrderItems = '';
+            $modifyAddress = 'Nao informado';
+            $modifyPayment = 'Nao informado';
+            $modifyTotal = '0,00';
+            if ($modifyOrderId > 0) {
+                try {
+                    $modOrdStmt = $db->prepare("
+                        SELECT delivery_address, forma_pagamento, total, subtotal,
+                               delivery_fee, service_fee
+                        FROM om_market_orders WHERE order_id = ?
+                    ");
+                    $modOrdStmt->execute([$modifyOrderId]);
+                    $modOrd = $modOrdStmt->fetch(PDO::FETCH_ASSOC);
+                    if ($modOrd) {
+                        $modifyAddress = $modOrd['delivery_address'] ?? 'Nao informado';
+                        $modifyPayment = formatPaymentLabel($modOrd['forma_pagamento'] ?? '');
+                        $modifyTotal = number_format((float)$modOrd['total'], 2, ',', '.');
+                    }
+
+                    $modItemsStmt = $db->prepare("
+                        SELECT oi.product_id, oi.name, oi.price, oi.quantity, oi.total
+                        FROM om_market_order_items oi
+                        WHERE oi.order_id = ?
+                        ORDER BY oi.id
+                    ");
+                    $modItemsStmt->execute([$modifyOrderId]);
+                    $modOrdItems = $modItemsStmt->fetchAll(PDO::FETCH_ASSOC);
+                    $modItemLines = [];
+                    foreach ($modOrdItems as $idx => $moi) {
+                        $moiQty = (int)$moi['quantity'];
+                        $moiPrice = number_format((float)$moi['price'], 2, ',', '.');
+                        $modItemLines[] = "[{$idx}] {$moiQty}x {$moi['name']} — R\$ {$moiPrice} (product_id={$moi['product_id']})";
+                    }
+                    $modifyOrderItems = implode("\n", $modItemLines);
+                } catch (\Throwable $e) {
+                    error_log(WABOT_LOG_PREFIX . " Error fetching order details for modify: " . $e->getMessage());
+                }
+            }
+
+            // Load store menu for adding items
+            $menuHint = '';
+            if ($modifyPartnerId > 0) {
+                try {
+                    $menuStmt = $db->prepare("
+                        SELECT product_id, name, price, special_price
+                        FROM om_market_products
+                        WHERE partner_id = ? AND status::text = '1' AND quantity > 0
+                        ORDER BY sort_order, name LIMIT 30
+                    ");
+                    $menuStmt->execute([$modifyPartnerId]);
+                    $menuProducts = $menuStmt->fetchAll(PDO::FETCH_ASSOC);
+                    if ($menuProducts) {
+                        $menuLines = [];
+                        foreach ($menuProducts as $mp) {
+                            $mpPrice = ((float)($mp['special_price'] ?? 0) > 0 && (float)$mp['special_price'] < (float)$mp['price'])
+                                ? (float)$mp['special_price'] : (float)$mp['price'];
+                            $mpPriceFmt = number_format($mpPrice, 2, ',', '.');
+                            $menuLines[] = "[{$mp['product_id']}] {$mp['name']} — R\$ {$mpPriceFmt}";
+                        }
+                        $menuHint = "\n\nPRODUTOS DISPONIVEIS PARA ADICIONAR:\n" . implode("\n", $menuLines);
+                    }
+                } catch (\Throwable $e) {}
+            }
+
+            $stepInstructions = <<<STEP
+ETAPA ATUAL: Modificacao do pedido #{$modifyOrderNumber}
+
+O cliente quer modificar o pedido #{$modifyOrderNumber} que ainda esta pendente (aguardando aceite da loja).
+
+PEDIDO ATUAL:
+Loja: *{$modifyPartnerName}*
+Itens:
+{$modifyOrderItems}
+
+Total: R\$ {$modifyTotal}
+Endereco: {$modifyAddress}
+Pagamento: {$modifyPayment}
+{$menuHint}
+
+O CLIENTE PODE:
+1. Adicionar item — use [MODIFY_ADD_ITEM:product_id:nome:preco:qty]
+2. Remover item — use [MODIFY_REMOVE_ITEM:indice] (indice da lista acima, comecando em 0)
+3. Trocar endereco — use [MODIFY_ADDRESS:novo endereco completo]
+4. Trocar pagamento — use [MODIFY_PAYMENT:metodo] (pix, cartao, dinheiro)
+5. Cancelar o pedido — use [MODIFY_CANCEL]
+6. Confirmar alteracoes (dizer que esta tudo ok) — use [MODIFY_CONFIRM]
+
+INSTRUCOES:
+- Mostre o pedido atual e pergunte o que quer mudar
+- Se o cliente pedir para adicionar algo, procure no menu e use [MODIFY_ADD_ITEM:product_id:nome:preco:qty]
+- Se pedir para remover, identifique o item pelo nome e use [MODIFY_REMOVE_ITEM:indice]
+- Se quiser trocar endereco, pegue o novo endereco e use [MODIFY_ADDRESS:endereco]
+- Se quiser trocar pagamento, confirme o metodo e use [MODIFY_PAYMENT:metodo]
+- Se quiser cancelar, confirme: "Tem certeza?" e use [MODIFY_CANCEL]
+- Quando o cliente disser "pronto", "ok", "isso", "beleza", use [MODIFY_CONFIRM]
+- Aceite multiplas alteracoes na mesma conversa
+- Sempre mostre o resumo atualizado depois de cada alteracao
+- Se o cliente disser algo nao relacionado a modificacao, lembre que esta no modo de alteracao
+
+MARCADORES:
+- [MODIFY_ADD_ITEM:product_id:nome:preco:qty] — adicionar item ao pedido
+- [MODIFY_REMOVE_ITEM:indice] — remover item pelo indice
+- [MODIFY_ADDRESS:endereco] — trocar endereco de entrega
+- [MODIFY_PAYMENT:metodo] — trocar forma de pagamento (pix/cartao/dinheiro)
+- [MODIFY_CANCEL] — cancelar o pedido
+- [MODIFY_CONFIRM] — confirmar alteracoes e sair do modo modificacao
 - [TRANSFER_HUMAN] — transferir para humano
 STEP;
             break;
@@ -2886,6 +3179,78 @@ function handleQuickCommand(PDO $db, string $message, array $conversation, array
         }
     }
 
+    // Favorite stores — list customer's favorite stores
+    if (in_array($msg, ['favoritos', 'minhas lojas', 'lojas favoritas', 'meus favoritos', 'favoritas'])) {
+        if (!$customerId) {
+            return [
+                'response' => "Preciso identificar sua conta para ver seus favoritos. Qual seu nome ou email cadastrado?",
+                'context'  => $context,
+            ];
+        }
+
+        $favStores = getCustomerFavoriteStores($db, $customerId);
+        if (empty($favStores)) {
+            return [
+                'response' => "Voce ainda nao tem lojas favoritas. Depois de pedir, a loja e adicionada automaticamente!\n\nQuer ver as lojas disponiveis? Digite *cardapio*",
+                'context'  => $context,
+            ];
+        }
+
+        $lines = ["\xE2\xAD\x90 *Suas lojas favoritas:*\n"];
+        foreach ($favStores as $s) {
+            $name = $s['trade_name'] ?: $s['name'];
+            $status = ((int)($s['is_open'] ?? 0) === 1) ? "\xF0\x9F\x9F\xA2 Aberta" : "\xF0\x9F\x94\xB4 Fechada";
+            $cat = $s['categoria'] ?? '';
+            $rating = !empty($s['rating']) ? number_format((float)$s['rating'], 1) : '-';
+            $lines[] = "\xE2\x80\xA2 *{$name}* ({$cat}) — {$status} — nota {$rating}";
+        }
+        $lines[] = "\nDigite o nome da loja para fazer um pedido!";
+
+        return [
+            'response' => implode("\n", $lines),
+            'context'  => $context,
+        ];
+    }
+
+    // Favoritar — add current store to favorites
+    if (in_array($msg, ['favoritar', 'favoritar loja', 'salvar loja', 'salvar favorito'])) {
+        if (!$customerId) {
+            return [
+                'response' => "Preciso identificar sua conta. Qual seu nome ou email?",
+                'context'  => $context,
+            ];
+        }
+
+        $partnerId = $context['partner_id'] ?? null;
+        $partnerName = $context['partner_name'] ?? null;
+
+        if (!$partnerId) {
+            return [
+                'response' => "Nao tem nenhuma loja selecionada no momento. Comece um pedido primeiro e depois voce pode favoritar a loja!",
+                'context'  => $context,
+            ];
+        }
+
+        try {
+            $db->prepare("
+                INSERT INTO om_market_favorites (customer_id, partner_id, created_at)
+                VALUES (?, ?, NOW())
+                ON CONFLICT DO NOTHING
+            ")->execute([$customerId, $partnerId]);
+
+            return [
+                'response' => "\xE2\xAD\x90 *{$partnerName}* adicionada aos seus favoritos!\n\nDigite *favoritos* a qualquer momento para ver suas lojas favoritas.",
+                'context'  => $context,
+            ];
+        } catch (\Exception $e) {
+            error_log(WABOT_LOG_PREFIX . " Error adding favorite: " . $e->getMessage());
+            return [
+                'response' => "Desculpe, houve um erro ao salvar o favorito. Tente novamente.",
+                'context'  => $context,
+            ];
+        }
+    }
+
     // Addresses management
     if (in_array($msg, ['enderecos', 'meus enderecos', 'endereço', 'meus endereços'])) {
         if (!$customerId) {
@@ -2935,6 +3300,219 @@ function handleQuickCommand(PDO $db, string $message, array $conversation, array
 
         return [
             'response' => "Show! Reativei suas notificacoes. Voce vai receber novidades e promos das suas lojas favoritas! \xF0\x9F\x8E\x89",
+            'context'  => $context,
+        ];
+    }
+
+
+    // Modify recent order — alterar pedido, mudar pedido, trocar endereco, adicionar item, modificar pedido
+    $modifyPhrases = [
+        'alterar pedido', 'mudar pedido', 'trocar endereco', 'trocar endereço',
+        'adicionar item', 'modificar pedido', 'editar pedido', 'mudar endereco',
+        'mudar endereço', 'alterar endereco', 'alterar endereço', 'trocar pagamento',
+        'mudar pagamento',
+    ];
+    if (in_array($msg, $modifyPhrases)) {
+        if (!$customerId) {
+            return [
+                'response' => "Preciso identificar sua conta para alterar o pedido. Qual seu nome ou email cadastrado?",
+                'context'  => array_merge($context, ['mode' => 'support', 'step' => STEP_SUPPORT]),
+            ];
+        }
+
+        // Look up customer's most recent pendente order created < 5 minutes ago
+        try {
+            $modStmt = $db->prepare("
+                SELECT o.order_id, o.order_number, o.partner_id, o.partner_name,
+                       o.total, o.subtotal, o.delivery_fee, o.service_fee,
+                       o.delivery_address, o.forma_pagamento, o.status,
+                       o.coupon_discount, o.cashback_discount, o.date_added
+                FROM om_market_orders o
+                WHERE o.customer_id = ?
+                  AND o.status = 'pendente'
+                  AND o.date_added >= NOW() - INTERVAL '5 minutes'
+                ORDER BY o.date_added DESC
+                LIMIT 1
+            ");
+            $modStmt->execute([$customerId]);
+            $modOrder = $modStmt->fetch(PDO::FETCH_ASSOC);
+        } catch (\Exception $e) {
+            error_log(WABOT_LOG_PREFIX . " Error looking up modifiable order: " . $e->getMessage());
+            $modOrder = null;
+        }
+
+        if (!$modOrder) {
+            return [
+                'response' => "Seu pedido ja esta sendo preparado e nao pode ser alterado. Posso te ajudar com algo mais?",
+                'context'  => $context,
+            ];
+        }
+
+        // Fetch order items for display
+        $modItems = getOrderItems($db, (int)$modOrder['order_id']);
+        $modItemLines = [];
+        foreach ($modItems as $mi => $mItem) {
+            $mQty = (int)($mItem['quantity'] ?? 1);
+            $mPrice = number_format((float)($mItem['price'] ?? 0), 2, ',', '.');
+            $mName = $mItem['name'] ?? 'Item';
+            $modItemLines[] = "{$mi}. {$mQty}x {$mName} — R\$ {$mPrice}";
+        }
+        $modItemsText = !empty($modItemLines) ? implode("\n", $modItemLines) : '(sem itens)';
+        $modTotalFmt = number_format((float)$modOrder['total'], 2, ',', '.');
+        $modPayment = formatPaymentLabel($modOrder['forma_pagamento'] ?? '');
+
+        $modResponse = "Encontrei seu pedido *#{$modOrder['order_number']}* ({$modOrder['partner_name']}):\n\n"
+            . "{$modItemsText}\n\n"
+            . "Total: *R\$ {$modTotalFmt}*\n"
+            . "Endereco: {$modOrder['delivery_address']}\n"
+            . "Pagamento: {$modPayment}\n\n"
+            . "O que voce quer alterar?\n"
+            . "\xE2\x80\xA2 Adicionar ou remover item\n"
+            . "\xE2\x80\xA2 Trocar endereco de entrega\n"
+            . "\xE2\x80\xA2 Trocar forma de pagamento\n"
+            . "\xE2\x80\xA2 Cancelar o pedido";
+
+        $modContext = array_merge($context, [
+            'step'            => STEP_MODIFY_ORDER,
+            'mode'            => 'ordering',
+            'modify_order_id' => (int)$modOrder['order_id'],
+            'modify_order_number' => $modOrder['order_number'],
+            'modify_partner_id'   => (int)$modOrder['partner_id'],
+            'modify_partner_name' => $modOrder['partner_name'],
+        ]);
+
+        return [
+            'response' => $modResponse,
+            'context'  => $modContext,
+        ];
+    }
+
+    // Referral / share code
+    if (in_array($msg, ['indicar', 'indicar amigo', 'indicar amigos', 'compartilhar', 'referral', 'meu codigo', 'codigo indicacao', 'indicacao'])) {
+        if (!$customerId) {
+            return [
+                'response' => "Preciso identificar sua conta para gerar seu codigo de indicacao. Qual seu nome ou email cadastrado?",
+                'context'  => $context,
+            ];
+        }
+
+        try {
+            // Check if customer already has a referral code
+            $codeStmt = $db->prepare("SELECT code FROM referral_codes WHERE user_id = ? AND active = true LIMIT 1");
+            $codeStmt->execute([$customerId]);
+            $existingCode = $codeStmt->fetchColumn();
+
+            if ($existingCode) {
+                $referralCode = $existingCode;
+            } else {
+                // Generate new code: SUPERBORA-{FIRST_NAME}-{RANDOM4}
+                $nameStmt = $db->prepare("SELECT name FROM om_market_customers WHERE customer_id = ? LIMIT 1");
+                $nameStmt->execute([$customerId]);
+                $custName = $nameStmt->fetchColumn() ?: 'AMIGO';
+                $firstName = strtoupper(explode(' ', trim($custName))[0]);
+                // Remove accents and non-alpha chars
+                $firstName = preg_replace('/[^A-Z]/', '', iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $firstName));
+                if (empty($firstName)) $firstName = 'AMIGO';
+                $random4 = strtoupper(substr(bin2hex(random_bytes(2)), 0, 4));
+                $referralCode = "SUPERBORA-{$firstName}-{$random4}";
+
+                // Insert into referral_codes
+                $db->prepare("
+                    INSERT INTO referral_codes (user_id, code, uses_count, max_uses, active, created_at)
+                    VALUES (?, ?, 0, 0, true, NOW())
+                    ON CONFLICT (user_id) DO UPDATE SET active = true
+                ")->execute([$customerId, $referralCode]);
+            }
+
+            // Save to context
+            $context['referral_code'] = $referralCode;
+
+            $shareMsg = "Ei! Conhece o SuperBora? Faz seu primeiro pedido com meu codigo *{$referralCode}* e nos dois ganhamos R\$10 de cashback! Baixe o app: superbora.com.br/r/{$referralCode}";
+
+            return [
+                'response' => "\xF0\x9F\x8E\x81 *Seu codigo de indicacao:* {$referralCode}\n\n"
+                    . "Compartilhe com amigos! Quando eles fizerem o primeiro pedido usando seu codigo, voces dois ganham *R\$10 de cashback*!\n\n"
+                    . "\xF0\x9F\x94\x97 Link: superbora.com.br/r/{$referralCode}\n\n"
+                    . "\xF0\x9F\x93\xB2 *Mensagem pronta pra compartilhar:*\n_{$shareMsg}_\n\n"
+                    . "E so copiar e enviar pros amigos!",
+                'context'  => $context,
+            ];
+        } catch (\Exception $e) {
+            error_log(WABOT_LOG_PREFIX . " Referral code error: " . $e->getMessage());
+            return [
+                'response' => "Desculpe, houve um erro ao gerar seu codigo de indicacao. Tente novamente em instantes.",
+                'context'  => $context,
+            ];
+        }
+    }
+
+    // Dietary restrictions / allergy management
+    if (in_array($msg, ['alergia', 'alergias', 'dieta', 'restricao', 'restricoes', 'restricao alimentar', 'restricoes alimentares', 'vegetariano', 'vegano', 'sem gluten', 'sem lactose', 'intolerancia', 'celiaco'])) {
+        // Check if customer has saved dietary preferences via ai-memory
+        $existingDietary = null;
+        $memories = aiMemoryLoad($db, $phone, $customerId);
+        if (!empty($memories['preference']['dietary_restriction']['value'])) {
+            $existingDietary = $memories['preference']['dietary_restriction']['value'];
+        }
+
+        if ($existingDietary) {
+            // If the message IS a specific restriction and different from saved, add it
+            $specificRestrictions = ['vegetariano', 'vegano', 'sem gluten', 'sem lactose', 'celiaco'];
+            if (in_array($msg, $specificRestrictions) && stripos($existingDietary, $msg) === false) {
+                $newDietary = $existingDietary . ', ' . $msg;
+                aiMemorySave($db, $phone, $customerId, 'preference', 'dietary_restriction', $newDietary);
+                $context['dietary_restrictions'] = $newDietary;
+                return [
+                    'response' => "\xE2\x9C\x85 Adicionei *{$msg}* as suas restricoes.\n\n"
+                        . "\xF0\x9F\x8D\xBD *Suas restricoes alimentares atualizadas:* {$newDietary}\n\n"
+                        . "Vou considerar isso em todas as suas compras! Se quiser alterar, e so me mandar *restricoes* ou *alergias*.",
+                    'context'  => $context,
+                ];
+            }
+
+            return [
+                'response' => "\xF0\x9F\x8D\xBD *Suas restricoes alimentares salvas:* {$existingDietary}\n\n"
+                    . "Quer alterar? Me diga quais restricoes voce tem agora.\n"
+                    . "Exemplos: vegetariano, vegano, sem gluten, sem lactose, sem amendoim, sem frutos do mar, intolerancia a lactose...\n\n"
+                    . "Ou digite *limpar restricoes* pra remover todas.",
+                'context'  => $context,
+            ];
+        } else {
+            // If the message IS a specific restriction, save it directly
+            $specificRestrictions = ['vegetariano', 'vegano', 'sem gluten', 'sem lactose', 'celiaco'];
+            if (in_array($msg, $specificRestrictions)) {
+                aiMemorySave($db, $phone, $customerId, 'preference', 'dietary_restriction', $msg);
+                $context['dietary_restrictions'] = $msg;
+                return [
+                    'response' => "\xE2\x9C\x85 Anotado! Salvei *{$msg}* como sua restricao alimentar.\n\n"
+                        . "Vou considerar isso nas suas compras e avisar se algum item pode nao ser adequado pra voce.\n"
+                        . "Pra alterar, e so mandar *restricoes* ou *alergias* a qualquer momento.",
+                    'context'  => $context,
+                ];
+            }
+
+            return [
+                'response' => "\xF0\x9F\x8D\xBD Voce nao tem restricoes alimentares salvas.\n\n"
+                    . "Quais restricoes ou alergias voce tem? Exemplos:\n"
+                    . "\xE2\x80\xA2 Vegetariano\n"
+                    . "\xE2\x80\xA2 Vegano\n"
+                    . "\xE2\x80\xA2 Sem gluten\n"
+                    . "\xE2\x80\xA2 Sem lactose\n"
+                    . "\xE2\x80\xA2 Sem amendoim\n"
+                    . "\xE2\x80\xA2 Sem frutos do mar\n"
+                    . "\xE2\x80\xA2 Intolerancia a lactose\n\n"
+                    . "Me diga suas restricoes que eu salvo pra sempre considerar nos seus pedidos!",
+                'context'  => $context,
+            ];
+        }
+    }
+
+    // Clear dietary restrictions
+    if (in_array($msg, ['limpar restricoes', 'remover restricoes', 'sem restricoes'])) {
+        aiMemorySave($db, $phone, $customerId, 'preference', 'dietary_restriction', '');
+        $context['dietary_restrictions'] = null;
+        return [
+            'response' => "\xE2\x9C\x85 Suas restricoes alimentares foram removidas. Se precisar adicionar novamente, e so mandar *alergias* ou *restricoes*.",
             'context'  => $context,
         ];
     }
@@ -3091,6 +3669,44 @@ function processAiResponse(PDO $db, array $conversation, string $aiResponse, str
         $markersFound[] = "CANCEL_ORDER:{$cancelOrderId}";
         handleOrderCancellation($db, $cancelOrderId, $customerId);
         $cleanedResponse = str_replace($m[0], '', $cleanedResponse);
+
+    // Parse [SPLIT_PAYMENT:method1:amount1:method2:amount2] — split payment between two methods
+    if (preg_match('/\[SPLIT_PAYMENT:([a-z_]+):([0-9.]+):([a-z_]+):([0-9.]+)\]/', $aiResponse, $m)) {
+        $splitMethod1 = trim($m[1]);
+        $splitAmount1 = (float)$m[2];
+        $splitMethod2 = trim($m[3]);
+        $splitAmount2 = (float)$m[4];
+        $markersFound[] = "SPLIT_PAYMENT:{$splitMethod1}:{$splitAmount1}:{$splitMethod2}:{$splitAmount2}";
+
+        $validSplitMethods = ['pix', 'cartao', 'dinheiro', 'credito', 'debito'];
+        if (in_array($splitMethod1, $validSplitMethods) && in_array($splitMethod2, $validSplitMethods)) {
+            // Validate amounts sum approximately to total (allow R$1 tolerance)
+            $currentSubtotal = calculateSubtotal($context['items'] ?? []);
+            $currentDeliveryFee = (float)($context['delivery_fee'] ?? WABOT_DEFAULT_DELIVERY_FEE);
+            $currentServiceFee = WABOT_SERVICE_FEE;
+            $currentCouponDiscount = (float)($context['coupon_discount'] ?? 0);
+            $currentCashback = (float)($context['use_cashback'] ?? 0);
+            $expectedTotal = max(0, $currentSubtotal - $currentCouponDiscount - $currentCashback + $currentDeliveryFee + $currentServiceFee);
+            $splitSum = $splitAmount1 + $splitAmount2;
+
+            if (abs($splitSum - $expectedTotal) <= 1.00) {
+                $context['payment_method'] = $splitMethod1;
+                $context['payment_method_2'] = $splitMethod2;
+                $context['payment_split'] = [$splitAmount1, $splitAmount2];
+            } else {
+                error_log(WABOT_LOG_PREFIX . " Split payment amounts ({$splitSum}) don't match total ({$expectedTotal})");
+                // Store anyway with adjusted amounts proportional to total
+                $ratio = $expectedTotal / max(0.01, $splitSum);
+                $context['payment_method'] = $splitMethod1;
+                $context['payment_method_2'] = $splitMethod2;
+                $context['payment_split'] = [round($splitAmount1 * $ratio, 2), round($splitAmount2 * $ratio, 2)];
+            }
+        } else {
+            error_log(WABOT_LOG_PREFIX . " Invalid split payment methods: {$splitMethod1}, {$splitMethod2}");
+        }
+
+        $cleanedResponse = str_replace($m[0], '', $cleanedResponse);
+    }
     }
 
     // Parse [TRANSFER_HUMAN]
@@ -3271,6 +3887,34 @@ function processAiResponse(PDO $db, array $conversation, string $aiResponse, str
         $cleanedResponse = str_replace('[SAVE_ADDRESS]', '', $cleanedResponse);
     }
 
+    // Parse [DELIVERY_INSTRUCTIONS:text] — delivery instructions for driver
+    if (preg_match('/\[DELIVERY_INSTRUCTIONS:([^\]]+)\]/', $aiResponse, $m)) {
+        $instrText = trim($m[1]);
+        $markersFound[] = "DELIVERY_INSTRUCTIONS:{$instrText}";
+        // Limit to 500 chars (matches DB column size)
+        $context['delivery_instructions'] = mb_substr($instrText, 0, 500);
+        $cleanedResponse = str_replace($m[0], '', $cleanedResponse);
+        error_log(WABOT_LOG_PREFIX . " Delivery instructions set: {$instrText}");
+    }
+
+    // Parse [TIP:value] — tip for delivery driver
+    if (preg_match('/\[TIP:([^\]]+)\]/', $aiResponse, $m)) {
+        $tipInput = trim($m[1]);
+        $markersFound[] = "TIP:{$tipInput}";
+        $cleanedResponse = str_replace($m[0], '', $cleanedResponse);
+
+        $tipValue = (float)str_replace(',', '.', $tipInput);
+        if ($tipValue < 0) $tipValue = 0;
+        if ($tipValue > 50) $tipValue = 50;
+        $context['tip'] = round($tipValue, 2);
+
+        if ($tipValue > 0) {
+            $tipFmt = number_format($tipValue, 2, ',', '.');
+            $cleanedResponse .= "\n\nGorjeta de *R\$ {$tipFmt}* adicionada pro entregador!";
+            error_log(WABOT_LOG_PREFIX . " Tip set: R\$ {$tipValue}");
+        }
+    }
+
     // Parse [COUPON:code]
     if (preg_match('/\[COUPON:([^\]]+)\]/', $aiResponse, $m)) {
         $couponCode = strtoupper(trim($m[1]));
@@ -3346,12 +3990,260 @@ function processAiResponse(PDO $db, array $conversation, string $aiResponse, str
         }
     }
 
+    // Parse [DIETARY:restrictions_text] — save dietary restrictions from conversation
+    if (preg_match('/\[DIETARY:([^\]]+)\]/', $aiResponse, $m)) {
+        $dietaryText = trim($m[1]);
+        $markersFound[] = "DIETARY:{$dietaryText}";
+        $cleanedResponse = str_replace($m[0], '', $cleanedResponse);
+
+        if (!empty($dietaryText) && $customerId) {
+            aiMemorySave($db, $phone, $customerId, 'preference', 'dietary_restriction', $dietaryText);
+            $context['dietary_restrictions'] = $dietaryText;
+            error_log(WABOT_LOG_PREFIX . " Dietary restrictions saved: {$dietaryText}");
+        }
+    }
+
+
+    // ── ORDER MODIFICATION MARKERS ──────────────────────────────────────
+
+    // Parse [MODIFY_ADD_ITEM:product_id:name:price:qty]
+    if (preg_match_all('/\[MODIFY_ADD_ITEM:(\d+):([^:]+):([0-9.]+):(\d+)\]/', $aiResponse, $matches, PREG_SET_ORDER)) {
+        $modifyOrderId = (int)($context['modify_order_id'] ?? 0);
+        foreach ($matches as $m) {
+            $markersFound[] = "MODIFY_ADD_ITEM:{$m[1]}:{$m[2]}:{$m[3]}:{$m[4]}";
+            $cleanedResponse = str_replace($m[0], '', $cleanedResponse);
+
+            if ($modifyOrderId > 0) {
+                $addProductId = (int)$m[1];
+                $addQty = max(1, (int)$m[4]);
+                try {
+                    $db->beginTransaction();
+                    // Verify order is still pendente
+                    $chkStmt = $db->prepare("SELECT status FROM om_market_orders WHERE order_id = ? FOR UPDATE");
+                    $chkStmt->execute([$modifyOrderId]);
+                    $chkStatus = $chkStmt->fetchColumn();
+                    if ($chkStatus !== 'pendente') {
+                        $db->rollBack();
+                        $cleanedResponse .= "\n\n_O pedido ja foi aceito pela loja e nao pode mais ser alterado._";
+                        $context['step'] = STEP_GREETING;
+                        unset($context['modify_order_id'], $context['modify_order_number'], $context['modify_partner_id'], $context['modify_partner_name']);
+                        continue;
+                    }
+                    // Validate product
+                    $prodStmt = $db->prepare("SELECT product_id, name, price, special_price, partner_id, quantity AS stock FROM om_market_products WHERE product_id = ? AND status::text = '1'");
+                    $prodStmt->execute([$addProductId]);
+                    $addProduct = $prodStmt->fetch(PDO::FETCH_ASSOC);
+                    if (!$addProduct || (int)$addProduct['partner_id'] !== (int)($context['modify_partner_id'] ?? 0)) {
+                        $db->rollBack();
+                        $cleanedResponse .= "\n\n_Produto nao encontrado ou nao pertence a esta loja._";
+                        continue;
+                    }
+                    if ((int)$addProduct['stock'] < $addQty) {
+                        $db->rollBack();
+                        $cleanedResponse .= "\n\n_Estoque insuficiente para {$addProduct['name']}._";
+                        continue;
+                    }
+                    $addPrice = ((float)($addProduct['special_price'] ?? 0) > 0 && (float)$addProduct['special_price'] < (float)$addProduct['price'])
+                        ? (float)$addProduct['special_price'] : (float)$addProduct['price'];
+                    $addItemTotal = round($addPrice * $addQty, 2);
+                    // Insert order item
+                    $db->prepare("
+                        INSERT INTO om_market_order_items (order_id, product_id, name, quantity, price, total)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    ")->execute([$modifyOrderId, $addProductId, $addProduct['name'], $addQty, $addPrice, $addItemTotal]);
+                    // Decrement stock
+                    $db->prepare("UPDATE om_market_products SET quantity = quantity - ? WHERE product_id = ? AND quantity >= ?")->execute([$addQty, $addProductId, $addQty]);
+                    // Recalculate order total
+                    $db->prepare("
+                        UPDATE om_market_orders SET
+                            subtotal = (SELECT COALESCE(SUM(total), 0) FROM om_market_order_items WHERE order_id = ?),
+                            total = (SELECT COALESCE(SUM(total), 0) FROM om_market_order_items WHERE order_id = ?) + delivery_fee + service_fee - COALESCE(coupon_discount, 0) - COALESCE(cashback_discount, 0)
+                        WHERE order_id = ?
+                    ")->execute([$modifyOrderId, $modifyOrderId, $modifyOrderId]);
+                    // Add timeline entry
+                    $db->prepare("INSERT INTO om_market_order_timeline (order_id, status, description, created_at) VALUES (?, 'pendente', ?, NOW())")
+                        ->execute([$modifyOrderId, "Item adicionado via WhatsApp: {$addQty}x {$addProduct['name']}"]);
+                    $db->commit();
+                    error_log(WABOT_LOG_PREFIX . " MODIFY: Added {$addQty}x {$addProduct['name']} to order {$modifyOrderId}");
+                } catch (\Exception $e) {
+                    if ($db->inTransaction()) $db->rollBack();
+                    error_log(WABOT_LOG_PREFIX . " MODIFY_ADD_ITEM error: " . $e->getMessage());
+                    $cleanedResponse .= "\n\n_Erro ao adicionar item. Tente novamente._";
+                }
+            }
+        }
+    }
+
+    // Parse [MODIFY_REMOVE_ITEM:index]
+    if (preg_match_all('/\[MODIFY_REMOVE_ITEM:(\d+)\]/', $aiResponse, $matches, PREG_SET_ORDER)) {
+        $modifyOrderId = (int)($context['modify_order_id'] ?? 0);
+        foreach ($matches as $m) {
+            $removeIdx = (int)$m[1];
+            $markersFound[] = "MODIFY_REMOVE_ITEM:{$removeIdx}";
+            $cleanedResponse = str_replace($m[0], '', $cleanedResponse);
+
+            if ($modifyOrderId > 0) {
+                try {
+                    $db->beginTransaction();
+                    $chkStmt = $db->prepare("SELECT status FROM om_market_orders WHERE order_id = ? FOR UPDATE");
+                    $chkStmt->execute([$modifyOrderId]);
+                    $chkStatus = $chkStmt->fetchColumn();
+                    if ($chkStatus !== 'pendente') {
+                        $db->rollBack();
+                        $cleanedResponse .= "\n\n_O pedido ja foi aceito pela loja e nao pode mais ser alterado._";
+                        $context['step'] = STEP_GREETING;
+                        unset($context['modify_order_id'], $context['modify_order_number'], $context['modify_partner_id'], $context['modify_partner_name']);
+                        continue;
+                    }
+                    // Get items ordered by id to match index
+                    $itemsStmt = $db->prepare("SELECT id, product_id, name, quantity, price FROM om_market_order_items WHERE order_id = ? ORDER BY id");
+                    $itemsStmt->execute([$modifyOrderId]);
+                    $orderItems = $itemsStmt->fetchAll(PDO::FETCH_ASSOC);
+                    if (!isset($orderItems[$removeIdx])) {
+                        $db->rollBack();
+                        $cleanedResponse .= "\n\n_Indice de item invalido._";
+                        continue;
+                    }
+                    $removedItem = $orderItems[$removeIdx];
+                    // Check we won't remove the last item
+                    if (count($orderItems) <= 1) {
+                        $db->rollBack();
+                        $cleanedResponse .= "\n\n_Nao posso remover o unico item do pedido. Se quiser cancelar, me avise._";
+                        continue;
+                    }
+                    // Restore stock
+                    $db->prepare("UPDATE om_market_products SET quantity = quantity + ? WHERE product_id = ?")->execute([(int)$removedItem['quantity'], (int)$removedItem['product_id']]);
+                    // Delete item
+                    $db->prepare("DELETE FROM om_market_order_items WHERE id = ?")->execute([$removedItem['id']]);
+                    // Recalculate order total
+                    $db->prepare("
+                        UPDATE om_market_orders SET
+                            subtotal = (SELECT COALESCE(SUM(total), 0) FROM om_market_order_items WHERE order_id = ?),
+                            total = (SELECT COALESCE(SUM(total), 0) FROM om_market_order_items WHERE order_id = ?) + delivery_fee + service_fee - COALESCE(coupon_discount, 0) - COALESCE(cashback_discount, 0)
+                        WHERE order_id = ?
+                    ")->execute([$modifyOrderId, $modifyOrderId, $modifyOrderId]);
+                    $db->prepare("INSERT INTO om_market_order_timeline (order_id, status, description, created_at) VALUES (?, 'pendente', ?, NOW())")
+                        ->execute([$modifyOrderId, "Item removido via WhatsApp: {$removedItem['name']}"]);
+                    $db->commit();
+                    error_log(WABOT_LOG_PREFIX . " MODIFY: Removed {$removedItem['name']} from order {$modifyOrderId}");
+                } catch (\Exception $e) {
+                    if ($db->inTransaction()) $db->rollBack();
+                    error_log(WABOT_LOG_PREFIX . " MODIFY_REMOVE_ITEM error: " . $e->getMessage());
+                    $cleanedResponse .= "\n\n_Erro ao remover item. Tente novamente._";
+                }
+            }
+        }
+    }
+
+    // Parse [MODIFY_ADDRESS:new_address]
+    if (preg_match('/\[MODIFY_ADDRESS:([^\]]+)\]/', $aiResponse, $m)) {
+        $newAddress = trim($m[1]);
+        $markersFound[] = "MODIFY_ADDRESS:{$newAddress}";
+        $cleanedResponse = str_replace($m[0], '', $cleanedResponse);
+        $modifyOrderId = (int)($context['modify_order_id'] ?? 0);
+
+        if ($modifyOrderId > 0 && !empty($newAddress)) {
+            try {
+                $db->beginTransaction();
+                $chkStmt = $db->prepare("SELECT status FROM om_market_orders WHERE order_id = ? FOR UPDATE");
+                $chkStmt->execute([$modifyOrderId]);
+                $chkStatus = $chkStmt->fetchColumn();
+                if ($chkStatus !== 'pendente') {
+                    $db->rollBack();
+                    $cleanedResponse .= "\n\n_O pedido ja foi aceito pela loja e nao pode mais ser alterado._";
+                    $context['step'] = STEP_GREETING;
+                    unset($context['modify_order_id'], $context['modify_order_number'], $context['modify_partner_id'], $context['modify_partner_name']);
+                } else {
+                    $db->prepare("UPDATE om_market_orders SET delivery_address = ?, shipping_address = ? WHERE order_id = ?")
+                        ->execute([$newAddress, $newAddress, $modifyOrderId]);
+                    $db->prepare("INSERT INTO om_market_order_timeline (order_id, status, description, created_at) VALUES (?, 'pendente', ?, NOW())")
+                        ->execute([$modifyOrderId, "Endereco alterado via WhatsApp para: {$newAddress}"]);
+                    $db->commit();
+                    error_log(WABOT_LOG_PREFIX . " MODIFY: Address changed on order {$modifyOrderId}");
+                }
+            } catch (\Exception $e) {
+                if ($db->inTransaction()) $db->rollBack();
+                error_log(WABOT_LOG_PREFIX . " MODIFY_ADDRESS error: " . $e->getMessage());
+                $cleanedResponse .= "\n\n_Erro ao trocar endereco. Tente novamente._";
+            }
+        }
+    }
+
+    // Parse [MODIFY_PAYMENT:method]
+    if (preg_match('/\[MODIFY_PAYMENT:([^\]]+)\]/', $aiResponse, $m)) {
+        $newPayment = mb_strtolower(trim($m[1]));
+        $markersFound[] = "MODIFY_PAYMENT:{$newPayment}";
+        $cleanedResponse = str_replace($m[0], '', $cleanedResponse);
+        $modifyOrderId = (int)($context['modify_order_id'] ?? 0);
+
+        $paymentMap = ['pix' => 'pix', 'cartao' => 'credito', 'credito' => 'credito', 'debito' => 'debito', 'dinheiro' => 'dinheiro'];
+        $dbPayment = $paymentMap[$newPayment] ?? null;
+
+        if ($modifyOrderId > 0 && $dbPayment) {
+            try {
+                $db->beginTransaction();
+                $chkStmt = $db->prepare("SELECT status FROM om_market_orders WHERE order_id = ? FOR UPDATE");
+                $chkStmt->execute([$modifyOrderId]);
+                $chkStatus = $chkStmt->fetchColumn();
+                if ($chkStatus !== 'pendente') {
+                    $db->rollBack();
+                    $cleanedResponse .= "\n\n_O pedido ja foi aceito pela loja e nao pode mais ser alterado._";
+                    $context['step'] = STEP_GREETING;
+                    unset($context['modify_order_id'], $context['modify_order_number'], $context['modify_partner_id'], $context['modify_partner_name']);
+                } else {
+                    $db->prepare("UPDATE om_market_orders SET forma_pagamento = ? WHERE order_id = ?")
+                        ->execute([$dbPayment, $modifyOrderId]);
+                    $db->prepare("INSERT INTO om_market_order_timeline (order_id, status, description, created_at) VALUES (?, 'pendente', ?, NOW())")
+                        ->execute([$modifyOrderId, "Pagamento alterado via WhatsApp para: " . formatPaymentLabel($newPayment)]);
+                    $db->commit();
+                    error_log(WABOT_LOG_PREFIX . " MODIFY: Payment changed to {$dbPayment} on order {$modifyOrderId}");
+                }
+            } catch (\Exception $e) {
+                if ($db->inTransaction()) $db->rollBack();
+                error_log(WABOT_LOG_PREFIX . " MODIFY_PAYMENT error: " . $e->getMessage());
+                $cleanedResponse .= "\n\n_Erro ao trocar pagamento. Tente novamente._";
+            }
+        } elseif (!$dbPayment) {
+            $cleanedResponse .= "\n\n_Forma de pagamento invalida. Use: pix, cartao ou dinheiro._";
+        }
+    }
+
+    // Parse [MODIFY_CANCEL]
+    if (strpos($aiResponse, '[MODIFY_CANCEL]') !== false) {
+        $markersFound[] = 'MODIFY_CANCEL';
+        $cleanedResponse = str_replace('[MODIFY_CANCEL]', '', $cleanedResponse);
+        $modifyOrderId = (int)($context['modify_order_id'] ?? 0);
+
+        if ($modifyOrderId > 0) {
+            $cancelled = handleOrderCancellation($db, $modifyOrderId, $customerId);
+            if ($cancelled) {
+                error_log(WABOT_LOG_PREFIX . " MODIFY: Order {$modifyOrderId} cancelled");
+            } else {
+                $cleanedResponse .= "\n\n_Nao foi possivel cancelar o pedido. Pode ser que ja tenha sido aceito pela loja._";
+            }
+        }
+        // Reset context
+        $context['step'] = STEP_GREETING;
+        unset($context['modify_order_id'], $context['modify_order_number'], $context['modify_partner_id'], $context['modify_partner_name']);
+    }
+
+    // Parse [MODIFY_CONFIRM]
+    if (strpos($aiResponse, '[MODIFY_CONFIRM]') !== false) {
+        $markersFound[] = 'MODIFY_CONFIRM';
+        $cleanedResponse = str_replace('[MODIFY_CONFIRM]', '', $cleanedResponse);
+        // Reset context back to greeting
+        $context['step'] = STEP_GREETING;
+        error_log(WABOT_LOG_PREFIX . " MODIFY: Modifications confirmed for order " . ($context['modify_order_id'] ?? '?'));
+        unset($context['modify_order_id'], $context['modify_order_number'], $context['modify_partner_id'], $context['modify_partner_name']);
+    }
+
     // Update subtotal and total with discounts
     $context['subtotal'] = calculateSubtotal($context['items'] ?? []);
     $couponDisc = (float)($context['coupon_discount'] ?? 0);
     $cashbackUse = (float)($context['use_cashback'] ?? 0);
     $delivFee = !empty($context['coupon_free_delivery']) ? 0 : (float)($context['delivery_fee'] ?? WABOT_DEFAULT_DELIVERY_FEE);
-    $context['total'] = max(0, $context['subtotal'] - $couponDisc - $cashbackUse + $delivFee + WABOT_SERVICE_FEE);
+    $tipVal = (float)($context['tip'] ?? 0);
+    $context['total'] = max(0, $context['subtotal'] - $couponDisc - $cashbackUse + $delivFee + WABOT_SERVICE_FEE + $tipVal);
 
     // Clean up response text
     $cleanedResponse = trim(preg_replace('/\n{3,}/', "\n\n", $cleanedResponse));
@@ -3480,8 +4372,21 @@ function submitWhatsAppOrder(PDO $db, array $conversation): array
     $items = $context['items'];
     $address = $context['address'];
     $paymentMethod = $context['payment_method'];
+    $paymentMethod2 = $context['payment_method_2'] ?? null;
+    $paymentSplit = $context['payment_split'] ?? null;
     $paymentChange = (float)($context['payment_change'] ?? 0);
     $notes = $context['notes'] ?? 'Pedido via WhatsApp AI';
+
+    // Append split payment info to notes if applicable
+    if ($paymentMethod2 && $paymentSplit) {
+        $splitNote = 'Pagamento dividido: '
+            . formatPaymentLabel($paymentMethod) . ' R$' . number_format($paymentSplit[0], 2, ',', '.')
+            . ' + ' . formatPaymentLabel($paymentMethod2) . ' R$' . number_format($paymentSplit[1], 2, ',', '.');
+        $notes = $notes ? ($notes . ' | ' . $splitNote) : $splitNote;
+    }
+
+    $deliveryInstructions = $context['delivery_instructions'] ?? '';
+    $tipAmount = (float)($context['tip'] ?? 0);
 
     // ── Verify partner is active and open ───────────────────────────────
 
@@ -3599,7 +4504,11 @@ function submitWhatsAppOrder(PDO $db, array $conversation): array
         $cashbackDiscount = min($useCashback, $cbBalance, $maxCb);
     }
 
-    $total = round(max(0, $subtotal - $couponDiscount - $cashbackDiscount + $deliveryFee + $serviceFee), 2);
+    // Cap tip between 0 and 50
+    if ($tipAmount < 0) $tipAmount = 0;
+    if ($tipAmount > 50) $tipAmount = 50;
+
+    $total = round(max(0, $subtotal - $couponDiscount - $cashbackDiscount + $deliveryFee + $serviceFee + $tipAmount), 2);
 
     // Validate payment method
     $validPayments = ['pix', 'cartao', 'dinheiro', 'credito', 'debito'];
@@ -3690,6 +4599,7 @@ function submitWhatsAppOrder(PDO $db, array $conversation): array
                 is_pickup, delivery_type, partner_categoria,
                 timer_started, timer_expires,
                 is_scheduled, scheduled_date, scheduled_time,
+                delivery_instructions, tip_amount,
                 source, date_added
             ) VALUES (
                 ?, ?, ?, ?,
@@ -3701,6 +4611,7 @@ function submitWhatsAppOrder(PDO $db, array $conversation): array
                 0, ?, ?,
                 ?, ?,
                 ?, ?, ?,
+                ?, ?,
                 'whatsapp_ai', NOW()
             )
             RETURNING order_id
@@ -3716,6 +4627,7 @@ function submitWhatsAppOrder(PDO $db, array $conversation): array
             $deliveryType, $partner['categoria'] ?? 'mercado',
             $timerStarted, $timerExpires,
             $isScheduled, $scheduledDate, $scheduledTime,
+            $deliveryInstructions ?: null, $tipAmount > 0 ? $tipAmount : 0,
         ]);
 
         $orderId = (int)$orderStmt->fetchColumn();
@@ -3829,12 +4741,28 @@ function submitWhatsAppOrder(PDO $db, array $conversation): array
             . "Numero: *#{$orderNumber}*\n"
             . "Loja: {$partnerName}\n"
             . "Total: *R\$ {$totalFmt}*\n"
-            . "Pagamento: " . formatPaymentLabel($paymentMethod) . "\n";
+            . "Pagamento: " . ($paymentMethod2 && $paymentSplit
+                ? 'R$ ' . number_format($paymentSplit[0], 2, ',', '.') . ' ' . formatPaymentLabel($paymentMethod)
+                  . ' + R$ ' . number_format($paymentSplit[1], 2, ',', '.') . ' ' . formatPaymentLabel($paymentMethod2)
+                : formatPaymentLabel($paymentMethod)) . "\n";
 
         // Add scheduling info to confirmation
         if ($isScheduled && $scheduledDate) {
             $schedDisplayFmt = date('d/m/Y \\a\\s H:i', strtotime($scheduledDate . ' ' . ($scheduledTime ?? '00:00')));
             $confirmMsg .= "Agendado para: *{$schedDisplayFmt}*\n";
+        }
+
+        // Add ETA to confirmation message
+        if (!$isScheduled) {
+            try {
+                $confirmEtaMins = calculateSmartETA($db, $partnerId, 5.0, 'pendente');
+                if ($confirmEtaMins > 0) {
+                    $confirmEtaMax = $confirmEtaMins + 10;
+                    $confirmMsg .= "Previsao de entrega: *{$confirmEtaMins}-{$confirmEtaMax} min*\n";
+                }
+            } catch (\Throwable $e) {
+                // Non-critical
+            }
         }
 
         $confirmMsg .= "\n";
@@ -4444,6 +5372,22 @@ function handleWhatsAppMessage(
         return;
     }
 
+    // ── Item rating response handling (after store rating completed) ────
+    if (!empty($context['item_rating_order_id']) && $customerId) {
+        $itemResult = processItemRatingResponse($db, $phone, $customerId, $message, $context);
+        if ($itemResult !== null) {
+            $response = $itemResult['response'];
+            if (!empty($itemResult['clear_item_rating'])) {
+                $context['item_rating_order_id'] = null;
+                $context['items_rated'] = true;
+            }
+            updateConversationContext($db, $conversationId, $context);
+            saveMessage($db, $conversationId, 'outbound', 'ai', $response);
+            sendWhatsAppResponse($phone, $response);
+            return;
+        }
+    }
+
     // ── Rating response handling (before Claude) ────────────────────────
     // If there's a pending rating request, try to process the response
     if (!empty($context['rating_requested_for_order']) && $customerId) {
@@ -4453,6 +5397,11 @@ function handleWhatsAppMessage(
             if (!empty($ratingResult['clear_rating_context'])) {
                 $context['rating_requested_for_order'] = null;
                 $context['rating_pending_value'] = null;
+            }
+            // Set item rating context if the store rating triggered item follow-up
+            if (!empty($ratingResult['item_rating_order_id'])) {
+                $context['item_rating_order_id'] = (int)$ratingResult['item_rating_order_id'];
+                $context['items_rated'] = false;
             }
             updateConversationContext($db, $conversationId, $context);
             saveMessage($db, $conversationId, 'outbound', 'ai', $response);
@@ -4518,6 +5467,29 @@ function handleWhatsAppMessage(
     $step = $context['step'] ?? STEP_GREETING;
     $customerInfo = $customerId ? lookupCustomerByPhone($db, $phone) : null;
     $memoryContext = aiMemoryBuildContext($db, $phone, $customerId);
+
+    // Load dietary restrictions from memory into context (if not already set)
+    if (empty($context['dietary_restrictions'])) {
+        $dietaryMemories = aiMemoryLoad($db, $phone, $customerId);
+        if (!empty($dietaryMemories['preference']['dietary_restriction']['value'])) {
+            $dietaryVal = $dietaryMemories['preference']['dietary_restriction']['value'];
+            if (!empty(trim($dietaryVal))) {
+                $context['dietary_restrictions'] = $dietaryVal;
+            }
+        }
+    }
+
+    // Load referral code into context (if not already set)
+    if (empty($context['referral_code']) && $customerId) {
+        try {
+            $refStmt = $db->prepare("SELECT code FROM referral_codes WHERE user_id = ? AND active = true LIMIT 1");
+            $refStmt->execute([$customerId]);
+            $refCode = $refStmt->fetchColumn();
+            if ($refCode) {
+                $context['referral_code'] = $refCode;
+            }
+        } catch (\Exception $e) { /* non-critical */ }
+    }
 
     // Get menu if in ordering steps
     $menuText = null;
@@ -4754,6 +5726,22 @@ function handleWhatsAppMessage(
             if (!empty($context['scheduled_for'])) {
                 $schedSuccessFmt = date('d/m/Y \\a\\s H:i', strtotime($context['scheduled_for']));
                 $successMsg .= "Agendado para: *{$schedSuccessFmt}*\n";
+            }
+
+            // Add ETA to success message
+            if (empty($context['scheduled_for'])) {
+                try {
+                    $successPartnerId = (int)($context['partner_id'] ?? 0);
+                    if ($successPartnerId > 0) {
+                        $etaSuccessMins = calculateSmartETA($db, $successPartnerId, 5.0, 'pendente');
+                        if ($etaSuccessMins > 0) {
+                            $etaSuccessMax = $etaSuccessMins + 10;
+                            $successMsg .= "Previsao de entrega: *{$etaSuccessMins}-{$etaSuccessMax} min*\n";
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    // Non-critical
+                }
             }
 
             $successMsg .= "\nVoce recebera atualizacoes aqui no WhatsApp.\n"

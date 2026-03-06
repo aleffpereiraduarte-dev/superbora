@@ -204,8 +204,7 @@ function processRatingResponse(PDO $db, string $phone, int $customerId, string $
         $stars = str_repeat("\u{2B50}", $rating);
         if ($rating >= 4) {
             $response = "Obrigado pela avaliacao! {$stars}\n\n"
-                      . "Ficamos felizes que voce gostou do pedido da *{$order['partner_name']}*! 🎉\n"
-                      . "Esperamos te ver novamente no SuperBora!";
+                      . "Ficamos felizes que voce gostou do pedido da *{$order['partner_name']}*! ð";
         } elseif ($rating === 3) {
             $response = "Obrigado pela avaliacao! {$stars}\n\n"
                       . "Vamos trabalhar para melhorar sua experiencia com a *{$order['partner_name']}*.\n"
@@ -217,10 +216,25 @@ function processRatingResponse(PDO $db, string $phone, int $customerId, string $
                       . "Se precisar de ajuda, estamos aqui!";
         }
 
+        // Check if order has items we can ask about
+        $hasItems = false;
+        try {
+            $itemStmt = $db->prepare("
+                SELECT COUNT(*) as cnt FROM om_market_order_items WHERE order_id = ?
+            ");
+            $itemStmt->execute([$orderId]);
+            $hasItems = ((int)$itemStmt->fetch(PDO::FETCH_ASSOC)['cnt']) > 0;
+        } catch (\Exception $e) { /* ignore */ }
+
+        if ($hasItems) {
+            $response .= "\n\nE os itens do pedido? Algum que voce adorou â¤ï¸ ou que poderia melhorar? (pode pular digitando *nao*)";
+        }
+
         return [
             'success' => true,
             'response' => $response,
             'clear_rating_context' => true,
+            'item_rating_order_id' => $hasItems ? $orderId : null,
         ];
 
     } catch (\Exception $e) {
@@ -229,6 +243,157 @@ function processRatingResponse(PDO $db, string $phone, int $customerId, string $
             'success' => false,
             'response' => "Desculpe, houve um erro ao salvar sua avaliacao. Tente novamente.",
             'clear_rating_context' => false,
+        ];
+    }
+}
+
+
+/**
+ * Process item-level rating/feedback response from a customer.
+ *
+ * After the store-level rating, we ask about specific items. The customer can:
+ *   - Name items they loved or disliked with optional ratings
+ *   - Skip with "nao", "pular", "nada"
+ *   - Give general item feedback as free text
+ *
+ * Stores feedback in sb_reviews with product_id when possible.
+ *
+ * @return array|null Response array or null if not an item rating
+ */
+function processItemRatingResponse(PDO $db, string $phone, int $customerId, string $message, array $context): ?array
+{
+    $orderId = $context['item_rating_order_id'] ?? null;
+    if (!$orderId) {
+        return null;
+    }
+
+    $msg = mb_strtolower(trim($message));
+
+    // Skip responses
+    if (in_array($msg, ['nao', 'nÃ£o', 'pular', 'nada', 'n', 'skip', 'sem comentarios', 'ta bom', 'tudo certo', 'tudo bem', 'nenhum'])) {
+        return [
+            'success' => true,
+            'response' => "Tudo bem! Obrigado pelo seu tempo. ð\n\nPrecisa de mais alguma coisa?",
+            'clear_item_rating' => true,
+        ];
+    }
+
+    try {
+        // Get order info
+        $orderStmt = $db->prepare("
+            SELECT o.order_id, o.partner_id, o.order_number
+            FROM om_market_orders o
+            WHERE o.order_id = ? AND o.customer_id = ?
+        ");
+        $orderStmt->execute([$orderId, $customerId]);
+        $order = $orderStmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$order) {
+            return [
+                'success' => false,
+                'response' => "Nao encontrei o pedido. Precisa de mais alguma coisa?",
+                'clear_item_rating' => true,
+            ];
+        }
+
+        // Get order items for matching
+        $itemsStmt = $db->prepare("
+            SELECT oi.product_id, oi.name
+            FROM om_market_order_items oi
+            WHERE oi.order_id = ?
+            ORDER BY oi.id
+        ");
+        $itemsStmt->execute([$orderId]);
+        $orderItems = $itemsStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        // Try to extract item rating from message
+        $rating = extractRatingFromMessage($message);
+        $matchedProductId = null;
+        $matchedProductName = null;
+
+        // Try to match mentioned item names against order items
+        foreach ($orderItems as $item) {
+            $itemNameLower = mb_strtolower($item['name']);
+            // Check if the item name (or significant part) appears in the message
+            $words = explode(' ', $itemNameLower);
+            $significantWords = array_filter($words, function($w) {
+                return mb_strlen($w) >= 4;
+            });
+
+            foreach ($significantWords as $word) {
+                if (mb_strpos($msg, $word) !== false) {
+                    $matchedProductId = (int)$item['product_id'];
+                    $matchedProductName = $item['name'];
+                    break 2;
+                }
+            }
+        }
+
+        // Determine sentiment from message
+        $sentiment = 'neutral';
+        if (preg_match('/adorei|amei|otimo|excelente|perfeito|maravilh|delici|incr[iÃ­]vel|top|sensacional|melhor/ui', $msg)) {
+            $sentiment = 'positive';
+            if (!$rating) $rating = 5;
+        } elseif (preg_match('/ruim|horrivel|pessimo|frio|demorou|errado|faltou|quebrado|estragado|podre|vencido|nojento/ui', $msg)) {
+            $sentiment = 'negative';
+            if (!$rating) $rating = 2;
+        } elseif (preg_match('/bom|gostei|legal|ok|razoavel|normal|medio/ui', $msg)) {
+            $sentiment = 'positive';
+            if (!$rating) $rating = 4;
+        }
+
+        // Default rating if none extracted
+        if (!$rating) {
+            $rating = 3;
+        }
+
+        // Save to sb_reviews
+        $stmtInsert = $db->prepare("
+            INSERT INTO sb_reviews
+                (user_id, store_id, product_id, order_id, rating, title, body, verified_purchase, status, created_at)
+            VALUES
+                (?, ?, ?, ?, ?, ?, ?, true, 'published', NOW())
+        ");
+
+        $title = $matchedProductName
+            ? ($sentiment === 'positive' ? "Adorei: {$matchedProductName}" : ($sentiment === 'negative' ? "Pode melhorar: {$matchedProductName}" : $matchedProductName))
+            : ($sentiment === 'positive' ? 'Itens otimos!' : ($sentiment === 'negative' ? 'Itens podem melhorar' : 'Feedback dos itens'));
+
+        $stmtInsert->execute([
+            $customerId,
+            (int)$order['partner_id'],
+            $matchedProductId,
+            $orderId,
+            $rating,
+            $title,
+            trim($message),
+        ]);
+
+        error_log("[whatsapp-rating] Item review saved: order #{$order['order_number']}, product_id=" . ($matchedProductId ?? 'null') . ", rating={$rating}, sentiment={$sentiment}");
+
+        // Build response
+        if ($matchedProductName) {
+            if ($sentiment === 'positive') {
+                $response = "Anotado! Que bom que voce curtiu o *{$matchedProductName}*! ð\n\nVou passar esse feedback pra loja. Obrigado!";
+            } else {
+                $response = "Entendi, vou registrar seu feedback sobre o *{$matchedProductName}*. Vamos passar pra loja pra melhorar! ð\n\nObrigado por nos contar!";
+            }
+        } else {
+            $response = "Obrigado pelo feedback sobre os itens! Vou registrar e passar pra loja. ð\n\nPrecisa de mais alguma coisa?";
+        }
+
+        return [
+            'success' => true,
+            'response' => $response,
+            'clear_item_rating' => true,
+        ];
+
+    } catch (\Exception $e) {
+        error_log("[whatsapp-rating] Error saving item review: " . $e->getMessage());
+        return [
+            'success' => true,
+            'response' => "Obrigado pelo feedback! Precisa de mais alguma coisa?",
+            'clear_item_rating' => true,
         ];
     }
 }

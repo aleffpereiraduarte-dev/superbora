@@ -137,6 +137,14 @@ try {
         error_log("[aceitar] WhatsApp error: " . $waErr->getMessage());
     }
 
+    // Proactive WhatsApp: log to conversation (message already sent above)
+    try {
+        require_once __DIR__ . '/../helpers/whatsapp-order-updates.php';
+        sendOrderStatusWhatsApp($db, $order_id, $novo_status, true);
+    } catch (\Throwable $e) {
+        error_log("[aceitar] Proactive WA update error: " . $e->getMessage());
+    }
+
     error_log("[aceitar] Pedido #$order_id aceito por parceiro #$mercado_id | Status: $novo_status");
 
     response(true, [

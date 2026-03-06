@@ -120,6 +120,14 @@ try {
         error_log("[preparando] WhatsApp error: " . $waErr->getMessage());
     }
 
+    // Proactive WhatsApp: log to conversation (message already sent above)
+    try {
+        require_once __DIR__ . '/../helpers/whatsapp-order-updates.php';
+        sendOrderStatusWhatsApp($db, $order_id, 'preparando', true);
+    } catch (\Throwable $e) {
+        error_log("[preparando] Proactive WA update error: " . $e->getMessage());
+    }
+
     response(true, [
         "order_id" => $order_id,
         "status" => "preparando"

@@ -442,6 +442,14 @@ try {
             error_log("[confirmar-entrega] WhatsApp error: " . $waErr->getMessage());
         }
 
+        // Proactive WhatsApp: log to conversation (message already sent above)
+        try {
+            require_once __DIR__ . '/../helpers/whatsapp-order-updates.php';
+            sendOrderStatusWhatsApp($db, $order_id, $finalStatus, true);
+        } catch (\Throwable $e) {
+            error_log("[confirmar-entrega] Proactive WA update error: " . $e->getMessage());
+        }
+
         // ═══════════════════════════════════════════════════════
         // CASHBACK - liberar cashback pendente
         // ═══════════════════════════════════════════════════════

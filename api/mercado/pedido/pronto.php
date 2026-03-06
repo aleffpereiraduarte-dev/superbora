@@ -166,6 +166,14 @@ try {
         error_log("[pronto] WhatsApp error: " . $waErr->getMessage());
     }
 
+    // Proactive WhatsApp: log to conversation (message already sent above)
+    try {
+        require_once __DIR__ . '/../helpers/whatsapp-order-updates.php';
+        sendOrderStatusWhatsApp($db, $order_id, 'pronto', true);
+    } catch (\Throwable $e) {
+        error_log("[pronto] Proactive WA update error: " . $e->getMessage());
+    }
+
     // Post-commit: Auto-dispatch BoraUm (external API call, must be outside transaction)
     $entrega = null;
     if ($isPickup) {
