@@ -263,6 +263,84 @@ try {
         $aiContext['ab_variant'] = $abConfig['variant_id'];
     }
 
+    // -- Phone number lookup (when caller not identified) --
+    if (!$customerId && !empty($userInput)) {
+        // Extract digits from speech — people say "19 9 5407 7804" or "dezenove nove cinco quatro..."
+        $digitsOnly = preg_replace('/\D/', '', $userInput);
+        // Also try to extract from mixed speech like "meu numero é 19547077804"
+        if (strlen($digitsOnly) >= 10 && strlen($digitsOnly) <= 13) {
+            $lookupSuffix = substr($digitsOnly, -11);
+            try {
+                $lookupStmt = $db->prepare("
+                    SELECT c.customer_id, c.name FROM om_customers c
+                    WHERE REPLACE(REPLACE(c.phone, '+', ''), '-', '') LIKE ?
+                    LIMIT 1
+                ");
+                $lookupStmt->execute(['%' . $lookupSuffix]);
+                $foundCust = $lookupStmt->fetch();
+
+                if ($foundCust) {
+                    $customerId = (int)$foundCust['customer_id'];
+                    $customerName = $foundCust['name'];
+                    $aiContext['customer_id'] = $customerId;
+                    $aiContext['customer_name'] = $customerName;
+
+                    // Update call record with found customer
+                    $db->prepare("UPDATE om_callcenter_calls SET customer_id = ?, customer_name = ? WHERE id = ?")
+                       ->execute([$customerId, $customerName, $callId]);
+
+                    // Check for active orders
+                    $actStmt = $db->prepare("
+                        SELECT o.order_number, o.status, p.name as partner_name
+                        FROM om_market_orders o
+                        JOIN om_market_partners p ON p.partner_id = o.partner_id
+                        WHERE o.customer_id = ? AND o.status IN ('pending','accepted','preparing','ready','delivering','em_preparo','saiu_entrega')
+                        ORDER BY o.date_added DESC LIMIT 1
+                    ");
+                    $actStmt->execute([$customerId]);
+                    $foundOrder = $actStmt->fetch();
+
+                    $firstName = explode(' ', trim($customerName))[0];
+
+                    if ($foundOrder) {
+                        $statusLabels = [
+                            'pending' => 'esperando a confirmação da loja',
+                            'accepted' => 'foi aceito e já já começa a ser preparado',
+                            'preparing' => 'tá sendo preparado agora',
+                            'em_preparo' => 'tá sendo preparado agora',
+                            'ready' => 'tá prontinho esperando o entregador',
+                            'delivering' => 'já saiu pra entrega e tá a caminho',
+                            'saiu_entrega' => 'já saiu pra entrega e tá a caminho',
+                        ];
+                        $statusText = $statusLabels[$foundOrder['status']] ?? 'em andamento';
+                        $msg = "Achei sua conta, {$firstName}! Seu pedido da {$foundOrder['partner_name']} {$statusText}. "
+                            . "Se quiser cancelar, saber mais detalhes, ou qualquer outra coisa, é só me falar!";
+                    } else {
+                        $msg = "Achei sua conta, {$firstName}! No momento não encontrei nenhum pedido ativo. "
+                            . "Quer fazer um pedido novo, tirar uma dúvida, ou precisa de outra coisa?";
+                    }
+
+                    // Respond directly and continue conversation
+                    $aiContext['history'][] = ['role' => 'user', 'content' => $userInput];
+                    $aiContext['history'][] = ['role' => 'assistant', 'content' => $msg];
+                    $aiContext['turn_count'] = ($aiContext['turn_count'] ?? 0) + 1;
+                    saveAiContext($db, $callId, $aiContext);
+
+                    echo '<?xml version="1.0" encoding="UTF-8"?>';
+                    echo '<Response>';
+                    echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" action="' . escXml($selfUrl) . '" method="POST" speechTimeout="auto" enhanced="true" speechModel="phone_call">';
+                    echo ttsSayOrPlay($msg);
+                    echo '</Gather>';
+                    echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
+                    echo '</Response>';
+                    exit;
+                }
+            } catch (Exception $e) {
+                error_log("[twilio-voice-ai] Phone lookup error: " . $e->getMessage());
+            }
+        }
+    }
+
     // -- Smart intent detection --
     if (!empty($userInput)) {
         $lowerInput = mb_strtolower($userInput, 'UTF-8');

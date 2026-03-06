@@ -153,21 +153,29 @@ if ($cust && $cust['name']) {
     } catch (Exception $e) {}
 
     if ($activeOrder) {
-        $statusLabels = ['pending' => 'esperando confirmação', 'accepted' => 'foi aceito', 'preparing' => 'tá sendo preparado', 'em_preparo' => 'tá sendo preparado', 'ready' => 'tá pronto', 'delivering' => 'tá a caminho', 'saiu_entrega' => 'tá a caminho'];
+        $statusLabels = [
+            'pending' => 'esperando a confirmação da loja',
+            'accepted' => 'foi aceito e já já começa a ser preparado',
+            'preparing' => 'tá sendo preparado agora',
+            'em_preparo' => 'tá sendo preparado agora',
+            'ready' => 'tá prontinho esperando o entregador',
+            'delivering' => 'já saiu pra entrega e tá a caminho',
+            'saiu_entrega' => 'já saiu pra entrega e tá a caminho',
+        ];
         $statusText = $statusLabels[$activeOrder['status']] ?? 'em andamento';
         $greetText = "{$periodo}, {$firstName}! Que bom que você ligou. "
-            . "Vi aqui que seu pedido da {$activeOrder['partner_name']} {$statusText}. "
-            . "Tô aqui pra te ajudar com o que precisar — se quiser saber mais sobre esse pedido, cancelar, fazer um pedido novo, ou qualquer outra coisa, é só me falar!";
+            . "Já achei seu pedido aqui — seu pedido da {$activeOrder['partner_name']} {$statusText}. "
+            . "Se quiser cancelar, saber mais detalhes, fazer um novo pedido, ou qualquer outra coisa, tô aqui pra te ajudar!";
     } else {
-        $greetText = "{$periodo}" . ($firstName ? ", {$firstName}" : "") . "! Aqui é a Bora, do SuperBora. Que bom que você ligou! "
-            . "Tô aqui pra te ajudar no que precisar — seja fazer um pedido, acompanhar uma entrega, cancelar, tirar dúvida, ou qualquer contratempo. "
+        $greetText = "{$periodo}, {$firstName}! Aqui é a Bora, do SuperBora. Que bom que você ligou! "
+            . "Tô aqui pra te ajudar no que precisar — fazer um pedido, acompanhar uma entrega, cancelar, tirar dúvida, ou qualquer contratempo. "
             . "Me conta, como posso te ajudar?";
     }
 } else {
-    // New/unknown customer
+    // Unknown phone number — ask for linked phone to find their account
     $greetText = "{$periodo}! Aqui é a Bora, do SuperBora. Que bom que você ligou! "
-        . "Tô aqui pra te ajudar no que precisar — fazer um pedido, acompanhar entrega, cancelar, tirar dúvida, o que for. "
-        . "Me conta, como posso te ajudar?";
+        . "Não encontrei uma conta com esse número. Se você já tem uma conta, me fala o número de telefone que usou pra se cadastrar, que eu encontro seus pedidos. "
+        . "Ou se quiser, posso te ajudar a fazer um pedido novo, tirar dúvida, ou o que precisar!";
 }
 
 // Append the agent option as a short suffix
