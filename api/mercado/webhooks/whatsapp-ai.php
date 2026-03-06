@@ -56,6 +56,26 @@ require_once __DIR__ . '/../helpers/whatsapp-rating.php';
 require_once __DIR__ . '/../helpers/eta-calculator.php';
 require_once __DIR__ . '/../helpers/cashback.php';
 
+// Enterprise helpers (optional — loaded only if present)
+if (file_exists(__DIR__ . '/../helpers/ai-multilang.php')) {
+    require_once __DIR__ . '/../helpers/ai-multilang.php';
+}
+if (file_exists(__DIR__ . '/../helpers/ai-retry-handler.php')) {
+    require_once __DIR__ . '/../helpers/ai-retry-handler.php';
+}
+if (file_exists(__DIR__ . '/../helpers/ai-quality-scorer.php')) {
+    require_once __DIR__ . '/../helpers/ai-quality-scorer.php';
+}
+if (file_exists(__DIR__ . '/../helpers/lgpd-compliance.php')) {
+    require_once __DIR__ . '/../helpers/lgpd-compliance.php';
+}
+if (file_exists(__DIR__ . '/../admin/callcenter/ab-testing.php')) {
+    require_once __DIR__ . '/../admin/callcenter/ab-testing.php';
+}
+if (file_exists(__DIR__ . '/../helpers/multi-store-order.php')) {
+    require_once __DIR__ . '/../helpers/multi-store-order.php';
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // CONSTANTS
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3211,11 +3231,15 @@ INSTRUCOES:
 - Se o cliente disser uma categoria ("pizza", "hamburguer", "acai"), filtre e mostre opcoes
 - Se mencionar "qualquer uma" ou "tanto faz", sugira as melhores avaliadas que estao abertas
 - Se tiver promocoes ativas, mencione naturalmente pra ajudar na decisao
+- Se o cliente quiser pedir de MAIS DE UMA LOJA no mesmo pedido, aceite normalmente.
+  Quando terminar o pedido da primeira loja e o cliente quiser adicionar de outra, use [NEXT_STORE] para sinalizar.
+  Exemplo: "Quero pizza da Bella e acai do Tropical" -> faca o pedido da Bella primeiro, depois pergunte os itens do Tropical.
 
 MARCADORES:
 - [STORE:id:nome] — loja identificada
 - [REORDER:order_number] — repetir pedido anterior (ex: [REORDER:WA00123])
 - [CITY:nome_da_cidade] — salvar localizacao do cliente
+- [NEXT_STORE] — sinaliza que o cliente quer pedir de outra loja (pedido multi-loja)
 - [TRANSFER_HUMAN] — transferir para humano
 STEP;
             break;
@@ -5715,6 +5739,55 @@ function processAiResponse(PDO $db, array $conversation, string $aiResponse, str
         $cleanedResponse = str_replace('[NEXT_STEP]', '', $cleanedResponse);
     }
 
+    // Parse [NEXT_STORE] — multi-store ordering: save current order context and go back to identify_store
+    if (strpos($aiResponse, '[NEXT_STORE]') !== false) {
+        $markersFound[] = 'NEXT_STORE';
+        $cleanedResponse = str_replace('[NEXT_STORE]', '', $cleanedResponse);
+
+        try {
+            if (function_exists('initMultiStoreOrder') && !empty($context['items'])) {
+                // Initialize multi-store group if not already started
+                if (empty($context['multi_store_group_id'])) {
+                    $msPhone = $phone ?: ($conversation['phone'] ?? '');
+                    $msCustomerId = $customerId ? (int)$customerId : null;
+                    $context['multi_store_group_id'] = initMultiStoreOrder($db, $msCustomerId, $msPhone, 'whatsapp');
+                }
+
+                // Save the current store's items to a completed_stores array for tracking
+                if (!isset($context['completed_stores'])) {
+                    $context['completed_stores'] = [];
+                }
+                $context['completed_stores'][] = [
+                    'partner_id'   => $context['partner_id'] ?? null,
+                    'partner_name' => $context['partner_name'] ?? 'Loja',
+                    'items'        => $context['items'],
+                    'delivery_fee' => $context['delivery_fee'] ?? WABOT_DEFAULT_DELIVERY_FEE,
+                ];
+
+                // Reset for next store but keep multi-store context
+                $multiGroupId = $context['multi_store_group_id'];
+                $completedStores = $context['completed_stores'];
+                $savedAddress = $context['address'] ?? null;
+                $savedPayment = $context['payment_method'] ?? null;
+
+                // Clear store-specific context
+                unset($context['partner_id'], $context['partner_name'], $context['delivery_fee']);
+                $context['items'] = [];
+                $context['step'] = STEP_IDENTIFY_STORE;
+                $context['multi_store_group_id'] = $multiGroupId;
+                $context['completed_stores'] = $completedStores;
+
+                // Preserve address and payment if already collected
+                if ($savedAddress) $context['address'] = $savedAddress;
+                if ($savedPayment) $context['payment_method'] = $savedPayment;
+
+                error_log(WABOT_LOG_PREFIX . " NEXT_STORE: Group {$multiGroupId}, " . count($completedStores) . " store(s) done, moving to identify_store");
+            }
+        } catch (Exception $e) {
+            error_log(WABOT_LOG_PREFIX . " NEXT_STORE error: " . $e->getMessage());
+        }
+    }
+
     // Parse [CONFIRMED]
     if (strpos($aiResponse, '[CONFIRMED]') !== false) {
         $markersFound[] = 'CONFIRMED';
@@ -7449,6 +7522,24 @@ function handleWhatsAppMessage(
         $context = $safeguards['context'] ?? $context;
     }
 
+    // ── LGPD audit log at conversation start ────────────────────────────
+    if (($context['message_count'] ?? 0) <= 1) {
+        try {
+            if (function_exists('auditLog')) {
+                auditLog($db, 'conversation', 'ai', null, [
+                    'customer_phone' => $phone,
+                    'customer_id' => $customerId,
+                    'resource_type' => 'whatsapp',
+                    'resource_id' => (string)$conversationId,
+                    'action' => 'create',
+                    'pii_fields' => ['phone', 'name'],
+                ]);
+            }
+        } catch (\Throwable $e) {
+            error_log(WABOT_LOG_PREFIX . " [lgpd-audit] Error: " . $e->getMessage());
+        }
+    }
+
     // ── Save inbound message ────────────────────────────────────────────
     $mediaUrl = $extraData['media_url'] ?? null;
     saveMessage($db, $conversationId, 'inbound', 'customer', $message, $messageType, $mediaUrl);
@@ -7630,6 +7721,36 @@ function handleWhatsAppMessage(
         }
     }
 
+    // ── Multi-language detection ────────────────────────────────────────
+    $detectedLang = 'pt';
+    if (function_exists('detectLanguage') && !empty($message)) {
+        try {
+            $newLang = detectLanguage($message);
+            if ($newLang !== 'pt') {
+                $detectedLang = $newLang;
+                $context['detected_language'] = $newLang;
+            } elseif (!empty($context['detected_language'])) {
+                $detectedLang = $context['detected_language']; // keep from previous turn
+            }
+        } catch (\Throwable $e) {
+            error_log(WABOT_LOG_PREFIX . " [multilang] Detection error: " . $e->getMessage());
+        }
+    }
+
+    // ── A/B testing integration ─────────────────────────────────────────
+    $abConfig = null;
+    try {
+        if (function_exists('getActiveABConfig')) {
+            $abConfig = getActiveABConfig($db, $phone, 'whatsapp');
+        }
+    } catch (\Throwable $e) {
+        error_log(WABOT_LOG_PREFIX . " [ab-testing] Error: " . $e->getMessage());
+    }
+    if ($abConfig) {
+        $context['ab_test_id'] = $abConfig['test_id'];
+        $context['ab_variant'] = $abConfig['variant_id'];
+    }
+
     // ── Get weather context (pure logic — no API) ──────────────────────
     $weatherCtx = getWeatherContext();
 
@@ -7779,6 +7900,25 @@ function handleWhatsAppMessage(
         $personalizedRecs
     );
 
+    // ── Append language modifier and A/B tone to system prompt ──────────
+    $langModifier = '';
+    if (function_exists('getMultilangPrompt') && $detectedLang !== 'pt') {
+        try {
+            $langModifier = getMultilangPrompt($detectedLang, $step);
+        } catch (\Throwable $e) {
+            error_log(WABOT_LOG_PREFIX . " [multilang] Prompt error: " . $e->getMessage());
+        }
+    }
+    if ($abConfig) {
+        if (!empty($abConfig['config']['tone'])) {
+            $toneMap = ['formal' => 'Use tom formal e profissional.', 'casual' => 'Use tom casual e descontraido.', 'fun' => 'Use tom divertido com emoji e gírias.'];
+            $langModifier .= "\n" . ($toneMap[$abConfig['config']['tone']] ?? '');
+        }
+    }
+    if (!empty($langModifier)) {
+        $systemPrompt .= "\n" . trim($langModifier);
+    }
+
     // ── Build message history for Claude ────────────────────────────────
 
     // Load recent messages for context (last 20)
@@ -7837,12 +7977,24 @@ function handleWhatsAppMessage(
         }
     }
 
-    // ── Call Claude AI ──────────────────────────────────────────────────
+    // ── Call Claude AI (with retry/fallback chain if available) ────────
 
     $aiResponse = '';
 
     try {
-        if (class_exists('ClaudeClient')) {
+        if (function_exists('callClaudeWithRetry')) {
+            // Use enterprise retry handler
+            $aiResult = callClaudeWithRetry($systemPrompt, $mergedMessages, [
+                'max_tokens' => 1024,
+                'conversation_type' => 'whatsapp',
+                'conversation_id' => $conversationId,
+                'step' => $step,
+            ]);
+            $aiResponse = $aiResult['response'] ?? '';
+            if (empty($aiResponse) && !empty($aiResult['fallback'])) {
+                $aiResponse = $aiResult['fallback'];
+            }
+        } elseif (class_exists('ClaudeClient')) {
             $claude = new \ClaudeClient(WABOT_CLAUDE_MODEL, WABOT_CLAUDE_TIMEOUT, 0);
             $result = $claude->send($systemPrompt, $mergedMessages);
 
@@ -7961,6 +8113,23 @@ function handleWhatsAppMessage(
             }
             saveMessage($db, $conversationId, 'outbound', 'ai', $successMsg);
             sendWhatsAppResponse($phone, $successMsg);
+
+            // ── AI quality scoring (post-order) ─────────────────────────
+            try {
+                if (function_exists('scoreAiConversation')) {
+                    scoreAiConversation($db, 'whatsapp', $conversationId, [
+                        'history' => $context['history'] ?? [],
+                        'items' => $context['items'] ?? [],
+                        'step' => $context['step'] ?? STEP_SUBMIT_ORDER,
+                        'order_id' => $submitResult['order_id'] ?? null,
+                        'customer_sentiment' => $context['sentiment']['mood'] ?? 'neutral',
+                        'turns_count' => (int)(($context['message_count'] ?? 0) / 2),
+                        'duration_seconds' => time() - strtotime($conversation['created_at'] ?? 'now'),
+                    ]);
+                }
+            } catch (\Throwable $e) {
+                error_log(WABOT_LOG_PREFIX . " [quality-scorer] Error: " . $e->getMessage());
+            }
 
             // Reset context for next conversation
             $context = getDefaultContext();

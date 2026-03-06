@@ -41,6 +41,26 @@ if (file_exists(__DIR__ . '/../helpers/ai-memory.php')) {
     require_once __DIR__ . '/../helpers/ai-memory.php';
 }
 
+// Enterprise helpers (optional — loaded only if present)
+if (file_exists(__DIR__ . '/../helpers/ai-multilang.php')) {
+    require_once __DIR__ . '/../helpers/ai-multilang.php';
+}
+if (file_exists(__DIR__ . '/../helpers/ai-retry-handler.php')) {
+    require_once __DIR__ . '/../helpers/ai-retry-handler.php';
+}
+if (file_exists(__DIR__ . '/../helpers/ai-quality-scorer.php')) {
+    require_once __DIR__ . '/../helpers/ai-quality-scorer.php';
+}
+if (file_exists(__DIR__ . '/../helpers/lgpd-compliance.php')) {
+    require_once __DIR__ . '/../helpers/lgpd-compliance.php';
+}
+if (file_exists(__DIR__ . '/../admin/callcenter/ab-testing.php')) {
+    require_once __DIR__ . '/../admin/callcenter/ab-testing.php';
+}
+if (file_exists(__DIR__ . '/../helpers/multi-store-order.php')) {
+    require_once __DIR__ . '/../helpers/multi-store-order.php';
+}
+
 header('Content-Type: text/xml; charset=utf-8');
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -194,6 +214,55 @@ try {
         ]);
     }
 
+    // -- LGPD audit log at conversation start --
+    $turnCount = ($aiContext['turn_count'] ?? 0);
+    if ($turnCount <= 1) {
+        try {
+            if (function_exists('auditLog')) {
+                auditLog($db, 'conversation', 'ai', null, [
+                    'customer_phone' => $callerPhone,
+                    'customer_id' => $customerId,
+                    'resource_type' => 'call',
+                    'resource_id' => (string)$callId,
+                    'action' => 'create',
+                    'pii_fields' => ['phone', 'name'],
+                ]);
+            }
+        } catch (\Throwable $e) {
+            error_log("[twilio-voice-ai] [lgpd-audit] Error: " . $e->getMessage());
+        }
+    }
+
+    // -- Multi-language detection --
+    $detectedLang = 'pt';
+    if (function_exists('detectLanguage') && !empty($userInput)) {
+        try {
+            $newLang = detectLanguage($userInput);
+            if ($newLang !== 'pt') {
+                $detectedLang = $newLang;
+                $aiContext['detected_language'] = $newLang;
+            } elseif (!empty($aiContext['detected_language'])) {
+                $detectedLang = $aiContext['detected_language']; // keep from previous turn
+            }
+        } catch (\Throwable $e) {
+            error_log("[twilio-voice-ai] [multilang] Detection error: " . $e->getMessage());
+        }
+    }
+
+    // -- A/B testing integration --
+    $abConfig = null;
+    try {
+        if (function_exists('getActiveABConfig')) {
+            $abConfig = getActiveABConfig($db, $callerPhone, 'voice');
+        }
+    } catch (\Throwable $e) {
+        error_log("[twilio-voice-ai] [ab-testing] Error: " . $e->getMessage());
+    }
+    if ($abConfig) {
+        $aiContext['ab_test_id'] = $abConfig['test_id'];
+        $aiContext['ab_variant'] = $abConfig['variant_id'];
+    }
+
     // -- Smart intent detection --
     if (!empty($userInput)) {
         $lowerInput = mb_strtolower($userInput, 'UTF-8');
@@ -219,6 +288,24 @@ try {
             } else {
                 saveAiContext($db, $callId, $aiContext);
                 $db->prepare("UPDATE om_callcenter_calls SET status = 'completed', ended_at = NOW() WHERE id = ?")->execute([$callId]);
+
+                // AI quality scoring (call ended without order)
+                try {
+                    if (function_exists('scoreAiConversation')) {
+                        scoreAiConversation($db, 'voice', $callId, [
+                            'history' => $aiContext['history'] ?? [],
+                            'items' => $aiContext['items'] ?? [],
+                            'step' => $step,
+                            'order_id' => null,
+                            'customer_sentiment' => 'neutral',
+                            'turns_count' => (int)($aiContext['turn_count'] ?? 0),
+                            'duration_seconds' => time() - strtotime($call['started_at'] ?? 'now'),
+                        ]);
+                    }
+                } catch (\Throwable $e) {
+                    error_log("[twilio-voice-ai] [quality-scorer] Error: " . $e->getMessage());
+                }
+
                 echo '<?xml version="1.0" encoding="UTF-8"?>';
                 echo '<Response>';
                 echo ttsSayOrPlay("Beleza! Se precisar de algo, é só ligar. Tchau e bom apetite!");
@@ -911,14 +998,60 @@ try {
     // Voice-specific instruction: keep responses SHORT
     $optimized['prompt'] .= "\n\n## LEMBRETE CRITICO PARA VOZ\nIsso é uma LIGACAO TELEFONICA. Responda em NO MAXIMO 2 frases curtas. Ninguem quer ouvir texto longo no telefone.\n";
 
+    // -- Append language modifier and A/B tone to system prompt --
+    $langModifier = '';
+    if (function_exists('getMultilangPrompt') && $detectedLang !== 'pt') {
+        try {
+            $langModifier = getMultilangPrompt($detectedLang, $step);
+        } catch (\Throwable $e) {
+            error_log("[twilio-voice-ai] [multilang] Prompt error: " . $e->getMessage());
+        }
+    }
+    if ($abConfig) {
+        if (!empty($abConfig['config']['tone'])) {
+            $toneMap = ['formal' => 'Use tom formal e profissional.', 'casual' => 'Use tom casual e descontraido.', 'fun' => 'Use tom divertido com emoji e gírias.'];
+            $langModifier .= "\n" . ($toneMap[$abConfig['config']['tone']] ?? '');
+        }
+    }
+    if (!empty($langModifier)) {
+        $optimized['prompt'] .= "\n" . trim($langModifier);
+    }
+
     $claudeStart = hrtime(true);
-    $result = $claude->send($optimized['prompt'], $optimized['history'], $optimized['max_tokens']);
+    $aiResponse = '';
+    $tokensUsed = 0;
+
+    // -- Try enterprise retry handler first, fall back to original logic --
+    $usedEnterpriseRetry = false;
+    if (function_exists('callClaudeWithRetry')) {
+        try {
+            $aiResult = callClaudeWithRetry($optimized['prompt'], $optimized['history'], [
+                'max_tokens' => $optimized['max_tokens'],
+                'conversation_type' => 'voice',
+                'conversation_id' => $callId,
+                'step' => $step,
+            ]);
+            $aiResponse = $aiResult['response'] ?? '';
+            if (empty($aiResponse) && !empty($aiResult['fallback'])) {
+                $aiResponse = $aiResult['fallback'];
+            }
+            $tokensUsed = (int)($aiResult['total_tokens'] ?? 0);
+            $usedEnterpriseRetry = !empty($aiResponse);
+        } catch (\Throwable $e) {
+            error_log("[twilio-voice-ai] Enterprise retry handler error: " . $e->getMessage());
+            // Fall through to original logic
+        }
+    }
+
+    if (!$usedEnterpriseRetry) {
+        $result = $claude->send($optimized['prompt'], $optimized['history'], $optimized['max_tokens']);
+    }
     $claudeLatencyMs = (int)((hrtime(true) - $claudeStart) / 1_000_000);
 
     $previousStep = $step;
 
-    // -- Retry logic for Claude failures --
-    if (!$result['success']) {
+    // -- Retry logic for Claude failures (original — only if enterprise handler was not used) --
+    if (!$usedEnterpriseRetry && !$result['success']) {
         $claudeError = $result['error'] ?? 'unknown';
         error_log("[twilio-voice-ai] Claude error ({$claudeLatencyMs}ms): {$claudeError} — attempting retry");
 
@@ -975,8 +1108,10 @@ try {
         }
     }
 
-    $aiResponse = trim($result['text'] ?? '');
-    $tokensUsed = (int)($result['total_tokens'] ?? 0);
+    if (!$usedEnterpriseRetry) {
+        $aiResponse = trim($result['text'] ?? '');
+        $tokensUsed = (int)($result['total_tokens'] ?? 0);
+    }
     error_log("[twilio-voice-ai] AI response ({$claudeLatencyMs}ms, {$tokensUsed}tok): " . mb_substr($aiResponse, 0, 200));
 
     // -- Parse AI response for state transitions --
@@ -1104,6 +1239,23 @@ try {
                 } catch (Exception $e) {
                     error_log("[twilio-voice-ai] Memory learn error (non-fatal): " . $e->getMessage());
                 }
+            }
+
+            // -- AI quality scoring (post-order) --
+            try {
+                if (function_exists('scoreAiConversation')) {
+                    scoreAiConversation($db, 'voice', $callId, [
+                        'history' => $newContext['history'] ?? [],
+                        'items' => $newContext['items'] ?? [],
+                        'step' => $newContext['step'] ?? 'submit_order',
+                        'order_id' => $orderResult['order_id'] ?? null,
+                        'customer_sentiment' => $newContext['customer_sentiment'] ?? 'neutral',
+                        'turns_count' => (int)($newContext['turn_count'] ?? 0),
+                        'duration_seconds' => time() - strtotime($call['started_at'] ?? 'now'),
+                    ]);
+                }
+            } catch (\Throwable $e) {
+                error_log("[twilio-voice-ai] [quality-scorer] Error: " . $e->getMessage());
             }
 
             echo '<?xml version="1.0" encoding="UTF-8"?>';
@@ -2466,9 +2618,14 @@ function buildSystemPrompt(
                 $prompt .= "CATEGORIAS FAVORITAS DO CLIENTE: " . implode(', ', $learnedPrefs['favorite_categories']) . " — priorize sugestoes dessas categorias!\n";
             }
 
-            $prompt .= "\nMARCADORES:\n";
+            $prompt .= "\nSe o cliente quiser pedir de MAIS DE UMA LOJA no mesmo pedido, aceite normalmente.\n";
+            $prompt .= "Quando terminar o pedido da primeira loja e o cliente quiser adicionar de outra, use [NEXT_STORE] para sinalizar.\n";
+            $prompt .= "Exemplo: 'Quero pizza da Bella e acai do Tropical' -> faca o pedido da Bella primeiro, depois pergunte os itens do Tropical.\n\n";
+
+            $prompt .= "MARCADORES:\n";
             $prompt .= "- Restaurante identificado: [STORE:id:nome] (ex: [STORE:42:Pizzaria Bella])\n";
             $prompt .= "- CEP detectado: [CEP:12345678]\n";
+            $prompt .= "- [NEXT_STORE] — sinaliza que o cliente quer pedir de outra loja (pedido multi-loja)\n";
             $prompt .= "- Quer suporte: mude o tom pra suporte (os pedidos serão carregados automaticamente)\n";
             break;
 
@@ -3132,6 +3289,52 @@ function parseAiResponse(string $response, array $context, PDO $db): array {
             $newContext['step'] = $stepOrder[$currentIdx + 1];
         }
         $cleaned = str_replace('[NEXT_STEP]', '', $cleaned);
+    }
+
+    // Parse [NEXT_STORE] — multi-store ordering: save current store, go back to identify_store
+    if (strpos($response, '[NEXT_STORE]') !== false) {
+        $cleaned = str_replace('[NEXT_STORE]', '', $cleaned);
+
+        try {
+            if (function_exists('initMultiStoreOrder') && !empty($newContext['items'])) {
+                // Initialize multi-store group if not already started
+                if (empty($newContext['multi_store_group_id'])) {
+                    $msPhone = $newContext['customer_phone'] ?? ($context['customer_phone'] ?? '');
+                    $msCustomerId = $newContext['customer_id'] ?? ($context['customer_id'] ?? null);
+                    $newContext['multi_store_group_id'] = initMultiStoreOrder($db, $msCustomerId ? (int)$msCustomerId : null, $msPhone, 'voice');
+                }
+
+                // Save current store's items
+                if (!isset($newContext['completed_stores'])) {
+                    $newContext['completed_stores'] = [];
+                }
+                $newContext['completed_stores'][] = [
+                    'store_id'   => $newContext['store_id'] ?? null,
+                    'store_name' => $newContext['store_name'] ?? 'Loja',
+                    'items'      => $newContext['items'],
+                ];
+
+                // Reset for next store but keep multi-store context
+                $multiGroupId = $newContext['multi_store_group_id'];
+                $completedStores = $newContext['completed_stores'];
+                $savedAddress = $newContext['address'] ?? null;
+                $savedPayment = $newContext['payment_method'] ?? null;
+
+                $newContext['store_id'] = null;
+                $newContext['store_name'] = null;
+                $newContext['items'] = [];
+                $newContext['step'] = 'identify_store';
+                $newContext['multi_store_group_id'] = $multiGroupId;
+                $newContext['completed_stores'] = $completedStores;
+
+                if ($savedAddress) $newContext['address'] = $savedAddress;
+                if ($savedPayment) $newContext['payment_method'] = $savedPayment;
+
+                error_log("[twilio-voice-ai] NEXT_STORE: Group {$multiGroupId}, " . count($completedStores) . " store(s) done");
+            }
+        } catch (Exception $e) {
+            error_log("[twilio-voice-ai] NEXT_STORE error: " . $e->getMessage());
+        }
     }
 
     // Parse [CONFIRMED]
