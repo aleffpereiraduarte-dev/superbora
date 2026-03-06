@@ -818,6 +818,7 @@ IDENTIDADE E TOM:
 - Mensagens curtas e diretas — ninguem quer ler textao no WhatsApp
 - Seja proativa: sugira coisas baseado no historico do cliente
 - Tenha personalidade: faca comentarios leves tipo "Boa escolha!" ou "Esse e top!"
+- Quando a conversa parece ter chegado ao fim (status informado, pedido feito, duvida respondida), SEMPRE encerre com uma frase acolhedora tipo "Se precisar, e so mandar msg!", "Qualquer coisa to aqui!", "Me chama quando quiser!" — faz o cliente sentir que pode voltar SEMPRE
 
 INTELIGENCIA CONTEXTUAL:
 - Detecte a intencao do cliente automaticamente pela mensagem:
@@ -874,10 +875,52 @@ PROMPT;
                 $returningHint = "\n\nDICA: Voce conhece esse cliente! Chame pelo nome: \"{$customerName}\".";
             }
 
+            // Build active orders proactive hint
+            $proactiveOrderHint = '';
+            if ($activeOrders && count($activeOrders) > 0) {
+                $proactiveOrderHint = "\n\n⚡ REGRA PRIORITARIA — PEDIDOS ATIVOS DETECTADOS:";
+                $proactiveOrderHint .= "\nO cliente tem pedido(s) em andamento! Quando ele mandar QUALQUER saudacao simples (oi, ola, e ai, fala, etc.), voce DEVE:";
+                $proactiveOrderHint .= "\n1. Cumprimentar BREVEMENTE (1 linha so)";
+                $proactiveOrderHint .= "\n2. IMEDIATAMENTE informar o status do pedido ativo, de forma natural e detalhada:";
+                foreach ($activeOrders as $ao) {
+                    $statusLabels2 = [
+                        'pendente'   => 'ta aguardando a loja aceitar',
+                        'confirmado' => 'a loja ja confirmou e vai comecar a preparar',
+                        'aceito'     => 'a loja ja aceitou',
+                        'preparando' => 'ta sendo preparado agora na cozinha',
+                        'pronto'     => 'ja ta pronto! Estamos buscando um entregador',
+                        'em_entrega' => 'ta a caminho! O entregador ja saiu com ele',
+                    ];
+                    $label = $statusLabels2[$ao['status']] ?? $ao['status'];
+                    $mins = round((float)($ao['minutes_ago'] ?? 0));
+                    $total = number_format((float)$ao['total'], 2, ',', '.');
+                    $proactiveOrderHint .= "\n   - Pedido #{$ao['order_number']} da {$ao['partner_name']} (R\$ {$total}) — {$label} (ha {$mins} min)";
+                }
+                $proactiveOrderHint .= "\n3. Pergunte se precisa de algo mais com o pedido ou se quer fazer outro";
+                $proactiveOrderHint .= "\nExemplo: \"Opa {$customerName}! Seu pedido #{$activeOrders[0]['order_number']} da {$activeOrders[0]['partner_name']} {$statusLabels2[$activeOrders[0]['status']] ?? $activeOrders[0]['status']}! Precisa de mais alguma coisa?\"";
+                $proactiveOrderHint .= "\nISTO E OBRIGATORIO — nao pergunte 'o que voce quer' se ele tem pedido ativo. INFORME o status primeiro!";
+            }
+
+            // Build recently delivered hint
+            $deliveredHint = '';
+            if ($recentOrders && count($recentOrders) > 0) {
+                $lastOrder = $recentOrders[0];
+                $lastStatus = $lastOrder['status'] ?? '';
+                $lastDate = date('d/m H:i', strtotime($lastOrder['date_added'] ?? $lastOrder['created_at'] ?? 'now'));
+                if (in_array($lastStatus, ['entregue', 'delivered'])) {
+                    $deliveredHint = "\n\nULTIMO PEDIDO FOI ENTREGUE:";
+                    $deliveredHint .= "\n- Pedido #{$lastOrder['order_number']} da {$lastOrder['partner_name']} (R\$ " . number_format((float)$lastOrder['total'], 2, ',', '.') . ") entregue em {$lastDate}";
+                    $deliveredHint .= "\nSe o cliente mandar saudacao simples e NAO tiver pedido ativo, pergunte se deu tudo certo com a entrega!";
+                    $deliveredHint .= "\nExemplo: \"E ai {$customerName}! Vi que seu pedido da {$lastOrder['partner_name']} foi entregue! Chegou tudo certinho? Precisa de ajuda com alguma coisa?\"";
+                }
+            }
+
             $stepInstructions = <<<STEP
 ETAPA ATUAL: Saudacao e deteccao de intencao
 
-OBJETIVO: Cumprimentar e entender o que o cliente quer. Detecte a intencao pela mensagem.
+OBJETIVO: Cumprimentar e PROATIVAMENTE informar o que e relevante para o cliente. Voce esta NA FRENTE — antecipe o que ele quer saber.
+{$proactiveOrderHint}
+{$deliveredHint}
 
 DETECCAO AUTOMATICA DE INTENCAO:
 1. Se mencionar nome de loja/restaurante -> identifique a loja e use [STORE:id:nome]
@@ -885,17 +928,21 @@ DETECCAO AUTOMATICA DE INTENCAO:
 3. Se reclamar de algo -> entre em modo empatico, use [SWITCH_TO_ORDER] para suporte
 4. Se disser "repetir"/"mesmo pedido" -> mostre o ultimo pedido e ofereca repetir
 5. Se disser "cancelar" -> mostre pedidos ativos e ajude a cancelar, use [SWITCH_TO_ORDER]
-6. Se saudacao simples ("oi", "ola") -> cumprimente e pergunte o que precisa
-7. Se pedir "atendente"/"humano" -> use [TRANSFER_HUMAN]
+6. Se saudacao simples ("oi", "ola") E tem pedido ativo -> INFORMAR STATUS DO PEDIDO (regra prioritaria acima)
+7. Se saudacao simples E ultimo pedido foi entregue -> perguntar se a entrega foi ok
+8. Se saudacao simples sem pedidos -> cumprimentar e perguntar o que precisa
+9. Se pedir "atendente"/"humano" -> use [TRANSFER_HUMAN]
 {$storeList}
 {$returningHint}
 
 INSTRUCOES:
-- Cumprimente de forma calorosa e BREVE (max 2 linhas de saudacao)
+- SEMPRE esteja a frente: o cliente mandou "oi"? Voce ja sabe se ele tem pedido ativo. Fale sobre isso PRIMEIRO.
+- Cumprimente de forma calorosa e BREVE (max 1 linha de saudacao)
 - Se o cliente e recorrente, use o nome dele e seja pessoal
 - Se detectar intencao de pedido direto, pule para o fluxo certo
-- Se nao souber o que ele quer, pergunte de forma natural: "Quer fazer um pedido, ver o status ou precisa de ajuda?"
+- Se nao tiver pedido ativo nem recente, pergunte de forma natural: "Quer fazer um pedido ou precisa de uma ajuda?"
 - NUNCA responda com um menu de opcoes numerado roboticamente
+- Seja a assistente mais atenciosa do mundo — antecipe tudo!
 
 MARCADORES DISPONIVEIS:
 - [STORE:id:nome] — quando identificar a loja (vai para proximo passo)
@@ -1146,7 +1193,18 @@ STEP;
             break;
 
         default:
-            $stepInstructions = "Aguarde instrucoes. Se o cliente enviar mensagem, cumprimente de forma calorosa e pergunte como pode ajudar.";
+            $stepInstructions = <<<STEP
+ETAPA ATUAL: Conversa encerrada / aguardando
+
+O cliente ja foi atendido recentemente (pedido feito ou suporte prestado).
+
+INSTRUCOES:
+- Se ele mandar saudacao ("oi", "e ai"), cumprimente de forma calorosa e pergunte como pode ajudar
+- Se ele tiver pedido ativo, informe o status proativamente (veja PEDIDOS ATIVOS acima)
+- Se o ultimo pedido foi entregue, pergunte se deu tudo certo
+- SEMPRE encerre suas respostas com algo acolhedor tipo "Se precisar de qualquer coisa, e so mandar msg que eu to aqui!" ou "Qualquer coisa, me chama!" — faca o cliente sentir que pode voltar a qualquer momento
+- Varie as frases de encerramento pra nao ficar repetitivo
+STEP;
     }
 
     // Build full prompt
