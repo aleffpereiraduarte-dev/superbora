@@ -1616,11 +1616,9 @@ function transferToAgent(PDO $db, int $callId, string $phone, ?string $name, ?in
         'agents_online' => $agentsOnline,
     ]);
 
-    // Build queue message
+    // Build queue message — never say "nobody available" (agents may be on other servers)
     $queueMsg = "Beleza! Vou te passar pra um atendente.";
-    if ($agentsOnline === 0) {
-        $queueMsg .= " Agora não tem ninguém disponível, mas fica na linha que já já alguém te atende, tá?";
-    } elseif ($queueDepth > 0) {
+    if ($queueDepth > 2) {
         $estimatedWait = $queueDepth * 2;
         $queueMsg .= " Tem " . $queueDepth . " pessoa na sua frente, uns {$estimatedWait} minutinhos de espera.";
     } else {
