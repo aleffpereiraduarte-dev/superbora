@@ -830,11 +830,13 @@ async function transferCall(callSid) {
     try {
         // Find online agents to ring their softphones
         let agentClients = '';
+        let agentIds = [];
         try {
             const agentsResult = await dbQuery(
                 `SELECT id FROM om_callcenter_agents WHERE status IN ('online', 'busy') ORDER BY id`
             );
             if (agentsResult.rows.length > 0) {
+                agentIds = agentsResult.rows.map(a => a.id);
                 agentClients = agentsResult.rows
                     .map(a => `<Client>agent_${a.id}</Client>`)
                     .join('\n                ');
@@ -846,17 +848,61 @@ async function transferCall(callSid) {
         // Fallback: ring all known agent identities
         if (!agentClients) {
             agentClients = '<Client>agent_5</Client>';
+            agentIds = [5];
+        }
+
+        // Broadcast to call center dashboard so agents see the incoming call
+        try {
+            const callInfo = activeCalls.get(callSid);
+            await fetch('http://localhost:8080/broadcast', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    channel: 'callcenter',
+                    event: 'call_transfer',
+                    data: {
+                        call_sid: callSid,
+                        customer_phone: callInfo?.callerPhone || '',
+                        customer_name: callInfo?.customer?.name || null,
+                        customer_id: callInfo?.customer?.customer_id || null,
+                        transfer_reason: callInfo?.transferReason || 'Pediu atendente',
+                        agents_ringing: agentIds,
+                    }
+                })
+            });
+        } catch (e) {
+            console.error('[voice] Dashboard broadcast failed:', e.message);
+        }
+
+        // Update call status in DB
+        try {
+            await dbQuery(
+                `UPDATE om_callcenter_calls SET status = 'queued' WHERE twilio_call_sid = $1`,
+                [callSid]
+            );
+            // Add to queue
+            await dbQuery(
+                `INSERT INTO om_callcenter_queue (call_id, customer_phone, customer_name, priority, queued_at)
+                 SELECT id, customer_phone, customer_name, 3, NOW()
+                 FROM om_callcenter_calls WHERE twilio_call_sid = $1
+                 ON CONFLICT DO NOTHING`,
+                [callSid]
+            );
+        } catch (e) {
+            console.error('[voice] Queue insert failed:', e.message);
         }
 
         const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Calls/${callSid}.json`;
+        const callerId = process.env.TWILIO_PHONE || '+17432285380';
+        const dialStatusUrl = `https://${WS_HOST}/voice/dial-status`;
+        // Ring agent softphones for 45s, if nobody answers play hold music and retry
         const twiml = `<Response>
             <Say language="pt-BR" voice="Polly.Camila">Transferindo para um atendente. Aguarde um momento.</Say>
-            <Dial timeout="60" callerId="${process.env.TWILIO_PHONE || '+17432285380'}">
+            <Dial timeout="45" callerId="${callerId}" action="${dialStatusUrl}" method="POST">
                 ${agentClients}
             </Dial>
-            <Say language="pt-BR" voice="Polly.Camila">Desculpe, nenhum atendente disponível. Tente novamente mais tarde.</Say>
-            <Hangup/>
         </Response>`;
+        console.log('[voice] Transfer TwiML:', twiml.replace(/\n\s+/g, ' ').trim());
 
         const auth = Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString('base64');
         await fetch(url, {
@@ -867,7 +913,7 @@ async function transferCall(callSid) {
             },
             body: new URLSearchParams({ Twiml: twiml })
         });
-        console.log(`[voice] Transfer initiated for ${callSid} → ${agentClients.match(/agent_\d+/g)?.join(', ')}`);
+        console.log(`[voice] Transfer initiated for ${callSid} → agent_${agentIds.join(', agent_')}`);
     } catch (e) {
         console.error('[voice] Transfer failed:', e.message);
     }
@@ -892,6 +938,45 @@ app.register(formbodyPlugin);
 
 // Health check
 app.get('/health', async () => ({ status: 'ok', calls: activeCalls.size }));
+
+// ─── HTTP: Dial Status — when agent doesn't answer, play hold music and retry ─────
+
+app.post('/dial-status', async (req, reply) => {
+    const dialStatus = req.body?.DialCallStatus || req.body?.DialStatus || 'no-answer';
+    const callSid = req.body?.CallSid || '';
+    console.log(`[voice] Dial status for ${callSid}: ${dialStatus}`);
+
+    if (dialStatus === 'completed' || dialStatus === 'answered') {
+        // Agent answered and call ended normally
+        reply.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>`);
+        return;
+    }
+
+    // Agent didn't answer (no-answer, busy, failed, canceled) — hold music + retry
+    // Look up agents again for retry
+    let agentClients = '<Client>agent_5</Client>';
+    try {
+        const agentsResult = await dbQuery(
+            `SELECT id FROM om_callcenter_agents WHERE status IN ('online', 'busy') ORDER BY id`
+        );
+        if (agentsResult.rows.length > 0) {
+            agentClients = agentsResult.rows.map(a => `<Client>agent_${a.id}</Client>`).join('\n');
+        }
+    } catch (e) {}
+
+    const callerId = process.env.TWILIO_PHONE || '+17432285380';
+    const dialStatusUrl = `https://${WS_HOST}/voice/dial-status`;
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say language="pt-BR" voice="Polly.Camila">Nossos atendentes estão ocupados. Aguarde na linha, já já alguém te atende.</Say>
+    <Play>http://com.twilio.music.soft-rock.s3.amazonaws.com/Deacon_Fry_-_Sun_Pianos.mp3</Play>
+    <Dial timeout="45" callerId="${callerId}" action="${dialStatusUrl}" method="POST">
+        ${agentClients}
+    </Dial>
+</Response>`;
+
+    reply.type('text/xml').send(twiml);
+});
 
 // ─── HTTP: Incoming Call → TwiML with ConversationRelay ─────
 

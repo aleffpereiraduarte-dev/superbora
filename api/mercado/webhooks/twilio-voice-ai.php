@@ -31,6 +31,9 @@ if (file_exists(__DIR__ . '/../../../.env')) {
     }
 }
 
+// AI calls can take 15-25s — need enough time for Claude API response
+set_time_limit(120);
+
 // Set Content-Type BEFORE requires so even fatal errors have proper header
 header('Content-Type: text/xml; charset=utf-8');
 
@@ -1341,7 +1344,7 @@ try {
     ]);
     $validation = validateAiResponse($aiResponse, $validationContext);
 
-    if (!$validation['valid'] && empty($validation['cleaned'])) {
+    if (!$validation['valid'] && empty($validation['cleaned'] ?? $validation['sanitized'] ?? '')) {
         // Response is completely invalid — use smart fallback
         error_log("[twilio-voice-ai] Response validation FAILED: " . implode('; ', $validation['issues']));
         $aiResponse = getSmartFallback($step, $aiContext, 'validation_failed');
@@ -1361,7 +1364,7 @@ try {
         if (!empty($validation['issues'])) {
             error_log("[twilio-voice-ai] Response cleaned: " . implode('; ', $validation['issues']));
         }
-        $aiResponse = $validation['cleaned'];
+        $aiResponse = $validation['cleaned'] ?? $validation['sanitized'] ?? $aiResponse;
 
         // Log successful turn metrics
         $stepTransition = ($previousStep !== ($newContext['step'] ?? $step))
@@ -2599,7 +2602,7 @@ function buildSystemPrompt(
     $prompt .= "- Se pediu comida sem bebida → 'Vai querer uma bebida?' (1x só, não insista)\n";
     $prompt .= "- Se pediu pra 1 pessoa → não sugira combo família. Se pediu pra vários → sugira combo se tiver\n";
     $prompt .= "- Se tem promoção relevante → mencione NATURALMENTE: 'Ah, e hoje tem [promo]!'\n";
-    $prompt .= "- Se o total tá quase atingindo frete grátis → 'Falta só R$X pro frete grátis, quer adicionar algo?'\n";
+    $prompt .= "- Se o total tá quase atingindo frete grátis → 'Falta só R\$X pro frete grátis, quer adicionar algo?'\n";
     $prompt .= "- Se é horário de pico → avise: 'Tá um pouco movimentado, pode demorar uns minutinhos a mais'\n";
     $prompt .= "- NUNCA sugira mais de 1 upsell por conversa. Respeite o NÃO do cliente.\n\n";
 
