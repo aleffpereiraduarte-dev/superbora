@@ -897,7 +897,10 @@ PROMPT;
                     $proactiveOrderHint .= "\n   - Pedido #{$ao['order_number']} da {$ao['partner_name']} (R\$ {$total}) — {$label} (ha {$mins} min)";
                 }
                 $proactiveOrderHint .= "\n3. Pergunte se precisa de algo mais com o pedido ou se quer fazer outro";
-                $proactiveOrderHint .= "\nExemplo: \"Opa {$customerName}! Seu pedido #{$activeOrders[0]['order_number']} da {$activeOrders[0]['partner_name']} {$statusLabels2[$activeOrders[0]['status']] ?? $activeOrders[0]['status']}! Precisa de mais alguma coisa?\"";
+                $exFirstStatus = $statusLabels2[$activeOrders[0]['status']] ?? $activeOrders[0]['status'];
+                $exFirstNumber = $activeOrders[0]['order_number'];
+                $exFirstStore = $activeOrders[0]['partner_name'];
+                $proactiveOrderHint .= "\nExemplo: \"Opa {$customerName}! Seu pedido #{$exFirstNumber} da {$exFirstStore} {$exFirstStatus}! Precisa de mais alguma coisa?\"";
                 $proactiveOrderHint .= "\nISTO E OBRIGATORIO — nao pergunte 'o que voce quer' se ele tem pedido ativo. INFORME o status primeiro!";
             }
 
