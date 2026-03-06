@@ -34,6 +34,16 @@ if (file_exists(__DIR__ . '/../../../.env')) {
 // Set Content-Type BEFORE requires so even fatal errors have proper header
 header('Content-Type: text/xml; charset=utf-8');
 
+// Last-resort safety net: if PHP fatals (e.g. require_once fails), output valid TwiML
+register_shutdown_function(function() {
+    $err = error_get_last();
+    if ($err && in_array($err['type'], [E_ERROR, E_PARSE, E_COMPILE_ERROR, E_CORE_ERROR])) {
+        if (!headers_sent()) header('Content-Type: text/xml; charset=utf-8');
+        echo '<?xml version="1.0" encoding="UTF-8"?><Response><Say language="pt-BR" voice="Polly.Camila">Desculpa, deu um probleminha. Me fala de novo, o que você precisa?</Say></Response>';
+        error_log("[twilio-voice-ai] SHUTDOWN FATAL: {$err['message']} in {$err['file']}:{$err['line']}");
+    }
+});
+
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../helpers/claude-client.php';
 require_once __DIR__ . '/../helpers/ws-callcenter-broadcast.php';

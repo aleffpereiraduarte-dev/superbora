@@ -22,6 +22,16 @@ if (file_exists(__DIR__ . '/../../../.env')) {
 
 header('Content-Type: text/xml; charset=utf-8');
 
+// Last-resort safety net: if PHP fatals (e.g. require_once fails), output valid TwiML
+register_shutdown_function(function() {
+    $err = error_get_last();
+    if ($err && in_array($err['type'], [E_ERROR, E_PARSE, E_COMPILE_ERROR, E_CORE_ERROR])) {
+        if (!headers_sent()) header('Content-Type: text/xml; charset=utf-8');
+        echo '<?xml version="1.0" encoding="UTF-8"?><Response><Say language="pt-BR" voice="Polly.Camila">Desculpa, estamos com um probleminha técnico. Tente ligar de novo em instantes.</Say></Response>';
+        error_log("[twilio-voice] SHUTDOWN FATAL: {$err['message']} in {$err['file']}:{$err['line']}");
+    }
+});
+
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { http_response_code(200); exit; }
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
