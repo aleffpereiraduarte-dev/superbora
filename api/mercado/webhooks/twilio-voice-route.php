@@ -48,23 +48,38 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 $authToken = $_ENV['TWILIO_TOKEN'] ?? getenv('TWILIO_TOKEN') ?: '';
 $twilioSignature = $_SERVER['HTTP_X_TWILIO_SIGNATURE'] ?? '';
 
-if (!empty($authToken) && !empty($twilioSignature)) {
-    $scheme = 'https';
-    $host = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? 'superbora.com.br';
-    $uri = $_SERVER['REQUEST_URI'] ?? '';
-    $fullUrl = $scheme . '://' . $host . strtok($uri, '?');
-    $params = $_POST;
-    ksort($params);
-    $dataString = $fullUrl;
-    foreach ($params as $key => $value) { $dataString .= $key . $value; }
-    $expectedSignature = base64_encode(hash_hmac('sha1', $dataString, $authToken, true));
-    if (!hash_equals($expectedSignature, $twilioSignature)) {
-        error_log("[twilio-voice-route] Signature mismatch — allowing (proxy may alter URL)");
-    }
-} elseif (empty($twilioSignature) && !isset($_POST['CallSid'])) {
+if (empty($authToken)) {
+    error_log("[twilio-voice-route] CRITICAL: TWILIO_TOKEN not configured");
+    http_response_code(500);
+    echo '<?xml version="1.0" encoding="UTF-8"?><Response><Say>Service unavailable</Say></Response>';
+    exit;
+}
+if (empty($twilioSignature)) {
+    error_log("[twilio-voice-route] REJECTED: Missing X-Twilio-Signature");
     http_response_code(403);
     echo '<?xml version="1.0" encoding="UTF-8"?><Response><Say>Unauthorized</Say></Response>';
     exit;
+}
+$scheme = 'https';
+$host = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? 'superbora.com.br';
+$uri = $_SERVER['REQUEST_URI'] ?? '';
+$fullUrl = $scheme . '://' . $host . strtok($uri, '?');
+$params = $_POST;
+ksort($params);
+$dataString = $fullUrl;
+foreach ($params as $key => $value) { $dataString .= $key . $value; }
+$expectedSignature = base64_encode(hash_hmac('sha1', $dataString, $authToken, true));
+if (!hash_equals($expectedSignature, $twilioSignature)) {
+    // Try alternative URL (proxy may alter host)
+    $altDataString = 'https://superbora.com.br' . strtok($uri, '?');
+    foreach ($params as $key => $value) { $altDataString .= $key . $value; }
+    $altSig = base64_encode(hash_hmac('sha1', $altDataString, $authToken, true));
+    if (!hash_equals($altSig, $twilioSignature)) {
+        error_log("[twilio-voice-route] REJECTED: Signature mismatch");
+        http_response_code(403);
+        echo '<?xml version="1.0" encoding="UTF-8"?><Response><Say>Unauthorized</Say></Response>';
+        exit;
+    }
 }
 
 // -- Parse Input --

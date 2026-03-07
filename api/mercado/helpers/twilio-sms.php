@@ -76,9 +76,13 @@ function sendSMS(string $to, string $body): array {
 function formatPhoneForTwilio(string $phone): string {
     $phone = preg_replace('/\D/', '', $phone);
 
-    // Aceita numeros de 10 a 15 digitos (com codigo do pais)
-    // Frontend já envia: código país + número local
-    if (strlen($phone) < 10 || strlen($phone) > 15) {
+    // Brazilian numbers: 10-11 digits without country code → prepend 55
+    if (strlen($phone) >= 10 && strlen($phone) <= 11 && !str_starts_with($phone, '55')) {
+        $phone = '55' . $phone;
+    }
+
+    // Aceita numeros de 12 a 15 digitos (com codigo do pais)
+    if (strlen($phone) < 12 || strlen($phone) > 15) {
         return '';
     }
     return '+' . $phone;

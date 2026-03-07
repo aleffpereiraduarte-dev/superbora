@@ -162,7 +162,7 @@ try {
                     CURLOPT_POST => true,
                     CURLOPT_POSTFIELDS => http_build_query([
                         'payment_intent' => $stripePi,
-                        'reason' => 'fraudulent',
+                        'reason' => 'requested_by_customer',
                         'metadata[order_id]' => $order_id,
                         'metadata[source]' => 'superbora_partner_reject',
                     ]),

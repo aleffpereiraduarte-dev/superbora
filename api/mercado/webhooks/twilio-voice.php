@@ -52,13 +52,10 @@ if (empty($authToken)) {
 
 if (empty($twilioSignature)) {
     $remoteIp = $_SERVER['HTTP_X_REAL_IP'] ?? $_SERVER['REMOTE_ADDR'] ?? '';
-    $hasTwilioParams = isset($_POST['CallSid']) && isset($_POST['From']);
-    if (!$hasTwilioParams) {
-        http_response_code(403);
-        echo '<?xml version="1.0" encoding="UTF-8"?><Response><Say>Unauthorized</Say></Response>';
-        exit;
-    }
-    error_log("[twilio-voice] Allowing request without signature (has CallSid) from IP: {$remoteIp}");
+    error_log("[twilio-voice] REJECTED: Missing X-Twilio-Signature from IP: {$remoteIp}");
+    http_response_code(403);
+    echo '<?xml version="1.0" encoding="UTF-8"?><Response><Say>Unauthorized</Say></Response>';
+    exit;
 }
 
 $scheme = 'https';
@@ -73,10 +70,20 @@ foreach ($params as $key => $value) {
     $dataString .= $key . $value;
 }
 
-if (!empty($twilioSignature)) {
-    $expectedSignature = base64_encode(hash_hmac('sha1', $dataString, $authToken, true));
-    if (!hash_equals($expectedSignature, $twilioSignature)) {
-        error_log("[twilio-voice] Signature mismatch — allowing (proxy may alter URL)");
+$expectedSignature = base64_encode(hash_hmac('sha1', $dataString, $authToken, true));
+if (!hash_equals($expectedSignature, $twilioSignature)) {
+    // Try alternative URL constructions (proxy may alter URL)
+    $altUrl = 'https://superbora.com.br' . strtok($uri, '?');
+    $altDataString = $altUrl;
+    foreach ($params as $key => $value) {
+        $altDataString .= $key . $value;
+    }
+    $altSignature = base64_encode(hash_hmac('sha1', $altDataString, $authToken, true));
+    if (!hash_equals($altSignature, $twilioSignature)) {
+        error_log("[twilio-voice] REJECTED: Signature mismatch");
+        http_response_code(403);
+        echo '<?xml version="1.0" encoding="UTF-8"?><Response><Say>Unauthorized</Say></Response>';
+        exit;
     }
 }
 

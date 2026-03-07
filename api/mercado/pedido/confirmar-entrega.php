@@ -108,7 +108,7 @@ try {
     }
 
     // Verificar ownership se motorista/shopper
-    if ($confirmado_por === 'motorista') {
+    if (in_array($confirmado_por, ['motorista', 'shopper'], true)) {
         $ownershipOk = false;
         if ($authType === OmAuth::USER_TYPE_SHOPPER && (int)($pedido['shopper_id'] ?? 0) === $authUid) {
             $ownershipOk = true;

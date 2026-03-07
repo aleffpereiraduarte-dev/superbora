@@ -379,7 +379,10 @@ class OmAuth {
     }
 
     private function isTokenValid(string $userType, int $userId, string $jti): bool {
-        if (!$this->pdo) return true;
+        if (!$this->pdo) {
+            error_log("[OmAuth] WARNING: No DB connection for token validation — failing closed");
+            return false;
+        }
 
         try {
             $stmt = $this->pdo->prepare("
@@ -396,12 +399,16 @@ class OmAuth {
             // Only reject if explicitly revoked
             return $row['revoked'] == 0;
         } catch (Exception $e) {
-            return true;
+            error_log("[OmAuth] Token validation DB error — failing closed: " . $e->getMessage());
+            return false;
         }
     }
 
     private function isAdminActive(int $adminId): bool {
-        if (!$this->pdo) return true;
+        if (!$this->pdo) {
+            error_log("[OmAuth] WARNING: No DB connection for admin check — failing closed");
+            return false;
+        }
 
         try {
             // Admin precisa ter status ativo E ter sido aprovado pelo RH
@@ -418,13 +425,17 @@ class OmAuth {
                 $stmt->execute([$adminId]);
                 return $stmt->fetch() !== false;
             } catch (Exception $e2) {
-                return true;
+                error_log("[OmAuth] Admin active check failed — failing closed: " . $e2->getMessage());
+                return false;
             }
         }
     }
 
     private function isRHActive(int $rhId): bool {
-        if (!$this->pdo) return true;
+        if (!$this->pdo) {
+            error_log("[OmAuth] WARNING: No DB connection for RH check — failing closed");
+            return false;
+        }
 
         try {
             $stmt = $this->pdo->prepare("
@@ -443,7 +454,8 @@ class OmAuth {
                 $stmt->execute([$rhId]);
                 return $stmt->fetch() !== false;
             } catch (Exception $e2) {
-                return true;
+                error_log("[OmAuth] RH active check failed — failing closed: " . $e2->getMessage());
+                return false;
             }
         }
     }

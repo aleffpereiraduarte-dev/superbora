@@ -227,14 +227,24 @@ if (stripos($event, 'CHARGE') !== false && strpos($correlationId, 'pix_intent_')
             if ($coupon_id > 0) {
                 $db->prepare("INSERT INTO om_market_coupon_usage (coupon_id, customer_id, order_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING")
                    ->execute([$coupon_id, $customer_id, $orderId]);
-                $db->prepare("UPDATE om_market_coupons SET current_uses = current_uses + 1 WHERE id = ?")->execute([$coupon_id]);
+                $stmtCoupon = $db->prepare("UPDATE om_market_coupons SET current_uses = current_uses + 1 WHERE id = ? AND (max_uses IS NULL OR max_uses = 0 OR current_uses < max_uses)");
+                $stmtCoupon->execute([$coupon_id]);
+                if ($stmtCoupon->rowCount() === 0) {
+                    error_log("[woovi-webhook] WARNING: Coupon #{$coupon_id} exceeded max_uses for order (PIX already paid, proceeding)");
+                }
             }
 
             // Deduct loyalty points
             $pointsUsed = (int)($cart['points_used'] ?? 0);
             if ($pointsUsed > 0) {
-                $db->prepare("UPDATE om_market_loyalty_points SET current_points = GREATEST(0, current_points - ?), updated_at = NOW() WHERE customer_id = ?")
-                   ->execute([$pointsUsed, $customer_id]);
+                $stmtPoints = $db->prepare("UPDATE om_market_loyalty_points SET current_points = GREATEST(0, current_points - ?), updated_at = NOW() WHERE customer_id = ? AND current_points >= ?");
+                $stmtPoints->execute([$pointsUsed, $customer_id, $pointsUsed]);
+                if ($stmtPoints->rowCount() === 0) {
+                    // Insufficient points (spent elsewhere) — deduct what's available
+                    $db->prepare("UPDATE om_market_loyalty_points SET current_points = 0, updated_at = NOW() WHERE customer_id = ? AND current_points > 0")
+                       ->execute([$customer_id]);
+                    error_log("[woovi-webhook] WARNING: Customer #{$customer_id} had insufficient loyalty points for order (PIX paid, zeroed balance)");
+                }
                 $db->prepare("INSERT INTO om_market_loyalty_transactions (customer_id, points, type, source, reference_id, description, created_at) VALUES (?, ?, 'redeem', 'checkout', ?, ?, NOW())")
                    ->execute([$customer_id, -$pointsUsed, $orderId, "Resgate no pedido #$order_number"]);
             }

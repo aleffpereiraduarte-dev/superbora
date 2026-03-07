@@ -119,11 +119,20 @@ if ($method === 'POST') {
             response(false, null, 'Loja não encontrada', 404);
         }
 
-        // Calculate totals
+        // Calculate totals using server-side prices (never trust client prices)
         $subtotal = 0;
-        foreach ($items as $item) {
+        foreach ($items as &$item) {
+            $prodStmt = $db->prepare("SELECT price, sale_price FROM om_market_products WHERE product_id = ? AND status = 1");
+            $prodStmt->execute([$item['product_id'] ?? 0]);
+            $prod = $prodStmt->fetch();
+            if ($prod) {
+                $serverPrice = ((float)$prod['sale_price'] > 0 && (float)$prod['sale_price'] < (float)$prod['price'])
+                    ? (float)$prod['sale_price'] : (float)$prod['price'];
+                $item['price'] = $serverPrice;
+            }
             $subtotal += ($item['price'] ?? 0) * ($item['quantity'] ?? 1);
         }
+        unset($item);
         $deliveryFee = (float)($input['delivery_fee'] ?? 0);
         $total = $subtotal + $deliveryFee;
 
