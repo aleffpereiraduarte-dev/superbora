@@ -577,6 +577,238 @@ try {
             $step = 'confirm_order';
         }
 
+        // 8-express. Express reorder: returning customer with store already chosen says "o de sempre" / "pedido rápido"
+        // Auto-fill last order + address + payment → jump to confirm (skips 3 Claude calls)
+        $expressStoreId = $aiContext['store_id'] ?? null;
+        if (!empty($aiContext['express_mode']) && $customerId && $expressStoreId && empty($aiContext['express_applied'])) {
+            // Early fetch: address, payment, items (normally loaded later but needed here)
+            $expressAddr = null;
+            try {
+                $eaStmt = $db->prepare("SELECT address_id, street, number, complement, neighborhood, city, state, zipcode, lat, lng FROM om_customer_addresses WHERE customer_id = ? AND is_active = '1' ORDER BY is_default DESC LIMIT 1");
+                $eaStmt->execute([$customerId]);
+                $expressAddr = $eaStmt->fetch();
+            } catch (\Throwable $e) {}
+            $expressLastPay = null;
+            try {
+                $epStmt = $db->prepare("SELECT forma_pagamento FROM om_market_orders WHERE customer_id = ? AND status NOT IN ('cancelled','refunded') ORDER BY date_added DESC LIMIT 1");
+                $epStmt->execute([$customerId]);
+                $epRow = $epStmt->fetch();
+                if ($epRow) $expressLastPay = $epRow['forma_pagamento'];
+            } catch (\Throwable $e) {}
+            $expressItems = fetchLastOrderItems($db, $customerId, $expressStoreId);
+            if (!empty($expressItems) && $expressAddr && $expressLastPay) {
+                $defaultAddress = $expressAddr;
+                $lastPayment = $expressLastPay;
+                $storeId = $expressStoreId;
+                $aiContext['items'] = $expressItems;
+                $aiContext['address_index'] = 0;
+                $aiContext['address'] = [
+                    'address_id' => (int)$defaultAddress['address_id'],
+                    'street' => $defaultAddress['street'], 'number' => $defaultAddress['number'],
+                    'complement' => $defaultAddress['complement'] ?? '', 'neighborhood' => $defaultAddress['neighborhood'],
+                    'city' => $defaultAddress['city'], 'state' => $defaultAddress['state'],
+                    'zipcode' => $defaultAddress['zipcode'] ?? '',
+                    'lat' => $defaultAddress['lat'] ?? null, 'lng' => $defaultAddress['lng'] ?? null,
+                    'full' => $defaultAddress['street'] . ', ' . $defaultAddress['number'] . ' - ' . $defaultAddress['neighborhood'],
+                ];
+                $aiContext['payment_method'] = $expressLastPay;
+                $aiContext['step'] = 'confirm_order';
+                $aiContext['confirmed'] = false;
+                $aiContext['express_applied'] = true;
+                $aiContext['repeat_order'] = true;
+                $step = 'confirm_order';
+
+                // Build natural confirmation
+                $subtotal = array_sum(array_map(fn($i) => ($i['price'] ?? 0) * ($i['quantity'] ?? 1), $expressItems));
+                $deliveryFee = 5.0;
+                try { $feeStmt = $db->prepare("SELECT delivery_fee FROM om_market_partners WHERE partner_id = ?"); $feeStmt->execute([$expressStoreId]); $feeRow = $feeStmt->fetch(); if ($feeRow) $deliveryFee = (float)$feeRow['delivery_fee']; } catch (\Throwable $e) {}
+                $serviceFee = round($subtotal * 0.08, 2);
+                $total = $subtotal + $deliveryFee + $serviceFee;
+                $tp = explode(',', number_format($total, 2, ',', '.')); $totalSpoken = $tp[0]; if (isset($tp[1]) && $tp[1] !== '00') $totalSpoken .= ' e ' . $tp[1];
+
+                $payLabels = ['dinheiro' => 'dinheiro', 'pix' => 'PIX', 'credit_card' => 'cartão', 'debit_card' => 'débito'];
+                $payLabel = $payLabels[$expressLastPay] ?? $expressLastPay;
+                $itemNames = array_map(fn($i) => ($i['quantity'] > 1 ? $i['quantity'] . ' ' : '') . $i['name'], $expressItems);
+                $itemsSpoken = count($itemNames) > 1 ? implode(', ', array_slice($itemNames, 0, -1)) . ' e ' . end($itemNames) : $itemNames[0];
+                $storeName = $aiContext['store_name'] ?? 'o restaurante';
+
+                $msg = "Pedido rápido! Da {$storeName}: {$itemsSpoken}. "
+                    . "Pra {$expressAddr['street']}, {$expressAddr['number']}, no {$payLabel}. "
+                    . "Total de {$totalSpoken} reais. Mando?";
+
+                $aiContext['history'] = $conversationHistory;
+                $aiContext['history'][] = ['role' => 'assistant', 'content' => $msg];
+                saveAiContext($db, $callId, $aiContext);
+
+                echo '<?xml version="1.0" encoding="UTF-8"?>';
+                echo '<Response>';
+                echo '<Gather ' . $gatherStd . ' timeout="8" action="' . escXml($selfUrl) . '" method="POST">';
+                echo ttsSayOrPlay($msg);
+                echo '</Gather>';
+                echo ttsSayOrPlay('Confirma? Sim ou não.');
+                echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
+                echo '</Response>';
+                exit;
+            }
+        }
+
+        // 8-qtyfix. Quantity correction: "na verdade quero 3" / "coloca 2" updates the LAST added item
+        if ($step === 'take_order' && !empty($aiContext['items']) && !$isYes && !$isNo) {
+            $qtyFixMatch = false;
+            $newQty = null;
+            $qtyPatterns = [
+                '/(?:na verdade|na real|melhor|opa|perai|alias)\s+(?:quero|coloca|manda|faz|bota|põe|poe)\s+(\d+)/iu',
+                '/(?:muda|troca|altera)\s+(?:pra|para|p)\s+(\d+)/iu',
+                '/(?:coloca|manda|faz|bota|põe|poe)\s+(\d+)\s+(?:unidade|porç|porcao)/iu',
+            ];
+            foreach ($qtyPatterns as $qp) {
+                if (preg_match($qp, $userInput, $qm)) {
+                    $newQty = max(1, min(50, (int)$qm[1]));
+                    $qtyFixMatch = true;
+                    break;
+                }
+            }
+            // Also: "na verdade quero duas" / "coloca três"
+            if (!$qtyFixMatch) {
+                $spokenQtyMap = ['uma' => 1, 'um' => 1, 'duas' => 2, 'dois' => 2, 'três' => 3, 'tres' => 3, 'quatro' => 4, 'cinco' => 5, 'seis' => 6, 'meia dúzia' => 6, 'meia duzia' => 6];
+                foreach ($spokenQtyMap as $word => $num) {
+                    if (preg_match('/(?:na verdade|na real|melhor|coloca|manda|faz)\s+' . preg_quote($word, '/') . '\b/iu', $lowerInput)) {
+                        $newQty = $num;
+                        $qtyFixMatch = true;
+                        break;
+                    }
+                }
+            }
+            if ($qtyFixMatch && $newQty !== null && mb_strlen(trim($lowerInput)) < 40) {
+                $lastIdx = count($aiContext['items']) - 1;
+                $oldQty = $aiContext['items'][$lastIdx]['quantity'];
+                $itemName = $aiContext['items'][$lastIdx]['name'];
+                $aiContext['items'][$lastIdx]['quantity'] = $newQty;
+                $lineTotal = $aiContext['items'][$lastIdx]['price'] * $newQty;
+                $priceSpoken = number_format($lineTotal, 2, ',', '.'); $pp = explode(',', $priceSpoken); $pv = $pp[0]; if (isset($pp[1]) && $pp[1] !== '00') $pv .= ' e ' . $pp[1];
+                $msg = "Troquei de {$oldQty} pra {$newQty} {$itemName}, deu {$pv} reais. Mais algo?";
+
+                $aiContext['history'] = $conversationHistory;
+                $aiContext['history'][] = ['role' => 'assistant', 'content' => $msg];
+                saveAiContext($db, $callId, $aiContext);
+
+                echo '<?xml version="1.0" encoding="UTF-8"?>';
+                echo '<Response>';
+                echo '<Gather ' . $gatherStd . ' timeout="10" action="' . escXml($selfUrl) . '" method="POST">';
+                echo ttsSayOrPlay($msg);
+                echo '</Gather>';
+                echo ttsSayOrPlay("Pode pedir mais ou dizer 'só isso' pra fechar!");
+                echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
+                echo '</Response>';
+                exit;
+            }
+        }
+
+        // 8-swap. Inline item swap: "troca a coca por guaraná" / "em vez de X quero Y"
+        if ($step === 'take_order' && !empty($aiContext['items']) && !empty($menuText)) {
+            $swapPatterns = [
+                '/(?:troca|trocar|troque)\s+(?:a|o)\s+(.+?)\s+(?:por|pelo|pela|pra|para)\s+(.+)/iu',
+                '/(?:em vez de|ao invés de|ao inves de|no lugar de?)\s+(.+?)\s*(?:,\s*|\s+)(?:quero|coloca|manda|me vê)\s+(.+)/iu',
+            ];
+            foreach ($swapPatterns as $sp) {
+                if (preg_match($sp, $userInput, $swapM) && mb_strlen($userInput) < 80) {
+                    $oldItemName = mb_strtolower(trim($swapM[1]), 'UTF-8');
+                    $newItemName = mb_strtolower(trim($swapM[2]), 'UTF-8');
+
+                    // Find the old item in cart
+                    $foundIdx = null;
+                    foreach ($aiContext['items'] as $idx => $item) {
+                        $cartItemLower = mb_strtolower($item['name'], 'UTF-8');
+                        if (mb_strpos($cartItemLower, $oldItemName) !== false || mb_strpos($oldItemName, $cartItemLower) !== false || levenshtein(mb_substr($oldItemName, 0, 15), mb_substr($cartItemLower, 0, 15)) <= 2) {
+                            $foundIdx = $idx;
+                            break;
+                        }
+                    }
+                    if ($foundIdx === null) break; // old item not in cart
+
+                    // Find the new item in menu
+                    $newItemPhonetic = phoneticNormalizePtBr($newItemName);
+                    $bestProd = null; $bestScore = 0;
+                    preg_match_all('/ID:(\d+)\s+(.+?)\s+R\$([\d.,]+)/m', $menuText, $mmAll, PREG_SET_ORDER);
+                    foreach ($mmAll as $mm) {
+                        $prodLower = mb_strtolower(trim($mm[2]), 'UTF-8');
+                        $prodPhonetic = phoneticNormalizePtBr($prodLower);
+                        if (mb_strpos($prodLower, $newItemName) !== false || mb_strpos($newItemName, $prodLower) !== false) {
+                            $bestProd = ['id' => (int)$mm[1], 'name' => trim($mm[2]), 'price' => (float)str_replace(',', '.', $mm[3])]; $bestScore = 100; break;
+                        }
+                        $prodWords = array_filter(preg_split('/\s+/', $prodPhonetic), fn($w) => mb_strlen($w) >= 3);
+                        $inputWords = array_filter(preg_split('/\s+/', $newItemPhonetic), fn($w) => mb_strlen($w) >= 3);
+                        if (empty($prodWords)) continue;
+                        $matched = 0;
+                        foreach ($prodWords as $pw) {
+                            foreach ($inputWords as $iw) {
+                                if ($iw === $pw || (mb_strlen($iw) >= 3 && levenshtein($iw, $pw) <= 1)) { $matched++; break; }
+                            }
+                        }
+                        $score = ($matched / count($prodWords)) * 80;
+                        if ($score > $bestScore && $score >= 50) { $bestProd = ['id' => (int)$mm[1], 'name' => trim($mm[2]), 'price' => (float)str_replace(',', '.', $mm[3])]; $bestScore = $score; }
+                    }
+                    if ($bestProd) {
+                        $oldItem = $aiContext['items'][$foundIdx];
+                        $aiContext['items'][$foundIdx] = [
+                            'product_id' => $bestProd['id'], 'quantity' => $oldItem['quantity'],
+                            'price' => $bestProd['price'], 'name' => $bestProd['name'],
+                            'options' => [], 'notes' => '',
+                        ];
+                        $priceFmt = number_format($bestProd['price'] * $oldItem['quantity'], 2, ',', '.'); $pp = explode(',', $priceFmt); $pv = $pp[0]; if (isset($pp[1]) && $pp[1] !== '00') $pv .= ' e ' . $pp[1];
+                        $msg = "Troquei {$oldItem['name']} por {$bestProd['name']}, {$pv} reais. Mais algo?";
+
+                        $aiContext['history'] = $conversationHistory;
+                        $aiContext['history'][] = ['role' => 'assistant', 'content' => $msg];
+                        saveAiContext($db, $callId, $aiContext);
+
+                        echo '<?xml version="1.0" encoding="UTF-8"?>';
+                        echo '<Response>';
+                        echo '<Gather ' . $gatherStd . ' timeout="10" action="' . escXml($selfUrl) . '" method="POST">';
+                        echo ttsSayOrPlay($msg);
+                        echo '</Gather>';
+                        echo ttsSayOrPlay("Mais alguma coisa?");
+                        echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
+                        echo '</Response>';
+                        exit;
+                    }
+                    break; // Only try first match
+                }
+            }
+        }
+
+        // 8-addmore. "Mais um/uma" / "adiciona outro" → add +1 of last item without Claude call
+        if ($step === 'take_order' && !empty($aiContext['items'])) {
+            $addMorePhrases = ['mais um', 'mais uma', 'outro', 'outra', 'adiciona mais', 'bota mais', 'coloca mais', 'manda mais', 'me vê mais'];
+            $wantsMore = false;
+            foreach ($addMorePhrases as $amp) {
+                if (mb_strpos($lowerInput, $amp) !== false && mb_strlen(trim($lowerInput)) < 25) { $wantsMore = true; break; }
+            }
+            if ($wantsMore) {
+                $lastIdx = count($aiContext['items']) - 1;
+                $aiContext['items'][$lastIdx]['quantity'] += 1;
+                $newQty = $aiContext['items'][$lastIdx]['quantity'];
+                $itemName = $aiContext['items'][$lastIdx]['name'];
+                $lineTotal = $aiContext['items'][$lastIdx]['price'] * $newQty;
+                $pp = explode(',', number_format($lineTotal, 2, ',', '.')); $pv = $pp[0]; if (isset($pp[1]) && $pp[1] !== '00') $pv .= ' e ' . $pp[1];
+                $msg = "Agora são {$newQty} {$itemName}, {$pv} reais. Mais algo?";
+
+                $aiContext['history'] = $conversationHistory;
+                $aiContext['history'][] = ['role' => 'assistant', 'content' => $msg];
+                saveAiContext($db, $callId, $aiContext);
+
+                echo '<?xml version="1.0" encoding="UTF-8"?>';
+                echo '<Response>';
+                echo '<Gather ' . $gatherStd . ' timeout="10" action="' . escXml($selfUrl) . '" method="POST">';
+                echo ttsSayOrPlay($msg);
+                echo '</Gather>';
+                echo ttsSayOrPlay("Mais alguma coisa?");
+                echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
+                echo '</Response>';
+                exit;
+            }
+        }
+
         // 8a-pre. Fast-track: "só isso" / "fechou" / "pronto" at take_order with items → skip to get_address
         if ($step === 'take_order' && !empty($aiContext['items'])) {
             $donePhrases = ['só isso', 'so isso', 'é isso', 'e isso', 'é só', 'e so', 'só', 'pronto', 'fechou', 'fecha', 'pode fechar', 'tá bom', 'ta bom', 'tá ótimo', 'ta otimo', 'nada mais', 'mais nada', 'era isso', 'acabou', 'terminei', 'finaliza', 'pode mandar', 'manda', 'bora', 'pode ir'];
@@ -1067,8 +1299,9 @@ try {
         }
     }
 
-    // Pre-process user input: convert spoken numbers to digits for addresses/quantities
+    // Pre-process user input: fix common Twilio STT errors for PT-BR, then convert spoken numbers
     if (!empty($userInput) && !$isCepRedirect) {
+        $userInput = fixCommonSttErrors($userInput);
         $userInput = convertSpokenNumbersPtBr($userInput);
     }
 
@@ -2734,6 +2967,60 @@ function fetchStoreMenu(PDO $db, int $storeId): string {
  * - Compound: "treze zero quarenta" → "13040" (CEP-like)
  * Does NOT convert when numbers are part of product names or unclear contexts.
  */
+/**
+ * Fix common Twilio STT errors for Brazilian Portuguese.
+ * Twilio's speech-to-text frequently mishears these patterns.
+ */
+function fixCommonSttErrors(string $text): string {
+    // Common word-level fixes (case-insensitive)
+    $fixes = [
+        // Food items
+        '/\bchees\s*burger/iu' => 'cheeseburger',
+        '/\bx[\s-]*(?:burg(?:u?er)?|bague)\b/iu' => 'x-burger',
+        '/\bx[\s-]*(?:tudo|todo)\b/iu' => 'x-tudo',
+        '/\bx[\s-]*(?:salada|salad)\b/iu' => 'x-salada',
+        '/\bx[\s-]*(?:egg|ég)\b/iu' => 'x-egg',
+        '/\bmargue?r[iy]ta\b/iu' => 'margherita',
+        '/\bmargare?ta\b/iu' => 'margherita',
+        '/\bmargarita\b/iu' => 'margherita',
+        '/\bcatupiry\b/iu' => 'catupiry',
+        '/\bkat[uo]piri?\b/iu' => 'catupiry',
+        '/\bstrog[oa]n[oa]f+e?\b/iu' => 'strogonoff',
+        '/\bstrogonof\b/iu' => 'strogonoff',
+        '/\bcala?bre[sz]a\b/iu' => 'calabresa',
+        '/\bquatr[oa]\s*queijo\b/iu' => 'quatro queijos',
+        '/\bfrang[oa]\b/iu' => 'frango',
+        '/\bmuss?are?la\b/iu' => 'mussarela',
+        '/\bmozare?la\b/iu' => 'mussarela',
+        '/\bguaraná\s*(?:antart?ica|antarc?tic)/iu' => 'guaraná antarctica',
+        // Payment
+        '/\bp[iy]x\b/iu' => 'pix',
+        '/\bpics\b/iu' => 'pix',
+        '/\bpiques\b/iu' => 'pix',
+        '/\bcartão\s*de?\s*cred[iy]to\b/iu' => 'cartão de crédito',
+        '/\bcartão\s*de?\s*deb[iy]to\b/iu' => 'cartão de débito',
+        // Addresses
+        '/\baven[iy]da\b/iu' => 'avenida',
+        '/\bapartament[oa]\b/iu' => 'apartamento',
+        '/\bcondom[iy]n[iy]o\b/iu' => 'condomínio',
+        // Intent words commonly mangled
+        '/\b(?:at[eé]nd[eê]nt[eê]|at[eé]ndent)\b/iu' => 'atendente',
+        '/\bcancela[rmn]\b/iu' => 'cancelar',
+        '/\bconfirm[ao]r?\b/iu' => 'confirmar',
+        // Twilio noise artifacts
+        '/\b(?:hum+|hmm+|uh+m|ah+|eh+)\b/iu' => '', // strip filler sounds when mixed with real words
+    ];
+
+    foreach ($fixes as $pattern => $replacement) {
+        $text = preg_replace($pattern, $replacement, $text);
+    }
+
+    // Clean up multiple spaces left by replacements
+    $text = preg_replace('/\s{2,}/', ' ', trim($text));
+
+    return $text;
+}
+
 function convertSpokenNumbersPtBr(string $text): string {
     // Only convert in address/number-heavy contexts — check for trigger words
     $hasAddressContext = preg_match('/\b(rua|avenida|numero|número|cep|apartamento|apto|bloco|casa|andar|complemento|endereço)\b/iu', $text);
@@ -4544,11 +4831,14 @@ function buildSystemPrompt(
             $prompt .= "- NUNCA diga 'erre cifrão' ou 'reais e centavos'. Fale naturalmente.\n";
             $prompt .= "- Centavos: use 'e [valor]' (ex: 'vinte e três e cinquenta' = R\$23,50)\n\n";
 
-            $prompt .= "COMO CONFIRMAR (seja conciso, o cliente já sabe o que pediu):\n";
+            $prompt .= "COMO CONFIRMAR (conversacional, NÃO faça lista formatada):\n";
             $prompt .= "- Pedido pequeno (1-2 itens): 'Então fica [itens] da {$storeName}, total [valor]. Confirma?'\n";
-            $prompt .= "- Pedido médio (3-4 itens): liste rapidamente: '[qty] [item], [qty] [item]... total [valor]. Mando?'\n";
-            $prompt .= "- Pedido grande (5+ itens): 'São [X] itens da {$storeName}, total [valor]. Quer que eu repita tudo ou mando?'\n";
-            $prompt .= "- SEMPRE termine com pergunta clara: 'Confirma?', 'Posso mandar?', 'Mando o pedido?'\n";
+            $prompt .= "- Pedido médio (3-4 itens): fale CORRIDO como gente: 'Duas coxinhas, um guaraná e uma pizza margherita grande, total quarenta e cinco reais. Mando?'\n";
+            $prompt .= "- Pedido grande (5+ itens): 'São [X] itens da {$storeName}, total [valor]. Quer ouvir tudo ou posso mandar?'\n";
+            $prompt .= "- NÃO use formato de lista. Fale os itens CORRIDOS, separados por vírgula e 'e' no final.\n";
+            $prompt .= "- Agrupe iguais: '3 coxinhas' não 'coxinha, coxinha, coxinha'\n";
+            $prompt .= "- Mencione endereço e pagamento brevemente: 'pra [rua], no [pagamento]'\n";
+            $prompt .= "- SEMPRE termine com pergunta clara: 'Confirma?', 'Posso mandar?', 'Mando?'\n";
             $prompt .= "- Se o cliente disser sim/confirma/manda/pode/beleza → [CONFIRMED]\n";
             $prompt .= "- Se quiser mudar algo → volte pro take_order com [BACK_TO_ORDER]\n\n";
 
