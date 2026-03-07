@@ -128,7 +128,9 @@ $selfUrl = $scheme . '://' . $host . strtok($_SERVER['REQUEST_URI'] ?? '', '?');
 $routeUrl = str_replace('twilio-voice-ai.php', 'twilio-voice-route.php', $selfUrl);
 
 // -- Standard Gather attributes (anti-noise, pt-BR optimized) --
-$gatherStd = 'input="speech dtmf" language="pt-BR" speechModel="experimental_utterances" speechTimeout="auto" profanityFilter="false" enhanced="true" hints="sim, não, pedido, atendente, cancelar, status, pizza, lanche, hambúrguer, açaí, sushi, japonesa, um, dois, três, quatro, cinco, seis, sete, oito, nove, dez, zero, obrigado, obrigada, tchau, Aleff, Alefe, meu nome é, endereço, rua, avenida, apartamento, casa, bloco, CEP, pix, cartão, dinheiro, crédito, débito, troco, confirma, confirmar, grande, pequeno, médio, combo, promoção"';
+// speechTimeout=2 instead of "auto" — "auto" cuts audio prematurely on background noise
+// 2 seconds of silence after user stops speaking before submitting (good balance)
+$gatherStd = 'input="speech dtmf" language="pt-BR" speechModel="experimental_utterances" speechTimeout="2" profanityFilter="false" enhanced="true" hints="sim, não, pedido, atendente, cancelar, status, pizza, lanche, hambúrguer, açaí, sushi, japonesa, um, dois, três, quatro, cinco, seis, sete, oito, nove, dez, zero, obrigado, obrigada, tchau, Aleff, Alefe, meu nome é, endereço, rua, avenida, apartamento, casa, bloco, CEP, pix, cartão, dinheiro, crédito, débito, troco, confirma, confirmar, grande, pequeno, médio, combo, promoção"';
 
 // -- NOISE FILTER: reject very low confidence or very short garbage speech --
 // Background noise, coughs, TV sounds etc. get picked up as random short text

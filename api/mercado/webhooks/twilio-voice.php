@@ -102,7 +102,7 @@ function safeErrorTwiml(string $routeUrl = ''): void {
     echo '<Say language="pt-BR" voice="Polly.Camila">Oi! Aqui é a Bora, do SuperBora. Como posso te ajudar?</Say>';
     if ($routeUrl) {
         $esc = htmlspecialchars($routeUrl, ENT_XML1 | ENT_QUOTES, 'UTF-8');
-        echo '<Gather input="speech dtmf" timeout="6" language="pt-BR" action="' . $esc . '" method="POST" speechTimeout="auto" speechModel="experimental_utterances" hints="sim, não, pedido, atendente, cancelar, status, ajuda">';
+        echo '<Gather input="speech dtmf" timeout="6" language="pt-BR" action="' . $esc . '" method="POST" speechTimeout="2" speechModel="experimental_utterances" hints="sim, não, pedido, atendente, cancelar, status, ajuda">';
         echo '<Say language="pt-BR" voice="Polly.Camila">Pode falar ou digitar, tô te escutando!</Say>';
         echo '</Gather>';
     }
@@ -267,7 +267,7 @@ try {
     }
 } catch (Exception $e) {}
 $storeHintStr = !empty($storeHintParts) ? ', ' . implode(', ', $storeHintParts) : '';
-$gatherAttrs = 'input="speech dtmf" language="pt-BR" speechModel="experimental_utterances" speechTimeout="auto" profanityFilter="false" enhanced="true" hints="sim, não, pedido, atendente, cancelar, status, ajuda, pizza, lanche, hambúrguer, bebida, açaí, sushi, um, dois, três, zero, Aleff, meu nome é, endereço, CEP, pix, cartão, dinheiro' . htmlspecialchars($storeHintStr, ENT_XML1 | ENT_QUOTES, 'UTF-8') . '"';
+$gatherAttrs = 'input="speech dtmf" language="pt-BR" speechModel="experimental_utterances" speechTimeout="2" profanityFilter="false" enhanced="true" hints="sim, não, pedido, atendente, cancelar, status, ajuda, pizza, lanche, hambúrguer, bebida, açaí, sushi, um, dois, três, zero, Aleff, meu nome é, endereço, CEP, pix, cartão, dinheiro' . htmlspecialchars($storeHintStr, ENT_XML1 | ENT_QUOTES, 'UTF-8') . '"';
 
 echo '<?xml version="1.0" encoding="UTF-8"?>';
 echo '<Response>';
