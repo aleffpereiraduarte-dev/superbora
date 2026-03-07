@@ -704,14 +704,152 @@ try {
             }
         }
 
-        // 8-swap. Inline item swap: "troca a coca por guaraná" / "em vez de X quero Y"
-        // Note: $menuText is loaded later in main flow; fetch it early if needed for swap
-        $swapMenuText = '';
-        $swapStoreId = $aiContext['store_id'] ?? null;
-        if ($step === 'take_order' && !empty($aiContext['items']) && $swapStoreId) {
-            try { $swapMenuText = fetchStoreMenu($db, (int)$swapStoreId); } catch (\Throwable $e) {}
+        // Early menu fetch: load menu text for take_order fast-tracks (swap, direct-add, etc.)
+        // $menuText is loaded later in main flow (~line 1750); we load it here too for fast-tracks
+        $earlyMenuText = '';
+        $earlyStoreId = $aiContext['store_id'] ?? null;
+        if ($step === 'take_order' && $earlyStoreId) {
+            try { $earlyMenuText = fetchStoreMenu($db, (int)$earlyStoreId); } catch (\Throwable $e) {}
         }
-        if ($step === 'take_order' && !empty($aiContext['items']) && !empty($swapMenuText)) {
+
+        // 8-directadd. Direct item add: "me vê uma coca" / "quero 2 coxinhas" — match directly in menu
+        // Only for SHORT utterances where intent is clear (no ambiguity)
+        if ($step === 'take_order' && !empty($earlyMenuText) && !$isYes && !$isNo && !empty($userInput)) {
+            $directAddInput = mb_strtolower(trim($userInput), 'UTF-8');
+            // Strip order prefixes: "me vê", "quero", "manda", "adiciona", "coloca", "bota"
+            $directAddClean = preg_replace('/^(?:me\s+v[eê]|quero|manda|adiciona|coloca|bota|p[oõ]e|faz)\s+/iu', '', $directAddInput);
+            // Extract quantity: "uma coca" → qty=1, "2 coxinhas" → qty=2, "duas pizzas" → qty=2
+            $directQty = 1;
+            if (preg_match('/^(\d+)\s+(.+)$/', $directAddClean, $dqm)) {
+                $directQty = max(1, min(50, (int)$dqm[1]));
+                $directAddClean = trim($dqm[2]);
+            } else {
+                $spokenQtyMap = ['uma' => 1, 'um' => 1, 'duas' => 2, 'dois' => 2, 'três' => 3, 'tres' => 3, 'quatro' => 4, 'cinco' => 5, 'seis' => 6];
+                foreach ($spokenQtyMap as $word => $num) {
+                    if (preg_match('/^' . preg_quote($word, '/') . '\s+(.+)$/iu', $directAddClean, $sqm)) {
+                        $directQty = $num;
+                        $directAddClean = trim($sqm[1]);
+                        break;
+                    }
+                }
+            }
+
+            // Only try direct match for short, clear utterances (< 40 chars after cleanup)
+            if (mb_strlen($directAddClean) >= 3 && mb_strlen($directAddClean) <= 40) {
+                $directPhonetic = phoneticNormalizePtBr($directAddClean);
+                $directBest = null;
+                $directBestScore = 0;
+
+                preg_match_all('/ID:(\d+)\s+(.+?)\s+R\$([\d.,]+)/m', $earlyMenuText, $dMenuAll, PREG_SET_ORDER);
+                foreach ($dMenuAll as $dm) {
+                    $prodName = trim($dm[2]);
+                    $prodLower = mb_strtolower($prodName, 'UTF-8');
+                    $prodPhonetic = phoneticNormalizePtBr($prodLower);
+
+                    // Exact substring match
+                    if ($prodLower === $directAddClean || mb_strpos($prodLower, $directAddClean) === 0) {
+                        $directBest = ['id' => (int)$dm[1], 'name' => $prodName, 'price' => (float)str_replace(',', '.', $dm[3])];
+                        $directBestScore = 100;
+                        break;
+                    }
+                    // Containment match
+                    if (mb_strpos($prodLower, $directAddClean) !== false) {
+                        $score = 85;
+                        if ($score > $directBestScore) {
+                            $directBest = ['id' => (int)$dm[1], 'name' => $prodName, 'price' => (float)str_replace(',', '.', $dm[3])];
+                            $directBestScore = $score;
+                        }
+                        continue;
+                    }
+                    // Phonetic match
+                    $prodWords = array_filter(preg_split('/\s+/', $prodPhonetic), fn($w) => mb_strlen($w) >= 3);
+                    $inputWords = array_filter(preg_split('/\s+/', $directPhonetic), fn($w) => mb_strlen($w) >= 3);
+                    if (!empty($prodWords) && !empty($inputWords)) {
+                        $matched = 0;
+                        foreach ($inputWords as $iw) {
+                            foreach ($prodWords as $pw) {
+                                if ($iw === $pw || (mb_strlen($iw) >= 3 && levenshtein($iw, $pw) <= 1)) { $matched++; break; }
+                            }
+                        }
+                        $score = ($matched / max(count($inputWords), 1)) * 80;
+                        if ($score > $directBestScore && $score >= 65) {
+                            $directBest = ['id' => (int)$dm[1], 'name' => $prodName, 'price' => (float)str_replace(',', '.', $dm[3])];
+                            $directBestScore = $score;
+                        }
+                    }
+                }
+
+                // Only direct-add if high confidence match (>= 80) AND product has no required options
+                if ($directBest && $directBestScore >= 80) {
+                    // Check if this product has REQUIRED options (sizes, flavors, etc.)
+                    $hasRequiredOptions = false;
+                    if (preg_match('/ID:' . $directBest['id'] . '.*?\n.*?>>\s/m', $earlyMenuText)) {
+                        // Product has option groups — check if any are required
+                        // Look for [OBRIGATÓRIO] or required option markers
+                        $hasRequiredOptions = (bool)preg_match('/ID:' . $directBest['id'] . '.*?(?:\n.*?){0,10}OBRIGAT[OÓ]RIO/mi', $earlyMenuText);
+                        if (!$hasRequiredOptions) {
+                            // Also check for common required groups (Tamanho, Sabor)
+                            $hasRequiredOptions = (bool)preg_match('/ID:' . $directBest['id'] . '.*?(?:\n.*?){0,10}>>\s*(?:Tamanho|Sabor|Escolha)\s/mi', $earlyMenuText);
+                        }
+                    }
+
+                    if (!$hasRequiredOptions) {
+                        // Direct add — no Claude call needed!
+                        $newItem = [
+                            'product_id' => $directBest['id'],
+                            'quantity' => $directQty,
+                            'price' => $directBest['price'],
+                            'name' => $directBest['name'],
+                            'options' => [],
+                            'notes' => '',
+                        ];
+                        $aiContext['items'] = $aiContext['items'] ?? [];
+                        // Check if same item already in cart — merge quantities
+                        $merged = false;
+                        foreach ($aiContext['items'] as &$existingItem) {
+                            if (($existingItem['product_id'] ?? 0) === $directBest['id']) {
+                                $existingItem['quantity'] += $directQty;
+                                $merged = true;
+                                break;
+                            }
+                        }
+                        unset($existingItem);
+                        if (!$merged) {
+                            $aiContext['items'][] = $newItem;
+                        }
+
+                        $lineTotal = $directBest['price'] * $directQty;
+                        $pp = explode(',', number_format($lineTotal, 2, ',', '.'));
+                        $pv = $pp[0]; if (isset($pp[1]) && $pp[1] !== '00') $pv .= ' e ' . $pp[1];
+
+                        $confirmWords = ['Anotado!', 'Fechou!', 'Beleza!', 'Show!', 'Boa!'];
+                        $confirm = $confirmWords[array_rand($confirmWords)];
+                        $qtyText = $directQty > 1 ? "{$directQty} " : '';
+                        $msg = "{$confirm} {$qtyText}{$directBest['name']}, {$pv} reais. Mais alguma coisa?";
+
+                        $aiContext['history'] = $conversationHistory;
+                        $aiContext['history'][] = ['role' => 'assistant', 'content' => $msg];
+                        $aiContext['silence_count'] = 0;
+                        saveAiContext($db, $callId, $aiContext);
+
+                        error_log("[twilio-voice-ai] DIRECT-ADD: {$qtyText}{$directBest['name']} (score={$directBestScore}, id={$directBest['id']})");
+
+                        echo '<?xml version="1.0" encoding="UTF-8"?>';
+                        echo '<Response>';
+                        echo '<Gather ' . $gatherStd . ' timeout="10" action="' . escXml($selfUrl) . '" method="POST">';
+                        echo ttsSayOrPlay($msg);
+                        echo '</Gather>';
+                        echo ttsSayOrPlay("Pode pedir mais ou dizer 'só isso' pra fechar!");
+                        echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
+                        echo '</Response>';
+                        exit;
+                    }
+                }
+            }
+        }
+
+        // 8-swap. Inline item swap: "troca a coca por guaraná" / "em vez de X quero Y"
+        if ($step === 'take_order' && !empty($aiContext['items']) && !empty($earlyMenuText)) {
             $swapPatterns = [
                 '/(?:troca|trocar|troque)\s+(?:a|o)\s+(.+?)\s+(?:por|pelo|pela|pra|para)\s+(.+)/iu',
                 '/(?:em vez de|ao invés de|ao inves de|no lugar de?)\s+(.+?)\s*(?:,\s*|\s+)(?:quero|coloca|manda|me vê)\s+(.+)/iu',
