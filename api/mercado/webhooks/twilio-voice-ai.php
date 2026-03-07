@@ -2703,6 +2703,21 @@ try {
     // Voice-specific instruction: keep responses SHORT
     $optimized['prompt'] .= "\n\n## LEMBRETE CRITICO PARA VOZ\nIsso é LIGACAO TELEFONICA. MAXIMO 2 frases curtas e diretas. Seja breve — fale só o essencial. Nada de listas longas.\n";
 
+    // Inject what the AI said last turn for continuity (Claude doesn't know what fast-tracks responded)
+    $lastAiResponse = $aiContext['last_ai_response'] ?? null;
+    $lastUserInput = $aiContext['last_user_input'] ?? null;
+    if ($lastAiResponse || $lastUserInput) {
+        $contextHint = "\n## O QUE ACONTECEU NO TURNO ANTERIOR\n";
+        if ($lastAiResponse) {
+            $contextHint .= "VOCÊ DISSE: \"" . mb_substr($lastAiResponse, 0, 200, 'UTF-8') . "\"\n";
+        }
+        if ($lastUserInput) {
+            $contextHint .= "CLIENTE RESPONDEU: \"" . mb_substr($lastUserInput, 0, 150, 'UTF-8') . "\"\n";
+        }
+        $contextHint .= "Interprete a fala do cliente como RESPOSTA ao que você disse. O contexto é essencial!\n";
+        $optimized['prompt'] .= $contextHint;
+    }
+
     // -- Append language modifier and A/B tone to system prompt --
     $langModifier = '';
     if (function_exists('getMultilangPrompt') && $detectedLang !== 'pt') {
@@ -3159,6 +3174,10 @@ try {
         }
     }
 
+    // Save last turn info for next Claude call context
+    $newContext['last_ai_response'] = mb_substr($aiResponse, 0, 250, 'UTF-8');
+    $newContext['last_user_input'] = mb_substr($userInput ?? '', 0, 200, 'UTF-8');
+
     // Save context
     saveAiContext($db, $callId, $newContext);
 
@@ -3491,19 +3510,70 @@ function transferToAgent(PDO $db, int $callId, string $phone, ?string $name, ?in
         'agents_online' => $agentsOnline,
     ]);
 
-    // Build queue message — never say "nobody available" (agents may be on other servers)
-    $queueMsg = "Beleza! Vou te passar pra um atendente.";
-    if ($queueDepth > 2) {
-        $estimatedWait = $queueDepth * 2;
-        $queueMsg .= " Tem " . $queueDepth . " pessoa na sua frente, uns {$estimatedWait} minutinhos de espera.";
-    } else {
-        $queueMsg .= " Já já alguém te atende!";
+    // Find available agents for Dial (same logic as Node.js voice server)
+    $agents = [];
+    try {
+        $agentLookup = $db->prepare("
+            SELECT a.id, a.display_name, a.max_concurrent,
+                   COALESCE(active.cnt, 0)::int as active_calls
+            FROM om_callcenter_agents a
+            LEFT JOIN (
+                SELECT agent_id, COUNT(*) as cnt
+                FROM om_callcenter_calls
+                WHERE status IN ('in_progress', 'ringing')
+                  AND ended_at IS NULL AND agent_id IS NOT NULL
+                  AND started_at > NOW() - INTERVAL '2 hours'
+                GROUP BY agent_id
+            ) active ON active.agent_id = a.id
+            WHERE a.status = 'online'
+              AND COALESCE(active.cnt, 0) < a.max_concurrent
+            ORDER BY COALESCE(active.cnt, 0) ASC, a.last_call_ended_at ASC NULLS FIRST
+            LIMIT 10
+        ");
+        $agentLookup->execute();
+        $agents = $agentLookup->fetchAll(PDO::FETCH_ASSOC);
+    } catch (\Throwable $e) {
+        error_log("[twilio-voice-ai] Agent lookup error: " . $e->getMessage());
     }
+
+    $dialStatusUrl = 'https://superbora.com.br/api/mercado/webhooks/twilio-status.php';
+    $dialStatusEsc = htmlspecialchars($dialStatusUrl, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+    $callerIdNumber = $_ENV['TWILIO_PHONE'] ?? getenv('TWILIO_PHONE') ?: '+15705299780';
 
     echo '<?xml version="1.0" encoding="UTF-8"?>';
     echo '<Response>';
-    echo ttsSayOrPlay($queueMsg);
-    echo '<Play loop="0">http://com.twilio.music.pop-rock.s3.amazonaws.com/Ab0-3.mp3</Play>';
+
+    if (!empty($agents)) {
+        $clientTags = '';
+        $agentIds = [];
+        foreach ($agents as $ag) {
+            $agId = (int)$ag['id'];
+            $agentIds[] = $agId;
+            $clientTags .= '<Client statusCallback="' . $dialStatusEsc . '" statusCallbackEvent="answered completed" statusCallbackMethod="POST">agent_' . $agId . '</Client>';
+        }
+        error_log("[twilio-voice-ai] Transfer to agents: [" . implode(', ', $agentIds) . "] for call_id={$callId}");
+
+        ccBroadcastDashboard('call_transfer', [
+            'call_id' => $callId,
+            'customer_phone' => $phone,
+            'customer_name' => $name,
+            'agents_ringing' => $agentIds,
+        ]);
+
+        echo ttsSayOrPlay('Beleza! Vou te passar pra um atendente agora. Aguarda só um pouquinho.');
+        echo '<Dial timeout="45" callerId="' . htmlspecialchars($callerIdNumber, ENT_XML1 | ENT_QUOTES, 'UTF-8') . '" action="' . $dialStatusEsc . '" method="POST">';
+        echo $clientTags;
+        echo '</Dial>';
+    } else {
+        // No agents online — offer to continue with AI
+        $aiUrlFallback = str_replace('twilio-voice-route.php', 'twilio-voice-ai.php', $routeUrl);
+        $aiUrlEsc = htmlspecialchars($aiUrlFallback, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+        echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" speechModel="experimental_utterances" speechTimeout="auto" action="' . $aiUrlEsc . '" method="POST">';
+        echo ttsSayOrPlay('Ah, nesse momento não tem nenhum atendente disponível. Mas eu posso te ajudar com seu pedido! Quer continuar comigo?');
+        echo '</Gather>';
+        echo '<Redirect method="POST">' . $aiUrlEsc . '</Redirect>';
+    }
+
     echo '</Response>';
 }
 
@@ -4796,11 +4866,14 @@ function buildSystemPrompt(
     $prompt .= "## RACIOCÍNIO INTERNO (FUNDAMENTAL)\n";
     $prompt .= "ANTES de responder, pense internamente em <think> tags (o cliente NÃO ouve isso):\n";
     $prompt .= "<think>\n";
-    $prompt .= "1. O que o cliente disse? (interprete foneticamente se necessário)\n";
-    $prompt .= "2. O que ele QUER? (intenção real, não só as palavras)\n";
-    $prompt .= "3. Estou no passo certo? (preciso mudar de etapa?)\n";
-    $prompt .= "4. Tenho TODAS as informações pra avançar? (slots preenchidos?)\n";
-    $prompt .= "5. Qual a resposta mais CURTA e ÚTIL?\n";
+    $prompt .= "1. TRANSCRIÇÃO: O que o cliente falou? STT erra muito — interprete foneticamente, corrija erros óbvios.\n";
+    $prompt .= "2. INTENÇÃO REAL: O que ele QUER de verdade? (ex: 'aquele negócio' = item que estava discutindo)\n";
+    $prompt .= "3. CONTEXTO: O que aconteceu antes? Ele tá respondendo minha pergunta ou mudando de assunto?\n";
+    $prompt .= "4. ETAPA: Estou no passo certo ou o cliente quer algo diferente? Preciso mudar?\n";
+    $prompt .= "5. SLOTS: Tenho todas as informações pra avançar? O que falta?\n";
+    $prompt .= "6. TOM: Como ele tá se sentindo? (pressa, calmo, frustrado, confuso)\n";
+    $prompt .= "7. RESPOSTA: Qual é a resposta mais CURTA, ÚTIL e NATURAL? (max 2 frases)\n";
+    $prompt .= "8. MARCADORES: Preciso incluir algum marcador? ([STORE:], [ITEM:], [NEXT_STEP], etc)\n";
     $prompt .= "</think>\n";
     $prompt .= "Depois do </think>, escreva APENAS o que o cliente vai ouvir.\n";
     $prompt .= "NUNCA inclua tags <think> na parte falada. NUNCA.\n\n";
@@ -4870,6 +4943,22 @@ function buildSystemPrompt(
     $prompt .= "- 'tô na dúvida entre X e Y' → compare brevemente e recomende: 'O X é maior e vem com batata. Eu iria de X!'\n";
     $prompt .= "- 'pra mim e pra minha esposa/marido/namorado(a)' → são 2 pessoas, sugira 2 pratos ou combo casal\n";
     $prompt .= "- 'pra 4 pessoas' → sugira combo família ou calcule quantidade adequada\n\n";
+
+    $prompt .= "### Respostas implícitas e referências contextuais (MUITO IMPORTANTE):\n";
+    $prompt .= "O cliente RESPONDE ao que VOCÊ perguntou. Interprete no contexto:\n";
+    $prompt .= "- Você perguntou sabor de pizza, ele diz 'calabresa' → sabor=calabresa. Óbvio, né? Mas STT pode virar 'cara bessa'.\n";
+    $prompt .= "- Você listou 3 opções, ele diz 'o primeiro' / 'esse' / 'o do meio' → é a opção que você listou!\n";
+    $prompt .= "- Você perguntou endereço, ele diz 'o mesmo' / 'o de sempre' / 'o que tá salvo' → use endereço salvo.\n";
+    $prompt .= "- Você sugeriu algo, ele diz 'pode ser' / 'manda' / 'bora' / 'fecha' / 'isso' → é SIM.\n";
+    $prompt .= "- Ele diz 'não não' / 'pera' / 'espera' / 'calma' → quer mudar algo, pergunte.\n";
+    $prompt .= "- 'Aquilo que você falou' / 'aquele negócio' → volte no histórico e veja o que VOCÊ sugeriu.\n";
+    $prompt .= "- 'Adiciona mais um' → mais 1 do ÚLTIMO item adicionado, não pergunte qual.\n";
+    $prompt .= "- 'Tira esse' → remova o ÚLTIMO item adicionado.\n";
+    $prompt .= "- 'Quanto tá?' / 'Quanto ficou?' → diga o subtotal atual.\n";
+    $prompt .= "- 'Manda ver' / 'É isso' / 'Só isso' / 'Pronto' / 'Tá bom' → quer fechar o pedido, avance.\n";
+    $prompt .= "- 'Na verdade...' / 'Pensando bem...' → vai mudar de ideia, espere.\n";
+    $prompt .= "- 'Hum' / 'Hmm' / 'Ah' = pensando. Espere 1 segundo e pergunte: 'Decidiu?'\n";
+    $prompt .= "- SILÊNCIO (mensagem vazia ou muito curta) → o cliente pode não ter ouvido. Repita de forma mais curta.\n\n";
 
     $prompt .= "### Desambiguação inteligente (slot-filling):\n";
     $prompt .= "Quando o item tem opções obrigatórias, use SLOT-FILLING progressivo:\n";
@@ -4946,7 +5035,19 @@ function buildSystemPrompt(
     $prompt .= "- Tá tirando dúvida → 'bom, então quero pedir' → mude pra pedido\n";
     $prompt .= "- Tá no endereço → 'peraí, quero adicionar mais um item' → volte pros itens\n";
     $prompt .= "- Tá confirmando → 'na verdade tira a coca' → remova e re-confirme\n";
+    $prompt .= "- Tá em qualquer etapa → 'quanto tá o total?' → diga o total sem mudar de etapa\n";
+    $prompt .= "- Tá em qualquer etapa → 'o que eu pedi?' → repita os itens sem mudar de etapa\n";
     $prompt .= "SEMPRE se adapte. Nunca diga 'primeiro precisamos terminar X'. Siga o cliente.\n\n";
+
+    $prompt .= "### Inteligência de conversação telefônica\n";
+    $prompt .= "Numa LIGAÇÃO TELEFÔNICA a dinâmica é diferente de texto:\n";
+    $prompt .= "- O cliente pode estar dirigindo, cozinhando, com barulho → tolerância máxima\n";
+    $prompt .= "- Ele pode pausar pra falar com alguém do lado → NÃO interprete como input pro pedido\n";
+    $prompt .= "- Pode falar muito baixo ou longe do telefone → peça pra repetir com carinho, sem irritar\n";
+    $prompt .= "- Pode não entender termos técnicos → 'PIX' tá ok, mas 'link de pagamento Stripe' não. Diga 'te mando um link no celular'\n";
+    $prompt .= "- VELOCIDADE: O cliente quer resolver RÁPIDO. Cada segundo de demora = frustração. Seja EFICIENTE.\n";
+    $prompt .= "- Se o cliente diz 'oi' ou 'alô' no meio da conversa → ele tá verificando se a ligação ainda tá ativa. Diga 'tô aqui!' e continue\n";
+    $prompt .= "- NUNCA peça pro cliente 'digitar' ou 'acessar um link' durante a ligação (exceto pagamento por link que é pós-ligação)\n\n";
 
     $prompt .= "### Multi-intent (cliente pede 2 coisas de uma vez)\n";
     $prompt .= "- 'Quero pizza e também ver meu pedido' → trate suporte primeiro (é mais urgente), depois inicie pedido\n";

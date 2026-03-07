@@ -173,19 +173,75 @@ try {
 
         ccBroadcastDashboard('queue_updated', ['call_id' => $callId, 'customer_phone' => $callerPhone, 'customer_name' => $customerName, 'action' => 'new']);
 
-        $posStmt = $db->prepare("SELECT COUNT(*) as pos FROM om_callcenter_queue WHERE picked_at IS NULL AND abandoned_at IS NULL AND queued_at <= (SELECT queued_at FROM om_callcenter_queue WHERE call_id = ? LIMIT 1)");
-        $posStmt->execute([$callId]);
-        $position = (int)$posStmt->fetch()['pos'];
+        // Find available agents (same logic as Node.js voice server)
+        $agents = [];
+        try {
+            $agentStmt = $db->prepare("
+                SELECT a.id, a.display_name, a.max_concurrent,
+                       COALESCE(active.cnt, 0)::int as active_calls
+                FROM om_callcenter_agents a
+                LEFT JOIN (
+                    SELECT agent_id, COUNT(*) as cnt
+                    FROM om_callcenter_calls
+                    WHERE status IN ('in_progress', 'ringing')
+                      AND ended_at IS NULL AND agent_id IS NOT NULL
+                      AND started_at > NOW() - INTERVAL '2 hours'
+                    GROUP BY agent_id
+                ) active ON active.agent_id = a.id
+                WHERE a.status = 'online'
+                  AND COALESCE(active.cnt, 0) < a.max_concurrent
+                ORDER BY COALESCE(active.cnt, 0) ASC, a.last_call_ended_at ASC NULLS FIRST
+                LIMIT 10
+            ");
+            $agentStmt->execute();
+            $agents = $agentStmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (\Throwable $e) {
+            error_log("[twilio-voice-route] Agent lookup error: " . $e->getMessage());
+        }
 
-        $waitMsg = $position <= 1
-            ? "Você vai ser atendido rapidinho."
-            : "Tem " . ($position - 1) . " pessoa na sua frente. Tempo estimado: uns " . ($position * 2) . " minutinhos.";
+        // Build <Client> tags for Dial (Twilio Client softphone)
+        $dialStatusUrl = 'https://superbora.com.br/api/mercado/webhooks/twilio-status.php';
+        $dialStatusEsc = htmlspecialchars($dialStatusUrl, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+        $callerIdNumber = $_ENV['TWILIO_PHONE'] ?? getenv('TWILIO_PHONE') ?: '+15705299780';
 
-        echo '<?xml version="1.0" encoding="UTF-8"?>';
-        echo '<Response>';
-        echo ttsSayOrPlay('Tá bom! Vou te passar pra um atendente agora. ' . $waitMsg);
-        echo '<Play loop="0">http://com.twilio.music.pop-rock.s3.amazonaws.com/Ab0-3.mp3</Play>';
-        echo '</Response>';
+        if (!empty($agents)) {
+            $clientTags = '';
+            $agentIds = [];
+            foreach ($agents as $ag) {
+                $agId = (int)$ag['id'];
+                $agentIds[] = $agId;
+                $clientTags .= '<Client statusCallback="' . $dialStatusEsc . '" statusCallbackEvent="answered completed" statusCallbackMethod="POST">agent_' . $agId . '</Client>';
+            }
+            error_log("[twilio-voice-route] Transfer to agents: [" . implode(', ', $agentIds) . "] for call_id={$callId}");
+
+            // Broadcast transfer event
+            ccBroadcastDashboard('call_transfer', [
+                'call_id' => $callId,
+                'customer_phone' => $callerPhone,
+                'customer_name' => $customerName,
+                'agents_ringing' => $agentIds,
+            ]);
+
+            echo '<?xml version="1.0" encoding="UTF-8"?>';
+            echo '<Response>';
+            echo ttsSayOrPlay('Tá bom! Vou te passar pra um atendente agora. Aguarda só um pouquinho.');
+            echo '<Dial timeout="45" callerId="' . htmlspecialchars($callerIdNumber, ENT_XML1 | ENT_QUOTES, 'UTF-8') . '" action="' . $dialStatusEsc . '" method="POST">';
+            echo $clientTags;
+            echo '</Dial>';
+            echo '</Response>';
+        } else {
+            // No agents online — offer to go back to AI or leave callback
+            error_log("[twilio-voice-route] No agents online for call_id={$callId}");
+
+            $noAgentAiUrl = htmlspecialchars($aiUrl, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+            echo '<?xml version="1.0" encoding="UTF-8"?>';
+            echo '<Response>';
+            echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" speechModel="experimental_utterances" speechTimeout="auto" action="' . $noAgentAiUrl . '" method="POST">';
+            echo ttsSayOrPlay('Ah, nesse momento não tem nenhum atendente disponível. Mas eu posso te ajudar com seu pedido! Quer continuar comigo, ou prefere que a gente te ligue de volta?');
+            echo '</Gather>';
+            echo '<Redirect method="POST">' . $noAgentAiUrl . '</Redirect>';
+            echo '</Response>';
+        }
         exit;
     }
 
