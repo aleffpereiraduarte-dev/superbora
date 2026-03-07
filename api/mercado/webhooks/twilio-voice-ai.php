@@ -405,6 +405,34 @@ try {
         }
     }
 
+    // -- Pre-parse name capture from speech (before Claude, for faster context update) --
+    if (!$customerId && !empty($userInput)) {
+        $lowerForName = mb_strtolower($userInput, 'UTF-8');
+        // Common Brazilian patterns: "meu nome é X", "sou o X", "aqui é o X", "me chamo X", "é o X"
+        $namePatterns = [
+            '/(?:meu nome (?:é|e)|me chamo|sou (?:o|a)|aqui (?:é|e) (?:o|a)?)\s*([A-Za-zÀ-ÿ]{2,20}(?:\s+[A-Za-zÀ-ÿ]{2,20}){0,3})/iu',
+            '/^(?:é (?:o|a)|fala com (?:o|a)?)\s*([A-Za-zÀ-ÿ]{2,20}(?:\s+[A-Za-zÀ-ÿ]{2,20}){0,2})\s*$/iu',
+        ];
+        foreach ($namePatterns as $np) {
+            if (preg_match($np, $userInput, $nameMatch)) {
+                $detectedName = trim($nameMatch[1]);
+                // Basic validation: not a common word
+                $notNames = ['pedido', 'atendente', 'pizza', 'lanche', 'comida', 'fome', 'ajuda', 'nome', 'aqui', 'favor', 'obrigado', 'obrigada'];
+                if (mb_strlen($detectedName) >= 2 && !in_array(mb_strtolower($detectedName), $notNames)) {
+                    $detectedName = mb_convert_case($detectedName, MB_CASE_TITLE, 'UTF-8');
+                    $customerName = $detectedName;
+                    $aiContext['customer_name'] = $detectedName;
+                    try {
+                        $db->prepare("UPDATE om_callcenter_calls SET customer_name = ? WHERE id = ? AND (customer_name IS NULL OR customer_name = '')")
+                           ->execute([$detectedName, $callId]);
+                    } catch (Exception $e) {}
+                    error_log("[twilio-voice-ai] NAME pre-parsed from speech: {$detectedName}");
+                }
+                break;
+            }
+        }
+    }
+
     // -- Smart intent detection --
     if (!empty($userInput)) {
         $lowerInput = mb_strtolower($userInput, 'UTF-8');
@@ -574,10 +602,38 @@ try {
         $aiContext['history'] = $conversationHistory;
         saveAiContext($db, $callId, $aiContext);
 
-        $silencePrompts = [
+        // Context-aware silence prompts based on current step
+        $stepSilencePrompts = [
+            'identify_store' => [
+                "De qual restaurante você quer pedir? Pode falar o nome ou o tipo de comida!",
+                "Oi, tô aqui! Me fala de onde quer pedir, ou se quer ver as opções.",
+                "Hmm, não ouvi. Pode dizer o nome do restaurante?",
+            ],
+            'take_order' => [
+                "Pode falar o que quer pedir! Tô te ouvindo.",
+                "Oi, tô esperando! O que vai ser do cardápio?",
+                "Sem pressa! Quando decidir, me fala.",
+            ],
+            'get_address' => [
+                "Me fala o endereço de entrega! CEP ou endereço completo.",
+                "Oi, preciso do endereço pra mandar o pedido. Pode falar?",
+                "Qual o endereço? Pode ser o CEP ou a rua e número.",
+            ],
+            'get_payment' => [
+                "Como vai pagar? Dinheiro, PIX ou cartão?",
+                "Oi, falta só a forma de pagamento! Dinheiro, PIX ou cartão?",
+                "Pode falar: dinheiro, PIX ou cartão na maquininha.",
+            ],
+            'confirm_order' => [
+                "Posso mandar o pedido? Diz sim ou não!",
+                "Oi, confirma o pedido? Sim ou não.",
+                "Tô esperando sua confirmação! Manda ou não?",
+            ],
+        ];
+        $silencePrompts = $stepSilencePrompts[$step] ?? [
             "Pode falar ou digitar, tô te escutando!",
-            "Opa, não ouvi nada. Pode falar ou digitar que eu tô aqui te ouvindo!",
-            "Hmm, acho que a ligação tá ruim. Pode repetir? Tô aqui te escutando!",
+            "Opa, não ouvi nada. Pode falar que eu tô aqui!",
+            "Hmm, acho que a ligação tá ruim. Pode repetir?",
         ];
 
         if ($silenceCount >= 4) {
@@ -605,6 +661,54 @@ try {
 
     // Reset silence counter when we get input
     $aiContext['silence_count'] = 0;
+
+    // -- Loop/repetition detection: detect when conversation is stuck --
+    $turnCount = ($aiContext['turn_count'] ?? 0);
+    $repeatCount = ($aiContext['repeat_detect_count'] ?? 0);
+    if ($turnCount >= 3 && count($conversationHistory) >= 4) {
+        // Check if last 2 assistant responses are very similar (loop)
+        $lastAssistantMsgs = [];
+        for ($ri = count($conversationHistory) - 1; $ri >= 0 && count($lastAssistantMsgs) < 2; $ri--) {
+            if ($conversationHistory[$ri]['role'] === 'assistant') {
+                $lastAssistantMsgs[] = mb_strtolower(trim($conversationHistory[$ri]['content']), 'UTF-8');
+            }
+        }
+        if (count($lastAssistantMsgs) >= 2) {
+            // Similarity: check if > 70% of words overlap
+            $words1 = array_filter(explode(' ', $lastAssistantMsgs[0]), fn($w) => mb_strlen($w) >= 3);
+            $words2 = array_filter(explode(' ', $lastAssistantMsgs[1]), fn($w) => mb_strlen($w) >= 3);
+            if (count($words1) > 3 && count($words2) > 3) {
+                $overlap = count(array_intersect($words1, $words2));
+                $similarity = $overlap / max(count($words1), count($words2));
+                if ($similarity > 0.7) {
+                    $repeatCount++;
+                    $aiContext['repeat_detect_count'] = $repeatCount;
+                    error_log("[twilio-voice-ai] LOOP DETECTED: similarity={$similarity} repeatCount={$repeatCount}");
+
+                    // After 2 loops, inject recovery instruction
+                    if ($repeatCount >= 2) {
+                        $aiContext['force_recovery'] = true;
+                    }
+                    // After 3 loops, offer human agent
+                    if ($repeatCount >= 3) {
+                        $aiContext['history'] = $conversationHistory;
+                        saveAiContext($db, $callId, $aiContext);
+                        echo '<?xml version="1.0" encoding="UTF-8"?>';
+                        echo '<Response>';
+                        echo '<Gather ' . $gatherStd . ' timeout="8" action="' . escXml($selfUrl) . '" method="POST">';
+                        echo ttsSayOrPlay("Tô tendo dificuldade em te entender. Quer que eu te passe pra um atendente? Aperta zero ou diz atendente.");
+                        echo '</Gather>';
+                        echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
+                        echo '</Response>';
+                        exit;
+                    }
+                } else {
+                    // Reset if responses are now different
+                    $aiContext['repeat_detect_count'] = 0;
+                }
+            }
+        }
+    }
 
     // Add user message to history — annotate with confidence if low
     $userMsg = $isCepRedirect ? "Meu CEP é {$userInput}" : $userInput;
@@ -1158,6 +1262,7 @@ try {
         'voice_recs' => $voiceRecs,
         'cart_opt_tip' => $cartOptTip,
         'price_tips' => $priceTips,
+        'force_recovery' => $aiContext['force_recovery'] ?? false,
     ];
     $systemPrompt = buildSystemPrompt($step, $storeName, $menuText, $draftItems, $address, $paymentMethod, $customerName, $savedAddresses, $storeNames, $lastOrderItems ?? [], $aiContext, $extraData);
 
@@ -1580,10 +1685,30 @@ try {
         $gatherTimeout = $stepTimeouts[$currentStep] ?? 8;
 
         // Dynamic speech hints: inject menu items / store names for better Twilio recognition
-        $dynamicHints = buildDynamicHints($currentStep, $newContext, $menuText ?? '');
+        // Also pass saved address labels for the address step
+        $hintContext = $newContext;
+        if ($currentStep === 'get_address' && !empty($savedAddresses)) {
+            $addrLabels = [];
+            foreach ($savedAddresses as $a) {
+                if (!empty($a['label'])) $addrLabels[] = $a['label'];
+                if (!empty($a['street'])) $addrLabels[] = $a['street'];
+                if (!empty($a['neighborhood'])) $addrLabels[] = $a['neighborhood'];
+            }
+            $hintContext['saved_address_hints'] = array_unique(array_filter($addrLabels));
+        }
+        if ($currentStep === 'support' && !empty($aiContext['support_orders'])) {
+            $hintContext['support_order_numbers'] = array_map(fn($o) => $o['order_number'] ?? '', $aiContext['support_orders']);
+        }
+        $dynamicHints = buildDynamicHints($currentStep, $hintContext, $menuText ?? '');
+
+        // Per-step speechModel: phone_call (enhanced) for short responses, experimental_utterances for longer
+        $stepSpeechModel = getSpeechModelForStep($currentStep);
         $gatherAttrs = $gatherStd;
+        // Replace speechModel if different from default
+        if ($stepSpeechModel !== 'experimental_utterances') {
+            $gatherAttrs = str_replace('speechModel="experimental_utterances"', 'speechModel="' . $stepSpeechModel . '"', $gatherAttrs);
+        }
         if (!empty($dynamicHints)) {
-            // Replace the hints attribute with expanded hints
             $gatherAttrs = preg_replace('/hints="[^"]*"/', 'hints="' . escXml($dynamicHints) . '"', $gatherAttrs);
         }
 
@@ -1592,7 +1717,17 @@ try {
         echo '<Gather ' . $gatherAttrs . ' timeout="' . $gatherTimeout . '" action="' . escXml($selfUrl) . '" method="POST">';
         echo ttsSayOrPlay($aiResponse);
         echo '</Gather>';
-        echo ttsSayOrPlay("Oi, tô aqui! Pode falar, eu tô ouvindo.");
+        // Contextual re-prompt based on step (heard after main Gather expires)
+        $rePromptMap = [
+            'identify_store' => "Me fala de qual restaurante quer pedir, ou aperta zero pra falar com alguém.",
+            'take_order' => "O que mais vai querer? Se acabou, diz 'só isso'!",
+            'get_address' => "Qual o endereço de entrega?",
+            'get_payment' => "Dinheiro, PIX ou cartão?",
+            'confirm_order' => "Confirma o pedido? Diz sim ou não.",
+            'support' => "Me fala o que precisa que eu te ajudo!",
+        ];
+        $rePrompt = $rePromptMap[$currentStep] ?? "Pode falar, eu tô ouvindo! Aperta zero pra falar com uma pessoa.";
+        echo ttsSayOrPlay($rePrompt);
         echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
         echo '</Response>';
     }
@@ -1644,7 +1779,7 @@ try {
  */
 function buildDynamicHints(string $step, array $context, string $menuText): string {
     // Base hints always present
-    $baseHints = 'sim, não, pedido, atendente, cancelar, status, obrigado, tchau, Aleff, pix, cartão, dinheiro, crédito, débito';
+    $baseHints = 'sim, não, pedido, atendente, cancelar, status, obrigado, tchau, pix, cartão, dinheiro, crédito, débito';
 
     switch ($step) {
         case 'identify_store':
@@ -1655,16 +1790,16 @@ function buildDynamicHints(string $step, array $context, string $menuText): stri
                 $name = $store['name'] ?? '';
                 if ($name && mb_strlen($name) <= 40) {
                     $storeHints[] = $name;
-                    // Also add first word for partial matching
+                    // Also add first word for partial matching (e.g. "Pizzaria" from "Pizzaria Bella")
                     $firstWord = explode(' ', $name)[0];
-                    if (mb_strlen($firstWord) >= 3) $storeHints[] = $firstWord;
+                    if (mb_strlen($firstWord) >= 3 && !in_array($firstWord, $storeHints)) $storeHints[] = $firstWord;
                 }
             }
             $storeStr = implode(', ', array_unique(array_slice($storeHints, 0, 30)));
-            return $baseHints . ', pizza, lanche, hambúrguer, açaí, sushi, japonesa, pizzaria, hamburgueria, padaria, restaurante' . ($storeStr ? ', ' . $storeStr : '');
+            return $baseHints . ', pizza, lanche, hambúrguer, açaí, sushi, japonesa, pizzaria, hamburgueria, padaria, restaurante, quero pedir, o de sempre, meu pedido, cardápio, café, pastel, comida' . ($storeStr ? ', ' . $storeStr : '');
 
         case 'take_order':
-            // Extract product names from menu text for hints
+            // Extract product names from menu text for hints — critical for Twilio accuracy
             $productHints = [];
             if (!empty($menuText)) {
                 // Menu format: "- Product Name (R$XX.XX)" or "  >> Option"
@@ -1673,9 +1808,16 @@ function buildDynamicHints(string $step, array $context, string $menuText): stri
                     $cleaned = trim($productName);
                     if (mb_strlen($cleaned) >= 3 && mb_strlen($cleaned) <= 40) {
                         $productHints[] = $cleaned;
+                        // Add short version (first 2 significant words) for partial speech
+                        $words = preg_split('/\s+/', $cleaned);
+                        $significant = array_filter($words, fn($w) => mb_strlen($w) >= 3);
+                        if (count($significant) > 2) {
+                            $short = implode(' ', array_slice(array_values($significant), 0, 2));
+                            if (!in_array($short, $productHints)) $productHints[] = $short;
+                        }
                     }
                 }
-                // Also extract option names
+                // Extract option names (sizes, flavors, etc.)
                 preg_match_all('/^\s*>>\s*(.+?)\s*(?:\(|$)/m', $menuText, $optMatches);
                 foreach ($optMatches[1] ?? [] as $optName) {
                     $cleaned = trim($optName);
@@ -1684,21 +1826,58 @@ function buildDynamicHints(string $step, array $context, string $menuText): stri
                     }
                 }
             }
-            // Common food words + product names (limit to ~50 hints)
-            $productStr = implode(', ', array_unique(array_slice($productHints, 0, 40)));
-            return $baseHints . ', um, dois, três, quatro, cinco, grande, pequeno, médio, combo, sem cebola, sem tomate, extra queijo, meia a meia, só isso, pronto, fecha, mais alguma coisa' . ($productStr ? ', ' . $productStr : '');
+            // Deduplicate and limit (Twilio recommends <500 total chars for hints)
+            $productStr = implode(', ', array_unique(array_slice($productHints, 0, 45)));
+            return $baseHints . ', um, dois, três, quatro, cinco, seis, grande, pequeno, médio, broto, família, combo, sem cebola, sem tomate, extra queijo, meia a meia, só isso, pronto, fecha, mais alguma coisa, quanto tá, quanto custa, tira, remove, adiciona' . ($productStr ? ', ' . $productStr : '');
 
         case 'get_address':
-            return $baseHints . ', rua, avenida, alameda, travessa, apartamento, casa, bloco, andar, portão, portaria, CEP, número, complemento, esquina, próximo';
+            // Use Twilio hint macros $ADDRESSNUM, $STREET, $POSTALCODE for address fields
+            // These are special Twilio tokens that dramatically improve address recognition
+            $addrHints = $baseHints . ', $ADDRESSNUM, $STREET, $POSTALCODE, rua, avenida, alameda, travessa, praça, rodovia, estrada, apartamento, apto, casa, bloco, andar, portão, portaria, CEP, número, complemento, esquina, próximo, condomínio, edifício, prédio, fundos, sobrado';
+            // Add saved address labels/streets for returning customers
+            $savedAddrs = $context['saved_address_hints'] ?? [];
+            if (!empty($savedAddrs)) {
+                $addrHints .= ', ' . implode(', ', array_slice($savedAddrs, 0, 10));
+            }
+            return $addrHints;
 
         case 'get_payment':
-            return $baseHints . ', dinheiro, pix, cartão, crédito, débito, troco, cem, cinquenta, vinte, gorjeta, maquininha, dividir, metade';
+            return $baseHints . ', dinheiro, pix, cartão, crédito, débito, troco, cem, cinquenta, vinte, dez, gorjeta, maquininha, dividir, metade, vale refeição, vale, o mesmo, mantém';
 
         case 'confirm_order':
-            return $baseHints . ', confirma, confirmar, pode, manda, isso, bora, beleza, tá certo, muda, trocar, tirar, adicionar, volta';
+            return $baseHints . ', confirma, confirmar, pode, manda, isso, bora, beleza, tá certo, muda, trocar, tirar, adicionar, volta, mais uma coisa, espera';
+
+        case 'support':
+            // Add order numbers the customer has for better recognition
+            $supportHints = $baseHints . ', meu pedido, cancelar, estorno, reembolso, atrasado, errado, faltou, problema';
+            $orderNumbers = $context['support_order_numbers'] ?? [];
+            if (!empty($orderNumbers)) {
+                $supportHints .= ', ' . implode(', ', array_slice($orderNumbers, 0, 10));
+            }
+            return $supportHints;
 
         default:
             return $baseHints;
+    }
+}
+
+/**
+ * Get speechModel attribute per step.
+ * - 'phone_call' with enhanced=true: 54% fewer errors for short utterances (yes/no, names, numbers)
+ * - 'experimental_utterances': better for longer spontaneous speech
+ */
+function getSpeechModelForStep(string $step): string {
+    switch ($step) {
+        case 'confirm_order':  // Short: sim/não
+        case 'get_payment':    // Short: pix/dinheiro/cartão
+            return 'phone_call';
+        case 'get_address':    // Mix of numbers and street names
+            return 'phone_call';
+        case 'take_order':     // Longer: product names, customizations
+        case 'identify_store': // Varied: store names, food types, questions
+        case 'support':        // Longer: explaining issues
+        default:
+            return 'experimental_utterances';
     }
 }
 
@@ -2779,6 +2958,17 @@ function buildSystemPrompt(
     $prompt .= "REGRA DE OURO: Se o cliente diz algo que parece um nome (pessoa, lugar, restaurante), NUNCA ignore. Tente interpretar e confirme. Se disser 'meu nome é [algo]', aceite como nome mesmo se parecer estranho — pode ser nome gringo, apelido, etc.\n";
     $prompt .= "Quando pedir pra repetir, seja ESPECÍFICO: 'Não peguei o nome do restaurante. Pode repetir?' — não diga 'pode repetir?' genérico.\n\n";
 
+    // Customer name capture instruction (only for unknown customers)
+    if (empty($customerName)) {
+        $prompt .= "## CAPTURA DO NOME DO CLIENTE\n";
+        $prompt .= "Esse cliente NÃO está cadastrado. Quando ele disser o nome:\n";
+        $prompt .= "- 'Meu nome é Maria' / 'Sou o João' / 'Aqui é a Ana' / 'Me chamo Pedro' → capture com [CUSTOMER_NAME:nome]\n";
+        $prompt .= "- 'É o Lucas' / 'Fala com o Lucas' / 'Lucas aqui' → [CUSTOMER_NAME:Lucas]\n";
+        $prompt .= "- Nome estranho ou difícil → confirme: 'Anotei [X], tá certo?' e depois inclua [CUSTOMER_NAME:X]\n";
+        $prompt .= "- NÃO peça o nome se ele não oferecer — continue normalmente, pergunte só se precisar pro pedido\n";
+        $prompt .= "- Quando capturar, USE o nome nas próximas respostas pra personalizar\n\n";
+    }
+
     $prompt .= "### Transcrição com baixa confiança\n";
     $prompt .= "Se a mensagem do cliente começa com [CONFIANÇA BAIXA: X%], o reconhecimento de voz não tem certeza do que ele disse.\n";
     $prompt .= "- < 40%: muito incerto → confirme antes de agir: 'Entendi [X], tá certo?'\n";
@@ -2891,6 +3081,15 @@ function buildSystemPrompt(
     // Goodbye with pending items
     if (!empty($extraData['wants_goodbye'])) {
         $prompt .= "- ⚠️ CLIENTE QUER DESLIGAR mas tem itens no pedido! Pergunte: 'Peraí, você tem itens no pedido! Quer finalizar ou cancelar?'\n";
+    }
+
+    // Force recovery (loop detected)
+    if (!empty($extraData['force_recovery'])) {
+        $prompt .= "- ⚠️ ATENÇÃO: Você está REPETINDO a mesma resposta! MUDE completamente sua abordagem:\n";
+        $prompt .= "  1. Reformule de forma TOTALMENTE diferente\n";
+        $prompt .= "  2. Ofereça alternativas concretas (A, B, C)\n";
+        $prompt .= "  3. Simplifique radicalmente: use sim/não\n";
+        $prompt .= "  4. Se nada funcionar, ofereça: 'Quer que eu te passe pra um atendente?'\n";
     }
 
     $hora = (int)date('H');
@@ -3020,6 +3219,23 @@ function buildSystemPrompt(
             $prompt .= "- CEP/endereço: → use [CEP:12345678] se for número, senão pergunte CEP\n";
             $prompt .= "- Sem contexto nenhum: 'quero pedir' → pergunte o tipo de comida ou restaurante\n";
             $prompt .= "- Se já tem CEP/nearby_stores → NÃO peça CEP de novo!\n\n";
+
+            $prompt .= "QUANDO NÃO ENCONTRAR O RESTAURANTE:\n";
+            $prompt .= "NÃO diga simplesmente 'não encontrei'. Seja inteligente:\n";
+            $prompt .= "1. PRIMEIRO tente match fuzzy — o nome pode estar distorcido pelo reconhecimento de voz\n";
+            $prompt .= "2. Se não achou → pergunte tipo de comida: 'Não achei com esse nome, mas tem [lojas similares]. Serve?'\n";
+            $prompt .= "3. Se nenhuma loja serve → 'Essa loja não tá disponível aqui. Mas tem [alternativas]. Quer?'\n";
+            $prompt .= "4. NUNCA termine sem oferecer alternativa — o cliente já ligou, não perca ele!\n\n";
+
+            $prompt .= "DETECÇÃO DE TIPO DE COMIDA (mapeamento inteligente):\n";
+            $prompt .= "Quando o cliente fala o tipo de comida, filtre MENTALMENTE os restaurantes:\n";
+            $prompt .= "- 'pizza' → pizzarias | 'lanche'/'hambúrguer' → hamburgueria/lanchonete\n";
+            $prompt .= "- 'japonesa'/'sushi'/'japa' → restaurante japonês | 'açaí' → açaiterias\n";
+            $prompt .= "- 'mexicana'/'taco' → restaurante mexicano | 'chinesa' → restaurante chinês\n";
+            $prompt .= "- 'saudável'/'fit'/'light' → saladas, pokes, wraps | 'doce'/'sobremesa' → confeitarias\n";
+            $prompt .= "- 'churrasco'/'carne' → churrascarias | 'café'/'padaria' → cafeterias/padarias\n";
+            $prompt .= "- 'marmita'/'caseira'/'prato feito' → restaurantes com marmitex/PF\n";
+            $prompt .= "Sugira no MÁXIMO 3 opções e pergunte: 'Tem a X, a Y e a Z. Qual?'\n\n";
 
             // Favorite stores (from order history + favorites)
             $favStores = $extraData['favorite_stores'] ?? [];
@@ -3227,6 +3443,21 @@ function buildSystemPrompt(
             $prompt .= "- Cliente muda de restaurante → 'Quer trocar de restaurante? Eu cancelo esse e a gente começa outro.'\n";
             $prompt .= "- Pedido mínimo não atingido → 'O pedido mínimo dessa loja é R\$[X]. Faltam R\$[Y]. Quer adicionar mais alguma coisa?'\n\n";
 
+            $prompt .= "DESAMBIGUAÇÃO INTELIGENTE (quando existem múltiplos produtos parecidos):\n";
+            $prompt .= "Se o cliente diz algo que combina com 2+ produtos, NÃO adivinhe — pergunte com DIFERENÇAS claras:\n";
+            $prompt .= "✓ BOM: 'Tem a Coxinha Frango por seis e cinquenta e a Coxinha Queijo por sete e noventa. Qual?'\n";
+            $prompt .= "✓ BOM: 'Tem dois tamanhos: a Pequena de vinte e a Grande de trinta e cinco. Qual?'\n";
+            $prompt .= "✗ RUIM: 'Qual coxinha?' (sem dar opções — força o cliente a lembrar do cardápio)\n";
+            $prompt .= "✗ RUIM: 'Temos Coxinha de Frango Crocante Especial e Coxinha de Frango Tradicional e...' (nomes longos demais)\n";
+            $prompt .= "REGRA: Cite no MÁXIMO 3 opções com preço. Se tiver mais: 'Tem X e Y entre os mais pedidos. Ou quer ver mais?'\n\n";
+
+            $prompt .= "NUMERAIS POR VOZ (como clientes falam quantidades):\n";
+            $prompt .= "- 'uma/um' = 1, 'duas/dois' = 2, 'meia dúzia' = 6, 'uma dúzia' = 12\n";
+            $prompt .= "- 'umas três' / 'tipo umas 4' = quantidade aproximada, use o número literal\n";
+            $prompt .= "- 'uns 10' = 10 (pode confirmar: 'dez unidades, certinho?')\n";
+            $prompt .= "- Sem número = 1 ('me vê coxinha' = 1 coxinha)\n";
+            $prompt .= "- Pedido absurdo (100+ de algo) → confirme: 'cem unidades mesmo?'\n\n";
+
             // Dietary/allergen awareness
             if (!empty($context['dietary_question'])) {
                 $prompt .= "ALERTA: O CLIENTE PERGUNTOU SOBRE ALERGIAS/DIETA!\n";
@@ -3351,12 +3582,24 @@ function buildSystemPrompt(
                 }
             }
 
-            $prompt .= "\nENTENDENDO ENDEREÇOS POR VOZ:\n";
-            $prompt .= "O Twilio transcreve endereços mal. Interprete foneticamente:\n";
-            $prompt .= "- 'rua são paulo' / 'rua sao paulo' / 'rua sam paulo' = Rua São Paulo\n";
-            $prompt .= "- Números: 'cento e vinte três' / '123' / 'um dois três' = 123\n";
-            $prompt .= "- CEP falado: 'treze mil duzentos e trinta e quatro cinco seis sete' = 13234-567\n";
-            $prompt .= "- Se não entendeu o número da casa, peça: 'Desculpa, o número ficou cortado. Pode repetir só o número?'\n\n";
+            $prompt .= "\nENTENDENDO ENDEREÇOS POR VOZ (STT erra MUITO com endereços):\n";
+            $prompt .= "O sistema de voz tem dificuldade com endereços. Use estas estratégias:\n\n";
+            $prompt .= "1. COLETA PROGRESSIVA — peça uma coisa de cada vez, NÃO tudo junto:\n";
+            $prompt .= "   ✓ 'Qual o CEP?' → responde → 'E o número?' → responde → 'Tem complemento?'\n";
+            $prompt .= "   ✗ 'Me fala o endereço completo com CEP, número e complemento'\n\n";
+            $prompt .= "2. INTERPRETAÇÃO FONÉTICA de endereços:\n";
+            $prompt .= "   - 'rua são paulo' / 'rua sao paulo' / 'rua sam paulo' = Rua São Paulo\n";
+            $prompt .= "   - 'numero cento e vinte três' / '123' / 'um dois três' = número 123\n";
+            $prompt .= "   - 'apartamento trezentos e dois' / 'apto 302' / 'apto três zero dois' = Apto 302\n";
+            $prompt .= "   - 'bloco a' / 'bloco alfa' / 'bloco Alice' = Bloco A\n";
+            $prompt .= "   - CEP falado: 'treze zero quatro zero' → 13040 (peça os 3 finais separado se cortou)\n\n";
+            $prompt .= "3. CONFIRMAÇÃO INTELIGENTE:\n";
+            $prompt .= "   - Após montar o endereço, confirme LENDO de volta: 'Rua São Paulo, cento e vinte e três, apartamento trezentos e dois. Tá certo?'\n";
+            $prompt .= "   - Se o cliente corrigir qualquer parte, aceite e re-confirme\n";
+            $prompt .= "   - NUNCA prossiga sem confirmar o endereço — erro aqui = pedido perdido\n\n";
+            $prompt .= "4. RESGATE DE CEP INCOMPLETO:\n";
+            $prompt .= "   - Se o CEP veio incompleto (5 dígitos em vez de 8), peça os 3 restantes: 'E os últimos três números do CEP?'\n";
+            $prompt .= "   - Se o CEP é inválido, peça de novo: 'Esse CEP não tá batendo. Pode repetir os 8 números?'\n\n";
 
             $prompt .= "MARCADORES:\n";
             $prompt .= "- CEP: [CEP:12345678]\n";
@@ -3605,12 +3848,19 @@ function buildSystemPrompt(
             $prompt .= "- Saiu pra entrega → 'Já saiu pra entrega, não dá pra cancelar. Mas posso transferir pra um atendente resolver.'\n";
             $prompt .= "- SEMPRE confirme antes de cancelar: 'Tem certeza que quer cancelar o pedido #X?'\n\n";
 
-            $prompt .= "RECLAMAÇÕES — COMO LIDAR:\n";
-            $prompt .= "- Pedido atrasado → 'Entendo a frustração. O pedido tá [status]. Às vezes demora um pouquinho mais no horário de pico.'\n";
-            $prompt .= "- Pedido errado → 'Putz, sinto muito! Isso não deveria ter acontecido. Vou transferir pra um atendente que vai resolver pra você.'\n";
-            $prompt .= "- Comida fria/ruim → empatia total, ofereça transferir\n";
-            $prompt .= "- Cobrança errada → ofereça transferir (não tem como resolver por telefone)\n";
-            $prompt .= "- NUNCA minimize: 'acontece', 'é normal'. SEMPRE valide: 'Putz, realmente chato isso.'\n\n";
+            $prompt .= "RECLAMAÇÕES — TÉCNICA HEAR (Hear, Empathize, Apologize, Resolve):\n";
+            $prompt .= "1. OUVIR: deixe o cliente falar SEM interromper, mesmo que ele repita\n";
+            $prompt .= "2. EMPATIZAR: 'Putz, realmente chato isso.' / 'Imagino sua frustração.'\n";
+            $prompt .= "3. DESCULPAR: 'Sinto muito, não era pra ter acontecido.' (SEM 'mas', SEM justificativa)\n";
+            $prompt .= "4. RESOLVER: ofereça ação concreta — nunca termine sem próximo passo\n\n";
+            $prompt .= "Exemplos por tipo de reclamação:\n";
+            $prompt .= "- ATRASADO → 'Entendo, ninguém gosta de esperar. O pedido tá [status]. Se não chegar em mais uns [X] minutos, liga que a gente resolve.'\n";
+            $prompt .= "- ERRADO/FALTOU → 'Putz, isso é inaceitável. Vou te transferir pra um atendente que vai resolver na hora.' (NÃO tente resolver sozinha)\n";
+            $prompt .= "- COMIDA FRIA → 'Poxa, sinto muito por isso. Vou te passar pra alguém que pode te ajudar com estorno ou reenvio.'\n";
+            $prompt .= "- COBRANÇA → 'Entendi. Isso precisa de um atendente pra verificar certinho. Vou te transferir agora.'\n";
+            $prompt .= "- ENTREGADOR → 'Vou registrar isso e passar pro responsável. Quer que eu transfira pra resolver agora?'\n";
+            $prompt .= "NUNCA minimize: 'acontece', 'é normal', 'faz parte'. SEMPRE valide o sentimento do cliente.\n";
+            $prompt .= "NUNCA diga 'infelizmente' — use 'putz', 'poxa', 'eita' (mais humano).\n\n";
 
             if (!empty($context['support_orders'])) {
                 $prompt .= "PEDIDOS RECENTES DO CLIENTE:\n";
@@ -4168,6 +4418,64 @@ function parseAiResponse(string $response, array $context, PDO $db): array {
             } else {
                 $cleaned .= ' Não encontrei pedido pendente recente pra modificar.';
             }
+        }
+    }
+
+    // Parse [CUSTOMER_NAME:name] — capture customer name during conversation
+    if (preg_match('/\[CUSTOMER_NAME:([^\]]+)\]/', $response, $m)) {
+        $capturedName = trim($m[1]);
+        $cleaned = str_replace($m[0], '', $cleaned);
+
+        // Validate: reasonable name (2-50 chars, only letters/spaces/accents)
+        if (!empty($capturedName) && mb_strlen($capturedName) >= 2 && mb_strlen($capturedName) <= 50
+            && preg_match('/^[\p{L}\s\'-]+$/u', $capturedName)) {
+            $capturedName = mb_convert_case($capturedName, MB_CASE_TITLE, 'UTF-8');
+            $newContext['customer_name'] = $capturedName;
+
+            // Update call record with customer name
+            $callId = $context['call_id'] ?? 0;
+            if ($callId) {
+                try {
+                    $db->prepare("UPDATE om_callcenter_calls SET customer_name = ? WHERE id = ? AND (customer_name IS NULL OR customer_name = '')")
+                       ->execute([$capturedName, $callId]);
+                } catch (Exception $e) {
+                    error_log("[twilio-voice-ai] CUSTOMER_NAME update error: " . $e->getMessage());
+                }
+            }
+
+            // Try to find existing customer by name + phone
+            $custPhone = $newContext['customer_phone'] ?? ($context['customer_phone'] ?? '');
+            if (!($newContext['customer_id'] ?? null) && $custPhone) {
+                try {
+                    $phoneSuffix = substr(preg_replace('/\D/', '', $custPhone), -11);
+                    $nameStmt = $db->prepare("
+                        SELECT customer_id, name FROM om_customers
+                        WHERE REPLACE(REPLACE(phone, '+', ''), '-', '') LIKE ?
+                        AND LOWER(name) LIKE ?
+                        LIMIT 1
+                    ");
+                    $nameStmt->execute(['%' . $phoneSuffix, '%' . mb_strtolower(explode(' ', $capturedName)[0]) . '%']);
+                    $foundByName = $nameStmt->fetch();
+                    if ($foundByName) {
+                        $newContext['customer_id'] = (int)$foundByName['customer_id'];
+                        $newContext['customer_name'] = $foundByName['name'];
+                        $db->prepare("UPDATE om_callcenter_calls SET customer_id = ?, customer_name = ? WHERE id = ?")
+                           ->execute([$foundByName['customer_id'], $foundByName['name'], $callId]);
+                        error_log("[twilio-voice-ai] CUSTOMER_NAME matched existing: {$foundByName['name']} (ID: {$foundByName['customer_id']})");
+                    }
+                } catch (Exception $e) {
+                    error_log("[twilio-voice-ai] CUSTOMER_NAME lookup error: " . $e->getMessage());
+                }
+            }
+
+            // Save to AI memory if available
+            if (function_exists('aiMemorySave') && $custPhone) {
+                try {
+                    aiMemorySave($db, $custPhone, $newContext['customer_id'] ?? null, 'profile', 'name', $capturedName);
+                } catch (Exception $e) {}
+            }
+
+            error_log("[twilio-voice-ai] CUSTOMER_NAME captured: {$capturedName}");
         }
     }
 

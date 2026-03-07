@@ -416,7 +416,7 @@ try {
         }
     }
 
-    // Try to match store by name — multi-strategy fuzzy matching
+    // Try to match store by name — multi-strategy fuzzy matching (phonetic + levenshtein + substring)
     $storeIdentified = null;
     $storeId = null;
     if (!$wantsSupport && !$detectedCep && empty($detectedCuisine) && !empty($speechResult)) {
@@ -429,31 +429,76 @@ try {
         $storeStmt->execute(['%' . $speechLower . '%']);
         $store = $storeStmt->fetch();
 
-        // Strategy 2: Word-by-word fuzzy match (for misspellings like "pizaria bela" → "Pizzaria Bella")
+        // Strategy 2: Multi-signal fuzzy match (phonetic + prefix + levenshtein + common misspellings)
         if (!$store) {
             $allStoresForMatch = $db->query("SELECT partner_id, name FROM om_market_partners WHERE status = '1' AND name != '' LIMIT 50")->fetchAll();
             $speechWords = preg_split('/\s+/', $speechLower);
             $bestMatch = null;
             $bestScore = 0;
 
+            // Brazilian Portuguese common phonetic substitutions for STT errors
+            $phoneticNorm = function(string $word): string {
+                $word = mb_strtolower($word, 'UTF-8');
+                // Normalize accents
+                $word = strtr($word, 'áàãâéèêíìóòõôúùûç', 'aaaaeeeiiooooouuuc');
+                // Common PT-BR phonetic equivalences
+                $word = str_replace(['ph', 'ck', 'ss', 'sh', 'ch', 'th', 'rr', 'll', 'nn', 'tt', 'pp', 'bb', 'dd', 'ff', 'gg', 'cc', 'mm', 'zz'],
+                                    ['f',  'k',  's',  'x',  'x',  't',  'r',  'l',  'n',  't',  'p',  'b',  'd',  'f',  'g',  'k',  'm',  'z'], $word);
+                // STT common confusions: c/s/z before e/i, g/j before e/i, x/ch/sh
+                $word = preg_replace('/[sz](?=[ei])/', 'c', $word);
+                // Remove trailing vowels for stem matching (helps with -aria/-eria/-eria)
+                if (mb_strlen($word) > 4) {
+                    $word = preg_replace('/(aria|eria|oria|eiro|eira)$/', '', $word) ?: $word;
+                }
+                return $word;
+            };
+
+            // Common STT store-name mangling corrections
+            $speechNorm = str_replace(
+                ['a ', 'o ', 'do ', 'da ', 'de ', 'na ', 'no ', 'la ', 'lo '],
+                ['', '', '', '', '', '', '', '', ''],
+                $speechLower
+            );
+
             foreach ($allStoresForMatch as $s) {
                 $storeLower = mb_strtolower($s['name'], 'UTF-8');
                 $storeWords = preg_split('/\s+/', $storeLower);
                 $score = 0;
 
+                // Quick check: normalized full-string containment (strips articles)
+                $storeNorm = str_replace(
+                    ['a ', 'o ', 'do ', 'da ', 'de ', 'na ', 'no ', 'la ', 'lo '],
+                    ['', '', '', '', '', '', '', '', ''],
+                    $storeLower
+                );
+                if (!empty($speechNorm) && mb_strlen($speechNorm) >= 4) {
+                    if (mb_strpos($storeNorm, $speechNorm) !== false || mb_strpos($speechNorm, $storeNorm) !== false) {
+                        $score += 6; // Very strong match after article removal
+                    }
+                }
+
                 foreach ($speechWords as $sw) {
-                    if (mb_strlen($sw) < 3) continue; // Skip short words
+                    if (mb_strlen($sw) < 3) continue;
                     foreach ($storeWords as $stw) {
                         if (mb_strlen($stw) < 3) continue;
                         // Exact word match
-                        if ($sw === $stw) { $score += 3; continue 2; }
+                        if ($sw === $stw) { $score += 4; continue 2; }
+                        // Phonetic match (normalized)
+                        $swPhon = $phoneticNorm($sw);
+                        $stwPhon = $phoneticNorm($stw);
+                        if ($swPhon === $stwPhon && mb_strlen($swPhon) >= 3) { $score += 3; continue 2; }
                         // Word starts with same 3+ chars
                         $prefix = mb_substr($sw, 0, 3);
                         if (mb_strpos($stw, $prefix) === 0 || mb_strpos($sw, mb_substr($stw, 0, 3)) === 0) {
                             $score += 2;
                             continue 2;
                         }
-                        // Levenshtein-like: similar enough (within 2 edits for words > 4 chars)
+                        // Metaphone match (English-biased but still useful)
+                        if (mb_strlen($sw) >= 4 && mb_strlen($stw) >= 4 && metaphone($sw) === metaphone($stw)) {
+                            $score += 2;
+                            continue 2;
+                        }
+                        // Levenshtein for words > 4 chars (allow up to 2 edits)
                         if (mb_strlen($sw) > 4 && mb_strlen($stw) > 4) {
                             $lev = levenshtein($sw, $stw);
                             if ($lev <= 2) { $score += 2; continue 2; }
@@ -461,8 +506,7 @@ try {
                     }
                 }
 
-                // Need at least 2 points to be a match (1 good word match)
-                if ($score > $bestScore && $score >= 2) {
+                if ($score > $bestScore && $score >= 3) {
                     $bestScore = $score;
                     $bestMatch = $s;
                 }
@@ -470,6 +514,31 @@ try {
 
             if ($bestMatch) {
                 $store = $bestMatch;
+                error_log("[twilio-voice-route] Fuzzy store match: '{$speechResult}' → {$bestMatch['name']} (score:{$bestScore})");
+            }
+        }
+
+        // Strategy 3: Customer's recent stores (if caller identified)
+        if (!$store && $customerId) {
+            $favStmt = $db->prepare("
+                SELECT DISTINCT p.partner_id, p.name
+                FROM om_market_orders o
+                JOIN om_market_partners p ON p.partner_id = o.partner_id
+                WHERE o.customer_id = ? AND o.status NOT IN ('cancelled','refunded') AND p.status = '1'
+                ORDER BY o.date_added DESC LIMIT 10
+            ");
+            $favStmt->execute([$customerId]);
+            while ($fav = $favStmt->fetch()) {
+                $favLower = mb_strtolower($fav['name'], 'UTF-8');
+                // More lenient match against customer's known stores
+                foreach ($speechWords as $sw) {
+                    if (mb_strlen($sw) < 3) continue;
+                    if (mb_strpos($favLower, $sw) !== false) {
+                        $store = $fav;
+                        error_log("[twilio-voice-route] Matched from customer favorites: '{$speechResult}' → {$fav['name']}");
+                        break 2;
+                    }
+                }
             }
         }
 
@@ -662,12 +731,43 @@ try {
 
     $aiUrlEsc = htmlspecialchars($aiUrl, ENT_XML1 | ENT_QUOTES, 'UTF-8');
 
-    $gatherAttrs = 'input="speech dtmf" language="pt-BR" speechModel="experimental_utterances" speechTimeout="auto" profanityFilter="false" enhanced="true" hints="sim, não, pedido, atendente, cancelar, status, pizza, lanche, hambúrguer, açaí, sushi, um, dois, três, zero, Aleff, meu nome é, endereço, CEP, pix, cartão, dinheiro"';
+    // Build dynamic hints based on routing context
+    $routeHintParts = ['sim', 'não', 'pedido', 'atendente', 'cancelar', 'status', 'pizza', 'lanche', 'hambúrguer', 'açaí', 'sushi', 'um', 'dois', 'três', 'zero', 'meu nome é', 'endereço', 'CEP', 'pix', 'cartão', 'dinheiro', 'quero pedir', 'meu pedido', 'o de sempre', 'cardápio'];
+    // Add nearby store names for better speech recognition
+    if (!empty($nearbyStores)) {
+        foreach (array_slice($nearbyStores, 0, 25) as $ns) {
+            $n = trim($ns['name']);
+            if ($n && mb_strlen($n) <= 40 && !in_array($n, $routeHintParts)) {
+                $routeHintParts[] = $n;
+            }
+        }
+    }
+    // Add customer's favorite store names
+    if ($customerId) {
+        try {
+            $favHintStmt = $db->prepare("SELECT DISTINCT p.name FROM om_market_orders o JOIN om_market_partners p ON p.partner_id = o.partner_id WHERE o.customer_id = ? AND p.status = '1' ORDER BY o.date_added DESC LIMIT 5");
+            $favHintStmt->execute([$customerId]);
+            while ($fh = $favHintStmt->fetch()) {
+                $n = trim($fh['name']);
+                if ($n && mb_strlen($n) <= 40 && !in_array($n, $routeHintParts)) {
+                    $routeHintParts[] = $n;
+                }
+            }
+        } catch (Exception $e) {}
+    }
+    $routeHintsStr = htmlspecialchars(implode(', ', array_slice($routeHintParts, 0, 100)), ENT_XML1 | ENT_QUOTES, 'UTF-8');
+    $gatherAttrs = 'input="speech dtmf" language="pt-BR" speechModel="experimental_utterances" speechTimeout="auto" profanityFilter="false" enhanced="true" hints="' . $routeHintsStr . '"';
+
+    // Dynamic timeout: longer if we expect complex input (store name), shorter for yes/no
+    $routeTimeout = 6;
+    if ($storeIdentified) $routeTimeout = 8; // Store found, expect menu item names
+    elseif ($detectedCep && !empty($nearbyStores)) $routeTimeout = 8; // Expect store selection
+    elseif ($wantsSupport || $wantsComplaint) $routeTimeout = 10; // Support — customer may explain at length
 
     // Respond
     echo '<?xml version="1.0" encoding="UTF-8"?>';
     echo '<Response>';
-    echo '<Gather ' . $gatherAttrs . ' timeout="6" action="' . $aiUrlEsc . '" method="POST">';
+    echo '<Gather ' . $gatherAttrs . ' timeout="' . $routeTimeout . '" action="' . $aiUrlEsc . '" method="POST">';
     echo ttsSayOrPlay($plainSsml);
     echo '</Gather>';
     // Fallback re-prompt with DTMF option for timeout
