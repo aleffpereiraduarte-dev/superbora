@@ -536,7 +536,7 @@ try {
         ]);
 
     } catch (Exception $e) {
-        $db->rollBack();
+        if (isset($db) && $db->inTransaction()) $db->rollBack();
         throw $e;
     }
 

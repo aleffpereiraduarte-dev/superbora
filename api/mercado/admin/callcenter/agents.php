@@ -92,7 +92,7 @@ try {
         }
         unset($agent);
 
-        response(true, ['agents' => $agents]);
+        response(true, ['agents' => $agents, 'current_admin_id' => $admin_id]);
     }
 
     // =================== POST: Agent actions ===================

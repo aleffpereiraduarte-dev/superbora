@@ -27,7 +27,7 @@ try {
     OmAuth::getInstance()->setDb($db);
     OmAudit::getInstance()->setDb($db);
 
-    $email = filter_var(trim($input["email"] ?? ""), FILTER_SANITIZE_EMAIL);
+    $email = trim($input["email"] ?? "");
     $senha = $input["senha"] ?? "";
 
     if (empty($email) || empty($senha)) {

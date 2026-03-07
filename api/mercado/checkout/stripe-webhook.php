@@ -86,18 +86,21 @@ try {
     $stmtInsert->execute([$eventId, $event['type']]);
 
     if ($stmtInsert->rowCount() === 0) {
-        // Row already exists — check if it was successfully processed
-        $stmtCheck = $db->prepare("SELECT status FROM om_stripe_webhook_events WHERE event_id = ?");
-        $stmtCheck->execute([$eventId]);
-        $existing = $stmtCheck->fetch();
-        if ($existing && $existing['status'] === 'processed') {
-            error_log("[stripe-webhook] Duplicate event skipped (already processed): $eventId");
+        // Row already exists — atomically claim for processing to prevent double-processing
+        $stmtClaim = $db->prepare("
+            UPDATE om_stripe_webhook_events
+            SET status = 'processing', updated_at = NOW()
+            WHERE event_id = ? AND status IN ('received', 'failed')
+        ");
+        $stmtClaim->execute([$eventId]);
+        if ($stmtClaim->rowCount() === 0) {
+            // Already processed or being processed by another request
+            error_log("[stripe-webhook] Duplicate event skipped: $eventId");
             http_response_code(200);
             echo json_encode(['received' => true, 'duplicate' => true]);
             exit;
         }
-        // If status is 'received' or 'failed', allow retry by continuing
-        error_log("[stripe-webhook] Retrying event $eventId (previous status: " . ($existing['status'] ?? 'unknown') . ")");
+        error_log("[stripe-webhook] Retrying event $eventId");
     }
 
     $eventType = $event['type'];

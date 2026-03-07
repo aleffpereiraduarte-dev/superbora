@@ -194,7 +194,7 @@ try {
         exit;
     }
 
-    $orderId = $orderId ?: (int)$entrega['referencia_id'];
+    $orderId = $orderId ?: (int)($entrega['referencia_id'] ?? 0);
 
     // Buscar pedido
     $stmt = $db->prepare("SELECT * FROM om_market_orders WHERE order_id = ?");
