@@ -103,29 +103,38 @@ $qCustomerName = $_GET['customer_name'] ?? $_POST['customer_name'] ?? '';
 $qCustomerId   = $_GET['customer_id'] ?? $_POST['customer_id'] ?? '';
 $qCustomerId   = $qCustomerId !== '' ? (int)$qCustomerId : null;
 
+// Sanitize user-supplied strings that may flow into TwiML/XML output
+$qCustomerName = strip_tags($qCustomerName);
+$callType = preg_replace('/[^a-z_]/', '', $callType);
+
 // Decode call data payload
 $callData = [];
 if (!empty($callDataB64)) {
     $decoded = base64_decode($callDataB64);
     if ($decoded) {
         $callData = json_decode($decoded, true) ?: [];
+        // Sanitize all string values in call data to prevent XSS in TwiML output
+        array_walk_recursive($callData, function(&$val) {
+            if (is_string($val)) {
+                $val = strip_tags($val);
+            }
+        });
     }
 }
 
 // Build self URL preserving query params for Gather action loops
-$scheme   = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-$host     = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? 'localhost';
-$selfPath = strtok($_SERVER['REQUEST_URI'] ?? '', '?');
+// SECURITY: Use configured webhook base URL instead of HTTP_HOST to prevent SSRF/Host header injection
+$webhookBase = $_ENV['TWILIO_WEBHOOK_URL'] ?? getenv('TWILIO_WEBHOOK_URL') ?: 'https://superbora.com.br/api/mercado/webhooks';
 $selfParams = http_build_query([
     'call_type'     => $callType,
     'call_data_b64' => $callDataB64,
     'customer_name' => $qCustomerName,
     'customer_id'   => $qCustomerId ?? '',
 ]);
-$selfUrl = $scheme . '://' . $host . $selfPath . '?' . $selfParams;
+$selfUrl = $webhookBase . '/twilio-voice-outbound.php?' . $selfParams;
 
 // AI handler URL for redirect when customer wants to order
-$aiHandlerUrl = $scheme . '://' . $host . str_replace('twilio-voice-outbound.php', 'twilio-voice-ai.php', $selfPath);
+$aiHandlerUrl = $webhookBase . '/twilio-voice-ai.php';
 
 $userInput = $speechResult ?: ($digits ?: '');
 

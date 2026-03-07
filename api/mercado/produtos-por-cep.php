@@ -61,7 +61,7 @@ try {
             'cidade' => $cidade,
             'mensagem' => "Ainda não temos mercados disponíveis em {$cidade}. Em breve!",
             'produtos' => []
-        ]);
+        ], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
         exit;
     }
 
@@ -80,7 +80,7 @@ try {
         'total_produtos' => count($produtos),
         'categorias' => $categorias,
         'produtos' => $produtos
-    ], JSON_UNESCAPED_UNICODE);
+    ], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
 
 } catch (Exception $e) {
     error_log("Produtos por CEP error: " . $e->getMessage());

@@ -13,8 +13,7 @@ try {
     $db = getDB();
     OmAuth::getInstance()->setDb($db);
 
-    $payload = requireCustomerAuth();
-    $customerId = (int)$payload['uid'];
+    $customerId = requireCustomerAuth();
 
     // 1. Active orders
     $stmt = $db->prepare("

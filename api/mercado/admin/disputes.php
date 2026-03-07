@@ -169,7 +169,8 @@ try {
         $periodMap = ['7d' => '7 days', '30d' => '30 days', '90d' => '90 days', 'all' => null];
         $intervalStr = $periodMap[$period] ?? '30 days';
         if ($intervalStr) {
-            $where .= " AND d.created_at > NOW() - INTERVAL '$intervalStr'";
+            $where .= " AND d.created_at > NOW() - ?::interval";
+            $params[] = $intervalStr;
         }
 
         if ($search) {

@@ -39,6 +39,10 @@ try {
             'http' => ['timeout' => 5]
         ]);
 
+        // SECURITY: Strict IP format validation before external request (defense-in-depth)
+        if (!filter_var($ip, FILTER_VALIDATE_IP)) {
+            return null;
+        }
         $url = "http://ip-api.com/json/" . urlencode($ip) . "?fields=status,message,country,countryCode,region,regionName,city,lat,lon&lang=pt-BR";
         $raw = @file_get_contents($url, false, $ctx);
 

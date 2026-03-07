@@ -83,9 +83,15 @@ try {
         mkdir($destDir, 0755, true);
     }
 
+    // SECURITY: Verify resolved destination is within expected base path
+    $resolvedDestDir = realpath($destDir);
+    if (!$resolvedDestDir || strpos($resolvedDestDir, '/var/www/html/uploads/') !== 0) {
+        response(false, null, "Erro de configuracao do servidor", 500);
+    }
+
     // Gerar nome unico
     $filename = $mercado_id . '_' . time() . '_' . bin2hex(random_bytes(4)) . '.webp';
-    $destPath = $destDir . $filename;
+    $destPath = $resolvedDestDir . '/' . $filename;
 
     // Carregar e redimensionar imagem
     $maxWidth = 800;
@@ -157,7 +163,7 @@ try {
         $entity_id,
         $filename,
         $url,
-        $file['name'],
+        basename($file['name']),
         filesize($destPath)
     ]);
 

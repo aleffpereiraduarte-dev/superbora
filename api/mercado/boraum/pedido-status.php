@@ -131,7 +131,7 @@ try {
 }
 
 // Connected
-echo "event: connected\ndata: " . json_encode(["status" => "connected", "order_id" => $orderId]) . "\n\n";
+echo "event: connected\ndata: " . json_encode(["status" => "connected", "order_id" => $orderId], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . "\n\n";
 flush();
 
 $lastCheck = date('Y-m-d H:i:s', time() - 5);
@@ -185,9 +185,9 @@ while (true) {
                 'driver_name' => $order['driver_name'] ?? null,
                 'driver_phone' => $order['driver_phone'] ?? null,
                 'updated_at' => $order['last_modified'],
-            ], JSON_UNESCAPED_UNICODE);
+            ], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
 
-            echo "event: order_update\ndata: {$eventData}\n\n";
+            echo "event: order_update\ndata: " . $eventData . "\n\n";
 
             // Location update for delivery statuses
             if (in_array($order['status'], ['saiu_entrega', 'em_entrega'])) {
@@ -208,8 +208,8 @@ while (true) {
                             'lat' => (float)$location['latitude'],
                             'lng' => (float)$location['longitude'],
                             'location_updated_at' => $location['updated_at'],
-                        ]);
-                        echo "event: location_update\ndata: {$locData}\n\n";
+                        ], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
+                        echo "event: location_update\ndata: " . $locData . "\n\n";
                     }
                 } catch (Exception $e) {}
             }
@@ -243,8 +243,8 @@ while (true) {
                     'message_type' => $msg['message_type'] ?? 'text',
                     'image_url'   => $msg['image_url'] ?: null,
                     'created_at'  => $msg['created_at'],
-                ], JSON_UNESCAPED_UNICODE);
-                echo "event: chat_message\ndata: {$chatData}\n\n";
+                ], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
+                echo "event: chat_message\ndata: " . $chatData . "\n\n";
                 $lastChatId = (int)$msg['message_id'];
             }
         } catch (Exception $e) {}

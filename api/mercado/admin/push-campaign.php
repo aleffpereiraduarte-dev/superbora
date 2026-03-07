@@ -154,7 +154,7 @@ try {
     }
 
 } catch (Exception $e) {
-    if ($db->inTransaction()) $db->rollBack();
+    if (isset($db) && $db->inTransaction()) $db->rollBack();
     error_log("[PushCampaign] Error: " . $e->getMessage());
     response(false, null, "Erro interno", 500);
 }

@@ -36,9 +36,9 @@ try {
     // Limitar a 20 parceiros por request
     $ids = array_slice($ids, 0, 20);
 
-    $placeholders = implode(',', array_fill(0, count($ids), '?'));
-    $stmt = $db->prepare("
-        SELECT
+    $inPlaceholders = implode(',', array_fill(0, count($ids), '?'));
+    $stmt = $db->prepare(
+        "SELECT
             partner_id,
             delivery_fee,
             taxa_entrega,
@@ -57,9 +57,9 @@ try {
             delivery_start_time,
             delivery_end_time
         FROM om_market_partners
-        WHERE partner_id IN ($placeholders)
-    ");
-    $stmt->execute($ids);
+        WHERE partner_id IN (" . $inPlaceholders . ")"
+    );
+    $stmt->execute(array_values($ids));
 
     $result = [];
     while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {

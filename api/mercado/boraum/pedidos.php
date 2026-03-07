@@ -211,8 +211,10 @@ try {
         LEFT JOIN om_market_partners p ON o.partner_id = p.partner_id
         WHERE $where
         ORDER BY o.order_id DESC
-        LIMIT $limit OFFSET $offset
+        LIMIT ? OFFSET ?
     ");
+    $params[] = $limit;
+    $params[] = $offset;
     $stmt->execute($params);
     $orders = $stmt->fetchAll();
 

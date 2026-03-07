@@ -114,16 +114,20 @@ Exemplo de primeira resposta: "Claro! Me diz seu nome pra eu te ajudar melhor?"`
 Você está atendendo uma ligação telefônica. Seja simpática, natural e eficiente como uma atendente humana.
 
 PERSONALIDADE:
-- Fale como uma pessoa real — calorosa, simpática, brasileira
-- Não seja robótica. Varie suas respostas. Use expressões naturais como "beleza", "ótimo", "perfeito", "pode deixar"
+- Fale como uma pessoa real — calorosa, simpática, acolhedora, brasileira
+- Não seja robótica. Varie suas respostas. Use expressões naturais como "beleza", "ótimo", "perfeito", "pode deixar", "claro!"
 - Se o cliente falar algo engraçado, dê risada ("haha")
 - Demonstre entusiasmo com os produtos: "esse é muito bom!", "ótima escolha!"
+- Seja SEMPRE educada e paciente, mesmo se o cliente estiver irritado
+- Na primeira resposta, SEMPRE explique brevemente o que você pode fazer: fazer pedidos, ver status, ajudar com dúvidas
+- Diga que o cliente pode apertar zero pra falar com uma pessoa, se preferir
 
 REGRAS TÉCNICAS:
 - NUNCA use emojis, bullets, asteriscos, ou formatação — sua fala vira áudio
 - Fale números por extenso: "doze reais e cinquenta" não "R$12,50"
 - Respostas CURTAS — máximo 2-3 frases por vez. É conversa por telefone, não texto
-- NUNCA invente preços, produtos ou lojas — use as ferramentas
+- NUNCA invente preços, produtos, lojas, tempos de espera, ou posição na fila — use as ferramentas
+- NUNCA diga que tem pessoas na fila ou na frente — você NÃO tem essa informação
 - "Quero pizza" é TIPO DE COMIDA, não nome de restaurante
 
 ${customerContext}
@@ -819,39 +823,156 @@ async function finalizeCall(callSid, status, summary) {
              WHERE twilio_call_sid = $1`,
             [callSid, status || 'completed', summary || null]
         );
+        // Update agent: set idle timestamp AND reset status back to online
+        dbQuery(
+            `UPDATE om_callcenter_agents SET status = 'online', last_call_ended_at = NOW(), updated_at = NOW()
+             WHERE id = (SELECT agent_id FROM om_callcenter_calls WHERE twilio_call_sid = $1 AND agent_id IS NOT NULL)`,
+            [callSid]
+        ).catch(() => {});
     } catch (e) {
         console.error('[voice] Call finalize failed:', e.message);
     }
+}
+
+// ─── Smart Agent Routing ────────────────────────────────────
+// Finds available agents sorted by: fewest active calls → longest idle
+// Respects max_concurrent and optional skill matching
+
+async function getAvailableAgents(skillRequired = null) {
+    try {
+        let query = `
+            SELECT a.id, a.display_name, a.max_concurrent, a.skills,
+                   COALESCE(active.cnt, 0)::int as active_calls
+            FROM om_callcenter_agents a
+            LEFT JOIN (
+                SELECT agent_id, COUNT(*) as cnt
+                FROM om_callcenter_calls
+                WHERE status IN ('in_progress', 'ringing')
+                  AND ended_at IS NULL
+                  AND agent_id IS NOT NULL
+                  AND started_at > NOW() - INTERVAL '2 hours'
+                GROUP BY agent_id
+            ) active ON active.agent_id = a.id
+            WHERE a.status = 'online'
+              AND COALESCE(active.cnt, 0) < a.max_concurrent
+        `;
+        const params = [];
+        if (skillRequired) {
+            params.push(skillRequired);
+            query += ` AND $${params.length} = ANY(a.skills)`;
+        }
+        query += ` ORDER BY COALESCE(active.cnt, 0) ASC, a.last_call_ended_at ASC NULLS FIRST LIMIT 10`;
+
+        const result = await dbQuery(query, params);
+        return result.rows;
+    } catch (e) {
+        console.error('[voice] getAvailableAgents error:', e.message);
+        return [];
+    }
+}
+
+// ─── Call Recording ─────────────────────────────────────────
+// Starts recording the entire call via Twilio REST API (covers AI + agent portions)
+
+async function startCallRecording(callSid) {
+    if (!TWILIO_SID || !TWILIO_TOKEN) return;
+    try {
+        const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Calls/${callSid}/Recordings.json`;
+        const auth = Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString('base64');
+        const callbackUrl = `https://${WS_HOST}/voice/recording-status`;
+
+        const resp = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Basic ${auth}`,
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: new URLSearchParams({
+                RecordingStatusCallback: callbackUrl,
+                RecordingStatusCallbackMethod: 'POST',
+                RecordingChannels: 'dual',
+                Trim: 'trim-silence'
+            })
+        });
+
+        if (resp.ok) {
+            const data = await resp.json();
+            console.log(`[voice] Recording started: ${callSid} → ${data.sid}`);
+            const cs = activeCalls.get(callSid);
+            if (cs) cs.recordingSid = data.sid;
+            // Store recording SID in DB
+            dbQuery(
+                `UPDATE om_callcenter_calls SET recording_sid = $2 WHERE twilio_call_sid = $1`,
+                [callSid, data.sid]
+            ).catch(() => {});
+        } else {
+            console.error(`[voice] Recording start failed (${resp.status}):`, await resp.text());
+        }
+    } catch (e) {
+        console.error('[voice] startCallRecording error:', e.message);
+    }
+}
+
+// ─── Transcript Logging ─────────────────────────────────────
+// Saves full AI conversation history to DB
+
+async function saveTranscript(callSid, history, callState) {
+    if (!history || history.length === 0) return;
+    try {
+        // Format as readable text
+        const transcriptLines = history.map(h => {
+            const speaker = h.role === 'user' ? 'Cliente' : 'Bora (IA)';
+            return `[${speaker}] ${h.content}`;
+        });
+        const transcriptText = transcriptLines.join('\n');
+
+        // Build tags from conversation context
+        const tags = [];
+        if (callState?.orderSubmitted) tags.push('pedido_realizado');
+        if (callState?.transferRequested) tags.push('transferido');
+        if (callState?.store) tags.push(`loja:${callState.store.name}`);
+        if (callState?.items?.length > 0) tags.push('itens_no_carrinho');
+        if (history.length <= 4) tags.push('conversa_curta');
+        if (history.length > 20) tags.push('conversa_longa');
+
+        await dbQuery(
+            `UPDATE om_callcenter_calls
+             SET transcription = $2, ai_tags = $3, store_identified = $4
+             WHERE twilio_call_sid = $1`,
+            [callSid, transcriptText, tags, callState?.store?.name || null]
+        );
+        console.log(`[voice] Transcript saved: ${callSid} (${history.length} turns, ${transcriptText.length} chars)`);
+    } catch (e) {
+        console.error('[voice] saveTranscript error:', e.message);
+    }
+}
+
+// Build <Client> tags for Dial with statusCallback for agent tracking
+function buildClientTags(agents, clientStatusUrl) {
+    return agents.map(a =>
+        `<Client statusCallback="${escXml(clientStatusUrl)}" statusCallbackEvent="answered completed" statusCallbackMethod="POST">agent_${a.id}</Client>`
+    ).join('\n        ');
 }
 
 // ─── Transfer to Agent ──────────────────────────────────────
 
 async function transferCall(callSid) {
     try {
-        // Find online agents to ring their softphones
-        let agentClients = '';
-        let agentIds = [];
-        try {
-            const agentsResult = await dbQuery(
-                `SELECT id FROM om_callcenter_agents WHERE status IN ('online', 'busy') ORDER BY id`
-            );
-            if (agentsResult.rows.length > 0) {
-                agentIds = agentsResult.rows.map(a => a.id);
-                agentClients = agentsResult.rows
-                    .map(a => `<Client>agent_${a.id}</Client>`)
-                    .join('\n                ');
-            }
-        } catch (e) {
-            console.error('[voice] Agent lookup for transfer failed:', e.message);
-        }
+        // Smart routing: find available agents
+        const agents = await getAvailableAgents();
+        let agentClients, agentIds;
 
-        // Fallback: ring all known agent identities
-        if (!agentClients) {
+        if (agents.length > 0) {
+            agentIds = agents.map(a => a.id);
+            const clientStatusUrl = `https://${WS_HOST}/voice/client-status`;
+            agentClients = buildClientTags(agents, clientStatusUrl);
+        } else {
+            // Fallback
             agentClients = '<Client>agent_5</Client>';
             agentIds = [5];
         }
 
-        // Broadcast to call center dashboard so agents see the incoming call
+        // Broadcast to dashboard
         try {
             const callInfo = activeCalls.get(callSid);
             await fetch('http://localhost:8080/broadcast', {
@@ -867,20 +988,15 @@ async function transferCall(callSid) {
                         customer_id: callInfo?.customer?.customer_id || null,
                         transfer_reason: callInfo?.transferReason || 'Pediu atendente',
                         agents_ringing: agentIds,
+                        agents_detail: agents.map(a => ({ id: a.id, name: a.display_name, active_calls: a.active_calls }))
                     }
                 })
             });
-        } catch (e) {
-            console.error('[voice] Dashboard broadcast failed:', e.message);
-        }
+        } catch (e) {}
 
-        // Update call status in DB
+        // Update DB
         try {
-            await dbQuery(
-                `UPDATE om_callcenter_calls SET status = 'queued' WHERE twilio_call_sid = $1`,
-                [callSid]
-            );
-            // Add to queue
+            await dbQuery(`UPDATE om_callcenter_calls SET status = 'queued' WHERE twilio_call_sid = $1`, [callSid]);
             await dbQuery(
                 `INSERT INTO om_callcenter_queue (call_id, customer_phone, customer_name, priority, queued_at)
                  SELECT id, customer_phone, customer_name, 3, NOW()
@@ -888,24 +1004,21 @@ async function transferCall(callSid) {
                  ON CONFLICT DO NOTHING`,
                 [callSid]
             );
-        } catch (e) {
-            console.error('[voice] Queue insert failed:', e.message);
-        }
+        } catch (e) {}
 
         const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Calls/${callSid}.json`;
-        const callerId = process.env.TWILIO_PHONE || '+17432285380';
+        const callerId = process.env.TWILIO_PHONE || '+15705299780';
         const dialStatusUrl = `https://${WS_HOST}/voice/dial-status`;
-        // Ring agent softphones for 45s, if nobody answers play hold music and retry
         const twiml = `<Response>
-            <Say language="pt-BR" voice="Polly.Camila">Transferindo para um atendente. Aguarde um momento.</Say>
+            <Say language="pt-BR" voice="Polly.Camila">Estou te transferindo pra um atendente. Aguarda só um pouquinho, tá?</Say>
             <Dial timeout="45" callerId="${callerId}" action="${dialStatusUrl}" method="POST">
                 ${agentClients}
             </Dial>
         </Response>`;
-        console.log('[voice] Transfer TwiML:', twiml.replace(/\n\s+/g, ' ').trim());
 
+        console.log(`[voice] REST transfer: ${callSid} → agents [${agentIds.join(', ')}]`);
         const auth = Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString('base64');
-        await fetch(url, {
+        const resp = await fetch(url, {
             method: 'POST',
             headers: {
                 'Authorization': `Basic ${auth}`,
@@ -913,7 +1026,9 @@ async function transferCall(callSid) {
             },
             body: new URLSearchParams({ Twiml: twiml })
         });
-        console.log(`[voice] Transfer initiated for ${callSid} → agent_${agentIds.join(', agent_')}`);
+        if (!resp.ok) {
+            console.error(`[voice] Twilio transfer API error (${resp.status}):`, await resp.text());
+        }
     } catch (e) {
         console.error('[voice] Transfer failed:', e.message);
     }
@@ -939,48 +1054,322 @@ app.register(formbodyPlugin);
 // Health check
 app.get('/health', async () => ({ status: 'ok', calls: activeCalls.size }));
 
+// Test endpoint: make a test call to client:agent_5 and report result
+app.get('/test-client', async (req, reply) => {
+    try {
+        const agents = await getAvailableAgents();
+        const agentList = agents.map(a => ({ id: a.id, name: a.display_name, active: a.active_calls }));
+
+        // Make a test call via Twilio REST API
+        const testCallRes = await fetch(
+            `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Calls.json`,
+            {
+                method: 'POST',
+                headers: {
+                    'Authorization': 'Basic ' + Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString('base64'),
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: new URLSearchParams({
+                    To: 'client:agent_5',
+                    From: process.env.TWILIO_PHONE || '+15705299780',
+                    Twiml: '<Response><Say language="pt-BR">Teste. Se voce ouve isso, o softphone funciona.</Say></Response>',
+                    Timeout: '15',
+                }).toString(),
+            }
+        );
+        const testCall = await testCallRes.json();
+
+        // Wait 10s and check result
+        await new Promise(r => setTimeout(r, 10000));
+
+        const checkRes = await fetch(
+            `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Calls/${testCall.sid}.json`,
+            { headers: { 'Authorization': 'Basic ' + Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString('base64') } }
+        );
+        const result = await checkRes.json();
+
+        const diagnosis = result.status === 'in-progress' || result.status === 'completed' && parseInt(result.duration) > 0
+            ? 'OK — Device is registered and accepting calls'
+            : result.status === 'busy'
+            ? 'FAIL — Device is registered but REJECTING calls (SIP 600). Check: microphone permission, browser tab active, no duplicate devices'
+            : result.status === 'no-answer'
+            ? 'FAIL — Device is NOT registered. User needs to reload page and allow microphone'
+            : `UNKNOWN — status: ${result.status}`;
+
+        // Hang up if still active
+        if (result.status === 'in-progress' || result.status === 'ringing') {
+            await fetch(
+                `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Calls/${testCall.sid}.json`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': 'Basic ' + Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString('base64'),
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: 'Status=completed',
+                }
+            );
+        }
+
+        reply.send({
+            diagnosis,
+            call_sid: testCall.sid,
+            call_status: result.status,
+            call_duration: result.duration,
+            agents_available: agentList,
+        });
+    } catch (e) {
+        reply.send({ error: e.message });
+    }
+});
+
+// ─── HTTP: Fallback — called when primary voice URL fails (prevents AI restart) ─────
+
+app.post('/fallback', async (req, reply) => {
+    const callSid = req.body?.CallSid || '';
+    console.error(`[voice] FALLBACK triggered for ${callSid} — primary handler failed`);
+    reply.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say language="pt-BR" voice="Polly.Camila">Desculpa, tivemos um probleminha técnico. Por favor, tente ligar novamente em alguns instantes.</Say>
+    <Hangup/>
+</Response>`);
+});
+
+// ─── HTTP: Recording Status — Twilio callback when recording is ready ─────
+
+app.post('/recording-status', async (req, reply) => {
+    const callSid = req.body?.CallSid || '';
+    const recordingSid = req.body?.RecordingSid || '';
+    const recordingUrl = req.body?.RecordingUrl || '';
+    const recordingStatus = req.body?.RecordingStatus || '';
+    const recordingDuration = parseInt(req.body?.RecordingDuration || '0');
+
+    console.log(`[voice] Recording ${recordingStatus}: ${callSid} | ${recordingDuration}s | ${recordingSid}`);
+
+    if (recordingStatus === 'completed' && recordingUrl) {
+        try {
+            await dbQuery(
+                `UPDATE om_callcenter_calls
+                 SET recording_url = $2, recording_duration = $3, recording_sid = $4
+                 WHERE twilio_call_sid = $1`,
+                [callSid, recordingUrl + '.mp3', recordingDuration, recordingSid]
+            );
+            console.log(`[voice] Recording saved: ${callSid} | ${recordingDuration}s`);
+        } catch (e) {
+            console.error('[voice] Recording save failed:', e.message);
+        }
+    }
+
+    reply.send({ ok: true });
+});
+
+// ─── HTTP: Client Status — tracks which agent answered ─────
+
+app.post('/client-status', async (req, reply) => {
+    const parentCallSid = req.body?.ParentCallSid || '';
+    const clientIdentity = req.body?.To || ''; // e.g., "client:agent_5"
+    const callStatus = req.body?.CallStatus || '';
+    const childCallSid = req.body?.CallSid || '';
+
+    console.log(`[voice] Client status: ${clientIdentity} → ${callStatus} | parent=${parentCallSid} child=${childCallSid}`);
+
+    const agentMatch = clientIdentity.match(/agent_(\d+)/);
+    const agentId = agentMatch ? parseInt(agentMatch[1]) : null;
+
+    if (callStatus === 'in-progress' && agentId && parentCallSid) {
+        try {
+            await dbQuery(
+                `UPDATE om_callcenter_calls
+                 SET agent_id = $2, status = 'in_progress', answered_at = NOW()
+                 WHERE twilio_call_sid = $1`,
+                [parentCallSid, agentId]
+            );
+            // Update agent status to busy
+            await dbQuery(
+                `UPDATE om_callcenter_agents SET status = 'busy', updated_at = NOW() WHERE id = $1`,
+                [agentId]
+            );
+            // Broadcast
+            fetch('http://localhost:8080/broadcast', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    channel: 'callcenter',
+                    event: 'call_answered',
+                    data: { call_sid: parentCallSid, agent_id: agentId }
+                })
+            }).catch(() => {});
+            console.log(`[voice] Agent ${agentId} answered call ${parentCallSid}`);
+        } catch (e) {
+            console.error('[voice] Client status update failed:', e.message);
+        }
+    }
+
+    if (callStatus === 'completed' && agentId) {
+        // Call ended — reset agent back to online
+        try {
+            await dbQuery(
+                `UPDATE om_callcenter_agents SET status = 'online', last_call_ended_at = NOW(), updated_at = NOW() WHERE id = $1`,
+                [agentId]
+            );
+            console.log(`[voice] Agent ${agentId} call completed — status reset to online`);
+        } catch (e) {
+            console.error('[voice] Agent status reset failed:', e.message);
+        }
+    }
+
+    reply.send({ ok: true });
+});
+
+// ─── HTTP: Connect Action — called when ConversationRelay ends ─────
+
+app.post('/connect-action', async (req, reply) => {
+  try {
+    const callSid = req.body?.CallSid || '';
+    const handoffData = req.body?.HandoffData || '{}';
+    console.log(`[voice] Connect action for ${callSid} | handoff: ${handoffData}`);
+
+    let handoff;
+    try { handoff = JSON.parse(handoffData); } catch { handoff = {}; }
+
+    if (handoff.reasonCode === 'live-agent-handoff') {
+        // Smart routing: find available agents (least busy, within max_concurrent)
+        const agents = await getAvailableAgents();
+
+        if (agents.length === 0) {
+            // No agents available — hold music, retry via dial-status
+            console.log(`[voice] No agents available for ${callSid} — queuing with hold music`);
+            try {
+                await dbQuery(`UPDATE om_callcenter_calls SET status = 'queued' WHERE twilio_call_sid = $1`, [callSid]);
+            } catch (e) {}
+            const retryUrl = `https://${WS_HOST}/voice/dial-status`;
+            reply.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say language="pt-BR" voice="Polly.Camila">Nossos atendentes estão todos ocupados no momento. Aguarde um pouquinho, tá?</Say>
+    <Say language="pt-BR" voice="Polly.Camila">Sua chamada é importante pra gente. Aguarde só mais um pouquinho.</Say>
+    <Pause length="20"/>
+    <Redirect method="POST">${escXml(retryUrl)}</Redirect>
+</Response>`);
+            return;
+        }
+
+        const agentIds = agents.map(a => a.id);
+        const clientStatusUrl = `https://${WS_HOST}/voice/client-status`;
+        const agentClients = buildClientTags(agents, clientStatusUrl);
+
+        // Broadcast to dashboard with routing details
+        try {
+            const callInfo = activeCalls.get(callSid);
+            await fetch('http://localhost:8080/broadcast', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    channel: 'callcenter',
+                    event: 'call_transfer',
+                    data: {
+                        call_sid: callSid,
+                        customer_phone: callInfo?.callerPhone || '',
+                        customer_name: callInfo?.customer?.name || null,
+                        customer_id: callInfo?.customer?.customer_id || null,
+                        reason: handoff.reason || 'Pediu atendente',
+                        agents_ringing: agentIds,
+                        agents_detail: agents.map(a => ({ id: a.id, name: a.display_name, active_calls: a.active_calls }))
+                    }
+                })
+            });
+        } catch (e) {}
+
+        // Update DB — queue the call
+        try {
+            await dbQuery(`UPDATE om_callcenter_calls SET status = 'queued' WHERE twilio_call_sid = $1`, [callSid]);
+            await dbQuery(
+                `INSERT INTO om_callcenter_queue (call_id, customer_phone, customer_name, priority, queued_at)
+                 SELECT id, customer_phone, customer_name, 3, NOW()
+                 FROM om_callcenter_calls WHERE twilio_call_sid = $1
+                 ON CONFLICT DO NOTHING`,
+                [callSid]
+            );
+        } catch (e) {}
+
+        const callerId = process.env.TWILIO_PHONE || '+15705299780';
+        const dialStatusUrl = `https://${WS_HOST}/voice/dial-status`;
+        const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say language="pt-BR" voice="Polly.Camila">Estou te transferindo pra um atendente. Aguarda só um pouquinho, tá?</Say>
+    <Dial timeout="45" callerId="${callerId}" action="${escXml(dialStatusUrl)}" method="POST">
+        ${agentClients}
+    </Dial>
+</Response>`;
+        console.log(`[voice] Smart routing: ${callSid} → [${agents.map(a => `${a.display_name}(${a.active_calls})`).join(', ')}]`);
+        console.log(`[voice] TwiML sent:\n${twiml}`);
+        reply.type('text/xml').send(twiml);
+    } else {
+        reply.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>');
+    }
+  } catch (err) {
+    console.error(`[voice] connect-action FATAL:`, err.message);
+    reply.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response><Say language="pt-BR" voice="Polly.Camila">Desculpa, tivemos um probleminha técnico. Tente ligar de novo.</Say><Hangup/></Response>');
+  }
+});
+
 // ─── HTTP: Dial Status — when agent doesn't answer, play hold music and retry ─────
 
 app.post('/dial-status', async (req, reply) => {
-    const dialStatus = req.body?.DialCallStatus || req.body?.DialStatus || 'no-answer';
+  try {
+    const dialStatus = req.body?.DialCallStatus || req.body?.DialStatus || '';
     const callSid = req.body?.CallSid || '';
-    console.log(`[voice] Dial status for ${callSid}: ${dialStatus}`);
+    const dialCallSid = req.body?.DialCallSid || '';
+    const dialDuration = req.body?.DialCallDuration || '0';
+    console.log(`[voice] Dial status: ${callSid} | status=${dialStatus || '(retry)'} | child=${dialCallSid} | dur=${dialDuration}s`);
 
     if (dialStatus === 'completed' || dialStatus === 'answered') {
-        // Agent answered and call ended normally
+        // Agent answered and call completed — finalize
+        finalizeCall(callSid, 'completed', 'Atendido por agente');
         reply.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>`);
         return;
     }
 
-    // Agent didn't answer (no-answer, busy, failed, canceled) — hold music + retry
-    // Look up agents again for retry
-    let agentClients = '<Client>agent_5</Client>';
-    try {
-        const agentsResult = await dbQuery(
-            `SELECT id FROM om_callcenter_agents WHERE status IN ('online', 'busy') ORDER BY id`
-        );
-        if (agentsResult.rows.length > 0) {
-            agentClients = agentsResult.rows.map(a => `<Client>agent_${a.id}</Client>`).join('\n');
-        }
-    } catch (e) {}
-
-    const callerId = process.env.TWILIO_PHONE || '+17432285380';
+    // No answer / busy / failed / no agents — smart retry
+    const agents = await getAvailableAgents();
+    const callerId = process.env.TWILIO_PHONE || '+15705299780';
     const dialStatusUrl = `https://${WS_HOST}/voice/dial-status`;
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+
+    if (agents.length === 0) {
+        // Still no agents — hold music then retry (music ~3min acts as natural delay)
+        console.log(`[voice] No agents for retry ${callSid} — holding`);
+        reply.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say language="pt-BR" voice="Polly.Camila">Nossos atendentes estão ocupados. Aguarde na linha, já já alguém te atende.</Say>
-    <Play>http://com.twilio.music.soft-rock.s3.amazonaws.com/Deacon_Fry_-_Sun_Pianos.mp3</Play>
-    <Dial timeout="45" callerId="${callerId}" action="${dialStatusUrl}" method="POST">
+    <Say language="pt-BR" voice="Polly.Camila">Só mais um pouquinho, tá? Já já alguém te atende.</Say>
+    <Say language="pt-BR" voice="Polly.Camila">Sua chamada é importante pra gente. Aguarde só mais um pouquinho.</Say>
+    <Pause length="20"/>
+    <Redirect method="POST">${escXml(dialStatusUrl)}</Redirect>
+</Response>`);
+        return;
+    }
+
+    const clientStatusUrl = `https://${WS_HOST}/voice/client-status`;
+    const agentClients = buildClientTags(agents, clientStatusUrl);
+
+    console.log(`[voice] Retry routing: ${callSid} → [${agents.map(a => `${a.display_name}(${a.active_calls})`).join(', ')}]`);
+    reply.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say language="pt-BR" voice="Polly.Camila">Só mais um pouquinho, tá? Já já alguém te atende.</Say>
+    <Say language="pt-BR" voice="Polly.Camila">Sua chamada é importante pra gente. Aguarde só mais um pouquinho.</Say>
+    <Pause length="20"/>
+    <Dial timeout="45" callerId="${callerId}" action="${escXml(dialStatusUrl)}" method="POST">
         ${agentClients}
     </Dial>
-</Response>`;
-
-    reply.type('text/xml').send(twiml);
+</Response>`);
+  } catch (err) {
+    console.error(`[voice] dial-status FATAL:`, err.message);
+    reply.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response><Say language="pt-BR" voice="Polly.Camila">Desculpa, tivemos um probleminha. Tente ligar de novo.</Say><Hangup/></Response>');
+  }
 });
 
 // ─── HTTP: Incoming Call → TwiML with ConversationRelay ─────
 
 app.post('/incoming-call', async (req, reply) => {
+  try {
     const callerPhone = req.body?.From || '';
     const callSid = req.body?.CallSid || '';
 
@@ -995,8 +1384,8 @@ app.post('/incoming-call', async (req, reply) => {
     const periodo = horaNum < 12 ? 'Bom dia' : horaNum < 18 ? 'Boa tarde' : 'Boa noite';
 
     const greeting = firstName
-        ? `${periodo}, ${firstName}! Aqui é a Bora, do SuperBora. Posso te ajudar a fazer um pedido, ver o status de uma entrega, tirar dúvidas, fazer uma reclamação ou dar sugestões. O que você precisa?`
-        : `${periodo}! Aqui é a Bora, assistente virtual do SuperBora. Posso te ajudar a fazer um pedido, ver o status de uma entrega, tirar dúvidas, fazer uma reclamação ou dar sugestões. Como posso te ajudar?`;
+        ? `${periodo}, ${firstName}! Tudo bem? Aqui é a Bora, do SuperBora! Posso te ajudar a fazer um pedido, ver o status da sua entrega, ou qualquer outra coisa. Me conta, no que posso te ajudar?`
+        : `${periodo}! Tudo bem? Aqui é a Bora, do SuperBora! Posso te ajudar a fazer um pedido, ver status de entrega, ou tirar qualquer dúvida. Se quiser falar com uma pessoa, é só apertar zero. Me conta, no que posso te ajudar?`;
 
     // Create call record
     const customer = customerData?.found ? { customer_id: customerData.customer_id, name: customerData.name } : null;
@@ -1009,9 +1398,10 @@ app.post('/incoming-call', async (req, reply) => {
     });
     const wsUrl = `wss://${WS_HOST}/voice/ws?${wsParams}`;
 
+    const actionUrl = `https://${WS_HOST}/voice/connect-action`;
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Connect>
+    <Connect action="${escXml(actionUrl)}">
         <ConversationRelay
             url="${escXml(wsUrl)}"
             welcomeGreeting="${escXml(greeting)}"
@@ -1019,9 +1409,8 @@ app.post('/incoming-call', async (req, reply) => {
             ttsProvider="ElevenLabs"
             voice="${ELEVENLABS_VOICE_ID}"
             transcriptionProvider="google"
-            speechModel="phone_call"
+            speechModel="telephony"
             interruptible="true"
-            interruptByDtmf="true"
             dtmfDetection="true"
             profanityFilter="false"
         />
@@ -1029,6 +1418,13 @@ app.post('/incoming-call', async (req, reply) => {
 </Response>`;
 
     reply.type('text/xml').send(twiml);
+
+    // Start recording the entire call (fire-and-forget, covers AI + agent portions)
+    startCallRecording(callSid);
+  } catch (err) {
+    console.error(`[voice] incoming-call FATAL:`, err.message);
+    reply.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response><Say language="pt-BR" voice="Polly.Camila">Desculpa, estamos com um probleminha técnico. Tente ligar de novo em instantes.</Say><Hangup/></Response>');
+  }
 });
 
 // ─── WebSocket: ConversationRelay Handler ───────────────────
@@ -1142,10 +1538,27 @@ app.register(async (fastify) => {
                         console.log(`[voice] ${callState.callSid} AI: "${aiResponse.slice(0, 100)}"`);
                         safeSend(aiResponse);
 
-                        // Handle transfer after response
+                        // Handle transfer after response — use ConversationRelay end-session
                         if (callState.transferRequested) {
                             setTimeout(() => {
-                                transferCall(callState.callSid);
+                                try {
+                                    if (socket.readyState === 1) {
+                                        socket.send(JSON.stringify({
+                                            type: 'end',
+                                            handoffData: JSON.stringify({
+                                                reasonCode: 'live-agent-handoff',
+                                                reason: callState.transferReason || 'Pediu atendente'
+                                            })
+                                        }));
+                                        console.log(`[voice] ${callState.callSid} Sent end-session for agent handoff`);
+                                    } else {
+                                        console.log(`[voice] ${callState.callSid} Socket closed, falling back to REST API transfer`);
+                                        transferCall(callState.callSid);
+                                    }
+                                } catch (e) {
+                                    console.error(`[voice] ${callState.callSid} End-session failed, falling back:`, e.message);
+                                    transferCall(callState.callSid);
+                                }
                                 finalizeCall(callState.callSid, 'transferred', `Transferido: ${callState.transferReason}`);
                             }, 3000);
                         }
@@ -1171,16 +1584,25 @@ app.register(async (fastify) => {
                     console.log(`[voice] ${callState.callSid} DTMF: ${digit}`);
 
                     if (digit === '0') {
-                        // Transfer to agent
+                        // Transfer to agent via ConversationRelay end-session
+                        callState.transferRequested = true;
+                        callState.transferReason = 'DTMF 0 — pediu atendente';
                         socket.send(JSON.stringify({
                             type: 'text',
-                            token: 'Vou te transferir para um atendente agora. Um momento.',
+                            token: 'Claro! Vou te transferir pra um atendente agora. Só um momentinho, tá?',
                             last: true
                         }));
                         setTimeout(() => {
-                            transferCall(callState.callSid);
+                            // End ConversationRelay session — Twilio calls the action URL with handoff data
+                            socket.send(JSON.stringify({
+                                type: 'end',
+                                handoffData: JSON.stringify({
+                                    reasonCode: 'live-agent-handoff',
+                                    reason: 'DTMF 0 — pediu atendente'
+                                })
+                            }));
                             finalizeCall(callState.callSid, 'transferred', 'DTMF 0 — pediu atendente');
-                        }, 2000);
+                        }, 3000);
                     } else {
                         // Treat digit as text input
                         callState.history.push({ role: 'user', content: `Digitou ${digit}` });
@@ -1202,7 +1624,12 @@ app.register(async (fastify) => {
         socket.on('close', () => {
             if (callState) {
                 const duration = Math.round((Date.now() - callState.startTime) / 1000);
-                console.log(`[voice] Call ended: ${callState.callSid} | ${duration}s | items: ${callState.items?.length || 0}`);
+                console.log(`[voice] Call ended: ${callState.callSid} | ${duration}s | items: ${callState.items?.length || 0} | turns: ${callState.history?.length || 0}`);
+
+                // Save full conversation transcript
+                if (callState.history?.length > 0) {
+                    saveTranscript(callState.callSid, callState.history, callState);
+                }
 
                 if (!callState.transferRequested) {
                     const summary = callState.orderSubmitted

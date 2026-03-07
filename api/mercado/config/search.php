@@ -13,7 +13,17 @@ class SearchService {
     private string $searchKey;
 
     private function __construct() {
-        $this->host = $_ENV['MEILI_HOST'] ?? 'http://127.0.0.1:7700';
+        $meiliHost = $_ENV['MEILI_HOST'] ?? 'http://127.0.0.1:7700';
+
+        // SECURITY: Validate MEILI_HOST is a valid local/private URL to prevent SSRF
+        $parsed = parse_url($meiliHost);
+        if (!$parsed || !in_array($parsed['scheme'] ?? '', ['http', 'https'], true) ||
+            !preg_match('/^[a-zA-Z0-9._-]+$/', $parsed['host'] ?? '')) {
+            error_log('[SearchService] Invalid MEILI_HOST value, falling back to localhost');
+            $meiliHost = 'http://127.0.0.1:7700';
+        }
+        $this->host = $meiliHost;
+
         $this->adminKey = $_ENV['MEILI_ADMIN_KEY'] ?? '';
         $this->searchKey = $_ENV['MEILI_SEARCH_KEY'] ?? '';
 

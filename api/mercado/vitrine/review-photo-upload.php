@@ -240,20 +240,28 @@ try {
     $thumbSize = 200;
     $thumb = imagecreatetruecolor($thumbSize, $thumbSize);
 
+    // SECURITY: Verify resolved filepath is within expected upload directory before reading back
+    $resolvedFilepath = realpath($filepath);
+    $resolvedUploadDir = realpath($uploadDir);
+    if (!$resolvedFilepath || !$resolvedUploadDir || strpos($resolvedFilepath, $resolvedUploadDir) !== 0) {
+        @unlink($filepath);
+        response(false, null, "Erro de seguranca ao processar imagem", 500);
+    }
+
     // Load saved image for thumbnail
     switch ($ext) {
         case 'jpg':
-            $img = imagecreatefromjpeg($filepath);
+            $img = imagecreatefromjpeg($resolvedFilepath);
             break;
         case 'png':
-            $img = imagecreatefrompng($filepath);
+            $img = imagecreatefrompng($resolvedFilepath);
             imagealphablending($thumb, false);
             imagesavealpha($thumb, true);
             $transparent = imagecolorallocatealpha($thumb, 0, 0, 0, 127);
             imagefill($thumb, 0, 0, $transparent);
             break;
         case 'webp':
-            $img = imagecreatefromwebp($filepath);
+            $img = imagecreatefromwebp($resolvedFilepath);
             break;
     }
 

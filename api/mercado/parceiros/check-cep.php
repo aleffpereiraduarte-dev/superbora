@@ -29,7 +29,12 @@ try {
     $state = '';
     $neighborhood = '';
 
-    $viaCepCacheFile = "/tmp/viacep_{$cep}.json";
+    // SECURITY: Re-validate CEP is strictly 8 digits before filesystem/network use (defense-in-depth)
+    if (!preg_match('/^\d{8}$/', $cep)) {
+        response(false, null, "CEP invalido.", 400);
+    }
+
+    $viaCepCacheFile = "/tmp/viacep_" . $cep . ".json";
     $viaCepJson = false;
 
     // Check file cache (24h TTL)
@@ -38,7 +43,7 @@ try {
     }
 
     if (!$viaCepJson) {
-        $viaCepUrl = "https://viacep.com.br/ws/{$cep}/json/";
+        $viaCepUrl = "https://viacep.com.br/ws/" . urlencode($cep) . "/json/";
         $ctx = stream_context_create(['http' => ['timeout' => 5]]);
         $viaCepJson = @file_get_contents($viaCepUrl, false, $ctx);
 

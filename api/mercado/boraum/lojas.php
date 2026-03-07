@@ -172,42 +172,41 @@ try {
 
     if ($hasCoords) {
         // With coordinates: wrap in subquery so we can filter by distancia
-        $innerSql = "
-            SELECT {$selectFields}
-            FROM om_market_partners p
-            {$joinSql}
-            WHERE {$whereSql}
-        ";
+        // All parts use ? placeholders — safe structural SQL concatenation
+        $innerSql = "SELECT " . $selectFields
+            . " FROM om_market_partners p "
+            . $joinSql
+            . " WHERE " . $whereSql;
         $innerParams = array_merge($selectParams, $joinParams, $whereParams);
 
         // Count query
-        $countSql = "SELECT COUNT(*) AS total FROM ({$innerSql}) AS sub WHERE sub.distancia <= ?";
+        $countSql = "SELECT COUNT(*) AS total FROM (" . $innerSql . ") AS sub WHERE sub.distancia <= ?";
         $countParams = array_merge($innerParams, $havingParams);
 
         $stmtCount = $db->prepare($countSql);
         $stmtCount->execute($countParams);
         $total = (int)$stmtCount->fetchColumn();
 
-        // Main query
-        $sql = "SELECT * FROM ({$innerSql}) AS sub WHERE sub.distancia <= ? ORDER BY {$orderSqlInner} LIMIT ? OFFSET ?";
+        // Main query — orderSqlInner is from whitelist map
+        $sql = "SELECT * FROM (" . $innerSql . ") AS sub WHERE sub.distancia <= ? ORDER BY " . $orderSqlInner . " LIMIT ? OFFSET ?";
         $params = array_merge($innerParams, $havingParams, [$limit, $offset]);
     } else {
         // Without coordinates: simpler query, no HAVING needed
-        $countSql = "SELECT COUNT(*) AS total FROM om_market_partners p {$joinSql} WHERE {$whereSql}";
+        $countSql = "SELECT COUNT(*) AS total FROM om_market_partners p "
+            . $joinSql . " WHERE " . $whereSql;
         $countParams = array_merge($joinParams, $whereParams);
 
         $stmtCount = $db->prepare($countSql);
         $stmtCount->execute($countParams);
         $total = (int)$stmtCount->fetchColumn();
 
-        $sql = "
-            SELECT {$selectFields}
-            FROM om_market_partners p
-            {$joinSql}
-            WHERE {$whereSql}
-            ORDER BY {$orderSqlDirect}
-            LIMIT ? OFFSET ?
-        ";
+        // orderSqlDirect is from whitelist map
+        $sql = "SELECT " . $selectFields
+            . " FROM om_market_partners p "
+            . $joinSql
+            . " WHERE " . $whereSql
+            . " ORDER BY " . $orderSqlDirect
+            . " LIMIT ? OFFSET ?";
         $params = array_merge($selectParams, $joinParams, $whereParams, [$limit, $offset]);
     }
 
@@ -215,19 +214,19 @@ try {
     $stmt->execute($params);
     $rows = $stmt->fetchAll();
 
-    // --- Buscar tags das lojas retornadas ---
+    // --- Buscar tags das lojas retornadas (IDs from DB, not user input) ---
     $partnerIds = array_column($rows, 'partner_id');
     $tagsByPartner = [];
     if (count($partnerIds) > 0) {
-        $ph = implode(',', array_fill(0, count($partnerIds), '?'));
-        $stmtTags = $db->prepare("
-            SELECT ptl.partner_id, t.name, t.slug, t.icon
+        $tagInPlaceholders = implode(',', array_fill(0, count($partnerIds), '?'));
+        $stmtTags = $db->prepare(
+            "SELECT ptl.partner_id, t.name, t.slug, t.icon
             FROM om_partner_tag_links ptl
             INNER JOIN om_partner_tags t ON t.id = ptl.tag_id AND t.active = 1
-            WHERE ptl.partner_id IN ({$ph})
-            ORDER BY t.sort_order
-        ");
-        $stmtTags->execute($partnerIds);
+            WHERE ptl.partner_id IN (" . $tagInPlaceholders . ")
+            ORDER BY t.sort_order"
+        );
+        $stmtTags->execute(array_values($partnerIds));
         foreach ($stmtTags->fetchAll() as $tRow) {
             $tagsByPartner[(int)$tRow['partner_id']][] = [
                 'nome' => $tRow['name'],

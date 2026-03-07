@@ -539,7 +539,7 @@ try {
     // Cachear por 5 minutos
     $cache->set($cache_key, $response, 300);
 
-    echo json_encode($response, JSON_UNESCAPED_UNICODE);
+    echo json_encode($response, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
 
 } catch (Exception $e) {
     http_response_code(500);

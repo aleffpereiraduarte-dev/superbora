@@ -28,10 +28,10 @@ try {
 
     // Limit to 50 stores max
     $ids = array_slice($ids, 0, 50);
-    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+    $inPlaceholders = implode(',', array_fill(0, count($ids), '?'));
 
-    $stmt = $db->prepare("
-        SELECT
+    $stmt = $db->prepare(
+        "SELECT
             p.partner_id as id,
             COALESCE(p.name, p.trade_name) as nome,
             p.logo,
@@ -46,10 +46,10 @@ try {
             p.address as endereco,
             p.city as cidade
         FROM om_market_partners p
-        WHERE p.partner_id IN ($placeholders)
-        AND p.status = '1'
-    ");
-    $stmt->execute($ids);
+        WHERE p.partner_id IN (" . $inPlaceholders . ")
+        AND p.status = '1'"
+    );
+    $stmt->execute(array_values($ids));
     $stores = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     // Format response

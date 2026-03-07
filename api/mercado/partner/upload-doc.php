@@ -74,7 +74,14 @@ try {
 
     // BUG #26: Re-encode images with GD to strip EXIF and embedded payloads (polyglot protection)
     if (in_array($mime, ['image/jpeg', 'image/png', 'image/webp']) && function_exists('imagecreatefromstring')) {
-        $imgData = @file_get_contents($filepath);
+        // SECURITY: Verify resolved path is within the expected upload directory
+        $resolvedPath = realpath($filepath);
+        $resolvedDir = realpath($uploadDir);
+        if (!$resolvedPath || !$resolvedDir || strpos($resolvedPath, $resolvedDir . '/') !== 0) {
+            @unlink($filepath);
+            response(false, null, "Erro de seguranca ao processar arquivo", 500);
+        }
+        $imgData = @file_get_contents($resolvedPath);
         $img = @imagecreatefromstring($imgData);
         if ($img) {
             switch ($mime) {

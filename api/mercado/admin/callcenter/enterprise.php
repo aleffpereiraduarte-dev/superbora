@@ -78,9 +78,9 @@ try {
                     ROUND(AVG(overall_score), 1) AS overall,
                     COUNT(*) AS total_scored
                 FROM om_ai_quality_scores
-                WHERE created_at >= NOW() - INTERVAL '{$interval}'
+                WHERE created_at >= NOW() - ?::interval
             ");
-            $dimensions->execute();
+            $dimensions->execute([$interval]);
             $dims = $dimensions->fetch();
 
             // Score distribution (buckets: 0-20, 21-40, 41-60, 61-80, 81-100)
@@ -92,9 +92,9 @@ try {
                     COUNT(*) FILTER (WHERE overall_score BETWEEN 61 AND 80) AS bucket_61_80,
                     COUNT(*) FILTER (WHERE overall_score BETWEEN 81 AND 100) AS bucket_81_100
                 FROM om_ai_quality_scores
-                WHERE created_at >= NOW() - INTERVAL '{$interval}'
+                WHERE created_at >= NOW() - ?::interval
             ");
-            $distStmt->execute();
+            $distStmt->execute([$interval]);
             $dist = $distStmt->fetch();
 
             // Flagged conversations
@@ -104,11 +104,11 @@ try {
                 FROM om_ai_quality_scores
                 WHERE flagged_for_review = TRUE
                   AND reviewed_by IS NULL
-                  AND created_at >= NOW() - INTERVAL '{$interval}'
+                  AND created_at >= NOW() - ?::interval
                 ORDER BY created_at DESC
                 LIMIT 20
             ");
-            $flaggedStmt->execute();
+            $flaggedStmt->execute([$interval]);
             $flagged = $flaggedStmt->fetchAll();
 
             foreach ($flagged as &$f) {
@@ -128,9 +128,9 @@ try {
                     COUNT(*) FILTER (WHERE conversion_result = 'transferred') AS transferred,
                     COUNT(*) FILTER (WHERE conversion_result = 'support_only') AS support_only
                 FROM om_ai_quality_scores
-                WHERE created_at >= NOW() - INTERVAL '{$interval}'
+                WHERE created_at >= NOW() - ?::interval
             ");
-            $funnelStmt->execute();
+            $funnelStmt->execute([$interval]);
             $funnel = $funnelStmt->fetch();
 
             // Daily trend
@@ -140,11 +140,11 @@ try {
                     ROUND(AVG(overall_score), 1) AS avg_score,
                     COUNT(*) AS count
                 FROM om_ai_quality_scores
-                WHERE created_at >= NOW() - INTERVAL '{$interval}'
+                WHERE created_at >= NOW() - ?::interval
                 GROUP BY created_at::date
                 ORDER BY date
             ");
-            $trendStmt->execute();
+            $trendStmt->execute([$interval]);
             $trend = $trendStmt->fetchAll();
 
             foreach ($trend as &$t) {
@@ -408,11 +408,11 @@ try {
                     COUNT(*) FILTER (WHERE resolved = TRUE) AS resolved_count,
                     COALESCE(AVG(actual_delay_minutes), 0)::int AS avg_delay_minutes
                 FROM om_proactive_alerts
-                WHERE created_at >= NOW() - INTERVAL '{$interval}'
+                WHERE created_at >= NOW() - ?::interval
                 GROUP BY alert_type, severity
                 ORDER BY count DESC
             ");
-            $byTypeStmt->execute();
+            $byTypeStmt->execute([$interval]);
             $byType = $byTypeStmt->fetchAll();
 
             foreach ($byType as &$t) {
@@ -432,9 +432,9 @@ try {
                     COUNT(*) FILTER (WHERE partner_notified = TRUE) AS partners_notified,
                     COALESCE(AVG(EXTRACT(EPOCH FROM (resolved_at - detected_at)) / 60) FILTER (WHERE resolved = TRUE), 0)::int AS avg_resolution_minutes
                 FROM om_proactive_alerts
-                WHERE created_at >= NOW() - INTERVAL '{$interval}'
+                WHERE created_at >= NOW() - ?::interval
             ");
-            $resolutionStmt->execute();
+            $resolutionStmt->execute([$interval]);
             $resolution = $resolutionStmt->fetch();
 
             // Compensations given
@@ -444,12 +444,12 @@ try {
                     COUNT(*) AS count,
                     COALESCE(SUM(compensation_value), 0) AS total_value
                 FROM om_proactive_alerts
-                WHERE created_at >= NOW() - INTERVAL '{$interval}'
+                WHERE created_at >= NOW() - ?::interval
                   AND compensation_type IS NOT NULL AND compensation_type != 'none'
                 GROUP BY compensation_type
                 ORDER BY total_value DESC
             ");
-            $compStmt->execute();
+            $compStmt->execute([$interval]);
             $compensations = $compStmt->fetchAll();
 
             foreach ($compensations as &$c) {
@@ -468,12 +468,12 @@ try {
                 FROM om_proactive_alerts pa
                 JOIN om_market_orders o ON o.order_id = pa.order_id
                 LEFT JOIN om_market_partners p ON p.partner_id = o.partner_id
-                WHERE pa.created_at >= NOW() - INTERVAL '{$interval}'
+                WHERE pa.created_at >= NOW() - ?::interval
                 GROUP BY o.partner_id, p.company
                 ORDER BY alert_count DESC
                 LIMIT 10
             ");
-            $worstStmt->execute();
+            $worstStmt->execute([$interval]);
             $worstPartners = $worstStmt->fetchAll();
 
             foreach ($worstPartners as &$wp) {
@@ -532,11 +532,11 @@ try {
             $eventStmt = $db->prepare("
                 SELECT event_type, action, COUNT(*) AS count
                 FROM om_audit_log
-                WHERE created_at >= NOW() - INTERVAL '{$interval}'
+                WHERE created_at >= NOW() - ?::interval
                 GROUP BY event_type, action
                 ORDER BY count DESC
             ");
-            $eventStmt->execute();
+            $eventStmt->execute([$interval]);
             $events = $eventStmt->fetchAll();
 
             foreach ($events as &$e) {
@@ -551,10 +551,10 @@ try {
                     COUNT(DISTINCT customer_id) AS unique_customers,
                     COUNT(DISTINCT actor_id) AS unique_actors
                 FROM om_audit_log
-                WHERE created_at >= NOW() - INTERVAL '{$interval}'
+                WHERE created_at >= NOW() - ?::interval
                   AND event_type = 'pii_access'
             ");
-            $piiStmt->execute();
+            $piiStmt->execute([$interval]);
             $pii = $piiStmt->fetch();
 
             // Deletion requests
@@ -563,10 +563,10 @@ try {
                     status,
                     COUNT(*) AS count
                 FROM om_data_deletion_requests
-                WHERE created_at >= NOW() - INTERVAL '{$interval}'
+                WHERE created_at >= NOW() - ?::interval
                 GROUP BY status
             ");
-            $delStmt->execute();
+            $delStmt->execute([$interval]);
             $deletions = $delStmt->fetchAll();
 
             $deletionMap = [];
@@ -599,11 +599,11 @@ try {
                 SELECT id, event_type, actor_type, actor_id, customer_phone,
                        entity_type, action, pii_fields_accessed, created_at
                 FROM om_audit_log
-                WHERE created_at >= NOW() - INTERVAL '{$interval}'
+                WHERE created_at >= NOW() - ?::interval
                 ORDER BY created_at DESC
                 LIMIT 50
             ");
-            $recentStmt->execute();
+            $recentStmt->execute([$interval]);
             $recentAudit = $recentStmt->fetchAll();
 
             foreach ($recentAudit as &$a) {
@@ -733,11 +733,11 @@ try {
                     COALESCE(AVG(response_time_ms), 0)::int AS avg_response_ms,
                     COALESCE(AVG(attempt_number), 0) AS avg_attempts
                 FROM om_ai_retry_log
-                WHERE created_at >= NOW() - INTERVAL '{$interval}'
+                WHERE created_at >= NOW() - ?::interval
                 GROUP BY error_type
                 ORDER BY total DESC
             ");
-            $errorStmt->execute();
+            $errorStmt->execute([$interval]);
             $errors = $errorStmt->fetchAll();
 
             foreach ($errors as &$e) {
@@ -759,12 +759,12 @@ try {
                     COUNT(*) AS count,
                     COUNT(*) FILTER (WHERE success = TRUE) AS success_count
                 FROM om_ai_retry_log
-                WHERE created_at >= NOW() - INTERVAL '{$interval}'
+                WHERE created_at >= NOW() - ?::interval
                   AND fallback_used IS NOT NULL
                 GROUP BY fallback_used
                 ORDER BY count DESC
             ");
-            $fallbackStmt->execute();
+            $fallbackStmt->execute([$interval]);
             $fallbacks = $fallbackStmt->fetchAll();
 
             foreach ($fallbacks as &$f) {
@@ -785,9 +785,9 @@ try {
                     COALESCE(AVG(response_time_ms), 0)::int AS avg_response_ms,
                     COALESCE(MAX(attempt_number), 0) AS max_attempts
                 FROM om_ai_retry_log
-                WHERE created_at >= NOW() - INTERVAL '{$interval}'
+                WHERE created_at >= NOW() - ?::interval
             ");
-            $totalStmt->execute();
+            $totalStmt->execute([$interval]);
             $totals = $totalStmt->fetch();
 
             // Hourly trend
@@ -797,11 +797,11 @@ try {
                     COUNT(*) AS total,
                     COUNT(*) FILTER (WHERE success = FALSE) AS failures
                 FROM om_ai_retry_log
-                WHERE created_at >= NOW() - INTERVAL '{$interval}'
+                WHERE created_at >= NOW() - ?::interval
                 GROUP BY date_trunc('hour', created_at)
                 ORDER BY hour
             ");
-            $hourlyStmt->execute();
+            $hourlyStmt->execute([$interval]);
             $hourly = $hourlyStmt->fetchAll();
 
             foreach ($hourly as &$h) {

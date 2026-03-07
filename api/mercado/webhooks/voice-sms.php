@@ -35,11 +35,11 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
 require_once __DIR__ . '/../helpers/twilio-sms.php';
 
-$phone = $_POST['phone'] ?? '';
-$orderNumber = $_POST['order_number'] ?? '';
-$storeName = $_POST['store_name'] ?? '';
-$items = $_POST['items'] ?? '';
-$total = $_POST['total'] ?? '0';
+$phone = preg_replace('/[^0-9+]/', '', $_POST['phone'] ?? '');
+$orderNumber = preg_replace('/[^a-zA-Z0-9\-_#]/', '', $_POST['order_number'] ?? '');
+$storeName = strip_tags($_POST['store_name'] ?? '');
+$items = strip_tags($_POST['items'] ?? '');
+$total = preg_replace('/[^0-9.,]/', '', $_POST['total'] ?? '0');
 
 if (empty($phone) || empty($orderNumber)) {
     http_response_code(400);
@@ -56,8 +56,8 @@ $smsBody = "SuperBora - Pedido Confirmado!\n\n"
 
 try {
     $result = sendSMS($phone, $smsBody);
-    echo json_encode(['success' => true, 'result' => $result]);
+    echo json_encode(['success' => true, 'result' => $result], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
 } catch (Exception $e) {
     error_log("[voice-sms] Failed: " . $e->getMessage());
-    echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    echo json_encode(['success' => false, 'error' => 'Failed to send SMS'], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
 }

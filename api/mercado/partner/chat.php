@@ -84,11 +84,11 @@ try {
             $messages = $stmt->fetchAll();
 
             // Build full URLs for attachments
-            $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-            $host = $_SERVER['HTTP_HOST'] ?? 'superbora.com.br';
+            // SECURITY: Use hardcoded host to prevent Host header injection
+            $host = 'superbora.com.br';
             foreach ($messages as &$msg) {
                 if (!empty($msg['attachment_url']) && !str_starts_with($msg['attachment_url'], 'http')) {
-                    $msg['attachment_url'] = $scheme . '://' . $host . $msg['attachment_url'];
+                    $msg['attachment_url'] = 'https://' . $host . $msg['attachment_url'];
                 }
             }
             unset($msg);
@@ -208,11 +208,10 @@ try {
         $msgId = $stmt->fetchColumn();
 
         // Build full URL for response
+        // SECURITY: Use hardcoded host to prevent Host header injection
         $fullAttachmentUrl = $attachmentUrl;
         if ($attachmentUrl && !str_starts_with($attachmentUrl, 'http')) {
-            $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-            $host = $_SERVER['HTTP_HOST'] ?? 'superbora.com.br';
-            $fullAttachmentUrl = $scheme . '://' . $host . $attachmentUrl;
+            $fullAttachmentUrl = 'https://superbora.com.br' . $attachmentUrl;
         }
 
         // Gravar tambem em om_order_chat (tabela unificada usada pelo app BoraUm)

@@ -173,10 +173,12 @@ try {
     $productDiscounts = [];
 
     if (!empty($productIds)) {
-        // Buscar categorias dos produtos
-        $ph = implode(',', array_fill(0, count($productIds), '?'));
-        $stmt = $db->prepare("SELECT product_id, category_id FROM om_market_products WHERE product_id IN ($ph)");
-        $stmt->execute($productIds);
+        // Buscar categorias dos produtos (IDs already cast to int via intval)
+        $inPlaceholders = implode(',', array_fill(0, count($productIds), '?'));
+        $stmt = $db->prepare(
+            "SELECT product_id, category_id FROM om_market_products WHERE product_id IN (" . $inPlaceholders . ")"
+        );
+        $stmt->execute(array_values($productIds));
         $productCategories = [];
         foreach ($stmt->fetchAll() as $p) {
             $productCategories[(int)$p['product_id']] = (int)$p['category_id'];

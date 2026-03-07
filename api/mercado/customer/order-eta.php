@@ -13,8 +13,7 @@ try {
     $db = getDB();
     OmAuth::getInstance()->setDb($db);
 
-    $payload = requireCustomerAuth();
-    $customerId = (int)$payload['uid'];
+    $customerId = requireCustomerAuth();
 
     $orderId = (int)($_GET['order_id'] ?? 0);
     if (!$orderId) response(false, null, "order_id obrigatorio", 400);

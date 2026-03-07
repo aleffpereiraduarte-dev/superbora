@@ -39,7 +39,12 @@ try {
                 response(false, null, "CEP invalido. Informe 8 digitos.", 400);
             }
 
-            $url = "https://viacep.com.br/ws/{$cep}/json/";
+            // SECURITY: Double-check CEP is strictly digits before external request
+            if (!preg_match('/^\d{8}$/', $cep)) {
+                response(false, null, "CEP invalido.", 400);
+            }
+
+            $url = "https://viacep.com.br/ws/" . urlencode($cep) . "/json/";
             $ctx = stream_context_create([
                 'http' => [
                     'timeout' => 5,

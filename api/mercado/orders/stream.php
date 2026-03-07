@@ -103,7 +103,7 @@ try {
 $orderId = isset($_GET['order_id']) ? (int)$_GET['order_id'] : null;
 
 // Send initial connection event
-echo "event: connected\ndata: {\"status\":\"connected\",\"customer_id\":{$customerId}}\n\n";
+echo "event: connected\ndata: " . json_encode(["status" => "connected", "customer_id" => $customerId], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . "\n\n";
 flush();
 
 $lastCheck = date('Y-m-d H:i:s', time() - 5); // Start 5 seconds in the past
@@ -154,9 +154,9 @@ while (true) {
                 'driver_phone' => $order['driver_phone'] ?? null,
                 'driver_photo' => $order['driver_photo'] ?? null,
                 'updated_at' => $order['last_modified'],
-            ], JSON_UNESCAPED_UNICODE);
+            ], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
 
-            echo "event: order_update\ndata: {$eventData}\n\n";
+            echo "event: order_update\ndata: " . $eventData . "\n\n";
 
             // If order is in delivery, try to fetch shopper location
             if (in_array($order['status'], ['saiu_entrega', 'em_entrega'])) {
@@ -194,9 +194,9 @@ while (true) {
                             'lng' => (float)$location['longitude'],
                             'eta_minutes' => $etaMinutes,
                             'location_updated_at' => $location['updated_at'],
-                        ]);
+                        ], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
 
-                        echo "event: location_update\ndata: {$locData}\n\n";
+                        echo "event: location_update\ndata: " . $locData . "\n\n";
                     }
                 } catch (Exception $e) {
                     // Location tables may not exist, skip silently

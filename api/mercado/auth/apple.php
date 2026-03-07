@@ -144,10 +144,12 @@ try {
         $searchEmails[] = $appleEmail;
     }
 
-    $placeholders = implode(',', array_fill(0, count($searchEmails), '?'));
-    $stmt = $db->prepare("SELECT customer_id, name, email, phone FROM om_customers
-        WHERE email IN ($placeholders) LIMIT 1");
-    $stmt->execute($searchEmails);
+    $inPlaceholders = implode(',', array_fill(0, count($searchEmails), '?'));
+    $stmt = $db->prepare(
+        "SELECT customer_id, name, email, phone FROM om_customers
+        WHERE email IN (" . $inPlaceholders . ") LIMIT 1"
+    );
+    $stmt->execute(array_values($searchEmails));
     $existing = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if ($existing) {

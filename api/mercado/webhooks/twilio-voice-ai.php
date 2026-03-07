@@ -249,7 +249,14 @@ try {
         ]);
         echo '<?xml version="1.0" encoding="UTF-8"?>';
         echo '<Response>';
-        echo $safeguards['twiml'] ?: buildTwilioSay('Desculpe, não foi possível processar sua ligação.');
+        // $safeguards['twiml'] is pre-built TwiML from buildTwilioSay() which already escapes text content.
+        // Validate it looks like a valid TwiML tag before outputting; otherwise use safe fallback.
+        $safeTwiml = $safeguards['twiml'] ?? '';
+        if ($safeTwiml !== '' && strpos($safeTwiml, '<') === 0) {
+            echo $safeTwiml;
+        } else {
+            echo buildTwilioSay('Desculpe, não foi possível processar sua ligação.');
+        }
         echo '<Hangup/>';
         echo '</Response>';
         exit;

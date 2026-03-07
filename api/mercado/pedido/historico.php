@@ -14,11 +14,15 @@ try {
     $limite = min(50, max(1, (int)($_GET["limite"] ?? 20)));
     $offset = ($pagina - 1) * $limite;
 
-    // Optional status filter (comma-separated)
+    // Optional status filter (comma-separated) — whitelist valid values
     $statusFilter = trim($_GET["status"] ?? '');
+    $allowedStatuses = ['pendente','confirmado','preparando','pronto','saiu_entrega','entregue','cancelado','recusado','aguardando_pagamento'];
     $statusList = [];
     if ($statusFilter) {
-        $statusList = array_filter(array_map('trim', explode(',', $statusFilter)));
+        $statusList = array_values(array_intersect(
+            array_filter(array_map('trim', explode(',', $statusFilter))),
+            $allowedStatuses
+        ));
     }
 
     $cacheKey = "historico_pedidos_{$customer_id}_{$pagina}_{$limite}" . ($statusFilter ? "_st_" . md5($statusFilter) : "");
@@ -26,17 +30,16 @@ try {
     $data = CacheHelper::remember($cacheKey, 30, function() use ($customer_id, $pagina, $limite, $offset, $statusList) {
         $db = getDB();
 
-        // Build WHERE clause with optional status filter
-        $where = "o.customer_id = ?";
+        // Build WHERE clause with optional status filter (parameterized)
         $params = [$customer_id];
+        $statusClause = '';
         if (!empty($statusList)) {
-            $placeholders = implode(',', array_fill(0, count($statusList), '?'));
-            $where .= " AND o.status IN ($placeholders)";
+            $statusClause = ' AND o.status IN (' . implode(',', array_fill(0, count($statusList), '?')) . ')';
             $params = array_merge($params, $statusList);
         }
 
         // Count total for pagination metadata
-        $stmtCount = $db->prepare("SELECT COUNT(*) FROM om_market_orders o WHERE $where");
+        $stmtCount = $db->prepare("SELECT COUNT(*) FROM om_market_orders o WHERE o.customer_id = ?" . $statusClause);
         $stmtCount->execute($params);
         $total = (int)$stmtCount->fetchColumn();
 
@@ -49,24 +52,24 @@ try {
                     p.name as parceiro_nome, p.logo
                 FROM om_market_orders o
                 LEFT JOIN om_market_partners p ON o.partner_id = p.partner_id
-                WHERE $where
+                WHERE o.customer_id = ?" . $statusClause . "
                 ORDER BY o.date_added DESC
                 LIMIT ? OFFSET ?");
         $stmt->execute(array_merge($params, [$limite, $offset]));
         $pedidos = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        // Buscar itens de todos os pedidos retornados
+        // Buscar itens de todos os pedidos retornados (IDs are from DB, not user input)
         $orderIds = array_column($pedidos, 'order_id');
         $itemsByOrder = [];
         if (!empty($orderIds)) {
-            $placeholders = implode(',', array_fill(0, count($orderIds), '?'));
-            $stmtItems = $db->prepare("
-                SELECT order_id, product_id, product_name, quantity, price, product_image, unit
+            $inPlaceholders = implode(',', array_fill(0, count($orderIds), '?'));
+            $stmtItems = $db->prepare(
+                "SELECT order_id, product_id, product_name, quantity, price, product_image, unit
                 FROM om_market_order_items
-                WHERE order_id IN ($placeholders)
-                ORDER BY id ASC
-            ");
-            $stmtItems->execute($orderIds);
+                WHERE order_id IN (" . $inPlaceholders . ")
+                ORDER BY id ASC"
+            );
+            $stmtItems->execute(array_values($orderIds));
             $allItems = $stmtItems->fetchAll(PDO::FETCH_ASSOC);
 
             foreach ($allItems as $item) {

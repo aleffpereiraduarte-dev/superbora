@@ -32,20 +32,23 @@ try {
     $limit = min(50, max(1, (int)($_GET['limit'] ?? 10)));
     $page = max(1, (int)($_GET['page'] ?? 1));
     $offset = ($page - 1) * $limit;
-    $status = preg_replace('/[^a-z_,]/', '', $_GET['status'] ?? '');
+    $statusRaw = preg_replace('/[^a-z_,]/', '', $_GET['status'] ?? '');
 
-    $where = "o.customer_id = ?";
+    // Whitelist allowed status values
+    $allowedStatuses = ['pendente','confirmado','preparando','pronto','saiu_entrega','entregue','cancelado','recusado','aguardando_pagamento'];
     $params = [$customerId];
+    $statusClause = '';
 
-    if (!empty($status)) {
-        $statuses = explode(',', $status);
-        $placeholders = implode(',', array_fill(0, count($statuses), '?'));
-        $where .= " AND o.status IN ($placeholders)";
-        $params = array_merge($params, $statuses);
+    if (!empty($statusRaw)) {
+        $statuses = array_values(array_intersect(explode(',', $statusRaw), $allowedStatuses));
+        if (!empty($statuses)) {
+            $statusClause = ' AND o.status IN (' . implode(',', array_fill(0, count($statuses), '?')) . ')';
+            $params = array_merge($params, $statuses);
+        }
     }
 
     // Count total
-    $stmtCount = $db->prepare("SELECT COUNT(*) FROM om_market_orders o WHERE $where");
+    $stmtCount = $db->prepare("SELECT COUNT(*) FROM om_market_orders o WHERE o.customer_id = ?" . $statusClause);
     $stmtCount->execute($params);
     $total = (int)$stmtCount->fetchColumn();
 
@@ -59,7 +62,7 @@ try {
                p.trade_name, p.logo as partner_logo, p.categoria as partner_category
         FROM om_market_orders o
         LEFT JOIN om_market_partners p ON o.partner_id = p.partner_id
-        WHERE $where
+        WHERE o.customer_id = ?" . $statusClause . "
         ORDER BY o.date_added DESC
         LIMIT ? OFFSET ?
     ");

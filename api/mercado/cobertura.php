@@ -22,13 +22,14 @@ if (!$cep && (!$lat || !$lng)) {
 try {
     // Se informou CEP, buscar coordenadas via ViaCEP
     $endereco = null;
-    if ($cep && strlen($cep) == 8) {
-        $cache_file = "/tmp/viacep_$cep.json";
+    // SECURITY: Strict validation — CEP must be exactly 8 digits before filesystem/network use
+    if ($cep && preg_match('/^\d{8}$/', $cep)) {
+        $cache_file = "/tmp/viacep_" . $cep . ".json";
 
         if (file_exists($cache_file) && filemtime($cache_file) > time() - 86400) {
             $endereco = json_decode(file_get_contents($cache_file), true);
         } else {
-            $via_cep = @file_get_contents("https://viacep.com.br/ws/$cep/json/");
+            $via_cep = @file_get_contents("https://viacep.com.br/ws/" . urlencode($cep) . "/json/");
             if ($via_cep) {
                 $endereco = json_decode($via_cep, true);
                 if (!isset($endereco['erro'])) {
@@ -113,7 +114,7 @@ try {
             'endereco' => $endereco,
             'mensagem' => 'Ainda não atendemos sua região. Deixe seu email para ser avisado!',
             'mercados' => []
-        ]);
+        ], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
         exit;
     }
 
@@ -163,7 +164,7 @@ try {
         'endereco' => $endereco,
         'total' => count($mercados_formatados),
         'mercados' => $mercados_formatados
-    ], JSON_UNESCAPED_UNICODE);
+    ], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
 
 } catch (PDOException $e) {
     error_log("API cobertura: " . $e->getMessage());

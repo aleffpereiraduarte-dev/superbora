@@ -250,7 +250,7 @@ body.flash-red { background: #dc2626 !important; }
 
 <script>
 const CAMPAIGN_ID = <?= (int)$campaignId ?>;
-const PIN = <?= json_encode($pin, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG) ?>;
+const PIN = <?= json_encode($pin, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
 const DATA_URL = `admin-qr-data.php?id=${CAMPAIGN_ID}&pin=${PIN}`;
 
 let qrInstance = null;

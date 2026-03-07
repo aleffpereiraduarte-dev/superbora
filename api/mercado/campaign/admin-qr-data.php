@@ -77,7 +77,7 @@ try {
         'recent_redemptions' => $recent,
         'rotation_seconds' => (int)($campaign['qr_rotation_seconds'] ?: 30),
         'timestamp' => $timestamp,
-    ]);
+    ], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
 
 } catch (Exception $e) {
     error_log("[admin-qr-data] Erro: " . $e->getMessage());

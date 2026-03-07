@@ -12,7 +12,8 @@
  */
 
 // Load environment variables if not already loaded
-$envPath = $_SERVER['DOCUMENT_ROOT'] . '/.env';
+// SECURITY: Use __DIR__ relative path instead of DOCUMENT_ROOT to prevent path manipulation
+$envPath = dirname(__DIR__, 3) . '/.env';
 if (!isset($_ENV['ZAPI_INSTANCE_ID']) && file_exists($envPath)) {
     $envFile = file($envPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     foreach ($envFile as $line) {

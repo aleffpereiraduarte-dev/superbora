@@ -33,6 +33,13 @@ class RedisService {
             $host = $_ENV['REDIS_HOST'] ?? '127.0.0.1';
             $port = (int)($_ENV['REDIS_PORT'] ?? 6379);
 
+            // SECURITY: Validate Redis host is a valid IP or hostname (not a URL or injection)
+            if (!filter_var($host, FILTER_VALIDATE_IP) && !preg_match('/^[a-zA-Z0-9._-]+$/', $host)) {
+                error_log("[Redis] Invalid REDIS_HOST value: " . substr($host, 0, 50));
+                $this->available = false;
+                return;
+            }
+
             // Connect with timeout
             $this->redis->connect($host, $port, 2.0);
 
@@ -73,6 +80,13 @@ class RedisService {
             $raw = new Redis();
             $host = $_ENV['REDIS_HOST'] ?? '127.0.0.1';
             $port = (int)($_ENV['REDIS_PORT'] ?? 6379);
+
+            // SECURITY: Validate Redis host is a valid IP or hostname
+            if (!filter_var($host, FILTER_VALIDATE_IP) && !preg_match('/^[a-zA-Z0-9._-]+$/', $host)) {
+                error_log("[Redis] Invalid REDIS_HOST value in getRawConnection");
+                return null;
+            }
+
             $raw->connect($host, $port, 2.0);
             $password = $_ENV["REDIS_PASSWORD"] ?? getenv("REDIS_PASSWORD") ?: "Aleff2009@Redis";
             if (!empty($password)) { $raw->auth($password); }

@@ -83,22 +83,22 @@ function validarCNPJChecksum(string $cnpj): bool {
     $soma = 0;
     $pos = $tamanho - 7;
     for ($i = $tamanho; $i >= 1; $i--) {
-        $soma += $numeros[$tamanho - $i] * $pos--;
+        $soma += (int)$numeros[$tamanho - $i] * $pos--;
         if ($pos < 2) $pos = 9;
     }
     $resultado = $soma % 11 < 2 ? 0 : 11 - $soma % 11;
-    if ($resultado != $digitos[0]) return false;
+    if ($resultado != (int)$digitos[0]) return false;
 
     $tamanho++;
     $numeros = substr($cnpj, 0, $tamanho);
     $soma = 0;
     $pos = $tamanho - 7;
     for ($i = $tamanho; $i >= 1; $i--) {
-        $soma += $numeros[$tamanho - $i] * $pos--;
+        $soma += (int)$numeros[$tamanho - $i] * $pos--;
         if ($pos < 2) $pos = 9;
     }
     $resultado = $soma % 11 < 2 ? 0 : 11 - $soma % 11;
-    if ($resultado != $digitos[1]) return false;
+    if ($resultado != (int)$digitos[1]) return false;
 
     return true;
 }

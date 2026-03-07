@@ -36,34 +36,35 @@ try {
     $data = CacheHelper::remember($cacheKey, 300, function() use ($partner_id, $category_id, $busca, $pagina, $limite, $offset, $orderBy) {
         $db = getDB();
 
-        $where = ["p.status::text = '1'", "(p.available::text = '1' OR p.available IS NULL)"];
+        // Build conditions array — only literal SQL with ? placeholders
+        $conditions = ["p.status::text = '1'", "(p.available::text = '1' OR p.available IS NULL)"];
         $params = [];
 
         if ($partner_id) {
-            $where[] = "p.partner_id = ?";
+            $conditions[] = "p.partner_id = ?";
             $params[] = $partner_id;
         }
         if ($category_id) {
-            $where[] = "p.category_id = ?";
+            $conditions[] = "p.category_id = ?";
             $params[] = $category_id;
         }
         if ($busca) {
             $buscaEscaped = str_replace(['%', '_'], ['\\%', '\\_'], $busca);
-            $where[] = "(p.name ILIKE ? OR p.description ILIKE ?)";
+            $conditions[] = "(p.name ILIKE ? OR p.description ILIKE ?)";
             $params[] = "%{$buscaEscaped}%";
             $params[] = "%{$buscaEscaped}%";
         }
 
-        $whereSQL = implode(" AND ", $where);
-
-        // Query com LIMIT/OFFSET interpolados (valores já são int, seguro)
+        // $orderBy is from a whitelist — safe to interpolate
+        // Build full SQL with parameterized WHERE and whitelisted ORDER BY
+        $whereClause = implode(" AND ", $conditions);
         $sql = "SELECT p.id, p.product_id, p.name, p.description, p.price, p.special_price,
                        p.image, p.unit, p.quantity, p.category_id, p.available, p.partner_id,
                        c.name as categoria_nome
                 FROM om_market_products p
                 LEFT JOIN om_market_categories c ON p.category_id = c.category_id
-                WHERE $whereSQL
-                ORDER BY $orderBy
+                WHERE " . $whereClause . "
+                ORDER BY " . $orderBy . "
                 LIMIT ? OFFSET ?";
 
         $stmt = $db->prepare($sql);
@@ -71,26 +72,26 @@ try {
         $produtos = $stmt->fetchAll();
 
         // Count total
-        $countStmt = $db->prepare("SELECT COUNT(*) FROM om_market_products p WHERE $whereSQL");
+        $countStmt = $db->prepare("SELECT COUNT(*) FROM om_market_products p WHERE " . $whereClause);
         $countStmt->execute($params);
         $total = $countStmt->fetchColumn();
 
-        // Buscar opcoes para cada produto
+        // Buscar opcoes para cada produto (IDs from DB, not user input)
         $productIds = array_map(function($p) {
             return $p["product_id"] ?? $p["id"];
         }, $produtos);
 
         $optionGroups = [];
         if (!empty($productIds)) {
-            $placeholders = implode(',', array_fill(0, count($productIds), '?'));
-            $stmtGroups = $db->prepare("
-                SELECT g.*, o.id as option_id, o.name as option_name, o.price_extra, o.available as option_available, o.sort_order as option_sort
+            $inPlaceholders = implode(',', array_fill(0, count($productIds), '?'));
+            $stmtGroups = $db->prepare(
+                "SELECT g.*, o.id as option_id, o.name as option_name, o.price_extra, o.available as option_available, o.sort_order as option_sort
                 FROM om_product_option_groups g
                 LEFT JOIN om_product_options o ON g.id = o.group_id
-                WHERE g.product_id IN ($placeholders) AND g.active = 1
-                ORDER BY g.sort_order, g.id, o.sort_order, o.id
-            ");
-            $stmtGroups->execute($productIds);
+                WHERE g.product_id IN (" . $inPlaceholders . ") AND g.active = 1
+                ORDER BY g.sort_order, g.id, o.sort_order, o.id"
+            );
+            $stmtGroups->execute(array_values($productIds));
             $rows = $stmtGroups->fetchAll();
 
             foreach ($rows as $row) {

@@ -112,10 +112,11 @@ try {
                 CASE WHEN name LIKE ? THEN 0 ELSE 1 END,
                 ai_confidence DESC,
                 name ASC
-            LIMIT $limit
+            LIMIT ?
         ";
 
         $params[] = "$query%"; // Prioridade para match no início
+        $params[] = $limit;
 
         $stmt = $db->prepare($sql);
         $stmt->execute($params);

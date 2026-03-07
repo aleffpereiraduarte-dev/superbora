@@ -104,9 +104,9 @@ try {
         LEFT JOIN om_customers om ON r.customer_id = om.customer_id
         WHERE r.partner_id = ?
         ORDER BY {$orderBy}
-        LIMIT " . (int)$limit . " OFFSET " . (int)$offset . "
+        LIMIT ? OFFSET ?
     ");
-    $stmtReviews->execute([$partnerId]);
+    $stmtReviews->execute([$partnerId, $limit, $offset]);
     $reviewsRaw = $stmtReviews->fetchAll();
 
     // Get review IDs and order IDs for photo lookup

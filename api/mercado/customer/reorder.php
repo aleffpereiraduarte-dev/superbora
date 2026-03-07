@@ -15,8 +15,7 @@ try {
     $db = getDB();
     OmAuth::getInstance()->setDb($db);
 
-    $payload = requireCustomerAuth();
-    $customerId = (int)$payload['uid'];
+    $customerId = requireCustomerAuth();
 
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
         response(false, null, "Metodo nao permitido", 405);

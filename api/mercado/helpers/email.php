@@ -17,6 +17,13 @@
  * @return bool
  */
 function sendEmail(string $to, string $subject, string $htmlBody, ?PDO $db = null, ?int $customerId = null, string $template = 'generic'): bool {
+    // SECURITY: Validate email address to prevent command injection via proc_open args
+    if (!filter_var($to, FILTER_VALIDATE_EMAIL)) {
+        error_log("[Email] Invalid recipient address: " . substr($to, 0, 100));
+        _logEmail($db, $customerId, $to, $template, $subject, 'failed', ['error' => 'invalid email address']);
+        return false;
+    }
+
     $from = 'contato@superbora.com.br';
     $fromName = 'SuperBora';
 

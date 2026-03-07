@@ -95,10 +95,12 @@ try {
 
     if ($format === 'csv') {
         header('Content-Type: text/csv; charset=utf-8');
-        // SECURITY: Sanitize date values to prevent CRLF header injection
+        // SECURITY: Sanitize all filename components to prevent header injection
         $safeDateFrom = preg_match('/^\d{4}-\d{2}-\d{2}$/', $date_from) ? $date_from : 'unknown';
         $safeDateTo = preg_match('/^\d{4}-\d{2}-\d{2}$/', $date_to) ? $date_to : 'unknown';
-        header("Content-Disposition: attachment; filename={$type}_{$safeDateFrom}_{$safeDateTo}.csv");
+        $safeType = preg_replace('/[^a-zA-Z0-9_-]/', '', $type);
+        $filename = "{$safeType}_{$safeDateFrom}_{$safeDateTo}.csv";
+        header('Content-Disposition: attachment; filename="' . $filename . '"');
 
         if (!empty($data)) {
             $output = fopen('php://output', 'w');

@@ -130,6 +130,8 @@ try {
             $searchTerm = "%{$q}%";
             $params = array_merge([$searchTerm, $searchTerm], $partnerParams);
 
+            $params[] = $limit;
+
             $sql = "SELECT p.product_id, p.name, p.description, p.price, p.special_price,
                            p.image, p.unit, p.quantity, p.partner_id,
                            m.name as parceiro_nome, m.logo as parceiro_logo,
@@ -141,7 +143,7 @@ try {
                       AND (LOWER(p.name) LIKE LOWER(?) OR LOWER(p.description) LIKE LOWER(?))
                       {$partnerFilter}
                     ORDER BY m.is_open DESC, m.rating DESC, p.name ASC
-                    LIMIT {$limit}";
+                    LIMIT ?";
 
             $stmt = $db->prepare($sql);
             $stmt->execute($params);
