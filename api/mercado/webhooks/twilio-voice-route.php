@@ -429,86 +429,96 @@ try {
         $storeStmt->execute(['%' . $speechLower . '%']);
         $store = $storeStmt->fetch();
 
-        // Strategy 2: Multi-signal fuzzy match (phonetic + prefix + levenshtein + common misspellings)
+        // Strategy 2: Advanced multi-signal fuzzy match (4-strategy scoring)
         if (!$store) {
             $allStoresForMatch = $db->query("SELECT partner_id, name FROM om_market_partners WHERE status = '1' AND name != '' LIMIT 50")->fetchAll();
-            $speechWords = preg_split('/\s+/', $speechLower);
             $bestMatch = null;
             $bestScore = 0;
+            $inputPhonetic = routePhoneticNormalize($speechLower);
 
-            // Brazilian Portuguese common phonetic substitutions for STT errors
-            $phoneticNorm = function(string $word): string {
-                $word = mb_strtolower($word, 'UTF-8');
-                // Normalize accents
-                $word = strtr($word, 'áàãâéèêíìóòõôúùûç', 'aaaaeeeiiooooouuuc');
-                // Common PT-BR phonetic equivalences
-                $word = str_replace(['ph', 'ck', 'ss', 'sh', 'ch', 'th', 'rr', 'll', 'nn', 'tt', 'pp', 'bb', 'dd', 'ff', 'gg', 'cc', 'mm', 'zz'],
-                                    ['f',  'k',  's',  'x',  'x',  't',  'r',  'l',  'n',  't',  'p',  'b',  'd',  'f',  'g',  'k',  'm',  'z'], $word);
-                // STT common confusions: c/s/z before e/i, g/j before e/i, x/ch/sh
-                $word = preg_replace('/[sz](?=[ei])/', 'c', $word);
-                // Remove trailing vowels for stem matching (helps with -aria/-eria/-eria)
-                if (mb_strlen($word) > 4) {
-                    $word = preg_replace('/(aria|eria|oria|eiro|eira)$/', '', $word) ?: $word;
-                }
-                return $word;
-            };
-
-            // Common STT store-name mangling corrections
-            $speechNorm = str_replace(
-                ['a ', 'o ', 'do ', 'da ', 'de ', 'na ', 'no ', 'la ', 'lo '],
-                ['', '', '', '', '', '', '', '', ''],
-                $speechLower
-            );
-
-            foreach ($allStoresForMatch as $s) {
-                $storeLower = mb_strtolower($s['name'], 'UTF-8');
-                $storeWords = preg_split('/\s+/', $storeLower);
+            foreach ($allStoresForMatch as $cs) {
+                $csLower = mb_strtolower(trim($cs['name']), 'UTF-8');
                 $score = 0;
 
-                // Quick check: normalized full-string containment (strips articles)
-                $storeNorm = str_replace(
-                    ['a ', 'o ', 'do ', 'da ', 'de ', 'na ', 'no ', 'la ', 'lo '],
-                    ['', '', '', '', '', '', '', '', ''],
-                    $storeLower
-                );
-                if (!empty($speechNorm) && mb_strlen($speechNorm) >= 4) {
-                    if (mb_strpos($storeNorm, $speechNorm) !== false || mb_strpos($speechNorm, $storeNorm) !== false) {
-                        $score += 6; // Very strong match after article removal
+                // Strategy A: Exact substring after stripping articles (score=100)
+                $articles = ['a ', 'o ', 'do ', 'da ', 'de ', 'na ', 'no ', 'la ', 'lo ', 'as ', 'os '];
+                $speechStripped = $speechLower;
+                $csStripped = $csLower;
+                foreach ($articles as $art) {
+                    $speechStripped = str_replace($art, '', $speechStripped);
+                    $csStripped = str_replace($art, '', $csStripped);
+                }
+                if (!empty($speechStripped) && mb_strlen($speechStripped) >= 3) {
+                    if (mb_strpos($csStripped, $speechStripped) !== false || mb_strpos($speechStripped, $csStripped) !== false) {
+                        $score = 100;
                     }
                 }
 
-                foreach ($speechWords as $sw) {
-                    if (mb_strlen($sw) < 3) continue;
-                    foreach ($storeWords as $stw) {
-                        if (mb_strlen($stw) < 3) continue;
-                        // Exact word match
-                        if ($sw === $stw) { $score += 4; continue 2; }
-                        // Phonetic match (normalized)
-                        $swPhon = $phoneticNorm($sw);
-                        $stwPhon = $phoneticNorm($stw);
-                        if ($swPhon === $stwPhon && mb_strlen($swPhon) >= 3) { $score += 3; continue 2; }
-                        // Word starts with same 3+ chars
-                        $prefix = mb_substr($sw, 0, 3);
-                        if (mb_strpos($stw, $prefix) === 0 || mb_strpos($sw, mb_substr($stw, 0, 3)) === 0) {
-                            $score += 2;
-                            continue 2;
+                // Strategy B: Phonetic word match (up to 80)
+                if ($score < 80) {
+                    $csPhonetic = routePhoneticNormalize($csLower);
+                    // Full phonetic containment
+                    if (!empty($inputPhonetic) && mb_strlen($inputPhonetic) >= 3 && !empty($csPhonetic)) {
+                        if (mb_strpos($csPhonetic, $inputPhonetic) !== false || mb_strpos($inputPhonetic, $csPhonetic) !== false) {
+                            $score = max($score, 85);
                         }
-                        // Metaphone match (English-biased but still useful)
-                        if (mb_strlen($sw) >= 4 && mb_strlen($stw) >= 4 && metaphone($sw) === metaphone($stw)) {
-                            $score += 2;
-                            continue 2;
+                    }
+                    // Word-by-word phonetic
+                    $inputWords = array_filter(preg_split('/\s+/', $speechLower), fn($w) => mb_strlen($w) >= 3);
+                    $csWords = array_filter(preg_split('/\s+/', $csLower), fn($w) => mb_strlen($w) >= 3);
+                    if (!empty($csWords)) {
+                        $matchedWords = 0;
+                        foreach ($inputWords as $iw) {
+                            $iwPhon = routePhoneticNormalize($iw);
+                            foreach ($csWords as $cw) {
+                                $cwPhon = routePhoneticNormalize($cw);
+                                if ($iw === $cw) { $matchedWords++; break; }
+                                if (!empty($iwPhon) && $iwPhon === $cwPhon && mb_strlen($iwPhon) >= 3) { $matchedWords++; break; }
+                                // Prefix match (3+ chars)
+                                if (mb_strlen($iw) >= 3 && mb_strlen($cw) >= 3) {
+                                    $prefix = mb_substr($iw, 0, 3);
+                                    if (mb_strpos($cw, $prefix) === 0) { $matchedWords += 0.7; break; }
+                                }
+                            }
                         }
-                        // Levenshtein for words > 4 chars (allow up to 2 edits)
-                        if (mb_strlen($sw) > 4 && mb_strlen($stw) > 4) {
-                            $lev = levenshtein($sw, $stw);
-                            if ($lev <= 2) { $score += 2; continue 2; }
+                        $wordMatchRatio = count($inputWords) > 0 ? $matchedWords / count($inputWords) : 0;
+                        if ($wordMatchRatio >= 0.5 && $matchedWords >= 1) {
+                            $score = max($score, (int)(80 * $wordMatchRatio));
                         }
                     }
                 }
 
-                if ($score > $bestScore && $score >= 3) {
+                // Strategy C: Levenshtein on full name (up to 70)
+                if ($score < 60 && mb_strlen($speechLower) >= 4 && mb_strlen($csLower) >= 4) {
+                    $maxLen = max(mb_strlen($speechLower), mb_strlen($csLower));
+                    $lev = levenshtein($speechLower, $csLower);
+                    $sim = 1 - ($lev / $maxLen);
+                    if ($sim >= 0.5) {
+                        $score = max($score, (int)(70 * $sim));
+                    }
+                }
+
+                // Strategy D: Word-by-word levenshtein (50-60)
+                if ($score < 50) {
+                    $inputWords = array_filter(preg_split('/\s+/', $speechLower), fn($w) => mb_strlen($w) >= 3);
+                    $csWords = array_filter(preg_split('/\s+/', $csLower), fn($w) => mb_strlen($w) >= 3);
+                    foreach ($inputWords as $iw) {
+                        foreach ($csWords as $cw) {
+                            if (mb_strlen($iw) > 4 && mb_strlen($cw) > 4) {
+                                $wLev = levenshtein($iw, $cw);
+                                if ($wLev <= 2) { $score = max($score, 55); break 2; }
+                            }
+                            if (mb_strlen($iw) >= 4 && mb_strlen($cw) >= 4 && metaphone($iw) === metaphone($cw)) {
+                                $score = max($score, 50);
+                                break 2;
+                            }
+                        }
+                    }
+                }
+
+                if ($score > $bestScore && $score >= 40) {
                     $bestScore = $score;
-                    $bestMatch = $s;
+                    $bestMatch = $cs;
                 }
             }
 
@@ -791,4 +801,38 @@ try {
     echo '</Gather>';
     echo '<Redirect method="POST">' . $aiUrlFbEsc . '</Redirect>';
     echo '</Response>';
+}
+
+/**
+ * Brazilian Portuguese phonetic normalization for fuzzy store name matching.
+ * Handles STT distortions, double consonants, silent letters, and common equivalences.
+ */
+function routePhoneticNormalize(string $text): string {
+    $text = mb_strtolower(trim($text), 'UTF-8');
+    // Remove accents
+    $text = strtr($text, [
+        'á'=>'a','à'=>'a','ã'=>'a','â'=>'a','é'=>'e','è'=>'e','ê'=>'e',
+        'í'=>'i','ì'=>'i','ó'=>'o','ò'=>'o','õ'=>'o','ô'=>'o',
+        'ú'=>'u','ù'=>'u','û'=>'u','ç'=>'s','ñ'=>'n',
+    ]);
+    // Common PT-BR phonetic reductions
+    $text = str_replace(
+        ['ph','th','sh','ch','lh','nh','rr','ss','qu','gu','ck','sc','xc'],
+        ['f', 't', 'x', 'x', 'li','ni','r', 's', 'k', 'g', 'k','s', 's'],
+        $text
+    );
+    // Double consonants → single (pizza→piza, bella→bela, mamma→mama)
+    $text = preg_replace('/([bcdfgjklmnpqrstvwxyz])\1+/', '$1', $text);
+    // Silent H at start
+    $text = preg_replace('/^h/', '', $text);
+    $text = str_replace(' h', ' ', $text);
+    // C before e/i → s
+    $text = preg_replace('/c(?=[ei])/', 's', $text);
+    // G before e/i → j
+    $text = preg_replace('/g(?=[ei])/', 'j', $text);
+    // W → v, Y → i, K → k (already)
+    $text = strtr($text, ['w'=>'v', 'y'=>'i']);
+    // Clean up
+    $text = preg_replace('/\s+/', ' ', trim($text));
+    return $text;
 }
