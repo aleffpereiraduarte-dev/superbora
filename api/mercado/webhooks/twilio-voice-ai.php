@@ -705,7 +705,13 @@ try {
         }
 
         // 8-swap. Inline item swap: "troca a coca por guaraná" / "em vez de X quero Y"
-        if ($step === 'take_order' && !empty($aiContext['items']) && !empty($menuText)) {
+        // Note: $menuText is loaded later in main flow; fetch it early if needed for swap
+        $swapMenuText = '';
+        $swapStoreId = $aiContext['store_id'] ?? null;
+        if ($step === 'take_order' && !empty($aiContext['items']) && $swapStoreId) {
+            try { $swapMenuText = fetchStoreMenu($db, (int)$swapStoreId); } catch (\Throwable $e) {}
+        }
+        if ($step === 'take_order' && !empty($aiContext['items']) && !empty($swapMenuText)) {
             $swapPatterns = [
                 '/(?:troca|trocar|troque)\s+(?:a|o)\s+(.+?)\s+(?:por|pelo|pela|pra|para)\s+(.+)/iu',
                 '/(?:em vez de|ao invés de|ao inves de|no lugar de?)\s+(.+?)\s*(?:,\s*|\s+)(?:quero|coloca|manda|me vê)\s+(.+)/iu',
@@ -729,7 +735,7 @@ try {
                     // Find the new item in menu
                     $newItemPhonetic = phoneticNormalizePtBr($newItemName);
                     $bestProd = null; $bestScore = 0;
-                    preg_match_all('/ID:(\d+)\s+(.+?)\s+R\$([\d.,]+)/m', $menuText, $mmAll, PREG_SET_ORDER);
+                    preg_match_all('/ID:(\d+)\s+(.+?)\s+R\$([\d.,]+)/m', $swapMenuText, $mmAll, PREG_SET_ORDER);
                     foreach ($mmAll as $mm) {
                         $prodLower = mb_strtolower(trim($mm[2]), 'UTF-8');
                         $prodPhonetic = phoneticNormalizePtBr($prodLower);
@@ -803,6 +809,80 @@ try {
                 echo ttsSayOrPlay($msg);
                 echo '</Gather>';
                 echo ttsSayOrPlay("Mais alguma coisa?");
+                echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
+                echo '</Response>';
+                exit;
+            }
+        }
+
+        // 8-remove. Remove item fast-track: "tira o último" / "remove a coca" / "sem a pizza"
+        if ($step === 'take_order' && !empty($aiContext['items']) && !$isYes && !$isNo) {
+            $removeMatch = false;
+            $removeIdx = null;
+            $removedItemName = '';
+
+            // Pattern 1: "tira o último" / "remove o último" / "cancela o último"
+            $removeLastPhrases = ['tira o ultimo', 'tira o último', 'remove o ultimo', 'remove o último', 'cancela o ultimo', 'cancela o último', 'tira esse', 'esse não', 'esse nao'];
+            foreach ($removeLastPhrases as $rlp) {
+                if (mb_strpos($lowerInput, $rlp) !== false && mb_strlen(trim($lowerInput)) < 30) {
+                    $removeIdx = count($aiContext['items']) - 1;
+                    $removeMatch = true;
+                    break;
+                }
+            }
+
+            // Pattern 2: "tira a coca" / "remove o hambúrguer" / "sem a pizza" / "não quero mais a coxinha"
+            if (!$removeMatch) {
+                $removePatterns = [
+                    '/(?:tira|remove|retira|cancela|sem)\s+(?:a|o|as|os)?\s*(.+)/iu',
+                    '/(?:não quero|nao quero|num quero)\s+(?:mais\s+)?(?:a|o)?\s*(.+)/iu',
+                ];
+                foreach ($removePatterns as $rp) {
+                    if (preg_match($rp, $userInput, $rm) && mb_strlen(trim($userInput)) < 40) {
+                        $targetName = mb_strtolower(trim($rm[1]), 'UTF-8');
+                        // Remove trailing filler words
+                        $targetName = preg_replace('/\s+(por favor|pfv|pf|por gentileza|obrigado|obrigada)$/iu', '', $targetName);
+                        if (mb_strlen($targetName) < 2) break;
+
+                        // Find item in cart by fuzzy name match
+                        foreach ($aiContext['items'] as $idx => $item) {
+                            $cartItemLower = mb_strtolower($item['name'], 'UTF-8');
+                            if (mb_strpos($cartItemLower, $targetName) !== false
+                                || mb_strpos($targetName, $cartItemLower) !== false
+                                || (mb_strlen($targetName) >= 3 && levenshtein(mb_substr($targetName, 0, 12), mb_substr($cartItemLower, 0, 12)) <= 2)) {
+                                $removeIdx = $idx;
+                                $removeMatch = true;
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+
+            if ($removeMatch && $removeIdx !== null && isset($aiContext['items'][$removeIdx])) {
+                $removedItemName = $aiContext['items'][$removeIdx]['name'];
+                array_splice($aiContext['items'], $removeIdx, 1);
+
+                if (empty($aiContext['items'])) {
+                    $msg = "Tirei {$removedItemName}. O pedido ficou vazio! O que quer pedir?";
+                } else {
+                    $remaining = count($aiContext['items']);
+                    $subtotal = array_sum(array_map(fn($i) => ($i['price'] ?? 0) * ($i['quantity'] ?? 1), $aiContext['items']));
+                    $pp = explode(',', number_format($subtotal, 2, ',', '.')); $pv = $pp[0]; if (isset($pp[1]) && $pp[1] !== '00') $pv .= ' e ' . $pp[1];
+                    $msg = "Tirei {$removedItemName}! Ficou {$remaining} " . ($remaining === 1 ? 'item' : 'itens') . ", {$pv} reais. Mais algo?";
+                }
+
+                $aiContext['history'] = $conversationHistory;
+                $aiContext['history'][] = ['role' => 'assistant', 'content' => $msg];
+                saveAiContext($db, $callId, $aiContext);
+
+                echo '<?xml version="1.0" encoding="UTF-8"?>';
+                echo '<Response>';
+                echo '<Gather ' . $gatherStd . ' timeout="10" action="' . escXml($selfUrl) . '" method="POST">';
+                echo ttsSayOrPlay($msg);
+                echo '</Gather>';
+                echo ttsSayOrPlay("Pode pedir mais ou dizer 'só isso' pra fechar!");
                 echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
                 echo '</Response>';
                 exit;
@@ -974,6 +1054,7 @@ try {
                 $msg = 'Beleza! Mando lá na ' . $defAddr['street'] . ', ' . $defAddr['number'] . '. ';
                 if ($lastPay && isset($payLabels[$lastPay])) {
                     $msg .= $payLabels[$lastPay] . ' como da última vez?';
+                    $aiContext['auto_payment_suggested'] = true;
                 } else {
                     $msg .= 'Como vai pagar? Dinheiro, PIX ou cartão?';
                 }
@@ -990,6 +1071,25 @@ try {
                 echo '</Response>';
                 exit;
             }
+        }
+
+        // 8b-no. Fast-track: "no" at get_address when address was suggested → ask for new address
+        if ($isNo && $step === 'get_address' && !empty($aiContext['auto_address_suggested'])) {
+            $aiContext['auto_address_suggested'] = false;
+            $aiContext['history'] = $conversationHistory;
+            $msg = "Sem problema! Me fala o endereço de entrega. Pode ser o CEP ou o endereço completo.";
+            $aiContext['history'][] = ['role' => 'assistant', 'content' => $msg];
+            saveAiContext($db, $callId, $aiContext);
+
+            echo '<?xml version="1.0" encoding="UTF-8"?>';
+            echo '<Response>';
+            echo '<Gather ' . $gatherStd . ' timeout="12" action="' . escXml($selfUrl) . '" method="POST">';
+            echo ttsSayOrPlay($msg);
+            echo '</Gather>';
+            echo ttsSayOrPlay("Pode falar o CEP ou o endereço!");
+            echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
+            echo '</Response>';
+            exit;
         }
 
         // 8b2. Fast-track: address + payment in one phrase (e.g., "manda pro mesmo lugar no pix")
@@ -1145,12 +1245,12 @@ try {
             }
         }
 
-        // 8. Fast-track: simple "no" at confirm_order → go back to take_order without Claude call
+        // 8. Fast-track: "no" at confirm_order — detect what they want to change
         if ($isNo && $step === 'confirm_order' && !empty($aiContext['items'])) {
-            $aiContext['step'] = 'take_order';
             $aiContext['confirmed'] = false;
-            $step = 'take_order';
             $aiContext['history'] = $conversationHistory;
+            $aiContext['step'] = 'take_order';
+            $step = 'take_order';
             $msg = "Sem problema! O que quer mudar? Pode tirar, trocar ou adicionar algo.";
             $aiContext['history'][] = ['role' => 'assistant', 'content' => $msg];
             saveAiContext($db, $callId, $aiContext);
@@ -1164,6 +1264,73 @@ try {
             echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
             echo '</Response>';
             exit;
+        }
+
+        // 8-confirmchange. At confirm_order, detect specific change requests without Claude
+        if ($step === 'confirm_order' && !empty($aiContext['items']) && !$isYes && !$isNo) {
+            // "muda o endereço" / "quero mudar o pagamento" / "troca o endereço"
+            $changeTarget = null;
+            $changePatterns = [
+                'endereco' => ['endereço', 'endereco', 'mudar o endereço', 'trocar endereço', 'outro endereço', 'outro lugar'],
+                'payment' => ['pagamento', 'forma de pagar', 'mudar pagamento', 'trocar pagamento', 'pagar diferente', 'pagar de outra forma'],
+                'items' => ['adicionar', 'tirar', 'trocar', 'mudar item', 'mudar pedido', 'quero mais', 'faltou'],
+            ];
+            foreach ($changePatterns as $target => $phrases) {
+                foreach ($phrases as $phrase) {
+                    if (mb_strpos($lowerInput, $phrase) !== false) { $changeTarget = $target; break 2; }
+                }
+            }
+
+            if ($changeTarget === 'endereco') {
+                $aiContext['step'] = 'get_address';
+                $aiContext['auto_address_suggested'] = false;
+                $step = 'get_address';
+                $aiContext['history'] = $conversationHistory;
+                $msg = "Beleza! Qual o novo endereço? Me fala o CEP ou o endereço completo.";
+                $aiContext['history'][] = ['role' => 'assistant', 'content' => $msg];
+                saveAiContext($db, $callId, $aiContext);
+
+                echo '<?xml version="1.0" encoding="UTF-8"?>';
+                echo '<Response>';
+                echo '<Gather ' . $gatherStd . ' timeout="10" action="' . escXml($selfUrl) . '" method="POST">';
+                echo ttsSayOrPlay($msg);
+                echo '</Gather>';
+                echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
+                echo '</Response>';
+                exit;
+            } elseif ($changeTarget === 'payment') {
+                $aiContext['step'] = 'get_payment';
+                $step = 'get_payment';
+                $aiContext['history'] = $conversationHistory;
+                $msg = "Sem problema! Como quer pagar? Dinheiro, PIX ou cartão?";
+                $aiContext['history'][] = ['role' => 'assistant', 'content' => $msg];
+                saveAiContext($db, $callId, $aiContext);
+
+                echo '<?xml version="1.0" encoding="UTF-8"?>';
+                echo '<Response>';
+                echo '<Gather ' . $gatherStd . ' timeout="8" action="' . escXml($selfUrl) . '" method="POST">';
+                echo ttsSayOrPlay($msg);
+                echo '</Gather>';
+                echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
+                echo '</Response>';
+                exit;
+            } elseif ($changeTarget === 'items') {
+                $aiContext['step'] = 'take_order';
+                $step = 'take_order';
+                $aiContext['history'] = $conversationHistory;
+                $msg = "Pode falar! O que quer mudar no pedido?";
+                $aiContext['history'][] = ['role' => 'assistant', 'content' => $msg];
+                saveAiContext($db, $callId, $aiContext);
+
+                echo '<?xml version="1.0" encoding="UTF-8"?>';
+                echo '<Response>';
+                echo '<Gather ' . $gatherStd . ' timeout="10" action="' . escXml($selfUrl) . '" method="POST">';
+                echo ttsSayOrPlay($msg);
+                echo '</Gather>';
+                echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
+                echo '</Response>';
+                exit;
+            }
         }
     }
 
@@ -2974,12 +3141,13 @@ function fetchStoreMenu(PDO $db, int $storeId): string {
 function fixCommonSttErrors(string $text): string {
     // Common word-level fixes (case-insensitive)
     $fixes = [
-        // Food items
+        // Food items — common STT mishears
         '/\bchees\s*burger/iu' => 'cheeseburger',
         '/\bx[\s-]*(?:burg(?:u?er)?|bague)\b/iu' => 'x-burger',
         '/\bx[\s-]*(?:tudo|todo)\b/iu' => 'x-tudo',
         '/\bx[\s-]*(?:salada|salad)\b/iu' => 'x-salada',
         '/\bx[\s-]*(?:egg|ég)\b/iu' => 'x-egg',
+        '/\bx[\s-]*(?:bacon|becon)\b/iu' => 'x-bacon',
         '/\bmargue?r[iy]ta\b/iu' => 'margherita',
         '/\bmargare?ta\b/iu' => 'margherita',
         '/\bmargarita\b/iu' => 'margherita',
@@ -2987,28 +3155,54 @@ function fixCommonSttErrors(string $text): string {
         '/\bkat[uo]piri?\b/iu' => 'catupiry',
         '/\bstrog[oa]n[oa]f+e?\b/iu' => 'strogonoff',
         '/\bstrogonof\b/iu' => 'strogonoff',
+        '/\bestrog[oa]n[oa]f/iu' => 'strogonoff',
         '/\bcala?bre[sz]a\b/iu' => 'calabresa',
-        '/\bquatr[oa]\s*queijo\b/iu' => 'quatro queijos',
+        '/\bquatr[oa]\s*queijo/iu' => 'quatro queijos',
         '/\bfrang[oa]\b/iu' => 'frango',
         '/\bmuss?are?la\b/iu' => 'mussarela',
         '/\bmozare?la\b/iu' => 'mussarela',
         '/\bguaraná\s*(?:antart?ica|antarc?tic)/iu' => 'guaraná antarctica',
+        '/\bcocacola\b/iu' => 'coca-cola',
+        '/\bcoca\s+cola\b/iu' => 'coca-cola',
+        '/\bsprite\b/iu' => 'sprite',
+        '/\bnap[oa]litana\b/iu' => 'napolitana',
+        '/\bportu[gq]ue[sz]a\b/iu' => 'portuguesa',
+        '/\bpeperon[iy]\b/iu' => 'pepperoni',
+        '/\bpeper[oa]n[iy]\b/iu' => 'pepperoni',
+        '/\bpro[sv][uú]to\b/iu' => 'presunto',
+        '/\balmondeg[ua]\b/iu' => 'almôndega',
+        '/\bpalm[iy]to\b/iu' => 'palmito',
+        '/\bchedda?r\b/iu' => 'cheddar',
+        '/\bcoxin[hñ]a\b/iu' => 'coxinha',
+        '/\bmilane[sz]a\b/iu' => 'milanesa',
+        '/\bparmeg[iy]ana\b/iu' => 'parmegiana',
+        '/\btemak[iy]\b/iu' => 'temaki',
+        '/\bsashim[iy]\b/iu' => 'sashimi',
+        '/\bhot\s*dog\b/iu' => 'hot-dog',
+        // Bebidas
+        '/\bguar[aá]n[aá]\b/iu' => 'guaraná',
+        '/\bh2[oa]\b/iu' => 'água',
+        '/\brefr[iy]gerante\b/iu' => 'refrigerante',
         // Payment
         '/\bp[iy]x\b/iu' => 'pix',
         '/\bpics\b/iu' => 'pix',
         '/\bpiques\b/iu' => 'pix',
         '/\bcartão\s*de?\s*cred[iy]to\b/iu' => 'cartão de crédito',
         '/\bcartão\s*de?\s*deb[iy]to\b/iu' => 'cartão de débito',
+        '/\bdinhero\b/iu' => 'dinheiro',
+        '/\bdin[hñ]ero\b/iu' => 'dinheiro',
         // Addresses
         '/\baven[iy]da\b/iu' => 'avenida',
         '/\bapartament[oa]\b/iu' => 'apartamento',
         '/\bcondom[iy]n[iy]o\b/iu' => 'condomínio',
+        '/\bres[iy]d[eê]nc[iy]al\b/iu' => 'residencial',
         // Intent words commonly mangled
         '/\b(?:at[eé]nd[eê]nt[eê]|at[eé]ndent)\b/iu' => 'atendente',
         '/\bcancela[rmn]\b/iu' => 'cancelar',
         '/\bconfirm[ao]r?\b/iu' => 'confirmar',
-        // Twilio noise artifacts
-        '/\b(?:hum+|hmm+|uh+m|ah+|eh+)\b/iu' => '', // strip filler sounds when mixed with real words
+        '/\bobrg[ia]d[oa]\b/iu' => 'obrigado',
+        // Twilio noise artifacts — strip filler sounds when mixed with real words
+        '/\b(?:hum+|hmm+|uh+m|ah+|eh+)\b/iu' => '',
     ];
 
     foreach ($fixes as $pattern => $replacement) {
@@ -3102,41 +3296,55 @@ function extractAddressFromSpeech(string $text): ?array {
     // Convert spoken numbers to digits first
     $normalized = convertSpokenNumbersPtBr($normalized);
 
+    // Clean up common filler words at start
+    $normalized = preg_replace('/^(?:é|e|fica|moro|mora|mando|entrega)\s+(?:na|no|em|pra|pro|pela|pelo)?\s*/iu', '', $normalized);
+    $normalized = trim($normalized);
+
     // 1. Detect street type prefix (rua, avenida, etc.)
     $streetTypes = [
-        'rua' => 'Rua', 'avenida' => 'Av.', 'alameda' => 'Alameda',
+        'rua' => 'Rua', 'avenida' => 'Av.', 'av' => 'Av.', 'alameda' => 'Alameda',
         'travessa' => 'Travessa', 'estrada' => 'Estrada', 'rodovia' => 'Rodovia',
-        'praça' => 'Praça', 'largo' => 'Largo', 'viela' => 'Viela',
+        'praça' => 'Praça', 'praca' => 'Praça', 'largo' => 'Largo', 'viela' => 'Viela',
+        'servidão' => 'Servidão', 'beco' => 'Beco', 'vila' => 'Vila',
     ];
 
     $hasStreetType = false;
     foreach ($streetTypes as $type => $label) {
-        if (preg_match('/\b' . preg_quote($type, '/') . '\b\s+(.+)/iu', $normalized, $streetMatch)) {
+        if (preg_match('/\b' . preg_quote($type, '/') . '\.?\b\s+(.+)/iu', $normalized, $streetMatch)) {
             $hasStreetType = true;
             $afterType = trim($streetMatch[1]);
 
             // Extract number: look for standalone digits after street name
-            if (preg_match('/^(.+?)\s+(?:n[uú]mero\s+)?(\d{1,5})\b(.*)$/iu', $afterType, $numMatch)) {
-                $result['street'] = $label . ' ' . ucwords(trim($numMatch[1]));
+            // Also handle "número X", "nº X", ", X", or just a digit sequence
+            if (preg_match('/^(.+?)[\s,]+(?:n[uú]mero|n[°º]?\.?)?\s*(\d{1,5})\b(.*)$/iu', $afterType, $numMatch)) {
+                $streetName = trim($numMatch[1]);
+                // Remove trailing comma/dash from street name
+                $streetName = preg_replace('/[\s,\-]+$/', '', $streetName);
+                $result['street'] = $label . ' ' . mb_convert_case($streetName, MB_CASE_TITLE, 'UTF-8');
                 $result['number'] = $numMatch[2];
                 $remaining = trim($numMatch[3]);
             } else {
                 // No number found — take the whole thing as street name
-                $result['street'] = $label . ' ' . ucwords(trim($afterType));
+                $result['street'] = $label . ' ' . mb_convert_case(trim($afterType), MB_CASE_TITLE, 'UTF-8');
                 $remaining = '';
             }
 
             // Extract complement from remaining text
             if (!empty($remaining)) {
+                $remaining = preg_replace('/^\s*[-,]\s*/', '', $remaining);
+                $complParts = [];
                 $complementPatterns = [
-                    '/\b(?:apartamento|apto?|ap)\s*(\d+\w?)/iu',
-                    '/\b(?:bloco|bl)\s*(\w{1,3})/iu',
-                    '/\b(?:casa|cs)\s*(\d+\w?)/iu',
+                    '/\b(?:apartamento|apto?|ap)\.?\s*(\d+\w?)/iu',
+                    '/\b(?:bloco|bl)\.?\s*(\w{1,3})/iu',
+                    '/\b(?:casa|cs)\.?\s*(\d+\w?)/iu',
                     '/\b(?:andar|piso)\s*(\d+)/iu',
                     '/\b(?:sala)\s*(\d+\w?)/iu',
-                    '/\b(?:condom[ií]nio|cond\.?)\s+([^\d,]+)/iu',
+                    '/\b(?:lote)\s*(\d+\w?)/iu',
+                    '/\b(?:quadra|qd)\.?\s*(\d+\w?)/iu',
+                    '/\b(?:condom[ií]nio|cond\.?|residencial)\s+([^\d,]{3,25})/iu',
+                    '/\b(?:edif[ií]cio|ed\.?|prédio|pr[eé]dio)\s+([^\d,]{3,25})/iu',
+                    '/\b(?:fundos|frente|lateral)\b/iu',
                 ];
-                $complParts = [];
                 foreach ($complementPatterns as $cp) {
                     if (preg_match($cp, $remaining, $complMatch)) {
                         $complParts[] = trim($complMatch[0]);
@@ -3147,14 +3355,17 @@ function extractAddressFromSpeech(string $text): ?array {
                     $result['complement'] = implode(', ', $complParts);
                 }
 
-                // Whatever's left after complement extraction could be the neighborhood
+                // Extract neighborhood: "bairro X", "no X", or after last comma/dash
                 $remaining = preg_replace('/^\s*[-,]\s*/', '', trim($remaining));
-                if (!empty($remaining) && mb_strlen($remaining) >= 3) {
+                if (preg_match('/\b(?:bairro|no|na)\s+(.{3,25}?)(?:\s*[-,]|\s*$)/iu', $remaining, $bMatch)) {
+                    $result['neighborhood'] = mb_convert_case(trim($bMatch[1]), MB_CASE_TITLE, 'UTF-8');
+                    $remaining = str_replace($bMatch[0], '', $remaining);
+                } elseif (!empty($remaining) && mb_strlen(trim($remaining)) >= 3) {
                     // Filter out noise words
-                    $noiseWords = ['da', 'do', 'de', 'no', 'na', 'em', 'pra', 'pro', 'la', 'aqui', 'ali', 'esse', 'essa'];
+                    $noiseWords = ['da', 'do', 'de', 'no', 'na', 'em', 'pra', 'pro', 'la', 'lá', 'aqui', 'ali', 'esse', 'essa', 'meu', 'minha'];
                     $remainClean = trim(preg_replace('/\b(' . implode('|', $noiseWords) . ')\b/iu', '', $remaining));
                     if (!empty($remainClean) && mb_strlen($remainClean) >= 3) {
-                        $result['neighborhood'] = ucwords($remainClean);
+                        $result['neighborhood'] = mb_convert_case($remainClean, MB_CASE_TITLE, 'UTF-8');
                     }
                 }
             }
@@ -3162,13 +3373,34 @@ function extractAddressFromSpeech(string $text): ?array {
         }
     }
 
-    // 2. If no street type prefix but has "número" or digit pattern with neighborhood keywords
+    // 2. If no street type prefix, try other patterns
     if (!$hasStreetType) {
-        // Try to detect "bairro X" or "[street] número [N]"
-        if (preg_match('/\b(?:bairro|no|na)\s+(\w[\w\s]{2,20}?)(?:\s*,|\s*$)/iu', $normalized, $bairroMatch)) {
-            $result['neighborhood'] = ucwords(trim($bairroMatch[1]));
+        // Pattern: "número 123 bairro Centro" / "bairro taquaral" / "jardim santa genebra"
+        if (preg_match('/\b(?:bairro|no bairro|na)\s+(.{3,30}?)(?:\s*[-,]|\s*$)/iu', $normalized, $bairroMatch)) {
+            $result['neighborhood'] = mb_convert_case(trim($bairroMatch[1]), MB_CASE_TITLE, 'UTF-8');
         }
-        // No clear address structure found
+
+        // Pattern: "jardim X" / "parque X" / "vila X" — common neighborhood prefixes
+        if (empty($result['neighborhood'])) {
+            $nbPrefixes = ['jardim', 'parque', 'vila', 'residencial', 'conjunto', 'chácara', 'chacara', 'cidade'];
+            foreach ($nbPrefixes as $nbp) {
+                if (preg_match('/\b' . preg_quote($nbp, '/') . '\s+([a-zà-ÿ\s]{3,25})/iu', $normalized, $nbMatch)) {
+                    $result['neighborhood'] = mb_convert_case(trim($nbp . ' ' . $nbMatch[1]), MB_CASE_TITLE, 'UTF-8');
+                    break;
+                }
+            }
+        }
+
+        // Pattern: has a number that looks like an address number
+        if (preg_match('/(.{3,30}?)\s+(?:n[uú]mero|n[°º]?)?\s*(\d{1,5})\b/iu', $normalized, $numOnly)) {
+            $possibleStreet = trim($numOnly[1]);
+            // Only accept if the part before looks like a street name (not just random words)
+            if (mb_strlen($possibleStreet) >= 5 && !preg_match('/^\d/', $possibleStreet)) {
+                $result['street'] = mb_convert_case($possibleStreet, MB_CASE_TITLE, 'UTF-8');
+                $result['number'] = $numOnly[2];
+            }
+        }
+
         if (empty($result['street']) && empty($result['neighborhood'])) {
             return null;
         }
