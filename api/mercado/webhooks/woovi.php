@@ -13,6 +13,7 @@
 require_once __DIR__ . '/../config/database.php';
 require_once dirname(__DIR__, 3) . '/includes/classes/WooviClient.php';
 require_once dirname(__DIR__, 3) . '/includes/classes/PusherService.php';
+require_once dirname(__DIR__) . '/helpers/ws-customer-broadcast.php';
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -267,15 +268,39 @@ if (stripos($event, 'CHARGE') !== false && strpos($correlationId, 'pix_intent_')
                 }
             }
 
-            // Clear cart — all items for this customer (multi-store PIX covers all stores)
-            $db->prepare("DELETE FROM om_market_cart WHERE customer_id = ?")
-               ->execute([$customer_id]);
+            // Clear cart — only items for this partner (preserve items from other stores)
+            $db->prepare("DELETE FROM om_market_cart WHERE customer_id = ? AND partner_id = ?")
+               ->execute([$customer_id, $partner_id]);
 
             // Link intent to order
             $db->prepare("UPDATE om_pix_intents SET order_id = ? WHERE intent_id = ?")
                ->execute([$orderId, $intent['intent_id']]);
 
             $db->commit();
+
+            // WebSocket broadcast — PIX confirmed + order created
+            try {
+                if ($customer_id) {
+                    wsBroadcastToCustomer($customer_id, 'pix_confirmed', [
+                        'order_id' => $orderId,
+                        'order_number' => $order_number,
+                        'status' => 'aceito',
+                        'payment_status' => 'paid',
+                    ]);
+                    wsBroadcastToCustomer($customer_id, 'order_update', [
+                        'order_id' => $orderId,
+                        'order_number' => $order_number,
+                        'status' => 'aceito',
+                    ]);
+                }
+                wsBroadcastToOrder($orderId, 'order_update', [
+                    'order_id' => $orderId,
+                    'order_number' => $order_number,
+                    'status' => 'aceito',
+                ]);
+            } catch (\Throwable $e) {
+                error_log("[woovi-webhook] WS broadcast intent erro: " . $e->getMessage());
+            }
 
             // Notify partner
             $partnerName = $cart['partner_name'] ?? '';
@@ -306,9 +331,9 @@ if (stripos($event, 'CHARGE') !== false && strpos($correlationId, 'pix_intent_')
                 error_log("[woovi-webhook] Pusher newOrder intent erro: " . $e->getMessage());
             }
 
-            // Notify customer via Pusher (with order_id so frontend can navigate)
+            // Notify partner panel via Pusher (partner_id, not order_id)
             try {
-                PusherService::orderUpdate($orderId, [
+                PusherService::orderUpdate($partner_id, [
                     'status' => 'aceito',
                     'payment_status' => 'pago',
                     'order_id' => $orderId,
@@ -416,7 +441,7 @@ if (stripos($event, 'CHARGE') !== false || ($charge && strpos($correlationId, 'o
                 $custName = $custStmt->fetchColumn() ?: 'Cliente';
 
                 try {
-                    require_once dirname(__DIR__) . '/helpers/notificar.php';
+                    require_once dirname(__DIR__) . '/helpers/notify.php';
                     notifyPartner($db, $partnerId,
                         'Novo pedido - PIX confirmado!',
                         "Pedido #{$orderNumber} - R$ " . number_format($orderTotal, 2, ',', '.') . " - {$custName}",
@@ -441,15 +466,40 @@ if (stripos($event, 'CHARGE') !== false || ($charge && strpos($correlationId, 'o
                 }
             }
 
-            // Notificar cliente via Pusher
+            // Notificar parceiro via Pusher (partner_id, not order_id)
             try {
-                PusherService::orderUpdate($orderId, [
+                PusherService::orderUpdate($partnerId, [
                     'status' => 'aceito',
                     'payment_status' => 'pago',
+                    'order_id' => $orderId,
                     'message' => 'PIX confirmado!'
                 ]);
             } catch (\Exception $e) {
                 error_log("[woovi-webhook] Pusher erro: " . $e->getMessage());
+            }
+
+            // WebSocket broadcast — PIX confirmed for legacy charge flow
+            try {
+                $customerId = (int)($orderInfo['customer_id'] ?? 0);
+                if ($customerId) {
+                    wsBroadcastToCustomer($customerId, 'pix_confirmed', [
+                        'order_id' => $orderId,
+                        'order_number' => $orderNumber ?? '',
+                        'status' => 'aceito',
+                        'payment_status' => 'paid',
+                    ]);
+                    wsBroadcastToCustomer($customerId, 'order_update', [
+                        'order_id' => $orderId,
+                        'status' => 'aceito',
+                    ]);
+                }
+                wsBroadcastToOrder($orderId, 'order_update', [
+                    'order_id' => $orderId,
+                    'status' => 'aceito',
+                    'payment_status' => 'paid',
+                ]);
+            } catch (\Throwable $e) {
+                error_log("[woovi-webhook] WS broadcast charge erro: " . $e->getMessage());
             }
         } elseif (stripos($event, 'EXPIRED') !== false || stripos($event, 'FAILED') !== false) {
             error_log("[woovi-webhook] Charge EXPIRED/FAILED for order #{$orderId}");

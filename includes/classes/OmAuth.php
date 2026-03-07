@@ -238,7 +238,10 @@ class OmAuth {
      * Verifica se o shopper foi aprovado pelo RH
      */
     public function isShopperApproved(int $shopperId): bool {
-        if (!$this->pdo) return true;
+        if (!$this->pdo) {
+            error_log("[OmAuth] WARNING: No DB connection for shopper check — failing closed");
+            return false;
+        }
 
         try {
             $stmt = $this->pdo->prepare("
@@ -461,7 +464,10 @@ class OmAuth {
     }
 
     private function isPartnerApproved(int $partnerId): bool {
-        if (!$this->pdo) return true;
+        if (!$this->pdo) {
+            error_log("[OmAuth] WARNING: No DB connection for partner check — failing closed");
+            return false;
+        }
 
         try {
             $stmt = $this->pdo->prepare("

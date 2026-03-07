@@ -328,12 +328,43 @@ try {
                 $db->commit();
                 $cancelledIds[] = $orderId;
 
-                // PIX refund: PIX refunds are handled via the payment provider webhook,
-                // but log it for audit trail
+                // PIX refund: attempt automatic refund via Woovi
                 try {
-                    $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ? WHERE order_id = ?")
-                       ->execute([' [CRON: PIX pago mas parceiro nao aceitou 30min — reembolso necessario]', $orderId]);
-                } catch (Exception $e) { /* skip */ }
+                    // Find correlation_id from om_pix_intents or om_pagarme_transacoes
+                    $pixCorrId = '';
+                    $intentQ = $db->prepare("SELECT correlation_id FROM om_pix_intents WHERE order_id = ? AND status = 'paid' LIMIT 1");
+                    $intentQ->execute([$orderId]);
+                    $pixCorrId = $intentQ->fetchColumn() ?: '';
+                    if (empty($pixCorrId)) {
+                        $txQ = $db->prepare("SELECT correlation_id FROM om_pagarme_transacoes WHERE pedido_id = ? AND tipo = 'pix' LIMIT 1");
+                        $txQ->execute([$orderId]);
+                        $pixCorrId = $txQ->fetchColumn() ?: '';
+                    }
+                    if (!empty($pixCorrId)) {
+                        require_once dirname(__DIR__, 3) . '/includes/classes/WooviClient.php';
+                        $woovi = new WooviClient();
+                        $refResult = $woovi->refundCharge($pixCorrId);
+                        $refOk = !empty($refResult['data']) || !empty($refResult['refund']) || (isset($refResult['status']) && $refResult['status'] === 'OK');
+                        if ($refOk) {
+                            $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ? WHERE order_id = ?")
+                               ->execute([' [CRON: PIX REFUND OK]', $orderId]);
+                            $log("  PIX refund OK for order #{$orderId}");
+                        } else {
+                            $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ? WHERE order_id = ?")
+                               ->execute([' [CRON: PIX REFUND FAILED - MANUAL]', $orderId]);
+                            $log("  PIX refund FAILED for order #{$orderId}: " . json_encode($refResult));
+                        }
+                    } else {
+                        $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ? WHERE order_id = ?")
+                           ->execute([' [CRON: PIX pago mas sem correlationId — reembolso manual necessario]', $orderId]);
+                    }
+                } catch (Exception $e) {
+                    $log("  PIX refund error for order #{$orderId}: " . $e->getMessage());
+                    try {
+                        $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ? WHERE order_id = ?")
+                           ->execute([' [CRON: PIX REFUND ERROR - MANUAL]', $orderId]);
+                    } catch (Exception $e2) { /* skip */ }
+                }
 
             } catch (Exception $e) {
                 if ($db->inTransaction()) {

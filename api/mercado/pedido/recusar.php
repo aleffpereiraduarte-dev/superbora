@@ -88,7 +88,25 @@ try {
     $paymentMethod = $pedido['forma_pagamento'] ?? $pedido['payment_method'] ?? '';
     $stripePi = $pedido['stripe_payment_intent_id'] ?? $pedido['payment_id'] ?? '';
     $needsStripeRefund = in_array($paymentMethod, ['stripe_card', 'stripe_wallet', 'credito']) && $stripePi;
-    $needsPixRefund = in_array($paymentMethod, ['pix', 'pix_woovi']) && !empty($pedido['pix_correlation_id'] ?? $pedido['correlation_id'] ?? '');
+    // Check for PIX correlation in order row, om_pagarme_transacoes, or om_pix_intents
+    $pixCorrelationId = $pedido['pix_correlation_id'] ?? $pedido['correlation_id'] ?? '';
+    if (empty($pixCorrelationId) && in_array($paymentMethod, ['pix', 'pix_woovi'])) {
+        // Try om_pagarme_transacoes first
+        try {
+            $txStmt = $db->prepare("SELECT correlation_id FROM om_pagarme_transacoes WHERE pedido_id = ? AND tipo = 'pix' LIMIT 1");
+            $txStmt->execute([$order_id]);
+            $pixCorrelationId = $txStmt->fetchColumn() ?: '';
+        } catch (\Exception $e) {}
+        // Fallback to om_pix_intents (intent-based PIX flow)
+        if (empty($pixCorrelationId)) {
+            try {
+                $intentStmt = $db->prepare("SELECT correlation_id FROM om_pix_intents WHERE order_id = ? AND status = 'paid' LIMIT 1");
+                $intentStmt->execute([$order_id]);
+                $pixCorrelationId = $intentStmt->fetchColumn() ?: '';
+            } catch (\Exception $e) {}
+        }
+    }
+    $needsPixRefund = in_array($paymentMethod, ['pix', 'pix_woovi']) && !empty($pixCorrelationId);
 
     // Restaurar pontos e cashback
     $pointsUsed = (int)($pedido['loyalty_points_used'] ?? 0);
@@ -199,15 +217,14 @@ try {
         try {
             require_once dirname(__DIR__, 3) . '/includes/classes/WooviClient.php';
             $woovi = new WooviClient();
-            $correlationId = $pedido['pix_correlation_id'] ?? $pedido['correlation_id'] ?? '';
-            $pixRefundResult = $woovi->refundCharge($correlationId);
+            $pixRefundResult = $woovi->refundCharge($pixCorrelationId);
             $pixRefundOk = !empty($pixRefundResult['data']) || !empty($pixRefundResult['refund']) || (isset($pixRefundResult['status']) && $pixRefundResult['status'] === 'OK');
             if ($pixRefundOk) {
-                error_log("[recusar] PIX refund OK para pedido #$order_id correlationId=$correlationId");
+                error_log("[recusar] PIX refund OK para pedido #$order_id correlationId=$pixCorrelationId");
                 $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ? WHERE order_id = ?")
                    ->execute([" [PIX REFUND OK]", $order_id]);
             } else {
-                error_log("[recusar] FALHA PIX refund correlationId=$correlationId resp=" . json_encode($pixRefundResult));
+                error_log("[recusar] FALHA PIX refund correlationId=$pixCorrelationId resp=" . json_encode($pixRefundResult));
                 $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ' [PIX REFUND FAILED - MANUAL]' WHERE order_id = ?")->execute([$order_id]);
             }
         } catch (Exception $pixErr) {
