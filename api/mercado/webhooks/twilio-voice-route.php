@@ -236,7 +236,7 @@ try {
             $noAgentAiUrl = htmlspecialchars($aiUrl, ENT_XML1 | ENT_QUOTES, 'UTF-8');
             echo '<?xml version="1.0" encoding="UTF-8"?>';
             echo '<Response>';
-            echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" speechModel="experimental_utterances" speechTimeout="2" action="' . $noAgentAiUrl . '" method="POST">';
+            echo '<Gather input="speech dtmf" timeout="8" language="pt-BR" speechModel="experimental_utterances" speechTimeout="auto" action="' . $noAgentAiUrl . '" method="POST">';
             echo ttsSayOrPlay('Ah, nesse momento não tem nenhum atendente disponível. Mas eu posso te ajudar com seu pedido! Quer continuar comigo, ou prefere que a gente te ligue de volta?');
             echo '</Gather>';
             echo '<Redirect method="POST">' . $noAgentAiUrl . '</Redirect>';
@@ -822,7 +822,7 @@ try {
         } catch (Exception $e) {}
     }
     $routeHintsStr = htmlspecialchars(implode(', ', array_slice($routeHintParts, 0, 100)), ENT_XML1 | ENT_QUOTES, 'UTF-8');
-    $gatherAttrs = 'input="speech dtmf" language="pt-BR" speechModel="experimental_utterances" speechTimeout="2" profanityFilter="false" enhanced="true" hints="' . $routeHintsStr . '"';
+    $gatherAttrs = 'input="speech dtmf" language="pt-BR" speechModel="experimental_utterances" speechTimeout="auto" profanityFilter="false" enhanced="true" hints="' . $routeHintsStr . '"';
 
     // Dynamic timeout: longer if we expect complex input (store name), shorter for yes/no
     $routeTimeout = 6;
@@ -852,7 +852,7 @@ try {
     echo '<?xml version="1.0" encoding="UTF-8"?>';
     echo '<Response>';
     echo '<Say language="pt-BR" voice="Polly.Camila">Desculpa, deu um probleminha. Me fala de novo, o que você precisa?</Say>';
-    echo '<Gather input="speech dtmf" timeout="6" language="pt-BR" speechModel="experimental_utterances" speechTimeout="2" action="' . $aiUrlFbEsc . '" method="POST">';
+    echo '<Gather input="speech dtmf" timeout="6" language="pt-BR" speechModel="experimental_utterances" speechTimeout="auto" action="' . $aiUrlFbEsc . '" method="POST">';
     echo '<Say language="pt-BR" voice="Polly.Camila">Pode falar ou digitar. Aperta zero pra falar com uma pessoa.</Say>';
     echo '</Gather>';
     echo '<Redirect method="POST">' . $aiUrlFbEsc . '</Redirect>';

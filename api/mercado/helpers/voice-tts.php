@@ -99,7 +99,14 @@ define('TTS_COMMON_PHRASES', [
 ]);
 
 /**
- * Generate TwiML: <Play> with high-quality TTS, or <Say> fallback
+ * Generate TwiML: <Say> with Polly.Camila (instant, zero latency)
+ *
+ * Previous approach used <Play> with ElevenLabs TTS which added 1-3s latency
+ * per turn (HTTP roundtrip to audio.php + ElevenLabs API call). This caused
+ * choppy/"picotado" audio on phone calls.
+ *
+ * Polly.Camila is Amazon's Neural voice for Brazilian Portuguese, built into
+ * Twilio — plays instantly with no external HTTP calls.
  */
 function ttsSayOrPlay(string $text, string $emotion = 'neutral'): string {
     $clean = preg_replace('/<[^>]+>/', ' ', $text);
@@ -109,24 +116,8 @@ function ttsSayOrPlay(string $text, string $emotion = 'neutral'): string {
         return '';
     }
 
-    // Check if this is a common pre-cached phrase (instant playback)
-    $commonKey = ttsMatchCommonPhrase($clean);
-    if ($commonKey !== null) {
-        $url = ttsCommonPhraseUrl($commonKey);
-        if ($url !== null) {
-            return '<Play>' . htmlspecialchars($url, ENT_XML1 | ENT_QUOTES, 'UTF-8') . '</Play>';
-        }
-    }
-
-    $hash = md5($clean . '_' . TTS_CACHE_VERSION . '_' . $emotion);
-    $encoded = rtrim(base64_encode($clean), '=');
-    $scheme = 'https';
-    $host = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? 'superbora.com.br';
-    $url = $scheme . '://' . $host . '/api/mercado/webhooks/audio.php?h=' . $hash
-         . '&t=' . urlencode($encoded)
-         . ($emotion !== 'neutral' ? '&e=' . urlencode($emotion) : '');
-
-    return '<Play>' . htmlspecialchars($url, ENT_XML1 | ENT_QUOTES, 'UTF-8') . '</Play>';
+    $escaped = htmlspecialchars($clean, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+    return '<Say language="pt-BR" voice="Polly.Camila">' . $escaped . '</Say>';
 }
 
 /**
