@@ -255,6 +255,19 @@ try {
             ]);
         } catch (\Throwable $e) {}
 
+        // 3a. Cancel repasses (partner payouts) — prevents money leak on cancelled orders
+        try {
+            require_once dirname(__DIR__, 3) . '/includes/classes/OmRepasse.php';
+            $repasse = new OmRepasse($db);
+            $stmtRepasses = $db->prepare("SELECT id FROM om_repasses WHERE order_id = ? AND order_type = 'market' AND status IN ('hold', 'pendente')");
+            $stmtRepasses->execute([$order_id]);
+            foreach ($stmtRepasses->fetchAll(PDO::FETCH_COLUMN) as $repasseId) {
+                $repasse->cancelar((int)$repasseId, "Pedido #$order_id cancelado: $motivo", 'sistema');
+            }
+        } catch (Exception $repErr) {
+            error_log("[cancelar] Erro cancelar repasse pedido #$order_id: " . $repErr->getMessage());
+        }
+
         // 3b. Cancelar entrega BoraUm se despachada (external API call outside transaction)
         try {
             require_once __DIR__ . '/../helpers/delivery.php';

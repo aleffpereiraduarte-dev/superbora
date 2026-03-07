@@ -158,6 +158,19 @@ try {
         ]);
     } catch (\Throwable $e) {}
 
+    // Cancel repasses (partner payouts) — prevents money leak on refused orders
+    try {
+        require_once dirname(__DIR__, 3) . '/includes/classes/OmRepasse.php';
+        $repasse = new OmRepasse($db);
+        $stmtRepasses = $db->prepare("SELECT id FROM om_repasses WHERE order_id = ? AND order_type = 'market' AND status IN ('hold', 'pendente')");
+        $stmtRepasses->execute([$order_id]);
+        foreach ($stmtRepasses->fetchAll(PDO::FETCH_COLUMN) as $repasseId) {
+            $repasse->cancelar((int)$repasseId, "Pedido #$order_id recusado: $motivo", 'sistema');
+        }
+    } catch (Exception $repErr) {
+        error_log("[recusar] Erro cancelar repasse pedido #$order_id: " . $repErr->getMessage());
+    }
+
     // Estornar Stripe APOS commit (external call outside transaction)
     if ($needsStripeRefund) {
         try {

@@ -142,7 +142,13 @@ function handleMessage(clientId, data) {
     switch (msg.type) {
       case 'auth': {
         // JWT validation if JWT_SECRET is configured
-        if (JWT_SECRET && msg.token) {
+        if (JWT_SECRET) {
+          // JWT is required when JWT_SECRET is configured
+          if (!msg.token) {
+            sendTo(clientId, { type: 'auth_error', message: 'Token required' });
+            console.warn(`[Auth] Rejected: no token provided (JWT_SECRET is set)`);
+            return;
+          }
           try {
             const decoded = jwt.verify(msg.token, JWT_SECRET);
             const userId = decoded.uid || decoded.sub || decoded.id;
@@ -151,6 +157,7 @@ function handleMessage(clientId, data) {
               return;
             }
             client.userId = userId;
+            client.userType = decoded.type || 'customer';
             client.authenticated = true;
             subscribe(clientId, `user_${userId}`);
             sendTo(clientId, { type: 'auth_success', user_id: userId, channels: Array.from(client.channels) });
@@ -160,23 +167,44 @@ function handleMessage(clientId, data) {
             console.warn(`[Auth] JWT failed: ${jwtErr.message}`);
           }
         } else {
-          // Fallback: trust user_id (backwards compat with partner panel when no JWT_SECRET)
+          // Fallback: trust user_id (dev/staging only when no JWT_SECRET)
           client.userId = msg.user_id;
           client.authenticated = true;
           subscribe(clientId, `user_${msg.user_id}`);
           sendTo(clientId, { type: 'auth_success', channels: Array.from(client.channels) });
-          console.log(`[Auth] ${msg.user_id} (no JWT)`);
+          console.warn(`[Auth] ${msg.user_id} (no JWT — dev mode only)`);
         }
         break;
       }
 
-      case 'subscribe':
+      case 'subscribe': {
+        const ch = msg.channel || '';
         // Public channels (stores:*) don't require auth
-        if (client.authenticated || (msg.channel && msg.channel.startsWith('stores:'))) {
-          subscribe(clientId, msg.channel);
-          sendTo(clientId, { type: 'subscribed', channel: msg.channel });
+        if (ch.startsWith('stores:')) {
+          subscribe(clientId, ch);
+          sendTo(clientId, { type: 'subscribed', channel: ch });
+        } else if (client.authenticated) {
+          // Restrict user_ channels to own user_id
+          if (ch.startsWith('user_')) {
+            const chUserId = ch.replace('user_', '');
+            if (String(client.userId) !== String(chUserId)) {
+              sendTo(clientId, { type: 'error', message: 'Cannot subscribe to other user channels' });
+              break;
+            }
+          }
+          // Partner channels restricted to partner user type
+          if (ch.startsWith('partner-') || ch.startsWith('partner_')) {
+            const chPartnerId = ch.replace(/^partner[-_]/, '');
+            if (String(client.userId) !== String(chPartnerId)) {
+              sendTo(clientId, { type: 'error', message: 'Cannot subscribe to other partner channels' });
+              break;
+            }
+          }
+          subscribe(clientId, ch);
+          sendTo(clientId, { type: 'subscribed', channel: ch });
         }
         break;
+      }
 
       case 'unsubscribe':
         unsubscribe(clientId, msg.channel);
