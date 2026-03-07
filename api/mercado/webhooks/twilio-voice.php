@@ -190,16 +190,31 @@ if ($cust && $cust['name']) {
             'accepted' => 'já foi aceito',
             'preparing' => 'tá sendo preparado',
             'em_preparo' => 'tá sendo preparado',
-            'ready' => 'tá prontinho',
+            'ready' => 'tá prontinho, saindo já',
             'delivering' => 'tá a caminho',
             'saiu_entrega' => 'tá a caminho',
         ];
         $statusText = $statusLabels[$activeOrder['status']] ?? 'em andamento';
         $greetText = "{$periodo}, {$firstName}! Seu pedido da {$activeOrder['partner_name']} {$statusText}. "
-            . "Quer saber mais, cancelar, ou fazer outro pedido?";
+            . "Quer saber mais ou fazer outro pedido?";
     } else {
-        $greetText = "{$periodo}, {$firstName}! Aqui é a Bora, do SuperBora. "
-            . "No que posso te ajudar hoje?";
+        // Vary greeting based on customer history — feel like a real person who remembers you
+        if ($orderCount >= 10) {
+            // VIP customer
+            $vipGreets = [
+                "{$periodo}, {$firstName}! Que bom te ouvir de novo. Vai querer pedir?",
+                "E aí, {$firstName}! Tudo bem? Vai querer o de sempre?",
+                "{$periodo}, {$firstName}! Sempre bom falar com você. O que vai ser hoje?",
+            ];
+            $greetText = $vipGreets[array_rand($vipGreets)];
+        } elseif ($recentOrder && $daysSinceOrder <= 7) {
+            // Ordered recently
+            $greetText = "{$periodo}, {$firstName}! Vi que você pediu da {$recentOrder['partner_name']} esses dias. Quer repetir ou algo diferente?";
+        } elseif ($recentOrder && $daysSinceOrder <= 30) {
+            $greetText = "{$periodo}, {$firstName}! Faz um tempinho que você não pede. Bora matar essa fome?";
+        } else {
+            $greetText = "{$periodo}, {$firstName}! Aqui é a Bora, do SuperBora. O que vai ser hoje?";
+        }
     }
 } else {
     // Unknown phone number — friendly greeting, ask name naturally
@@ -236,7 +251,23 @@ try {
 $fullGreeting = $greetText . $agentHint;
 
 $routeEsc = htmlspecialchars($routeUrl, ENT_XML1 | ENT_QUOTES, 'UTF-8');
-$gatherAttrs = 'input="speech dtmf" language="pt-BR" speechModel="experimental_utterances" speechTimeout="auto" profanityFilter="false" enhanced="true" hints="sim, não, pedido, atendente, cancelar, status, ajuda, pizza, lanche, hambúrguer, bebida, açaí, sushi, um, dois, três, zero, Aleff, meu nome é, endereço, CEP, pix, cartão, dinheiro"';
+// Build dynamic hints including store names from customer's area
+$storeHintParts = [];
+try {
+    $city = $savedCity ?: null;
+    if ($city) {
+        $hintStmt = $db->prepare("SELECT name FROM om_market_partners WHERE status = '1' AND city ILIKE ? AND name != '' LIMIT 20");
+        $hintStmt->execute(['%' . $city . '%']);
+    } else {
+        $hintStmt = $db->query("SELECT name FROM om_market_partners WHERE status = '1' AND name != '' ORDER BY COALESCE(total_orders,0) DESC LIMIT 20");
+    }
+    while ($hRow = $hintStmt->fetch()) {
+        $n = trim($hRow['name']);
+        if ($n && mb_strlen($n) <= 40) $storeHintParts[] = $n;
+    }
+} catch (Exception $e) {}
+$storeHintStr = !empty($storeHintParts) ? ', ' . implode(', ', $storeHintParts) : '';
+$gatherAttrs = 'input="speech dtmf" language="pt-BR" speechModel="experimental_utterances" speechTimeout="auto" profanityFilter="false" enhanced="true" hints="sim, não, pedido, atendente, cancelar, status, ajuda, pizza, lanche, hambúrguer, bebida, açaí, sushi, um, dois, três, zero, Aleff, meu nome é, endereço, CEP, pix, cartão, dinheiro' . htmlspecialchars($storeHintStr, ENT_XML1 | ENT_QUOTES, 'UTF-8') . '"';
 
 echo '<?xml version="1.0" encoding="UTF-8"?>';
 echo '<Response>';

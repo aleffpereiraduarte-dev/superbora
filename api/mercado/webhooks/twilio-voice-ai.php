@@ -512,6 +512,42 @@ try {
         $isNo = in_array(trim($lowerInput), $noWords);
         if ($isYes) $aiContext['last_answer'] = 'yes';
         if ($isNo) $aiContext['last_answer'] = 'no';
+
+        // 7. Fast-track: simple "yes" at confirm_order step → skip Claude, submit directly
+        if ($isYes && $step === 'confirm_order' && !empty($aiContext['items']) && !empty($aiContext['payment_method'])) {
+            $aiContext['confirmed'] = true;
+            $aiContext['step'] = 'submit_order';
+            $aiContext['history'] = $conversationHistory;
+            $aiContext['history'][] = ['role' => 'assistant', 'content' => 'Pedido confirmado! Tô enviando pro restaurante...'];
+            saveAiContext($db, $callId, $aiContext);
+
+            $orderResult = submitAiOrder($db, $aiContext, $callId);
+            if ($orderResult && ($orderResult['success'] ?? false)) {
+                $orderNum = $orderResult['order_number'] ?? '';
+                $finalMsg = "Pronto! Pedido {$orderNum} enviado! Você vai receber um SMS com o resumo. Bom apetite!";
+                try {
+                    if (function_exists('sendAiOrderSms')) {
+                        $phone = $aiContext['customer_phone'] ?? $call['customer_phone'] ?? '';
+                        if ($phone) sendAiOrderSms($phone, $aiContext, $orderResult);
+                    }
+                } catch (\Throwable $e) {}
+
+                echo '<?xml version="1.0" encoding="UTF-8"?>';
+                echo '<Response>';
+                echo ttsSayOrPlay($finalMsg);
+                echo '<Pause length="1"/>';
+                echo ttsSayOrPlay("Tchau!");
+                echo '<Hangup/>';
+                echo '</Response>';
+                $aiContext['step'] = 'complete';
+                saveAiContext($db, $callId, $aiContext);
+                exit;
+            }
+            // Submission failed — fall through to normal Claude flow
+            $aiContext['step'] = 'confirm_order';
+            $aiContext['confirmed'] = false;
+            $step = 'confirm_order';
+        }
     }
 
     if ($digits === '0' && empty($speechResult)) {
@@ -570,8 +606,13 @@ try {
     // Reset silence counter when we get input
     $aiContext['silence_count'] = 0;
 
-    // Add user message to history
-    $conversationHistory[] = ['role' => 'user', 'content' => $isCepRedirect ? "Meu CEP é {$userInput}" : $userInput];
+    // Add user message to history — annotate with confidence if low
+    $userMsg = $isCepRedirect ? "Meu CEP é {$userInput}" : $userInput;
+    if (!$isCepRedirect && $speechConfidence > 0 && $speechConfidence < 0.6 && !empty($speechResult)) {
+        // Tell Claude the transcription might be wrong so it can ask to confirm
+        $userMsg = "[CONFIANÇA BAIXA: " . round($speechConfidence * 100) . "%] " . $userMsg;
+    }
+    $conversationHistory[] = ['role' => 'user', 'content' => $userMsg];
 
     // -- Build context for Claude --
     $storeId = $aiContext['store_id'] ?? null;
@@ -605,8 +646,8 @@ try {
             }
         }
 
-        // Detect natural pauses — don't waste Claude call
-        $pausePhrases = ['perai', 'pera', 'espera', 'um momento', 'calma', 'deixa eu pensar', 'hm', 'hmm', 'ah'];
+        // Detect natural pauses & backchannels — don't waste Claude call
+        $pausePhrases = ['perai', 'pera', 'espera', 'um momento', 'calma', 'deixa eu pensar', 'hm', 'hmm', 'ah', 'ahan', 'aham', 'é', 'ta', 'tá', 'uhum', 'uh hum', 'um segundo', 'momento', 'so um minuto', 'to pensando', 'deixa ver', 'deixa eu ver', 'como é', 'olha', 'bom'];
         if (in_array(trim($lowerInput), $pausePhrases)) {
             $aiContext['history'] = $conversationHistory;
             saveAiContext($db, $callId, $aiContext);
@@ -1127,12 +1168,25 @@ try {
         if (!empty($aiContext['store_name'])) $summaryParts[] = 'Loja: ' . $aiContext['store_name'];
         if (!empty($aiContext['items'])) {
             $itemNames = array_map(fn($i) => ($i['quantity'] ?? 1) . 'x ' . ($i['name'] ?? '?'), $aiContext['items']);
-            $summaryParts[] = 'Itens: ' . implode(', ', $itemNames);
+            $subtotal = array_sum(array_map(fn($i) => ($i['price'] ?? 0) * ($i['quantity'] ?? 1), $aiContext['items']));
+            $summaryParts[] = 'Itens: ' . implode(', ', $itemNames) . ' (subtotal R$' . number_format($subtotal, 2, ',', '.') . ')';
         }
-        if (!empty($aiContext['address'])) $summaryParts[] = 'Endereço: definido';
-        if (!empty($aiContext['payment_method'])) $summaryParts[] = 'Pagamento: ' . $aiContext['payment_method'];
+        if (!empty($aiContext['address'])) {
+            $addrStr = is_array($aiContext['address']) ? ($aiContext['address']['full'] ?? $aiContext['address']['street'] ?? 'definido') : 'definido';
+            $summaryParts[] = 'Endereço: ' . mb_substr($addrStr, 0, 50);
+        }
+        if (!empty($aiContext['payment_method'])) {
+            $payLabels = ['dinheiro' => 'Dinheiro', 'pix' => 'PIX', 'credit_card' => 'Cartão crédito', 'debit_card' => 'Cartão débito'];
+            $summaryParts[] = 'Pagamento: ' . ($payLabels[$aiContext['payment_method']] ?? $aiContext['payment_method']);
+        }
+        if (!empty($aiContext['delivery_instructions'])) $summaryParts[] = 'Instruções: ' . mb_substr($aiContext['delivery_instructions'], 0, 40);
+        if (!empty($aiContext['tip']) && (float)$aiContext['tip'] > 0) $summaryParts[] = 'Gorjeta: R$' . number_format((float)$aiContext['tip'], 2, ',', '.');
+        if (!empty($aiContext['scheduled_date'])) $summaryParts[] = 'Agendado: ' . $aiContext['scheduled_date'] . ' ' . ($aiContext['scheduled_time'] ?? '');
+        if ($didUpsell) $summaryParts[] = 'Upsell: já feito (não sugira de novo)';
+
         if (!empty($summaryParts)) {
             $conversationSummary = "\n\n## RESUMO DA CONVERSA ATÉ AGORA\n" . implode(' | ', $summaryParts) . "\n";
+            $conversationSummary .= "Turno: #{$turnCount} | Etapa atual: {$step}\n";
         }
     }
 
@@ -1511,10 +1565,31 @@ try {
         echo '<Hangup/>';
         echo '</Response>';
     } else {
-        // Continue conversation with Gather — enhanced speech for better recognition
+        // Continue conversation with Gather — dynamic attributes per step
+        $currentStep = $newContext['step'] ?? 'identify_store';
+
+        // Dynamic timeout: longer for complex steps, shorter for yes/no
+        $stepTimeouts = [
+            'identify_store' => 8,
+            'take_order' => 10,      // Customer may be reading menu / thinking
+            'get_address' => 12,     // Address is complex to say
+            'get_payment' => 8,
+            'confirm_order' => 6,    // Quick yes/no expected
+            'support' => 10,
+        ];
+        $gatherTimeout = $stepTimeouts[$currentStep] ?? 8;
+
+        // Dynamic speech hints: inject menu items / store names for better Twilio recognition
+        $dynamicHints = buildDynamicHints($currentStep, $newContext, $menuText ?? '');
+        $gatherAttrs = $gatherStd;
+        if (!empty($dynamicHints)) {
+            // Replace the hints attribute with expanded hints
+            $gatherAttrs = preg_replace('/hints="[^"]*"/', 'hints="' . escXml($dynamicHints) . '"', $gatherAttrs);
+        }
+
         echo '<?xml version="1.0" encoding="UTF-8"?>';
         echo '<Response>';
-        echo '<Gather ' . $gatherStd . ' timeout="8" action="' . escXml($selfUrl) . '" method="POST">';
+        echo '<Gather ' . $gatherAttrs . ' timeout="' . $gatherTimeout . '" action="' . escXml($selfUrl) . '" method="POST">';
         echo ttsSayOrPlay($aiResponse);
         echo '</Gather>';
         echo ttsSayOrPlay("Oi, tô aqui! Pode falar, eu tô ouvindo.");
@@ -1561,6 +1636,71 @@ try {
 // ═══════════════════════════════════════════════════════════════════════════
 // HELPER FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Build dynamic Twilio speech hints based on current step & context.
+ * Hints improve speech recognition accuracy by telling Twilio what words to expect.
+ * Max ~500 words for Twilio hints attribute.
+ */
+function buildDynamicHints(string $step, array $context, string $menuText): string {
+    // Base hints always present
+    $baseHints = 'sim, não, pedido, atendente, cancelar, status, obrigado, tchau, Aleff, pix, cartão, dinheiro, crédito, débito';
+
+    switch ($step) {
+        case 'identify_store':
+            // Add store names as hints for better recognition
+            $storeHints = [];
+            $nearbyStores = $context['nearby_stores'] ?? [];
+            foreach ($nearbyStores as $store) {
+                $name = $store['name'] ?? '';
+                if ($name && mb_strlen($name) <= 40) {
+                    $storeHints[] = $name;
+                    // Also add first word for partial matching
+                    $firstWord = explode(' ', $name)[0];
+                    if (mb_strlen($firstWord) >= 3) $storeHints[] = $firstWord;
+                }
+            }
+            $storeStr = implode(', ', array_unique(array_slice($storeHints, 0, 30)));
+            return $baseHints . ', pizza, lanche, hambúrguer, açaí, sushi, japonesa, pizzaria, hamburgueria, padaria, restaurante' . ($storeStr ? ', ' . $storeStr : '');
+
+        case 'take_order':
+            // Extract product names from menu text for hints
+            $productHints = [];
+            if (!empty($menuText)) {
+                // Menu format: "- Product Name (R$XX.XX)" or "  >> Option"
+                preg_match_all('/^-\s*(.+?)\s*\(R\$/m', $menuText, $matches);
+                foreach ($matches[1] ?? [] as $productName) {
+                    $cleaned = trim($productName);
+                    if (mb_strlen($cleaned) >= 3 && mb_strlen($cleaned) <= 40) {
+                        $productHints[] = $cleaned;
+                    }
+                }
+                // Also extract option names
+                preg_match_all('/^\s*>>\s*(.+?)\s*(?:\(|$)/m', $menuText, $optMatches);
+                foreach ($optMatches[1] ?? [] as $optName) {
+                    $cleaned = trim($optName);
+                    if (mb_strlen($cleaned) >= 3 && mb_strlen($cleaned) <= 30) {
+                        $productHints[] = $cleaned;
+                    }
+                }
+            }
+            // Common food words + product names (limit to ~50 hints)
+            $productStr = implode(', ', array_unique(array_slice($productHints, 0, 40)));
+            return $baseHints . ', um, dois, três, quatro, cinco, grande, pequeno, médio, combo, sem cebola, sem tomate, extra queijo, meia a meia, só isso, pronto, fecha, mais alguma coisa' . ($productStr ? ', ' . $productStr : '');
+
+        case 'get_address':
+            return $baseHints . ', rua, avenida, alameda, travessa, apartamento, casa, bloco, andar, portão, portaria, CEP, número, complemento, esquina, próximo';
+
+        case 'get_payment':
+            return $baseHints . ', dinheiro, pix, cartão, crédito, débito, troco, cem, cinquenta, vinte, gorjeta, maquininha, dividir, metade';
+
+        case 'confirm_order':
+            return $baseHints . ', confirma, confirmar, pode, manda, isso, bora, beleza, tá certo, muda, trocar, tirar, adicionar, volta';
+
+        default:
+            return $baseHints;
+    }
+}
 
 function escXml(string $s): string {
     return htmlspecialchars($s, ENT_XML1 | ENT_QUOTES, 'UTF-8');
@@ -2570,6 +2710,29 @@ function buildSystemPrompt(
     $prompt .= "7. Use 'você' (nunca senhor/senhora). Nome do cliente SÓ na primeira interação, depois só se precisar chamar atenção.\n";
     $prompt .= "8. Alergia/ingrediente sem info → 'não tenho certeza, melhor ligar pro restaurante direto'\n\n";
 
+    $prompt .= "## RITMO DA CONVERSA (anti-monólogo)\n";
+    $prompt .= "REGRA #1: Cada resposta sua TERMINA com uma PERGUNTA ou PAUSA pra o cliente falar.\n";
+    $prompt .= "NUNCA faça monólogos longos. O cliente precisa se sentir ouvido, não palestra.\n\n";
+    $prompt .= "EXEMPLOS DE RITMO BOM:\n";
+    $prompt .= "- ✓ 'Pizza Margherita, trinta e cinco. Mais alguma coisa?' (frase + pergunta)\n";
+    $prompt .= "- ✓ 'Beleza! E pra beber?' (confirmação + próxima pergunta)\n";
+    $prompt .= "- ✓ 'Anotado! Quer fechar ou tem mais?' (ação + opções)\n";
+    $prompt .= "- ✗ 'Pizza Margherita por trinta e cinco reais, que é uma das mais populares. Temos também a Calabresa, que é outra opção muito boa...' (monólogo)\n\n";
+    $prompt .= "EXEMPLOS DE RITMO RUIM (NUNCA faça):\n";
+    $prompt .= "- ✗ Listar mais de 3 itens do cardápio de uma vez\n";
+    $prompt .= "- ✗ Explicar regras, promoções ou procedimentos longamente\n";
+    $prompt .= "- ✗ Repetir o pedido inteiro depois de cada item adicionado\n";
+    $prompt .= "- ✗ Dar opções demais: 'Tem A, B, C, D, E, F...' — máximo 3 opções por vez\n\n";
+
+    $prompt .= "## FORMATAÇÃO PARA VOZ (TTS)\n";
+    $prompt .= "Sua resposta será convertida em áudio. Formate pra soar natural:\n";
+    $prompt .= "- Números: escreva POR EXTENSO — 'treze e cinquenta' não 'R$13,50'\n";
+    $prompt .= "- Listas: máximo 3 itens, separados por pausa — 'Tem margherita, calabresa e portuguesa'\n";
+    $prompt .= "- Siglas: soletre — 'P-I-X' não 'pix' (para pagamento), mas pode dizer 'pix' coloquialmente\n";
+    $prompt .= "- Pontuação: use vírgulas pra pausas naturais. Ponto final = pausa longa.\n";
+    $prompt .= "- NUNCA use markdown, asteriscos, bullets, emojis ou formatação visual — isso é ÁUDIO\n";
+    $prompt .= "- NUNCA use parênteses ou colchetes no texto falado (use só nos marcadores internos)\n\n";
+
     $prompt .= "## ENTENDENDO O QUE O CLIENTE FALA (CRÍTICO)\n";
     $prompt .= "Você recebe o texto transcrito do áudio do cliente. O reconhecimento de voz ERRA MUITO. Sua inteligência é INTERPRETAR:\n\n";
 
@@ -2615,6 +2778,13 @@ function buildSystemPrompt(
 
     $prompt .= "REGRA DE OURO: Se o cliente diz algo que parece um nome (pessoa, lugar, restaurante), NUNCA ignore. Tente interpretar e confirme. Se disser 'meu nome é [algo]', aceite como nome mesmo se parecer estranho — pode ser nome gringo, apelido, etc.\n";
     $prompt .= "Quando pedir pra repetir, seja ESPECÍFICO: 'Não peguei o nome do restaurante. Pode repetir?' — não diga 'pode repetir?' genérico.\n\n";
+
+    $prompt .= "### Transcrição com baixa confiança\n";
+    $prompt .= "Se a mensagem do cliente começa com [CONFIANÇA BAIXA: X%], o reconhecimento de voz não tem certeza do que ele disse.\n";
+    $prompt .= "- < 40%: muito incerto → confirme antes de agir: 'Entendi [X], tá certo?'\n";
+    $prompt .= "- 40-60%: razoável → interprete pelo contexto, mas confirme se for algo crítico (nome da loja, item do pedido)\n";
+    $prompt .= "- > 60%: normal → confie na transcrição\n";
+    $prompt .= "NUNCA mencione o percentual pro cliente. Isso é informação interna sua.\n\n";
 
     $prompt .= "## VOCABULÁRIO NATURAL\n";
     $prompt .= "Confirmações (varie!): 'show!', 'beleza!', 'anotado!', 'fechou!', 'pode crê!', 'bora!', 'boa!', 'massa!', 'top!', 'perfeito!', 'certinho!', 'combinado!'\n";
