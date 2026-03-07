@@ -1748,6 +1748,122 @@ try {
         }
     }
 
+    // 8-storefast. Fast-track store identification: when user clearly names a store, skip Claude
+    if ($step === 'identify_store' && !empty($userInput) && !$isYes && !$isNo) {
+        $storeInputLower = mb_strtolower(trim($userInput), 'UTF-8');
+        // Don't fast-track if it looks like a question or generic intent
+        $isGenericIntent = preg_match('/^(?:quero|vou|preciso|me|pode|oi|olá|bom dia|boa tarde|boa noite|fome|pedido|ajuda|duvida|dúvida|status|cancelar|atendente)/iu', $storeInputLower);
+        if (!$isGenericIntent && mb_strlen($storeInputLower) >= 3 && mb_strlen($storeInputLower) <= 60) {
+            // Load all active stores
+            $storeCandidates = $aiContext['nearby_stores'] ?? [];
+            if (empty($storeCandidates)) {
+                try {
+                    $allStFast = $db->query("SELECT partner_id AS id, name FROM om_market_partners WHERE status = '1' AND name != '' LIMIT 50")->fetchAll();
+                    $storeCandidates = $allStFast;
+                } catch (Exception $e) {}
+            }
+
+            $bestMatch = null;
+            $bestScore = 0;
+            $inputPhonetic = phoneticNormalizePtBr($storeInputLower);
+
+            // Strip common prefixes: "da", "do", "na", "no", "quero da", "pedir da"
+            $cleanInput = preg_replace('/^(?:quero\s+(?:pedir\s+)?(?:da|do|na|no|de)\s+|pedir\s+(?:da|do|na|no|de)\s+|(?:da|do|na|no|la)\s+)/iu', '', $storeInputLower);
+            $cleanPhonetic = phoneticNormalizePtBr($cleanInput);
+
+            foreach ($storeCandidates as $cs) {
+                $csLower = mb_strtolower($cs['name'], 'UTF-8');
+
+                // Exact substring (both directions)
+                if ($csLower === $cleanInput || mb_strpos($csLower, $cleanInput) !== false || mb_strpos($cleanInput, $csLower) !== false) {
+                    $bestMatch = $cs;
+                    $bestScore = 100;
+                    break;
+                }
+
+                // Phonetic match
+                $storePhonetic = phoneticNormalizePtBr($csLower);
+                $storeWords = array_filter(preg_split('/\s+/', $storePhonetic), fn($w) => mb_strlen($w) >= 2);
+                $inputWords = array_filter(preg_split('/\s+/', $cleanPhonetic), fn($w) => mb_strlen($w) >= 2);
+
+                if (!empty($storeWords) && !empty($inputWords)) {
+                    $matchedWords = 0;
+                    foreach ($storeWords as $sw) {
+                        foreach ($inputWords as $iw) {
+                            if ($iw === $sw || (mb_strlen($iw) >= 3 && mb_strlen($sw) >= 3 && levenshtein($iw, $sw) <= 1)) {
+                                $matchedWords++;
+                                break;
+                            }
+                        }
+                    }
+                    $score = ($matchedWords / max(count($storeWords), 1)) * 85;
+                    if ($score > $bestScore && $score >= 55) {
+                        $bestMatch = $cs;
+                        $bestScore = $score;
+                    }
+                }
+
+                // Full-name levenshtein for short store names
+                if (mb_strlen($cleanInput) >= 4 && mb_strlen($csLower) >= 4) {
+                    $lev = levenshtein(mb_substr($cleanInput, 0, 20), mb_substr($csLower, 0, 20));
+                    $maxLen = max(mb_strlen($cleanInput), mb_strlen($csLower));
+                    $levScore = (1 - ($lev / $maxLen)) * 80;
+                    if ($levScore > $bestScore && $levScore >= 60) {
+                        $bestMatch = $cs;
+                        $bestScore = $levScore;
+                    }
+                }
+            }
+
+            // High-confidence match (>= 70) → set store directly without Claude
+            if ($bestMatch && $bestScore >= 70) {
+                $matchedStoreId = (int)$bestMatch['id'];
+                $matchedStoreName = $bestMatch['name'];
+                $aiContext['store_id'] = $matchedStoreId;
+                $aiContext['store_name'] = $matchedStoreName;
+                $aiContext['step'] = 'take_order';
+                $step = 'take_order';
+                $aiContext['history'] = $conversationHistory;
+                $aiContext['history'][] = ['role' => 'user', 'content' => $userInput];
+
+                try {
+                    $db->prepare("UPDATE om_callcenter_calls SET store_identified = ? WHERE id = ?")
+                       ->execute([$matchedStoreName, $callId]);
+                } catch (Exception $e) {}
+
+                // Fetch popular items for greeting
+                $popNames = [];
+                try {
+                    $popS = $db->prepare("SELECT oi.product_name, COUNT(*) as cnt FROM om_market_order_items oi JOIN om_market_orders o ON o.order_id = oi.order_id WHERE o.partner_id = ? AND o.status NOT IN ('cancelled','refunded') AND oi.product_name IS NOT NULL GROUP BY oi.product_name ORDER BY cnt DESC LIMIT 3");
+                    $popS->execute([$matchedStoreId]);
+                    while ($pr = $popS->fetch()) { $popNames[] = $pr['product_name']; }
+                } catch (\Throwable $e) {}
+
+                $msg = "Beleza, {$matchedStoreName}! O que vai ser?";
+                if (!empty($popNames)) {
+                    $popStr = count($popNames) > 1 ? implode(', ', array_slice($popNames, 0, -1)) . ' e ' . end($popNames) : $popNames[0];
+                    $msg = "{$matchedStoreName}, boa escolha! Os mais pedidos são {$popStr}. O que vai ser?";
+                }
+
+                $aiContext['history'][] = ['role' => 'assistant', 'content' => $msg];
+                $aiContext['turn_count'] = ($aiContext['turn_count'] ?? 0) + 1;
+                saveAiContext($db, $callId, $aiContext);
+
+                error_log("[twilio-voice-ai] FAST-STORE: '{$userInput}' → {$matchedStoreName} (ID:{$matchedStoreId}, score={$bestScore})");
+
+                echo '<?xml version="1.0" encoding="UTF-8"?>';
+                echo '<Response>';
+                echo '<Gather ' . $gatherStd . ' timeout="10" action="' . escXml($selfUrl) . '" method="POST">';
+                echo ttsSayOrPlay($msg);
+                echo '</Gather>';
+                echo ttsSayOrPlay("Pode falar o que quer pedir!");
+                echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
+                echo '</Response>';
+                exit;
+            }
+        }
+    }
+
     if ($digits === '0' && empty($speechResult)) {
         transferToAgent($db, $callId, $callerPhone, $customerName, $customerId, $routeUrl);
         exit;
