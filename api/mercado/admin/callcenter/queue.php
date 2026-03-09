@@ -38,6 +38,22 @@ try {
     // GET — Current queue
     // ════════════════════════════════════════════════════════════════════
     if ($method === 'GET') {
+        // Auto-cleanup: finalize stuck calls (ai_handling/in_progress/on_hold older than 30 min)
+        $db->query("
+            UPDATE om_callcenter_calls
+            SET status = 'completed',
+                ended_at = COALESCE(ended_at, NOW()),
+                duration_seconds = COALESCE(duration_seconds, EXTRACT(EPOCH FROM (NOW() - started_at))::int)
+            WHERE status IN ('ai_handling', 'in_progress', 'on_hold', 'ringing')
+            AND started_at < NOW() - INTERVAL '30 minutes'
+        ");
+        // Cleanup orphaned queue entries
+        $db->query("
+            UPDATE om_callcenter_queue SET abandoned_at = NOW()
+            WHERE picked_at IS NULL AND abandoned_at IS NULL
+            AND queued_at < NOW() - INTERVAL '30 minutes'
+        ");
+
         $stmt = $db->query("
             SELECT q.id, q.call_id, q.customer_phone, q.customer_name, q.customer_id,
                    q.priority, q.estimated_wait_seconds, q.queued_at,

@@ -52,16 +52,34 @@ try {
             WHERE picked_at IS NULL AND abandoned_at IS NULL
         ")->fetchColumn();
 
-        // Active calls
+        // Active calls (only count recent ones to avoid stuck records)
         $activeCalls = (int)$db->query("
             SELECT COUNT(*) FROM om_callcenter_calls
             WHERE status IN ('in_progress', 'ai_handling')
+            AND started_at > NOW() - INTERVAL '30 minutes'
         ")->fetchColumn();
+
+        // Active AI calls specifically
+        $activeAiCalls = (int)$db->query("
+            SELECT COUNT(*) FROM om_callcenter_calls
+            WHERE status = 'ai_handling'
+            AND started_at > NOW() - INTERVAL '30 minutes'
+        ")->fetchColumn();
+
+        // Auto-fix stuck calls (started > 30 min ago, still ai_handling)
+        $db->query("
+            UPDATE om_callcenter_calls
+            SET status = 'completed',
+                ended_at = COALESCE(ended_at, started_at + (duration_seconds || ' seconds')::interval, started_at + INTERVAL '1 minute')
+            WHERE status = 'ai_handling'
+            AND started_at < NOW() - INTERVAL '30 minutes'
+        ");
 
         // Calls on hold
         $onHoldCalls = (int)$db->query("
             SELECT COUNT(*) FROM om_callcenter_calls
             WHERE status = 'on_hold'
+            AND started_at > NOW() - INTERVAL '2 hours'
         ")->fetchColumn();
 
         // Active WhatsApp conversations
@@ -120,6 +138,7 @@ try {
             ],
             'calls' => [
                 'active' => $activeCalls,
+                'ai' => $activeAiCalls,
                 'on_hold' => $onHoldCalls,
             ],
             'whatsapp' => [
@@ -143,9 +162,10 @@ try {
         $callStats = $db->prepare("
             SELECT
                 COUNT(*) AS total_calls,
-                COUNT(*) FILTER (WHERE status = 'completed') AS answered,
+                COUNT(*) FILTER (WHERE status IN ('completed', 'ai_handling', 'in_progress')) AS answered,
                 COUNT(*) FILTER (WHERE status = 'missed') AS missed,
-                COUNT(*) FILTER (WHERE status = 'ai_handling') AS ai_handled,
+                COUNT(*) FILTER (WHERE agent_id IS NULL AND (transcription IS NOT NULL OR ai_summary IS NOT NULL)) AS ai_handled,
+                COUNT(*) FILTER (WHERE agent_id IS NOT NULL) AS agent_handled,
                 COUNT(*) FILTER (WHERE status = 'voicemail') AS voicemail,
                 COUNT(*) FILTER (WHERE callback_requested = TRUE) AS callbacks_requested,
                 COUNT(*) FILTER (WHERE callback_completed_at IS NOT NULL) AS callbacks_completed,
@@ -157,12 +177,26 @@ try {
         $callStats->execute([$today]);
         $calls = $callStats->fetch();
 
+        // Recent calls (last 20) for activity feed
+        $recentCalls = $db->prepare("
+            SELECT id, customer_phone, customer_name, direction, status,
+                   duration_seconds, ai_summary, protocol_code,
+                   started_at, ended_at, store_identified,
+                   CASE WHEN agent_id IS NULL THEN 'ia' ELSE 'agente' END AS handled_by
+            FROM om_callcenter_calls
+            WHERE created_at::date = ?
+            ORDER BY created_at DESC
+            LIMIT 20
+        ");
+        $recentCalls->execute([$today]);
+        $recentCallsList = $recentCalls->fetchAll(PDO::FETCH_ASSOC);
+
         // Draft/order stats today
         $draftStats = $db->prepare("
             SELECT
                 COUNT(*) AS total_drafts,
                 COUNT(*) FILTER (WHERE status = 'submitted') AS submitted,
-                COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled,
+                COUNT(*) FILTER (WHERE status = 'cancelado') AS cancelled,
                 COUNT(*) FILTER (WHERE status IN ('building', 'review', 'awaiting_payment')) AS in_progress,
                 COALESCE(SUM(total) FILTER (WHERE status = 'submitted'), 0) AS submitted_total_value
             FROM om_callcenter_order_drafts
@@ -201,12 +235,14 @@ try {
                 'answered' => (int)$calls['answered'],
                 'missed' => (int)$calls['missed'],
                 'ai_handled' => (int)$calls['ai_handled'],
+                'agent_handled' => (int)$calls['agent_handled'],
                 'voicemail' => (int)$calls['voicemail'],
                 'callbacks_requested' => (int)$calls['callbacks_requested'],
                 'callbacks_completed' => (int)$calls['callbacks_completed'],
                 'avg_duration_seconds' => (int)$calls['avg_duration'],
                 'avg_wait_seconds' => (int)$calls['avg_wait'],
             ],
+            'recent_activity' => $recentCallsList,
             'drafts' => [
                 'total' => (int)$drafts['total_drafts'],
                 'submitted' => (int)$drafts['submitted'],

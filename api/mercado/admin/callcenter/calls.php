@@ -108,11 +108,18 @@ try {
             }
         }
 
-        // Search by phone or name
+        // Search by protocol code (exact match)
+        if (!empty($_GET['protocol'])) {
+            $conditions[] = "c.protocol_code = ?";
+            $params[] = strtoupper(trim($_GET['protocol']));
+        }
+
+        // Search by phone, name, or protocol
         if (!empty($_GET['search'])) {
             $escaped = str_replace(['%', '_'], ['\\%', '\\_'], $_GET['search']);
-            $conditions[] = "(c.customer_phone ILIKE ? OR c.customer_name ILIKE ?)";
+            $conditions[] = "(c.customer_phone ILIKE ? OR c.customer_name ILIKE ? OR c.protocol_code ILIKE ?)";
             $searchParam = '%' . $escaped . '%';
+            $params[] = $searchParam;
             $params[] = $searchParam;
             $params[] = $searchParam;
         }
@@ -129,7 +136,7 @@ try {
         $params[] = $limit;
         $params[] = $offset;
         $sql = "
-            SELECT c.id, c.twilio_call_sid, c.customer_phone, c.customer_name, c.customer_id,
+            SELECT c.id, c.twilio_call_sid, c.protocol_code, c.customer_phone, c.customer_name, c.customer_id,
                    c.agent_id, c.direction, c.status, c.duration_seconds, c.recording_url,
                    c.ai_summary, c.ai_sentiment, c.notes, c.order_id, c.store_identified,
                    c.callback_requested, c.wait_time_seconds, c.started_at, c.answered_at, c.ended_at,
