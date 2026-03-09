@@ -397,16 +397,28 @@ try {
                 $addressJson = json_encode($addressData, JSON_UNESCAPED_UNICODE);
             }
 
-            $stmt = $db->prepare("
-                UPDATE om_callcenter_order_drafts
-                SET customer_id = ?, customer_name = ?, customer_phone = ?,
-                    customer_address_id = ?, address = ?::jsonb, updated_at = NOW()
-                WHERE id = ?
-            ");
-            $stmt->execute([
-                $customerId ?: null, $customerName, $customerPhone,
-                $addressId ?: null, $addressJson, $draftId
-            ]);
+            // Only update address fields if address data was actually provided
+            if ($addressJson !== null || $addressId) {
+                $stmt = $db->prepare("
+                    UPDATE om_callcenter_order_drafts
+                    SET customer_id = ?, customer_name = ?, customer_phone = ?,
+                        customer_address_id = ?, address = ?::jsonb, updated_at = NOW()
+                    WHERE id = ?
+                ");
+                $stmt->execute([
+                    $customerId ?: null, $customerName, $customerPhone,
+                    $addressId ?: null, $addressJson, $draftId
+                ]);
+            } else {
+                $stmt = $db->prepare("
+                    UPDATE om_callcenter_order_drafts
+                    SET customer_id = ?, customer_name = ?, customer_phone = ?, updated_at = NOW()
+                    WHERE id = ?
+                ");
+                $stmt->execute([
+                    $customerId ?: null, $customerName, $customerPhone, $draftId
+                ]);
+            }
 
             $updatedDraft = fetchDraft($db, $draftId);
             response(true, ['draft' => $updatedDraft], "Cliente definido");

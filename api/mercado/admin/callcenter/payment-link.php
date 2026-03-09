@@ -127,9 +127,7 @@ try {
                             'currency' => 'brl',
                             'unit_amount' => (int)round($itemTotal * 100),
                             'product_data' => [
-                                'name' => ($item['quantity'] ?? 1) > 1
-                                    ? "{$item['quantity']}x {$item['name']}"
-                                    : $item['name'],
+                                'name' => $item['name'],
                             ],
                         ],
                         'quantity' => (int)($item['quantity'] ?? 1),
@@ -228,7 +226,7 @@ try {
                 SET status = 'awaiting_payment', payment_method = 'link',
                     payment_link_url = ?, payment_link_id = ?, updated_at = NOW()
                 WHERE id = ?
-            ")->execute([$paymentUrl, $sessionId, $draftId]);
+            ")->execute([$paymentUrl, $linkId, $draftId]);
 
             // ── Send SMS with payment link ──────────────────────────────
             $smsResult = sendPaymentLink($customerPhone, $paymentUrl, $total);
