@@ -213,9 +213,13 @@ try {
     $lng_cliente = (float)($input['lng'] ?? $input['longitude'] ?? 0);
     $lat_parceiro = (float)($parceiro['latitude'] ?? $parceiro['lat'] ?? 0);
     $lng_parceiro = (float)($parceiro['longitude'] ?? $parceiro['lng'] ?? 0);
-    // Validate coordinate ranges
-    if ($lat_cliente && ($lat_cliente < -90 || $lat_cliente > 90)) $lat_cliente = 0;
-    if ($lng_cliente && ($lng_cliente < -180 || $lng_cliente > 180)) $lng_cliente = 0;
+    // Validate coordinate ranges — reject null-island (0,0) and out-of-range
+    if ($lat_cliente == 0 && $lng_cliente == 0) { $lat_cliente = null; $lng_cliente = null; }
+    if ($lat_parceiro == 0 && $lng_parceiro == 0) { $lat_parceiro = null; $lng_parceiro = null; }
+    if ($lat_cliente !== null && ($lat_cliente < -90 || $lat_cliente > 90)) $lat_cliente = null;
+    if ($lng_cliente !== null && ($lng_cliente < -180 || $lng_cliente > 180)) $lng_cliente = null;
+    if ($lat_parceiro !== null && ($lat_parceiro < -90 || $lat_parceiro > 90)) $lat_parceiro = null;
+    if ($lng_parceiro !== null && ($lng_parceiro < -180 || $lng_parceiro > 180)) $lng_parceiro = null;
     if ($usaBoraUm && $lat_parceiro && $lat_cliente) {
         $distancia_km = OmPricing::calcularDistancia($lat_parceiro, $lng_parceiro, $lat_cliente, $lng_cliente);
     }
