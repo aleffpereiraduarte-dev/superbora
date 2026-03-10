@@ -164,11 +164,12 @@ try {
                 $secondaries = $stmtSecondaries->fetchAll(PDO::FETCH_COLUMN);
                 foreach ($secondaries as $secId) {
                     $db->prepare("UPDATE om_market_orders SET status = 'cancelado', cancel_reason = 'Pedido primario cancelado', cancelled_at = NOW(), date_modified = NOW() WHERE order_id = ?")->execute([$secId]);
-                    // Restore stock for secondary order items
+                    // Restore stock for secondary order items (with FOR UPDATE lock)
                     $stmtSecItems = $db->prepare("SELECT product_id, quantity FROM om_market_order_items WHERE order_id = ?");
                     $stmtSecItems->execute([$secId]);
                     foreach ($stmtSecItems->fetchAll() as $si) {
                         if ($si['product_id']) {
+                            $db->prepare("SELECT product_id FROM om_market_products WHERE product_id = ? FOR UPDATE")->execute([$si['product_id']]);
                             $db->prepare("UPDATE om_market_products SET quantity = quantity + ? WHERE product_id = ?")->execute([$si['quantity'], $si['product_id']]);
                         }
                     }
@@ -179,12 +180,14 @@ try {
             }
         }
 
-        // 2. Restaurar estoque dos produtos
+        // 2. Restaurar estoque dos produtos (with FOR UPDATE to prevent race conditions)
         $stmtItens = $db->prepare("SELECT product_id, quantity FROM om_market_order_items WHERE order_id = ?");
         $stmtItens->execute([$order_id]);
         $itens = $stmtItens->fetchAll();
         foreach ($itens as $item) {
             if ($item['product_id']) {
+                $db->prepare("SELECT product_id FROM om_market_products WHERE product_id = ? FOR UPDATE")
+                   ->execute([$item['product_id']]);
                 $db->prepare("UPDATE om_market_products SET quantity = quantity + ? WHERE product_id = ?")
                    ->execute([$item['quantity'], $item['product_id']]);
             }
@@ -193,8 +196,9 @@ try {
         // 3. Save Stripe info for refund AFTER commit (external call must not hold FOR UPDATE lock)
         $refundResult = null;
         $paymentMethod = $pedido['forma_pagamento'] ?? $pedido['payment_method'] ?? '';
-        $stripePi = $pedido['stripe_payment_intent_id'] ?? $pedido['payment_id'] ?? '';
-        $needsStripeRefund = in_array($paymentMethod, ['stripe_card', 'stripe_wallet', 'credito']) && $stripePi;
+        $stripePi = $pedido['stripe_payment_intent_id'] ?? '';
+        // Only Stripe for wallet payments (Apple Pay, Google Pay)
+        $needsStripeRefund = in_array($paymentMethod, ['stripe_wallet']) && $stripePi;
         // Se tem taxa, fazer refund parcial no Stripe. null = full refund, 0 = no refund needed
         $stripeRefundAmount = $cancellationFee > 0 ? max(0, $refundAmount) : null; // null = full refund
         // If refund amount is 0 (e.g. pickup order cancelled at 'pronto' status), skip Stripe call
@@ -259,7 +263,7 @@ try {
         try {
             require_once dirname(__DIR__, 3) . '/includes/classes/OmRepasse.php';
             $repasse = new OmRepasse($db);
-            $stmtRepasses = $db->prepare("SELECT id FROM om_repasses WHERE order_id = ? AND order_type = 'market' AND status IN ('hold', 'pendente')");
+            $stmtRepasses = $db->prepare("SELECT id FROM om_repasses WHERE order_id = ? AND order_type = 'mercado' AND status IN ('hold', 'pendente')");
             $stmtRepasses->execute([$order_id]);
             foreach ($stmtRepasses->fetchAll(PDO::FETCH_COLUMN) as $repasseId) {
                 $repasse->cancelar((int)$repasseId, "Pedido #$order_id cancelado: $motivo", 'sistema');
@@ -297,7 +301,7 @@ try {
             }
         }
 
-        // 3d. Estornar PIX (Woovi) se pagamento foi confirmado
+        // 3d. Estornar PIX via EFI se pagamento foi confirmado
         $needsPixRefund = ($paymentMethod === 'pix') && (
             ($pedido['pagamento_status'] ?? '') === 'pago' ||
             ($pedido['payment_status'] ?? '') === 'paid' ||
@@ -305,33 +309,63 @@ try {
         );
         if ($needsPixRefund) {
             try {
-                require_once dirname(__DIR__, 3) . '/includes/classes/WooviClient.php';
-                // Find the Woovi correlationId from transactions table
-                $txStmt = $db->prepare("SELECT pagarme_order_id FROM om_pagarme_transacoes WHERE pedido_id = ? AND tipo = 'pix' ORDER BY created_at DESC LIMIT 1");
-                $txStmt->execute([$order_id]);
-                $txRow = $txStmt->fetch();
-                $wooviCorrelation = $txRow['pagarme_order_id'] ?? '';
+                require_once dirname(__DIR__, 3) . '/includes/classes/EfiClient.php';
+                $efi = new EfiClient();
 
-                if (!empty($wooviCorrelation)) {
-                    $woovi = new WooviClient();
-                    $pixRefundResult = $woovi->refundCharge($wooviCorrelation, "Cancelamento pedido #$order_id");
-                    error_log("[cancelar] PIX refund pedido #$order_id correlation=$wooviCorrelation result=" . json_encode($pixRefundResult['data'] ?? []));
+                // e2eId is stored in payment_id, or look up via om_pix_intents txid
+                $efiE2eId = $pedido['payment_id'] ?? '';
+                $efiTxid = '';
+                if (empty($efiE2eId)) {
+                    $intentStmt = $db->prepare("SELECT correlation_id FROM om_pix_intents WHERE order_id = ? AND status = 'paid' LIMIT 1");
+                    $intentStmt->execute([$order_id]);
+                    $efiTxid = $intentStmt->fetchColumn() ?: '';
+                }
 
-                    // Validate refund result before marking as refunded
-                    $pixRefundOk = !empty($pixRefundResult['data']['refund']['status'])
-                        || !empty($pixRefundResult['data']['status'])
-                        || (isset($pixRefundResult['success']) && $pixRefundResult['success']);
+                // If no e2eId, get it from checking the charge
+                $refundE2eId = $efiE2eId;
+                if (empty($refundE2eId) && !empty($efiTxid)) {
+                    $chargeStatus = $efi->checkChargeStatus($efiTxid);
+                    $refundE2eId = $chargeStatus['e2e_id'] ?? '';
+                }
 
-                    if ($pixRefundOk) {
-                        $db->prepare("UPDATE om_pagarme_transacoes SET status = 'refunded' WHERE pedido_id = ? AND tipo = 'pix'")->execute([$order_id]);
-                    } else {
-                        error_log("[cancelar] PIX refund FAILED pedido #$order_id correlation=$wooviCorrelation — needs manual processing");
-                        $db->prepare("UPDATE om_pagarme_transacoes SET status = 'refund_failed' WHERE pedido_id = ? AND tipo = 'pix'")->execute([$order_id]);
-                        $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ' [PIX REFUND FAILED - MANUAL]' WHERE order_id = ?")->execute([$order_id]);
+                if (!empty($refundE2eId)) {
+                    $refundAmt = $cancellationFee > 0 ? max(0, $refundAmount) : (float)$pedido['total'];
+                    if ($refundAmt > 0) {
+                        $pixRefundResult = $efi->refundPix($refundE2eId, $refundAmt);
+                        if ($pixRefundResult['success']) {
+                            error_log("[cancelar] EFI PIX refund OK pedido #$order_id e2e=$refundE2eId dev={$pixRefundResult['devolucao_id']}");
+                            $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ? WHERE order_id = ?")
+                               ->execute([" [PIX REFUND OK: {$pixRefundResult['devolucao_id']}]", $order_id]);
+                        } else {
+                            error_log("[cancelar] EFI PIX refund FAILED pedido #$order_id e2e=$refundE2eId");
+                            $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ' [PIX REFUND FAILED - MANUAL]' WHERE order_id = ?")
+                               ->execute([$order_id]);
+                        }
                     }
+                } else {
+                    error_log("[cancelar] No e2eId for PIX refund pedido #$order_id");
                 }
             } catch (Exception $pixRefErr) {
-                error_log("[cancelar] Erro estorno PIX pedido #$order_id: " . $pixRefErr->getMessage());
+                error_log("[cancelar] Erro estorno EFI PIX pedido #$order_id: " . $pixRefErr->getMessage());
+            }
+        }
+
+        // 3e. Estornar cartao EFI se pagamento por cartao brasileiro
+        $efiChargeId = (int)($pedido['efi_charge_id'] ?? 0);
+        if (in_array($paymentMethod, ['efi_card', 'credito', 'debito']) && $efiChargeId > 0) {
+            try {
+                require_once dirname(__DIR__, 3) . '/includes/classes/EfiClient.php';
+                $efi = new EfiClient();
+                $cardRefundResult = $efi->refundCard($efiChargeId);
+                if ($cardRefundResult['success']) {
+                    error_log("[cancelar] EFI card refund OK pedido #$order_id chargeId=$efiChargeId");
+                    $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ' [CARD REFUND OK]' WHERE order_id = ?")
+                       ->execute([$order_id]);
+                } else {
+                    error_log("[cancelar] EFI card refund FAILED pedido #$order_id chargeId=$efiChargeId");
+                }
+            } catch (Exception $cardErr) {
+                error_log("[cancelar] Erro EFI card refund: " . $cardErr->getMessage());
             }
         }
 

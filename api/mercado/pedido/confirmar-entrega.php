@@ -138,6 +138,19 @@ try {
         response(false, null, "Pedido nao esta em entrega", 400);
     }
 
+    // SECURITY: Verify payment before allowing delivery confirmation
+    // Cash/dinheiro orders are exempt (paid on delivery)
+    $paymentMethod = $pedido['payment_method'] ?? $pedido['forma_pagamento'] ?? '';
+    $isCashPayment = in_array($paymentMethod, ['dinheiro', 'cartao_entrega']);
+    if (!$isCashPayment) {
+        $pagStatus = $pedido['pagamento_status'] ?? $pedido['payment_status'] ?? '';
+        if (!in_array($pagStatus, ['paid', 'pago', 'confirmado'])) {
+            $db->rollBack();
+            error_log("[confirmar-entrega] SECURITY: Pedido #{$order_id} pagamento nao confirmado (status={$pagStatus}, method={$paymentMethod})");
+            response(false, null, "Pagamento nao confirmado para este pedido", 400);
+        }
+    }
+
     // SECURITY: Customer cannot confirm DELIVERY on 'pronto' orders (must be em_entrega)
     // EXCEPTION: Pickup orders — customer confirms PICKUP when status is 'pronto'
     if ($confirmado_por === 'cliente' && $pedido['status'] === 'pronto' && !$isPickupOrder) {
@@ -171,7 +184,12 @@ try {
             $db->rollBack();
             response(false, null, "Pedido sem codigo de confirmacao configurado", 400);
         }
-        if (strtoupper(trim($codigo_confirmacao)) !== strtoupper(trim($storedCode))) {
+        $trimmedInput = trim($codigo_confirmacao);
+        if (strlen($trimmedInput) < 4) {
+            $db->rollBack();
+            response(false, null, "Codigo de confirmacao invalido", 400);
+        }
+        if (strtoupper($trimmedInput) !== strtoupper(trim($storedCode))) {
             $db->rollBack();
             response(false, null, "Codigo de confirmacao invalido", 400);
         }
@@ -187,16 +205,20 @@ try {
                 delivery_photo = ?,
                 confirmed_by = ?,
                 date_modified = NOW()
-            WHERE order_id = ?
+            WHERE order_id = ? AND status IN ('em_entrega', 'coletando', 'pronto')
         ");
         $stmt->execute([$finalStatus, $foto_entrega, $confirmado_por, $order_id]);
+        if ($stmt->rowCount() === 0) {
+            $db->rollBack();
+            response(false, null, "Pedido ja foi confirmado ou status foi alterado", 409);
+        }
 
         // 2. Verificar se repasse ja existe (idempotencia — webhook pode ter criado)
         require_once dirname(__DIR__, 3) . '/includes/classes/OmPricing.php';
         require_once dirname(__DIR__, 3) . '/includes/classes/OmDailyBudget.php';
         require_once dirname(__DIR__, 3) . '/includes/classes/OmRepasse.php';
 
-        $stmtRepasseCheck = $db->prepare("SELECT id FROM om_repasses WHERE order_id = ? AND order_type = 'mercado' LIMIT 1");
+        $stmtRepasseCheck = $db->prepare("SELECT id FROM om_repasses WHERE order_id = ? AND order_type = 'mercado' LIMIT 1 FOR UPDATE");
         $stmtRepasseCheck->execute([$order_id]);
         $repasseJaExiste = (bool)$stmtRepasseCheck->fetch();
 
