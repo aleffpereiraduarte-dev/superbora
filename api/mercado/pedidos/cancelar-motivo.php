@@ -67,9 +67,10 @@ try {
 
         if (!$orderId) response(false, null, 'order_id obrigatorio', 400);
 
-        // Verificar pedido
-        $stmt = $db->prepare("SELECT order_id, status, total, delivery_fee, subtotal, payment_method, delivering_at, partner_id
-            FROM om_market_orders WHERE order_id = ? AND customer_id = ?");
+        // Verificar pedido (FOR UPDATE to prevent concurrent modifications)
+        $db->beginTransaction();
+        $stmt = $db->prepare("SELECT order_id, status, total, delivery_fee, subtotal, payment_method, delivering_at, partner_id, coupon_id, cashback_used, loyalty_points_used
+            FROM om_market_orders WHERE order_id = ? AND customer_id = ? FOR UPDATE");
         $stmt->execute([$orderId, $customerId]);
         $order = $stmt->fetch(PDO::FETCH_ASSOC);
         if (!$order) response(false, null, 'Pedido nao encontrado', 404);
@@ -99,8 +100,6 @@ try {
                 break;
         }
 
-        $db->beginTransaction();
-
         $db->prepare("UPDATE om_market_orders SET
             status = 'cancelado',
             cancelled_at = NOW(),
@@ -116,16 +115,49 @@ try {
         $items = $db->prepare("SELECT product_id, quantity FROM om_market_order_items WHERE order_id = ?");
         $items->execute([$orderId]);
         foreach ($items->fetchAll(PDO::FETCH_ASSOC) as $item) {
-            $db->prepare("UPDATE om_market_products SET quantity = quantity + ?, stock = stock + ? WHERE product_id = ?")
-                ->execute([$item['quantity'], $item['quantity'], $item['product_id']]);
+            $db->prepare("UPDATE om_market_products SET quantity = quantity + ? WHERE product_id = ?")
+                ->execute([$item['quantity'], $item['product_id']]);
         }
 
-        // Devolver pontos de fidelidade usados (best-effort, table may not have status column)
+        // Restaurar uso de cupom
         try {
+            $couponId = (int)($order['coupon_id'] ?? 0);
+            if ($couponId > 0) {
+                $db->prepare("UPDATE om_market_coupons SET used_count = GREATEST(0, used_count - 1) WHERE coupon_id = ?")
+                    ->execute([$couponId]);
+                // Remove customer usage record so they can reuse the coupon
+                $db->prepare("DELETE FROM om_market_coupon_usage WHERE coupon_id = ? AND customer_id = ? AND order_id = ?")
+                    ->execute([$couponId, $customerId, $orderId]);
+            }
+        } catch (Exception $couponEx) {
+            error_log('[CancelarMotivo] Coupon reversal skipped: ' . $couponEx->getMessage());
+        }
+
+        // Restaurar cashback usado
+        try {
+            $cashbackUsed = (float)($order['cashback_used'] ?? 0);
+            if ($cashbackUsed > 0) {
+                $db->prepare("INSERT INTO om_market_cashback (customer_id, amount, type, reference_id, description, created_at)
+                    VALUES (?, ?, 'credit', ?, 'Estorno cancelamento pedido #' || CAST(? AS TEXT), NOW())
+                    ON CONFLICT DO NOTHING")
+                    ->execute([$customerId, $cashbackUsed, $orderId, $orderId]);
+            }
+        } catch (Exception $cbEx) {
+            error_log('[CancelarMotivo] Cashback reversal skipped: ' . $cbEx->getMessage());
+        }
+
+        // Devolver pontos de fidelidade usados
+        try {
+            $loyaltyUsed = (int)($order['loyalty_points_used'] ?? 0);
+            if ($loyaltyUsed > 0) {
+                $db->prepare("INSERT INTO om_market_loyalty_transactions (customer_id, points, type, reference_id, description, created_at)
+                    VALUES (?, ?, 'credit', CAST(? AS TEXT), 'Estorno cancelamento pedido #' || CAST(? AS TEXT), NOW())")
+                    ->execute([$customerId, $loyaltyUsed, $orderId, $orderId]);
+            }
+            // Also remove the original redeem record
             $db->prepare("DELETE FROM om_market_loyalty_transactions WHERE reference_id = CAST(? AS TEXT) AND type = 'redeem'")
                 ->execute([$orderId]);
         } catch (Exception $loyaltyEx) {
-            // Non-critical: loyalty table schema may differ
             error_log('[CancelarMotivo] Loyalty reversal skipped: ' . $loyaltyEx->getMessage());
         }
 

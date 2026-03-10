@@ -75,7 +75,7 @@ try {
     $customer_email = $custData['email'] ?? '';
 
     // Validacoes
-    $formasPermitidas = ['pix', 'credito', 'stripe_card', 'debito', 'dinheiro', 'cartao_entrega', 'stripe_wallet', 'vale_refeicao'];
+    $formasPermitidas = ['pix', 'credito', 'efi_card', 'stripe_card', 'debito', 'dinheiro', 'cartao_entrega', 'stripe_wallet', 'vale_refeicao'];
     if (!in_array($payment_method, $formasPermitidas)) {
         response(false, null, "Forma de pagamento invalida", 400);
     }
@@ -371,6 +371,11 @@ try {
         response(false, null, "Limite de R$" . number_format(OmPricing::CASH_LIMITE, 0) . " para pagamento em dinheiro. Use PIX ou cartao para valores maiores.", 403);
     }
 
+    // Validar troco: change_for deve ser >= total
+    if ($payment_method === 'dinheiro' && $change_for > 0 && $change_for < $total) {
+        response(false, null, "Valor do troco (R$" . number_format($change_for, 2, ',', '.') . ") deve ser maior ou igual ao total (R$" . number_format($total, 2, ',', '.') . ").", 400);
+    }
+
     // Validar: total 0 so e permitido se houve desconto real cobrindo o valor
     $totalDiscounts = $coupon_discount + $loyalty_discount + $cashback_discount;
     if ($total <= 0 && $totalDiscounts <= 0) {
@@ -383,8 +388,8 @@ try {
     $market_id = (int)($parceiro["market_id"] ?? $parceiro["partner_id"] ?? 0);
     $partner_categoria = $parceiro['categoria'] ?? 'mercado';
     $timer_started = date('Y-m-d H:i:s');
-    // PIX: 5 min para pagar. Cartao/outros: 5 min padrao
-    $timer_minutes = 5;
+    // PIX: 10 min para pagar (match QR code expiry). Cartao/outros: 10 min padrao
+    $timer_minutes = 10;
     $timer_expires = date('Y-m-d H:i:s', strtotime("+{$timer_minutes} minutes"));
     $timer_expires_iso = date('c', strtotime("+{$timer_minutes} minutes")); // ISO 8601 for frontend
 
@@ -395,7 +400,44 @@ try {
     $stripe_verified = false;
     $stripe_pi_status = '';
 
-    if (in_array($payment_method, ['stripe_card', 'stripe_wallet', 'credito']) && $stripe_pi_id) {
+    // EFI Card: process Brazilian card payment via EFI
+    $efi_charge_id = 0;
+    $efi_card_verified = false;
+    $efi_payment_token = trim($input['efi_payment_token'] ?? '');
+    $efi_installments = max(1, min(12, (int)($input['installments'] ?? 1)));
+
+    if (in_array($payment_method, ['efi_card', 'credito', 'debito']) && !empty($efi_payment_token)) {
+        require_once dirname(__DIR__, 3) . '/includes/classes/EfiClient.php';
+        $efi = new EfiClient();
+
+        $cpf = preg_replace('/[^0-9]/', '', $custData['cpf'] ?? ($input['cpf'] ?? ''));
+        $efiResult = $efi->chargeCard($total, "Pedido SuperBora", [
+            'name' => $customer_name,
+            'cpf' => $cpf,
+            'email' => $customer_email,
+            'phone' => $customer_phone,
+        ], $efi_payment_token, $efi_installments);
+
+        if (!$efiResult['success']) {
+            $efiError = $efiResult['error'] ?? 'Erro no pagamento com cartao';
+            error_log("[Checkout] EFI card charge failed: " . $efiError);
+            // Sanitize error for client — don't expose internal API details
+            $clientMsg = 'Erro no pagamento com cartao. Verifique os dados e tente novamente.';
+            if (stripos($efiError, 'cpf') !== false) {
+                $clientMsg = 'CPF invalido. Verifique e tente novamente.';
+            } elseif (stripos($efiError, 'payment_token') !== false) {
+                $clientMsg = 'Dados do cartao invalidos. Tente novamente.';
+            }
+            response(false, null, $clientMsg, 402);
+        }
+
+        $efi_charge_id = (int)$efiResult['charge_id'];
+        $efi_card_verified = true;
+        $payment_method = 'efi_card';
+        error_log("[Checkout] EFI card charge #{$efi_charge_id} OK. Amount: R$ {$total}");
+    }
+
+    if (in_array($payment_method, ['stripe_card', 'stripe_wallet']) && $stripe_pi_id) {
         $stripeCheckResult = verificarStripePayment($stripe_pi_id);
         if (!$stripeCheckResult['paid']) {
             response(false, null, "Pagamento nao confirmado. Tente novamente.", 402);
@@ -417,7 +459,7 @@ try {
 
         $stripe_verified = true;
         error_log("[Checkout] Stripe PI {$stripe_pi_id} verificado ANTES de criar pedido. Status: {$stripeCheckResult['status']}, Amount: {$paidAmountCents} cents");
-    } elseif (in_array($payment_method, ['stripe_card', 'stripe_wallet', 'credito']) && !$stripe_pi_id) {
+    } elseif (in_array($payment_method, ['stripe_card', 'stripe_wallet']) && !$stripe_pi_id) {
         // Secondary route orders inherit payment from primary — skip PI requirement
         if (!$is_route_secondary) {
             response(false, null, "Pagamento nao processado. Tente novamente.", 400);
@@ -434,7 +476,7 @@ try {
             response(false, null, "Rota nao encontrada ou nao pertence a este cliente.", 400);
         }
         // Inherit payment verification from primary order — actually verify PI status
-        if (in_array($payment_method, ['stripe_card', 'stripe_wallet', 'credito'])) {
+        if (in_array($payment_method, ['stripe_card', 'stripe_wallet'])) {
             $stripe_pi_id = $primaryOrder['stripe_payment_intent_id'] ?? '';
             if (!empty($stripe_pi_id)) {
                 $secondaryCheckResult = verificarStripePayment($stripe_pi_id);
@@ -583,10 +625,10 @@ try {
             timer_started, timer_expires, partner_categoria,
             delivery_type, cpf_nota,
             service_fee, express_fee, installments, installment_value,
-            cashback_discount, stripe_payment_intent_id,
+            cashback_discount, stripe_payment_intent_id, efi_charge_id,
             route_id, route_stop_sequence, shipping_lat, shipping_lng,
             date_added
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pendente', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pendente', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
         RETURNING order_id");
 
         // Route sequence: primary=1, secondary=next stop
@@ -615,11 +657,16 @@ try {
             $timer_started, $timer_expires, $partner_categoria,
             $delivery_type, $cpf_nota ?: null,
             $service_fee, $express_fee, $installments, $installment_value,
-            $cashback_discount, $stripe_pi_id ?: null,
+            $cashback_discount, $stripe_pi_id ?: null, $efi_charge_id ?: null,
             $order_route_id, $route_stop_seq, $lat_cliente ?: null, $lng_cliente ?: null
         ]);
 
         $order_id = (int)$stmt->fetchColumn();
+        if (!$order_id) {
+            $db->rollBack();
+            error_log("[Checkout] CRITICAL: INSERT succeeded but no order_id returned");
+            response(false, null, "Erro ao criar pedido. Tente novamente.", 500);
+        }
 
         // Gerar order_number bonito com o order_id: SB00025
         $order_number = 'SB' . str_pad($order_id, 5, '0', STR_PAD_LEFT);
@@ -703,10 +750,10 @@ try {
         $stmtClear = $db->prepare("DELETE FROM om_market_cart WHERE customer_id = ? AND partner_id = ?");
         $stmtClear->execute([$customer_id, $partner_id]);
 
-        // Para PIX, gerar cobranca via Woovi ANTES do commit (dentro da transacao)
+        // Para PIX, gerar cobranca via EFI ANTES do commit (dentro da transacao)
         $pixData = null;
         if ($payment_method === 'pix') {
-            $pixData = gerarPixWoovi($order_id, $total, $customer_name, $customer_email, $customer_phone, $customer_id, $cpf_nota);
+            $pixData = gerarPixEfi($order_id, $total, $customer_name, $customer_id, $cpf_nota);
             if ($pixData && !empty($pixData['qr_code_text'])) {
                 // Save PIX data to order within the same transaction
                 $db->prepare("UPDATE om_market_orders SET pix_code = ?, pix_qr_code = ? WHERE order_id = ?")
@@ -719,12 +766,19 @@ try {
             }
         }
 
-        // Stripe confirmed — update status INSIDE transaction (atomic)
+        // Card confirmed — update status INSIDE transaction (atomic)
         $stripe_confirmed = false;
         if ($stripe_verified && $stripe_pi_id && $stripe_pi_status === 'succeeded') {
             $db->prepare("UPDATE om_market_orders SET status = 'confirmado' WHERE order_id = ?")
                ->execute([$order_id]);
             $stripe_confirmed = true;
+        }
+
+        // EFI card confirmed — mark as confirmed + paid
+        if ($efi_card_verified && $efi_charge_id) {
+            $db->prepare("UPDATE om_market_orders SET status = 'confirmado', pagamento_status = 'pago', payment_status = 'paid' WHERE order_id = ?")
+               ->execute([$order_id]);
+            $stripe_confirmed = true; // reuse flag for response
         }
 
         // Cash payment — save change_for INSIDE transaction
@@ -750,6 +804,7 @@ try {
             "pontos_usados" => $loyalty_points_used,
             "desconto_cashback" => round($cashback_discount, 2),
             "taxa_entrega" => round($delivery_fee, 2),
+            "taxa_servico" => round($service_fee, 2),
             "gorjeta" => round($tip, 2),
             "total" => round($total, 2),
             "forma_pagamento" => $payment_method,
@@ -866,18 +921,16 @@ try {
 }
 
 /**
- * Gerar PIX via Woovi (OpenPix) API
+ * Gerar PIX via EFI (Efi/Gerencianet) API
  */
-function gerarPixWoovi($orderId, $total, $name, $email, $phone, $customerId, $cpfNota = '') {
+function gerarPixEfi($orderId, $total, $name, $customerId, $cpfNota = '') {
     try {
-        require_once dirname(__DIR__, 3) . '/includes/classes/WooviClient.php';
-        $woovi = new WooviClient();
+        require_once dirname(__DIR__, 3) . '/includes/classes/EfiClient.php';
+        $efi = new EfiClient();
 
-        $amountCents = (int)round($total * 100);
-        $correlationId = 'order_' . $orderId . '_' . time();
-        $comment = "Pedido #{$orderId} - SuperBora Mercado";
+        $description = "Pedido #{$orderId} - SuperBora Mercado";
 
-        // Build customer data for Woovi
+        // Build customer data for EFI
         $cpf = preg_replace('/[^0-9]/', '', $cpfNota ?? '');
         if (strlen($cpf) !== 11) {
             try {
@@ -891,40 +944,25 @@ function gerarPixWoovi($orderId, $total, $name, $email, $phone, $customerId, $cp
             } catch (Exception $e) {}
         }
 
-        // Woovi requires at least one identifier: taxID (CPF), email, or phone
         $customerData = [
-            'name' => $name ?: 'Cliente SuperBora',
+            'nome' => $name ?: 'Cliente SuperBora',
         ];
         if (strlen($cpf) === 11) {
-            $customerData['taxID'] = $cpf;
-        }
-        $phone = preg_replace('/[^0-9]/', '', $phone ?? '');
-        if (strlen($phone) >= 10) {
-            $customerData['phone'] = '+55' . $phone;
-        }
-        // Include email as fallback identifier (Woovi rejects if no taxID/email/phone)
-        if (!empty($email) && filter_var($email, FILTER_VALIDATE_EMAIL)) {
-            $customerData['email'] = $email;
-        }
-        // Final fallback: if no identifier at all, use a placeholder email
-        if (!isset($customerData['taxID']) && !isset($customerData['phone']) && !isset($customerData['email'])) {
-            $customerData['email'] = 'customer' . $customerId . '@superbora.com.br';
+            $customerData['cpf'] = $cpf;
         }
 
-        $result = $woovi->createCharge($amountCents, $correlationId, $comment, 600, $customerData);
-        $chargeData = $result['data'] ?? [];
-        $charge = $chargeData['charge'] ?? $chargeData;
+        $result = $efi->createPixCharge($total, $description, 600, $customerData);
 
-        $brCode = $charge['brCode'] ?? $charge['pixCopiaECola'] ?? '';
-        $qrCodeUrl = $charge['qrCodeImage'] ?? '';
-        $chargeId = $charge['correlationID'] ?? $correlationId;
+        $brCode = $result['qrcode_text'] ?? '';
+        $qrCodeUrl = $result['qrcode_image'] ?? '';
+        $txid = $result['txid'] ?? '';
 
         if (empty($brCode)) {
-            error_log("[PIX-Woovi] Charge created but no brCode returned: " . json_encode($chargeData));
+            error_log("[PIX-EFI] Charge created but no brCode returned: " . json_encode($result));
             return null;
         }
 
-        // Generate QR code image if Woovi didn't return one
+        // Generate QR code image if EFI didn't return one
         if (empty($qrCodeUrl)) {
             $qrCodeUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=' . urlencode($brCode);
         }
@@ -935,26 +973,26 @@ function gerarPixWoovi($orderId, $total, $name, $email, $phone, $customerId, $cp
             $db->prepare("INSERT INTO om_pagarme_transacoes (pedido_id, charge_id, pagarme_order_id, tipo, valor, qr_code, qr_code_url, status, created_at)
                 VALUES (?, ?, ?, 'pix', ?, ?, ?, 'pending', NOW())
                 "
-            )->execute([$orderId, $chargeId, $correlationId, $total, $brCode, $qrCodeUrl]);
+            )->execute([$orderId, $txid, $txid, $total, $brCode, $qrCodeUrl]);
         } catch (Exception $e) {
-            error_log("[PIX-Woovi] transacoes save error: " . $e->getMessage());
+            error_log("[PIX-EFI] transacoes save error: " . $e->getMessage());
         }
 
         return [
             "qr_code" => $brCode,
             "qr_code_url" => $qrCodeUrl,
             "qr_code_text" => $brCode,
-            "charge_id" => $chargeId,
+            "charge_id" => $txid,
             "expiration" => date('c', strtotime('+10 minutes'))
         ];
     } catch (Exception $e) {
-        error_log("[PIX-Woovi] Error: " . $e->getMessage());
+        error_log("[PIX-EFI] Error: " . $e->getMessage());
         return null;
     }
 }
 
 /**
- * Gerar PIX via Pagar.me v5 API (DESATIVADO — usando Woovi agora)
+ * Gerar PIX via Pagar.me v5 API (DESATIVADO — usando EFI agora)
  */
 function gerarPixPagarme($orderId, $total, $name, $email, $phone, $customerId, $cpfNota = '') {
     // Resolver CPF: priorizar cpf_nota do checkout, senao buscar do cadastro

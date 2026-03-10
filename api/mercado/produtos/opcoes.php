@@ -17,6 +17,7 @@ require_once __DIR__ . "/../helpers/csrf.php";
 
 try {
     session_start();
+    session_write_close();
     verifyCsrf();
     $db = getDB();
 
@@ -153,12 +154,12 @@ try {
             response(false, null, "option_id e name obrigatorios", 400);
         }
 
-        // Verificar ownership via join
+        // Verificar ownership via join (PostgreSQL syntax)
         $stmt = $db->prepare("
-            UPDATE om_product_options o
-            INNER JOIN om_product_option_groups g ON o.group_id = g.id
-            SET o.name = ?, o.price_extra = ?, o.sort_order = ?
-            WHERE o.id = ? AND g.partner_id = ?
+            UPDATE om_product_options SET name = ?, price_extra = ?, sort_order = ?
+            FROM om_product_option_groups
+            WHERE om_product_options.group_id = om_product_option_groups.id
+              AND om_product_options.id = ? AND om_product_option_groups.partner_id = ?
         ");
         $stmt->execute([$name, $price_extra, $sort_order, $option_id, $mercado_id]);
 
@@ -172,9 +173,10 @@ try {
         }
 
         $stmt = $db->prepare("
-            DELETE o FROM om_product_options o
-            INNER JOIN om_product_option_groups g ON o.group_id = g.id
-            WHERE o.id = ? AND g.partner_id = ?
+            DELETE FROM om_product_options
+            USING om_product_option_groups
+            WHERE om_product_options.group_id = om_product_option_groups.id
+              AND om_product_options.id = ? AND om_product_option_groups.partner_id = ?
         ");
         $stmt->execute([$option_id, $mercado_id]);
 
