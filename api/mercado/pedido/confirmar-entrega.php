@@ -165,9 +165,13 @@ try {
         $stmtTransit = $db->prepare("
             UPDATE om_market_orders
             SET status = 'em_entrega', date_modified = NOW()
-            WHERE order_id = ?
+            WHERE order_id = ? AND status = 'pronto'
         ");
         $stmtTransit->execute([$order_id]);
+        if ($stmtTransit->rowCount() === 0) {
+            $db->rollBack();
+            response(false, null, "Status do pedido foi alterado por outra operacao", 409);
+        }
         $db->commit();
         response(true, [
             "order_id" => $order_id,

@@ -491,7 +491,8 @@ try {
                     response(false, null, "Pagamento da rota primaria nao confirmado.", 402);
                 }
             } else {
-                $stripe_verified = false;
+                error_log("[Checkout] Secondary route order missing PI on primary order route_id={$incoming_route_id}");
+                response(false, null, "Pagamento da rota primaria nao encontrado.", 400);
             }
         }
         // Force delivery_fee to 0 for secondary stops
