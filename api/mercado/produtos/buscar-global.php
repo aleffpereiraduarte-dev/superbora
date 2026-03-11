@@ -42,7 +42,7 @@ try {
                 $stmt = $db->prepare("
                     SELECT partner_id FROM om_market_partners
                     WHERE status::text = '1' AND (
-                        LEFT(REPLACE(cep, '-', ''), 3) = ?
+                        SUBSTRING(REPLACE(cep, '-', ''), 1, 3) = ?
                         OR (delivery_radius_km IS NOT NULL AND delivery_radius_km >= 50)
                     )
                 ");

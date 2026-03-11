@@ -93,7 +93,7 @@ try {
 
     try {
         // Verificar pedidos ativos antes de deletar
-        $activeStmt = $db->prepare("SELECT COUNT(*) FROM om_market_orders WHERE customer_id = ? AND status NOT IN ('entregue', 'cancelado', 'cancelled', 'completed', 'retirado', 'finalizado')");
+        $activeStmt = $db->prepare("SELECT COUNT(*) FROM om_market_orders WHERE customer_id = ? AND status NOT IN ('entregue', 'cancelado', 'reembolsado')");
         $activeStmt->execute([$customerId]);
         if ((int)$activeStmt->fetchColumn() > 0) {
             $db->rollBack();

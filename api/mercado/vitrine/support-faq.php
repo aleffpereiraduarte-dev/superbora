@@ -41,7 +41,7 @@ try {
             SELECT id, categoria as category, pergunta as question, resposta as answer
             FROM om_support_faq
             WHERE ativo::text = '1'
-              AND (pergunta LIKE ? OR resposta LIKE ?)
+              AND (pergunta ILIKE ? OR resposta ILIKE ?)
             ORDER BY ordem ASC
             LIMIT ?
         ");

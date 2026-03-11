@@ -256,14 +256,14 @@ function getSuggestions(PDO $db, string $q): array {
             SELECT p.product_id, p.name, p.price, p.special_price, p.image, p.unit,
                    mp.partner_id, mp.name as partner_name, mp.logo as partner_logo,
                    CASE
-                       WHEN p.name LIKE ? THEN 1
+                       WHEN p.name ILIKE ? THEN 1
                        ELSE 2
                    END as relevancia
             FROM om_market_products p
             INNER JOIN om_market_partners mp ON p.partner_id = mp.partner_id
             WHERE p.status = '1'
               AND mp.status = '1'
-              AND (p.name LIKE ? OR p.description LIKE ?)
+              AND (p.name ILIKE ? OR p.description ILIKE ?)
             ORDER BY relevancia ASC, p.name ASC
             LIMIT 8
         ");
@@ -275,12 +275,12 @@ function getSuggestions(PDO $db, string $q): array {
             SELECT mp.partner_id, mp.name, mp.logo, mp.rating, mp.categoria,
                    mp.delivery_fee, mp.delivery_time_min, mp.is_open,
                    CASE
-                       WHEN mp.name LIKE ? THEN 1
+                       WHEN mp.name ILIKE ? THEN 1
                        ELSE 2
                    END as relevancia
             FROM om_market_partners mp
             WHERE mp.status = '1'
-              AND (mp.name LIKE ? OR mp.trade_name LIKE ? OR mp.categoria LIKE ?)
+              AND (mp.name ILIKE ? OR mp.trade_name ILIKE ? OR mp.categoria ILIKE ?)
             ORDER BY relevancia ASC, mp.rating DESC, mp.name ASC
             LIMIT 5
         ");
@@ -291,10 +291,10 @@ function getSuggestions(PDO $db, string $q): array {
         $stmt = $db->prepare("
             SELECT term, search_count
             FROM om_search_logs
-            WHERE term LIKE ?
+            WHERE term ILIKE ?
               AND search_count >= 2
             ORDER BY
-                CASE WHEN term LIKE ? THEN 1 ELSE 2 END ASC,
+                CASE WHEN term ILIKE ? THEN 1 ELSE 2 END ASC,
                 search_count DESC
             LIMIT 5
         ");

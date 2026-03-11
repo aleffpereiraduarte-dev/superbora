@@ -133,7 +133,7 @@ try {
         }
         if ($q) {
             $qEscaped = str_replace(['%', '_'], ['\\%', '\\_'], $q);
-            $where[] = "(p.name LIKE ? OR p.description LIKE ?)";
+            $where[] = "(p.name ILIKE ? OR p.description ILIKE ?)";
             $params[] = "%{$qEscaped}%";
             $params[] = "%{$qEscaped}%";
         }

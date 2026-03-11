@@ -72,13 +72,15 @@ try {
 
         // Se nao tem nenhuma, criar a padrao
         if (empty($collections)) {
-            $db->prepare("
+            $stmtIns = $db->prepare("
                 INSERT INTO om_favorites (customer_id, name, is_default)
                 VALUES (?, 'Favoritos', 1)
-            ")->execute([$customerId]);
+                RETURNING id
+            ");
+            $stmtIns->execute([$customerId]);
 
             $collections = [[
-                'id' => (int)$db->lastInsertId(),
+                'id' => (int)$stmtIns->fetchColumn(),
                 'name' => 'Favoritos',
                 'description' => null,
                 'icon' => 'heart',

@@ -72,7 +72,7 @@ $stmt = $db->prepare("
            r.partner_reply, r.partner_reply_at,
            r.created_at,
            r.customer_name,
-           CONCAT(SPLIT_PART(r.customer_name, ' ', 1), ' ', LEFT(SPLIT_PART(r.customer_name, ' ', 2), 1), '.') as display_name
+           SPLIT_PART(r.customer_name, ' ', 1) || ' ' || SUBSTRING(SPLIT_PART(r.customer_name, ' ', 2), 1, 1) || '.' as display_name
     FROM om_market_reviews r
     WHERE {$where}
     ORDER BY {$orderBy}

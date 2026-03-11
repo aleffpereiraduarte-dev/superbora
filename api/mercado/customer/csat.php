@@ -65,7 +65,7 @@ try {
         // Resolved disputes
         try {
             $stmt = $db->prepare("
-                SELECT d.dispute_id as id, CONCAT('Disputa #', d.dispute_id) as subject, 'dispute' as ref_type, d.updated_at
+                SELECT d.dispute_id as id, 'Disputa #' || d.dispute_id as subject, 'dispute' as ref_type, d.updated_at
                 FROM om_order_disputes d
                 LEFT JOIN om_support_csat c ON c.referencia_tipo = 'dispute' AND c.referencia_id = d.dispute_id AND c.customer_id = ?
                 WHERE d.customer_id = ?

@@ -34,7 +34,7 @@ try {
                o.notes, o.rating, o.created_at, o.confirmed_at, o.entrega_finalizada_em,
                p.name as mercado_name,
                s.name as shopper_name,
-               CASE WHEN s.phone IS NOT NULL THEN CONCAT(LEFT(s.phone, 4), '****', RIGHT(s.phone, 4)) ELSE NULL END as shopper_phone,
+               CASE WHEN s.phone IS NOT NULL THEN SUBSTRING(s.phone, 1, 4) || '****' || SUBSTRING(s.phone, LENGTH(s.phone) - 3) ELSE NULL END as shopper_phone,
                m.name as motorista_name
         FROM om_market_orders o
         LEFT JOIN om_market_partners p ON o.partner_id = p.partner_id

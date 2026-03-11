@@ -97,7 +97,7 @@ function buildCustomerContext(PDO $db, int $customerId): array {
                 FROM om_market_partners
                 WHERE status::text = '1'
                   AND cep_inicio IS NOT NULL
-                  AND LEFT(REPLACE(cep_inicio, '-', ''), 5) <= ? AND LEFT(REPLACE(cep_fim, '-', ''), 5) >= LEFT(?, 5)
+                  AND SUBSTRING(REPLACE(cep_inicio, '-', ''), 1, 5) <= ? AND SUBSTRING(REPLACE(cep_fim, '-', ''), 1, 5) >= SUBSTRING(?, 1, 5)
                 ORDER BY is_open DESC, rating DESC
                 LIMIT 100
             ");
@@ -113,7 +113,7 @@ function buildCustomerContext(PDO $db, int $customerId): array {
                 FROM om_market_partners
                 WHERE status::text = '1'
                   AND cep_inicio IS NOT NULL
-                  AND LEFT(REPLACE(cep_inicio, '-', ''), 3) <= ? AND LEFT(REPLACE(cep_fim, '-', ''), 3) >= ?
+                  AND SUBSTRING(REPLACE(cep_inicio, '-', ''), 1, 3) <= ? AND SUBSTRING(REPLACE(cep_fim, '-', ''), 1, 3) >= ?
                 ORDER BY is_open DESC, rating DESC
                 LIMIT 100
             ");

@@ -129,13 +129,14 @@ try {
                 INSERT INTO om_customer_addresses
                     (customer_id, label, zipcode, street, number, complement, neighborhood, city, state, lat, lng, reference, is_default, is_active, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())
+                RETURNING address_id
             ");
             $stmt->execute([
                 $customerId, $label, $zipcode, $street, $number, $complement,
                 $neighborhood, $city, $state, $lat, $lng, $reference, $isDefault ? 1 : 0
             ]);
 
-            $addressId = (int)$db->lastInsertId();
+            $addressId = (int)$stmt->fetchColumn();
             $db->commit();
         } catch (Exception $txEx) {
             $db->rollBack();
@@ -179,15 +180,18 @@ try {
             response(false, null, "Estado invalido", 400);
         }
 
+        $lat = !empty($input['latitude']) ? (float)$input['latitude'] : null;
+        $lng = !empty($input['longitude']) ? (float)$input['longitude'] : null;
+
         $stmt = $db->prepare("
             UPDATE om_customer_addresses
             SET label = ?, zipcode = ?, street = ?, number = ?, complement = ?,
-                neighborhood = ?, city = ?, state = ?, reference = ?
+                neighborhood = ?, city = ?, state = ?, reference = ?, lat = ?, lng = ?
             WHERE address_id = ? AND customer_id = ?
         ");
         $stmt->execute([
             $label, $zipcode, $street, $number, $complement,
-            $neighborhood, $city, $state, $reference,
+            $neighborhood, $city, $state, $reference, $lat, $lng,
             $addressId, $customerId
         ]);
 
