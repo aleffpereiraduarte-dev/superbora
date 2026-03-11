@@ -46,6 +46,22 @@ function validarCPF(string $cpf): bool {
     return true;
 }
 
+/**
+ * Normalize phone to digits-only.
+ * Frontend always sends countryCode + localDigits (e.g. 5533999999999, 15551234567).
+ * For backward compat: 10-digit numbers assumed Brazilian landline (add 55).
+ * 11+ digit numbers already include country code.
+ */
+function normalizePhone(string $phone): string {
+    $digits = preg_replace('/[^0-9]/', '', $phone);
+    // Only auto-add 55 for 10-digit BR landline (DDD 2 + number 8 = 10)
+    // 11+ digits already have country code (BR mobile = 55+11, US = 1+10, etc.)
+    if (strlen($digits) === 10) {
+        $digits = '55' . $digits;
+    }
+    return $digits;
+}
+
 try {
     $input = getInput();
     $db = getDB();
@@ -91,10 +107,14 @@ try {
         response(false, null, "Senha deve conter pelo menos uma letra e um numero", 400);
     }
 
-    // Telefone obrigatorio
-    if (empty($telefone) || strlen($telefone) < 10 || strlen($telefone) > 15) {
-        response(false, null, "Telefone obrigatorio e deve ter DDD + numero", 400);
+    // Telefone obrigatorio — aceita brasileiro (10-11 digitos) e internacional (com codigo do pais)
+    $phoneDigits = preg_replace('/[^0-9]/', '', $telefone);
+    if (empty($phoneDigits) || strlen($phoneDigits) < 10 || strlen($phoneDigits) > 15) {
+        response(false, null, "Telefone obrigatorio. Inclua DDD + numero (Brasil) ou codigo do pais + numero (internacional).", 400);
     }
+
+    // Normalizar telefone: sempre com codigo do pais, somente digitos
+    $phoneNormalized = normalizePhone($telefone);
 
     // CPF obrigatorio com validacao mod11
     if (empty($cpf)) {
@@ -104,26 +124,43 @@ try {
         response(false, null, "CPF invalido", 400);
     }
 
-    // Verificar email unico
-    $stmt = $db->prepare("SELECT customer_id FROM om_customers WHERE email = ?");
+    // ── Verificar duplicatas com mensagens especificas ──
+
+    // Email unico (case-insensitive)
+    $stmt = $db->prepare("SELECT customer_id FROM om_customers WHERE LOWER(email) = LOWER(?)");
     $stmt->execute([$email]);
     if ($stmt->fetch()) {
-        response(false, null, "Dados ja cadastrados. Tente fazer login ou recuperar sua conta.", 409);
+        response(false, ['field' => 'email'], "Este email ja esta cadastrado. Tente fazer login ou recuperar sua senha.", 409);
     }
 
-    // Verificar CPF unico
-    $stmt = $db->prepare("SELECT customer_id FROM om_customers WHERE cpf = ?");
+    // CPF unico (limpar formatacao de ambos os lados)
+    $stmt = $db->prepare("
+        SELECT customer_id FROM om_customers
+        WHERE REGEXP_REPLACE(cpf, '[^0-9]', '', 'g') = ?
+        AND cpf IS NOT NULL AND cpf != ''
+    ");
     $stmt->execute([$cpf]);
     if ($stmt->fetch()) {
-        response(false, null, "Dados ja cadastrados. Tente fazer login ou recuperar sua conta.", 409);
+        response(false, ['field' => 'cpf'], "Este CPF ja esta cadastrado. Tente fazer login ou entre em contato com o suporte.", 409);
     }
 
-    // Verificar telefone unico
-    $phoneClean = preg_replace('/[^0-9]/', '', $telefone);
-    $stmt = $db->prepare("SELECT customer_id FROM om_customers WHERE REPLACE(REPLACE(phone, '+', ''), '-', '') = ?");
-    $stmt->execute([$phoneClean]);
+    // Telefone unico — normalizar ambos os lados para comparar
+    // Compara tanto com quanto sem codigo do pais (pega formatos antigos)
+    $phoneSuffix = $phoneNormalized;
+    if (substr($phoneNormalized, 0, 2) === '55' && strlen($phoneNormalized) >= 12) {
+        $phoneSuffix = substr($phoneNormalized, 2); // numero sem 55
+    }
+    $stmt = $db->prepare("
+        SELECT customer_id FROM om_customers
+        WHERE REGEXP_REPLACE(phone, '[^0-9]', '', 'g') IN (?, ?)
+        OR (
+            LENGTH(REGEXP_REPLACE(phone, '[^0-9]', '', 'g')) BETWEEN 10 AND 11
+            AND '55' || REGEXP_REPLACE(phone, '[^0-9]', '', 'g') = ?
+        )
+    ");
+    $stmt->execute([$phoneNormalized, $phoneSuffix, $phoneNormalized]);
     if ($stmt->fetch()) {
-        response(false, null, "Dados ja cadastrados. Tente fazer login ou recuperar sua conta.", 409);
+        response(false, ['field' => 'telefone'], "Este telefone ja esta cadastrado. Tente fazer login ou entre em contato com o suporte.", 409);
     }
 
     // Verificar OTP se fornecido
@@ -134,15 +171,16 @@ try {
         }
 
         // Buscar codigo mais recente nao expirado (atomic with FOR UPDATE)
+        // Tenta com numero normalizado e tambem com variantes (com/sem 55)
         $db->beginTransaction();
         $stmt = $db->prepare("
             SELECT id, code, attempts, expires_at
             FROM om_market_otp_codes
-            WHERE phone = ? AND expires_at > NOW() AND (used = 0 OR used IS NULL)
+            WHERE phone IN (?, ?) AND expires_at > NOW() AND (used = 0 OR used IS NULL)
             ORDER BY created_at DESC LIMIT 1
             FOR UPDATE
         ");
-        $stmt->execute([$phoneClean]);
+        $stmt->execute([$phoneNormalized, $phoneSuffix]);
         $otp = $stmt->fetch();
 
         if (!$otp) {
@@ -182,10 +220,19 @@ try {
             VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?, NOW(), NOW())
             RETURNING customer_id
         ");
-        $stmt->execute([$fullName, $email, $passwordHash, $telefone, $cpf ?: null, $phoneVerified, $genero ?: null, $birthDate]);
+        $stmt->execute([$fullName, strtolower($email), $passwordHash, $phoneNormalized, $cpf ?: null, $phoneVerified, $genero ?: null, $birthDate]);
         $customerId = (int)$stmt->fetch()['customer_id'];
     } catch (PDOException $e) {
         if (strpos($e->getCode(), '23505') !== false || stripos($e->getMessage(), 'unique') !== false) {
+            // Identify which field caused the UNIQUE violation
+            $msg = $e->getMessage();
+            if (stripos($msg, 'email') !== false) {
+                response(false, ['field' => 'email'], "Este email ja esta cadastrado. Tente fazer login ou recuperar sua senha.", 409);
+            } elseif (stripos($msg, 'phone') !== false) {
+                response(false, ['field' => 'telefone'], "Este telefone ja esta cadastrado. Tente fazer login ou entre em contato com o suporte.", 409);
+            } elseif (stripos($msg, 'cpf') !== false) {
+                response(false, ['field' => 'cpf'], "Este CPF ja esta cadastrado. Tente fazer login ou entre em contato com o suporte.", 409);
+            }
             response(false, null, "Dados ja cadastrados. Tente fazer login ou recuperar sua conta.", 409);
         }
         throw $e;
@@ -203,7 +250,7 @@ try {
             "id" => $customerId,
             "nome" => $fullName,
             "email" => $email,
-            "telefone" => $telefone,
+            "telefone" => $phoneNormalized,
             "cpf" => $cpf,
             "genero" => $genero ?: null,
             "data_nascimento" => $birthDate,

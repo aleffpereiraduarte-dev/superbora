@@ -30,11 +30,11 @@ try {
         response(false, null, "Email invalido", 400);
     }
 
-    // Buscar cliente
+    // Buscar cliente (case-insensitive email match)
     $stmt = $db->prepare("
         SELECT customer_id, name, email, phone, cpf, password_hash, foto, is_active
         FROM om_customers
-        WHERE email = ?
+        WHERE LOWER(email) = LOWER(?)
     ");
     $stmt->execute([$email]);
     $customer = $stmt->fetch();
