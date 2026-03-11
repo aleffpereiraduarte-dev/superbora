@@ -57,7 +57,7 @@ try {
         // Filtro por busca (nome)
         if ($busca) {
             $buscaEscaped = str_replace(['%', '_'], ['\\%', '\\_'], $busca);
-            $where[] = "p.name LIKE ?";
+            $where[] = "p.name ILIKE ?";
             $params[] = "%" . $buscaEscaped . "%";
         }
 
@@ -88,7 +88,8 @@ try {
                        (SELECT COUNT(*) FROM om_market_products mp WHERE mp.partner_id = p.partner_id AND mp.status::text = '1') as total_produtos
                 FROM om_market_partners p
                 WHERE {$whereClause}
-                ORDER BY {$distanciaOrder}p.name ASC";
+                ORDER BY {$distanciaOrder}p.name ASC
+                LIMIT 50";
 
         $stmt = $db->prepare($sql);
         $stmt->execute($params);

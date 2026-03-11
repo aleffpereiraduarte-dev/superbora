@@ -51,12 +51,13 @@ try {
     // 1. Verificar se cliente esta logado
     session_set_cookie_params(['secure' => true, 'httponly' => true, 'samesite' => 'Lax']);
     session_start();
+    session_write_close();
     if (isset($_SESSION['customer_id'])) {
         $customerId = $_SESSION['customer_id'];
 
         // Buscar CEP do endereco padrao
         $stmt = $db->prepare("
-            SELECT cep FROM om_customer_addresses
+            SELECT zipcode FROM om_customer_addresses
             WHERE customer_id = ?
             ORDER BY is_default DESC, created_at DESC
             LIMIT 1
@@ -64,8 +65,8 @@ try {
         $stmt->execute([$customerId]);
         $endereco = $stmt->fetch();
 
-        if ($endereco && $endereco['cep']) {
-            $cep = preg_replace('/\D/', '', $endereco['cep']);
+        if ($endereco && $endereco['zipcode']) {
+            $cep = preg_replace('/\D/', '', $endereco['zipcode']);
         }
     }
 
@@ -140,7 +141,9 @@ try {
         ],
         "categorias" => $categorias,
         "destaques" => $destaques,
-        "produtos" => $produtos
+        "promocoes" => $destaques,
+        "produtos" => $produtos,
+        "populares" => $produtos
     ]);
 
 } catch (Exception $e) {
@@ -176,7 +179,7 @@ function buscarMercadoMaisProximo($db, $cep) {
         SELECT * FROM om_market_partners
         WHERE status::text = '1'
           AND (
-              SUBSTRING(REPLACE(zipcode, '-', ''), 1, 3) = ?
+              SUBSTRING(REPLACE(cep, '-', ''), 1, 3) = ?
               OR delivery_radius_km >= 50
           )
         ORDER BY rating DESC, delivery_fee ASC
@@ -402,7 +405,7 @@ function buscarProdutos($db, $partnerId, $categoriaId = null, $busca = null) {
         // SECURITY: Limit search length and escape LIKE wildcards to prevent DoS
         $busca = mb_substr($busca, 0, 100);
         $buscaEscaped = str_replace(['%', '_'], ['\\%', '\\_'], $busca);
-        $where[] = "(p.name LIKE ? OR p.description LIKE ?)";
+        $where[] = "(p.name ILIKE ? OR p.description ILIKE ?)";
         $params[] = "%{$buscaEscaped}%";
         $params[] = "%{$buscaEscaped}%";
     }

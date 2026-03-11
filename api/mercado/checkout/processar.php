@@ -264,9 +264,9 @@ try {
             // Verificar validade
             $now = date('Y-m-d H:i:s');
             $valid = true;
-            if (!empty($cupomData['start_date']) && $now < $cupomData['start_date']) $valid = false;
-            if (!empty($cupomData['end_date']) && $now > $cupomData['end_date']) $valid = false;
-            if (isset($cupomData['min_order']) && $subtotal < (float)$cupomData['min_order']) $valid = false;
+            if (!empty($cupomData['valid_from'] ?? $cupomData['start_date'] ?? null) && $now < ($cupomData['valid_from'] ?? $cupomData['start_date'])) $valid = false;
+            if (!empty($cupomData['valid_until'] ?? $cupomData['end_date'] ?? null) && $now > ($cupomData['valid_until'] ?? $cupomData['end_date'])) $valid = false;
+            if (isset($cupomData['min_order_value']) && $subtotal < (float)$cupomData['min_order_value']) $valid = false;
 
             // Verificar uso unico por cliente
             if ($valid && $customer_id > 0 && !empty($cupomData['single_use'])) {

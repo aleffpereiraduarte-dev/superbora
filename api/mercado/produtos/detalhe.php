@@ -62,14 +62,16 @@ try {
         response(false, null, "Produto indisponivel", 404);
     }
 
-    // Option groups
+    // Option groups — use the product's actual ID, not the request param
+    // (in fallback path, $id may be product_id which differs from the row's id)
+    $productId = (int)$product['id'];
     $stmt = $db->prepare("
         SELECT id, name, min_select, max_select, required, sort_order
         FROM om_product_option_groups
         WHERE product_id = ? AND active = 1
         ORDER BY sort_order, id
     ");
-    $stmt->execute([$id]);
+    $stmt->execute([$productId]);
     $groups = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     foreach ($groups as &$group) {
