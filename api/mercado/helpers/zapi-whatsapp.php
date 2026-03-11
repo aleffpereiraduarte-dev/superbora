@@ -1,20 +1,22 @@
 <?php
 /**
- * Z-API WhatsApp Integration - SuperBora
- * Envia mensagens WhatsApp via Z-API (canal padrao de notificacao)
+ * Twilio WhatsApp Integration - SuperBora
+ * Envia mensagens WhatsApp via Twilio Content Templates
  *
- * Docs: https://developer.z-api.io/
+ * Migrado de Z-API para Twilio (Mar 2026) — mesmas funcoes, mesma interface
+ * Usa Content Templates para envio sem janela de 24h
  *
  * Required environment variables:
- *   ZAPI_INSTANCE_ID - Z-API instance identifier
- *   ZAPI_INSTANCE_TOKEN - Z-API instance token
- *   ZAPI_CLIENT_TOKEN - Z-API client token
+ *   TWILIO_SID - Twilio Account SID
+ *   TWILIO_TOKEN - Twilio Auth Token
+ *   TWILIO_WA_FROM - WhatsApp sender (whatsapp:+15705299780)
+ *   TWILIO_WA_OTP_TEMPLATE - Content SID for OTP messages
+ *   TWILIO_WA_NOTIFY_TEMPLATE - Content SID for general notifications
  */
 
 // Load environment variables if not already loaded
-// SECURITY: Use __DIR__ relative path instead of DOCUMENT_ROOT to prevent path manipulation
 $envPath = dirname(__DIR__, 3) . '/.env';
-if (!isset($_ENV['ZAPI_INSTANCE_ID']) && file_exists($envPath)) {
+if (!isset($_ENV['TWILIO_SID']) && file_exists($envPath)) {
     $envFile = file($envPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     foreach ($envFile as $line) {
         if (strpos(trim($line), '#') === 0) continue;
@@ -25,28 +27,123 @@ if (!isset($_ENV['ZAPI_INSTANCE_ID']) && file_exists($envPath)) {
     }
 }
 
-// Get credentials from environment variables (REQUIRED - no fallback for security)
-$zapiInstanceId = $_ENV['ZAPI_INSTANCE_ID'] ?? '';
-$zapiInstanceToken = $_ENV['ZAPI_INSTANCE_TOKEN'] ?? '';
-$zapiClientToken = $_ENV['ZAPI_CLIENT_TOKEN'] ?? '';
+// Twilio credentials
+$_twilioWaSid = $_ENV['TWILIO_SID'] ?? '';
+$_twilioWaToken = $_ENV['TWILIO_TOKEN'] ?? '';
+$_twilioWaFrom = $_ENV['TWILIO_WA_FROM'] ?? 'whatsapp:+15705299780';
+$_twilioWaOtpTemplate = $_ENV['TWILIO_WA_OTP_TEMPLATE'] ?? '';
+$_twilioWaNotifyTemplate = $_ENV['TWILIO_WA_NOTIFY_TEMPLATE'] ?? '';
 
-if (empty($zapiInstanceId) || empty($zapiInstanceToken) || empty($zapiClientToken)) {
-    error_log("[zapi] CRITICAL: Z-API credentials not configured in environment variables");
+if (empty($_twilioWaSid) || empty($_twilioWaToken)) {
+    error_log("[twilio-wa] CRITICAL: Twilio credentials not configured");
 }
 
-if (!defined('ZAPI_INSTANCE_ID')) define('ZAPI_INSTANCE_ID', $zapiInstanceId);
-if (!defined('ZAPI_INSTANCE_TOKEN')) define('ZAPI_INSTANCE_TOKEN', $zapiInstanceToken);
-if (!defined('ZAPI_CLIENT_TOKEN')) define('ZAPI_CLIENT_TOKEN', $zapiClientToken);
-define('ZAPI_BASE_URL', !empty($zapiInstanceId) && !empty($zapiInstanceToken)
-    ? 'https://api.z-api.io/instances/' . ZAPI_INSTANCE_ID . '/token/' . ZAPI_INSTANCE_TOKEN
-    : '');
-
-// Retry configuration
-define('ZAPI_MAX_RETRIES', 3);
-define('ZAPI_RETRY_BASE_DELAY', 1); // segundos
+// Backward compat constants for files that check ZAPI_BASE_URL
+if (!defined('ZAPI_BASE_URL')) define('ZAPI_BASE_URL', !empty($_twilioWaSid) ? 'twilio' : '');
+if (!defined('ZAPI_CLIENT_TOKEN')) define('ZAPI_CLIENT_TOKEN', $_twilioWaToken);
+if (!defined('ZAPI_INSTANCE_ID')) define('ZAPI_INSTANCE_ID', $_twilioWaSid);
+if (!defined('ZAPI_INSTANCE_TOKEN')) define('ZAPI_INSTANCE_TOKEN', $_twilioWaToken);
+if (!defined('ZAPI_MAX_RETRIES')) define('ZAPI_MAX_RETRIES', 3);
+if (!defined('ZAPI_RETRY_BASE_DELAY')) define('ZAPI_RETRY_BASE_DELAY', 1);
 
 /**
- * Send WhatsApp with automatic retry and exponential backoff
+ * Internal: Send WhatsApp via Twilio Content Template
+ * @param string $phone Phone number
+ * @param string $message Message body (used as variable {{1}} in template)
+ * @param string|null $templateSid Specific template SID (null = general notification)
+ * @param array $variables Template variables (e.g. ['1' => 'value'])
+ * @return array ['success' => bool, 'message' => string, 'messageId' => string|null]
+ */
+function _twilioWaSend(string $phone, string $message, ?string $templateSid = null, array $variables = []): array {
+    global $_twilioWaSid, $_twilioWaToken, $_twilioWaFrom, $_twilioWaNotifyTemplate;
+
+    if (empty($_twilioWaSid) || empty($_twilioWaToken)) {
+        return ['success' => false, 'message' => 'Twilio WhatsApp nao configurado'];
+    }
+
+    $to = _formatPhoneForTwilioWa($phone);
+    if (!$to) {
+        return ['success' => false, 'message' => 'Telefone invalido'];
+    }
+
+    $url = "https://api.twilio.com/2010-04-01/Accounts/{$_twilioWaSid}/Messages.json";
+
+    // Use template if available, otherwise send freeform
+    $contentSid = $templateSid ?: $_twilioWaNotifyTemplate;
+
+    $fields = [
+        'From' => $_twilioWaFrom,
+        'To' => 'whatsapp:' . $to,
+    ];
+
+    if ($contentSid && !empty($variables)) {
+        $fields['ContentSid'] = $contentSid;
+        $fields['ContentVariables'] = json_encode($variables);
+    } elseif ($contentSid) {
+        $fields['ContentSid'] = $contentSid;
+        $fields['ContentVariables'] = json_encode(['1' => $message]);
+    } else {
+        // Fallback: freeform message (only works within 24h conversation window)
+        $fields['Body'] = $message;
+    }
+
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => http_build_query($fields),
+        CURLOPT_USERPWD => $_twilioWaSid . ':' . $_twilioWaToken,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 15,
+    ]);
+
+    $result = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $error = curl_error($ch);
+    curl_close($ch);
+
+    if ($error) {
+        error_log("[twilio-wa] cURL error: $error");
+        return ['success' => false, 'message' => "Erro conexao: $error"];
+    }
+
+    $data = json_decode($result, true);
+
+    if ($httpCode >= 200 && $httpCode < 300) {
+        $msgSid = $data['sid'] ?? '';
+        $phoneMasked = substr($to, 0, 4) . '****' . substr($to, -2);
+        error_log("[twilio-wa] Enviado para {$phoneMasked} | SID: {$msgSid}");
+        return ['success' => true, 'message' => 'Enviado', 'messageId' => $msgSid];
+    }
+
+    $errMsg = $data['message'] ?? "HTTP $httpCode";
+    $errCode = $data['code'] ?? '';
+    $phoneMasked = substr($to, 0, 4) . '****' . substr($to, -2);
+    error_log("[twilio-wa] Falha para {$phoneMasked}: [{$errCode}] {$errMsg}");
+    return ['success' => false, 'message' => $errMsg];
+}
+
+/**
+ * Format phone for Twilio WhatsApp (returns +XXXXXXXXXXX without whatsapp: prefix)
+ */
+function _formatPhoneForTwilioWa(string $phone): string {
+    $phone = preg_replace('/\D/', '', $phone);
+
+    // Brazilian numbers without country code: prepend 55
+    if (strlen($phone) >= 10 && strlen($phone) <= 11 && !preg_match('/^(55|1|44|34|49|33|61|81|86|91|52|54|56|57|58|595|598)/', $phone)) {
+        $phone = '55' . $phone;
+    }
+
+    if (strlen($phone) < 11 || strlen($phone) > 15) {
+        return '';
+    }
+
+    return '+' . $phone;
+}
+
+// === Public API (backward compatible with Z-API interface) ===
+
+/**
+ * Send WhatsApp with automatic retry
  */
 function sendWhatsAppWithRetry(string $phone, string $message, int $maxRetries = ZAPI_MAX_RETRIES): array {
     $attempt = 0;
@@ -57,7 +154,7 @@ function sendWhatsAppWithRetry(string $phone, string $message, int $maxRetries =
 
         if ($result['success']) {
             if ($attempt > 0) {
-                error_log("[zapi] Success after " . ($attempt + 1) . " attempts for phone ending " . substr($phone, -4));
+                error_log("[twilio-wa] Success after " . ($attempt + 1) . " attempts for phone ending " . substr($phone, -4));
             }
             return $result;
         }
@@ -66,13 +163,13 @@ function sendWhatsAppWithRetry(string $phone, string $message, int $maxRetries =
         $attempt++;
 
         if ($attempt < $maxRetries) {
-            $delay = ZAPI_RETRY_BASE_DELAY * pow(2, $attempt - 1); // 1s, 2s, 4s
-            error_log("[zapi] Retry $attempt/$maxRetries in {$delay}s for phone ending " . substr($phone, -4));
+            $delay = ZAPI_RETRY_BASE_DELAY * pow(2, $attempt - 1);
+            error_log("[twilio-wa] Retry $attempt/$maxRetries in {$delay}s for phone ending " . substr($phone, -4));
             sleep($delay);
         }
     }
 
-    error_log("[zapi] All $maxRetries retries failed for phone ending " . substr($phone, -4) . ": $lastError");
+    error_log("[twilio-wa] All $maxRetries retries failed for phone ending " . substr($phone, -4) . ": $lastError");
     return ['success' => false, 'message' => "Failed after $maxRetries attempts: $lastError"];
 }
 
@@ -84,267 +181,74 @@ function sendWhatsApp(string $phone, string $message): array {
 }
 
 /**
- * Internal: Envia mensagem de texto via WhatsApp (single attempt)
- * @param string $phone Telefone com DDD (ex: 11999999999 ou +5511999999999)
- * @param string $message Texto da mensagem
- * @return array ['success' => bool, 'message' => string]
+ * Internal: Send single WhatsApp message via Twilio
  */
 function sendWhatsAppInternal(string $phone, string $message): array {
-    // Check if Z-API is configured
-    if (empty(ZAPI_BASE_URL) || empty(ZAPI_CLIENT_TOKEN)) {
-        error_log("[zapi] Z-API not configured - skipping message send");
-        return ['success' => false, 'message' => 'Z-API nao configurado'];
-    }
-
-    $phone = formatPhoneForZapi($phone);
-    if (!$phone) {
-        return ['success' => false, 'message' => 'Telefone invalido'];
-    }
-
-    $payload = json_encode([
-        'phone' => $phone,
-        'message' => $message
-    ]);
-
-    $ch = curl_init(ZAPI_BASE_URL . '/send-text');
-    curl_setopt_array($ch, [
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => $payload,
-        CURLOPT_HTTPHEADER => [
-            'Content-Type: application/json',
-            'Client-Token: ' . ZAPI_CLIENT_TOKEN
-        ],
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 15
-    ]);
-
-    $result = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $error = curl_error($ch);
-    curl_close($ch);
-
-    if ($error) {
-        error_log("[zapi] cURL error: $error");
-        return ['success' => false, 'message' => "Erro conexao: $error"];
-    }
-
-    $data = json_decode($result, true);
-
-    // Z-API retorna zaapId ou messageId ou id quando sucesso
-    $messageId = $data['zaapId'] ?? $data['messageId'] ?? $data['id'] ?? null;
-    if ($httpCode >= 200 && $httpCode < 300 && $messageId) {
-        error_log("[zapi] Mensagem enviada para " . substr($phone, 0, 4) . "****" . substr($phone, -2) . " | ID: $messageId");
-        return ['success' => true, 'message' => 'Enviado', 'messageId' => $messageId];
-    }
-
-    $errMsg = $data['error'] ?? $data['message'] ?? "HTTP $httpCode";
-    error_log("[zapi] Falha enviar para " . substr($phone, 0, 4) . "****" . substr($phone, -2) . ": $errMsg");
-    return ['success' => false, 'message' => $errMsg];
+    return _twilioWaSend($phone, $message);
 }
 
 /**
- * Envia mensagem com botoes interativos (ate 3 botoes).
- *
- * Z-API endpoint: POST /send-button-list
- * Payload:
- *   { "phone": "55...", "message": "text",
- *     "buttonList": { "buttons": [{"id": "btn_1", "label": "Button Text"}, ...] } }
- *
- * @param string $phone  Telefone com DDD
- * @param string $message Texto da mensagem
- * @param array  $buttons Array de botoes: [['id' => 'btn_x', 'label' => 'Text'], ...]
- * @return array ['success' => bool, 'message' => string]
+ * Send WhatsApp with interactive buttons
+ * Note: Twilio Content Templates don't support dynamic buttons the same way.
+ * Falls back to text message with numbered options.
  */
 function sendWhatsAppButtons(string $phone, string $message, array $buttons): array {
-    if (empty(ZAPI_BASE_URL) || empty(ZAPI_CLIENT_TOKEN)) {
-        return ['success' => false, 'message' => 'Z-API nao configurado'];
+    $buttonText = '';
+    foreach (array_slice($buttons, 0, 3) as $i => $btn) {
+        $label = $btn['label'] ?? '';
+        $buttonText .= "\n" . ($i + 1) . ". {$label}";
     }
-
-    $phone = formatPhoneForZapi($phone);
-    if (!$phone) return ['success' => false, 'message' => 'Telefone invalido'];
-
-    // Enforce WhatsApp limit of 3 buttons
-    $buttons = array_slice($buttons, 0, 3);
-
-    $buttonList = [];
-    foreach ($buttons as $btn) {
-        $buttonList[] = [
-            'id'    => $btn['id'] ?? uniqid('btn_'),
-            'label' => mb_substr($btn['label'] ?? '', 0, 20), // WhatsApp 20-char limit
-        ];
-    }
-
-    $payload = json_encode([
-        'phone'      => $phone,
-        'message'    => $message,
-        'buttonList' => [
-            'buttons' => $buttonList,
-        ],
-    ], JSON_UNESCAPED_UNICODE);
-
-    $ch = curl_init(ZAPI_BASE_URL . '/send-button-list');
-    curl_setopt_array($ch, [
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => $payload,
-        CURLOPT_HTTPHEADER => [
-            'Content-Type: application/json',
-            'Client-Token: ' . ZAPI_CLIENT_TOKEN
-        ],
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 15
-    ]);
-
-    $result = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $error = curl_error($ch);
-    curl_close($ch);
-
-    if ($error) {
-        error_log("[zapi] cURL error (buttons): $error");
-        return ['success' => false, 'message' => "Erro conexao: $error"];
-    }
-
-    $data = json_decode($result, true);
-    $messageId = $data['zaapId'] ?? $data['messageId'] ?? $data['id'] ?? null;
-    $ok = $httpCode >= 200 && $httpCode < 300 && $messageId;
-
-    if ($ok) {
-        error_log("[zapi] Buttons enviados para " . substr($phone, 0, 4) . "****" . substr($phone, -2) . " | ID: $messageId");
-    } else {
-        error_log("[zapi] Falha enviar buttons para " . substr($phone, 0, 4) . "****" . substr($phone, -2) . ": " . ($data['error'] ?? "HTTP $httpCode"));
-    }
-
-    return ['success' => $ok, 'message' => $ok ? 'Enviado' : ($data['error'] ?? $data['message'] ?? "HTTP $httpCode")];
+    return _twilioWaSend($phone, $message . "\n" . $buttonText);
 }
 
 /**
- * Envia mensagem com lista de opcoes (menu com secoes).
- *
- * Z-API endpoint: POST /send-option-list
- * Payload:
- *   { "phone": "55...", "message": "text",
- *     "optionList": {
- *       "title": "Menu Title",
- *       "buttonLabel": "Ver opcoes",
- *       "options": [
- *         { "title": "Section", "rows": [{"title": "Item", "description": "desc", "rowId": "id"}, ...] }
- *       ]
- *     }
- *   }
- *
- * @param string $phone        Telefone com DDD
- * @param string $message      Texto da mensagem
- * @param string $buttonLabel  Label do botao que abre a lista
- * @param array  $sections     Array de secoes: [['title' => 'Section', 'rows' => [['title' => 'Item', 'description' => 'desc', 'rowId' => 'id'], ...]], ...]
- * @return array ['success' => bool, 'message' => string]
+ * Send WhatsApp with list menu
+ * Falls back to text message with section headers and items.
  */
 function sendWhatsAppList(string $phone, string $message, string $buttonLabel, array $sections): array {
-    if (empty(ZAPI_BASE_URL) || empty(ZAPI_CLIENT_TOKEN)) {
-        return ['success' => false, 'message' => 'Z-API nao configurado'];
-    }
-
-    $phone = formatPhoneForZapi($phone);
-    if (!$phone) return ['success' => false, 'message' => 'Telefone invalido'];
-
-    // Build options array with WhatsApp limits
-    $options = [];
+    $listText = $message;
     foreach ($sections as $section) {
-        $rows = [];
+        $listText .= "\n\n*{$section['title']}*";
         foreach (($section['rows'] ?? []) as $row) {
-            $rows[] = [
-                'title'       => mb_substr($row['title'] ?? '', 0, 24),       // WhatsApp 24-char limit
-                'description' => mb_substr($row['description'] ?? '', 0, 72), // WhatsApp 72-char limit
-                'rowId'       => $row['rowId'] ?? uniqid('row_'),
-            ];
-        }
-        if (!empty($rows)) {
-            $options[] = [
-                'title' => mb_substr($section['title'] ?? '', 0, 24),
-                'rows'  => array_slice($rows, 0, 10), // WhatsApp max 10 rows per section
-            ];
+            $title = $row['title'] ?? '';
+            $desc = $row['description'] ?? '';
+            $listText .= "\n- {$title}";
+            if ($desc) $listText .= " — {$desc}";
         }
     }
-
-    if (empty($options)) {
-        return ['success' => false, 'message' => 'Nenhuma opcao fornecida'];
-    }
-
-    $payload = json_encode([
-        'phone'      => $phone,
-        'message'    => $message,
-        'optionList' => [
-            'title'       => mb_substr($buttonLabel, 0, 20),
-            'buttonLabel' => mb_substr($buttonLabel, 0, 20),
-            'options'     => array_slice($options, 0, 10), // WhatsApp max 10 sections
-        ],
-    ], JSON_UNESCAPED_UNICODE);
-
-    $ch = curl_init(ZAPI_BASE_URL . '/send-option-list');
-    curl_setopt_array($ch, [
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => $payload,
-        CURLOPT_HTTPHEADER => [
-            'Content-Type: application/json',
-            'Client-Token: ' . ZAPI_CLIENT_TOKEN
-        ],
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 15
-    ]);
-
-    $result = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $error = curl_error($ch);
-    curl_close($ch);
-
-    if ($error) {
-        error_log("[zapi] cURL error (list): $error");
-        return ['success' => false, 'message' => "Erro conexao: $error"];
-    }
-
-    $data = json_decode($result, true);
-    $messageId = $data['zaapId'] ?? $data['messageId'] ?? $data['id'] ?? null;
-    $ok = $httpCode >= 200 && $httpCode < 300 && $messageId;
-
-    if ($ok) {
-        error_log("[zapi] List enviada para " . substr($phone, 0, 4) . "****" . substr($phone, -2) . " | ID: $messageId");
-    } else {
-        error_log("[zapi] Falha enviar list para " . substr($phone, 0, 4) . "****" . substr($phone, -2) . ": " . ($data['error'] ?? "HTTP $httpCode"));
-    }
-
-    return ['success' => $ok, 'message' => $ok ? 'Enviado' : ($data['error'] ?? $data['message'] ?? "HTTP $httpCode")];
+    return _twilioWaSend($phone, $listText);
 }
 
 /**
- * Envia imagem via WhatsApp
- * @param string $phone Telefone com DDD
- * @param string $imageUrl URL da imagem
- * @param string $caption Legenda da imagem
- * @return array ['success' => bool, 'message' => string]
+ * Send image via WhatsApp
+ * Uses Twilio MMS with MediaUrl
  */
 function sendWhatsAppImage(string $phone, string $imageUrl, string $caption = ''): array {
-    if (empty(ZAPI_BASE_URL) || empty(ZAPI_CLIENT_TOKEN)) {
-        return ['success' => false, 'message' => 'Z-API nao configurado'];
+    global $_twilioWaSid, $_twilioWaToken, $_twilioWaFrom;
+
+    if (empty($_twilioWaSid) || empty($_twilioWaToken)) {
+        return ['success' => false, 'message' => 'Twilio WhatsApp nao configurado'];
     }
 
-    $phone = formatPhoneForZapi($phone);
-    if (!$phone) return ['success' => false, 'message' => 'Telefone invalido'];
+    $to = _formatPhoneForTwilioWa($phone);
+    if (!$to) return ['success' => false, 'message' => 'Telefone invalido'];
 
-    $payload = json_encode([
-        'phone' => $phone,
-        'image' => $imageUrl,
-        'caption' => $caption
-    ]);
+    $url = "https://api.twilio.com/2010-04-01/Accounts/{$_twilioWaSid}/Messages.json";
 
-    $ch = curl_init(ZAPI_BASE_URL . '/send-image');
+    $fields = [
+        'From' => $_twilioWaFrom,
+        'To' => 'whatsapp:' . $to,
+        'MediaUrl' => $imageUrl,
+    ];
+    if ($caption) $fields['Body'] = $caption;
+
+    $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => $payload,
-        CURLOPT_HTTPHEADER => [
-            'Content-Type: application/json',
-            'Client-Token: ' . ZAPI_CLIENT_TOKEN
-        ],
+        CURLOPT_POSTFIELDS => http_build_query($fields),
+        CURLOPT_USERPWD => $_twilioWaSid . ':' . $_twilioWaToken,
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 15
+        CURLOPT_TIMEOUT => 15,
     ]);
 
     $result = curl_exec($ch);
@@ -353,50 +257,38 @@ function sendWhatsAppImage(string $phone, string $imageUrl, string $caption = ''
     curl_close($ch);
 
     if ($error) {
-        error_log("[zapi] cURL error (image): $error");
+        error_log("[twilio-wa] cURL error (image): $error");
         return ['success' => false, 'message' => "Erro conexao: $error"];
     }
 
     $data = json_decode($result, true);
     $ok = $httpCode >= 200 && $httpCode < 300;
+    $phoneMasked = substr($to, 0, 4) . '****' . substr($to, -2);
 
     if ($ok) {
-        error_log("[zapi] Imagem enviada para " . substr($phone, 0, 4) . "****" . substr($phone, -2));
+        error_log("[twilio-wa] Imagem enviada para {$phoneMasked}");
     } else {
-        error_log("[zapi] Falha enviar imagem para " . substr($phone, 0, 4) . "****" . substr($phone, -2) . ": " . ($data['error'] ?? "HTTP $httpCode"));
+        error_log("[twilio-wa] Falha imagem para {$phoneMasked}: " . ($data['message'] ?? "HTTP $httpCode"));
     }
 
-    return ['success' => $ok, 'message' => $ok ? 'Enviado' : ($data['error'] ?? 'Erro')];
+    return ['success' => $ok, 'message' => $ok ? 'Enviado' : ($data['message'] ?? 'Erro')];
 }
 
-// Alias para compatibilidade
+// Alias for compatibility
 if (!function_exists('sendWhatsAppText')) {
     function sendWhatsAppText(string $phone, string $message): array {
         return sendWhatsApp($phone, $message);
     }
 }
 
-/**
- * Formata telefone para formato Z-API (codigo pais + numero)
- * Aceita numeros brasileiros e internacionais
- * O frontend já envia com código do país, então não adiciona 55 automaticamente
- */
+// Keep old function name for compatibility
 function formatPhoneForZapi(string $phone): string {
-    // Remover tudo que nao e digito
-    $phone = preg_replace('/\D/', '', $phone);
-
-    // Aceita numeros de 10 a 15 digitos (com codigo do pais)
-    // Frontend já envia: código país + número local
-    if (strlen($phone) < 10 || strlen($phone) > 15) {
-        return '';
-    }
-
-    return $phone;
+    $formatted = _formatPhoneForTwilioWa($phone);
+    return $formatted ? ltrim($formatted, '+') : '';
 }
 
-/**
- * Templates de mensagens para pedidos
- */
+// === Message Templates (same interface as before) ===
+
 function whatsappOrderCreated(string $phone, string $orderNumber, float $total, string $partnerName): array {
     $totalFmt = number_format($total, 2, ',', '.');
     $msg = "🛒 *Pedido Confirmado!*\n\n"
@@ -481,16 +373,24 @@ function whatsappShopperAssigned(string $phone, string $orderNumber, string $sho
     return sendWhatsApp($phone, $msg);
 }
 
+/**
+ * Send OTP code via WhatsApp using dedicated OTP template
+ */
 function whatsappOTP(string $phone, string $code, string $app = 'SuperBora'): array {
+    global $_twilioWaOtpTemplate;
+
+    // Use dedicated OTP template with code as variable
+    if (!empty($_twilioWaOtpTemplate)) {
+        return _twilioWaSend($phone, $code, $_twilioWaOtpTemplate, ['1' => $code]);
+    }
+
+    // Fallback: general template
     $msg = "🔐 *{$app} - Codigo de Verificacao*\n\n"
          . "Seu codigo: *{$code}*\n\n"
          . "Valido por 5 minutos. Nao compartilhe este codigo.";
     return sendWhatsApp($phone, $msg);
 }
 
-/**
- * Notifica parceiro via WhatsApp sobre novo pedido
- */
 function whatsappAskRating(string $phone, string $orderNumber, string $partnerName): array {
     $msg = "⭐ *Como foi seu pedido?*\n\n"
          . "Pedido *#{$orderNumber}* da *{$partnerName}*\n\n"
