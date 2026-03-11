@@ -33,6 +33,11 @@ try {
         response(false, null, "partner_id e order_total sao obrigatorios", 400);
     }
 
+    // Bounds validation — prevent overflow in cashback calculations
+    if ($orderTotal > 999999.99) {
+        response(false, null, "Valor do pedido invalido", 400);
+    }
+
     // Calcular preview de cashback
     $preview = previewCashback($db, $partnerId, $orderTotal);
 
