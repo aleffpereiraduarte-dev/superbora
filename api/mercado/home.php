@@ -548,6 +548,7 @@ function salvarListaEspera($db) {
  */
 function response($success, $data = null, $message = null, $httpCode = 200) {
     http_response_code($httpCode);
+    header("Content-Type: application/json; charset=utf-8");
 
     $response = ["success" => $success];
 
@@ -555,9 +556,7 @@ function response($success, $data = null, $message = null, $httpCode = 200) {
         $response["message"] = $message;
     }
 
-    if ($data) {
-        $response = array_merge($response, $data);
-    }
+    $response["data"] = $data;
 
     echo json_encode($response, JSON_UNESCAPED_UNICODE);
     exit;
