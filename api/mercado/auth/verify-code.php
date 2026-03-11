@@ -128,14 +128,14 @@ try {
         // Registrar novo cliente
         if ($isEmailOtp) {
             $stmt = $db->prepare("
-                INSERT INTO om_customers (name, email, email_verified, is_active, date_added, last_login)
+                INSERT INTO om_customers (name, email, email_verified, is_active, created_at, last_login)
                 VALUES (?, ?, 1, 1, NOW(), NOW())
                 RETURNING customer_id
             ");
             $stmt->execute([$name ?: 'Cliente', $identifier]);
         } else {
             $stmt = $db->prepare("
-                INSERT INTO om_customers (name, phone, phone_verified, is_active, date_added, last_login)
+                INSERT INTO om_customers (name, phone, phone_verified, is_active, created_at, last_login)
                 VALUES (?, ?, 1, 1, NOW(), NOW())
                 RETURNING customer_id
             ");
