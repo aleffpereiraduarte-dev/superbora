@@ -95,12 +95,14 @@ try {
         response(false, null, "TXID nao informado", 400);
     }
 
-    // Buscar pagamento (prepared statement)
-    $stmt = $db->prepare("SELECT * FROM om_payments WHERE gateway_id = ?");
+    // Buscar pagamento com FOR UPDATE para idempotencia atomica
+    $db->beginTransaction();
+    $stmt = $db->prepare("SELECT * FROM om_payments WHERE gateway_id = ? FOR UPDATE");
     $stmt->execute([$txid]);
     $pagamento = $stmt->fetch();
 
     if (!$pagamento) {
+        $db->commit();
         // Registrar no log mesmo sem pagamento encontrado
         $stmt = $db->prepare("
             INSERT INTO om_pix_webhook_log (txid, status, payload, processed)
@@ -125,9 +127,17 @@ try {
     ]);
 
     if ($status === "paid" || $status === "approved") {
-        // Confirmar pagamento
+        // IDEMPOTENCY: If already paid, skip all processing (cashback, points, notifications)
+        if ($pagamento['status'] === 'pago') {
+            $db->commit();
+            logPix("Webhook duplicado — pagamento ja confirmado, ignorando", ["payment_id" => $pagamento["id"]]);
+            response(true, ["status" => "already_processed"]);
+        }
+
+        // Confirmar pagamento (inside same transaction that locked the row)
         $stmt = $db->prepare("UPDATE om_payments SET status = 'pago', pago_em = NOW() WHERE id = ?");
         $stmt->execute([$pagamento["id"]]);
+        $db->commit();
 
         logPix("Pagamento confirmado", ["payment_id" => $pagamento["id"], "tipo" => $pagamento["tipo_origem"]]);
 
@@ -283,6 +293,9 @@ try {
                         // Bonus de streak: +10% por dia consecutivo (max 50%)
                         $streakBonus = min(0.5, $streakDays * 0.1);
                         $pointsEarned = (int)($pointsEarned * (1 + $streakBonus));
+
+                        // CAP: max 10000 points per order to prevent inflation
+                        $pointsEarned = min($pointsEarned, 10000);
 
                         $stmt = $db->prepare("
                             INSERT INTO om_gamification (customer_id, points, level, streak_days, last_order_date, total_orders, total_spent)

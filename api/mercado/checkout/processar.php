@@ -548,7 +548,7 @@ try {
             $maxLoyaltyDiscount = round($subtotal * OmPricing::PONTOS_MAX_DESCONTO_PCT, 2);
             if ($loyalty_discount > $maxLoyaltyDiscount) {
                 $loyalty_discount = $maxLoyaltyDiscount;
-                $loyalty_points_used = (int)round($loyalty_discount / OmPricing::PONTO_VALOR);
+                $loyalty_points_used = (int)floor($loyalty_discount / OmPricing::PONTO_VALOR);
             }
         }
 

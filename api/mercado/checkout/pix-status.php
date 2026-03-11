@@ -98,32 +98,43 @@ try {
     $pix_paid = ($order['pagamento_status'] ?? '') === 'pago'
         || ($order['payment_status'] ?? '') === 'paid';
 
-    // Fallback: se webhook nao atualizou, consultar Woovi API diretamente
+    // Fallback: se webhook nao atualizou, consultar EFI API diretamente
     if (!$pix_paid && $order['forma_pagamento'] === 'pix') {
         try {
-            $stmt2 = $db->prepare("SELECT charge_id, pagarme_order_id FROM om_pagarme_transacoes WHERE pedido_id = ? ORDER BY created_at DESC LIMIT 1");
-            $stmt2->execute([$order_id]);
-            $txRow = $stmt2->fetch();
+            // Check payment_id (stores the EFI txid)
+            $efiTxid = $order['payment_id'] ?? '';
 
-            // Try Woovi first (correlationId starts with "order_")
-            $wooviCorrelation = $txRow['pagarme_order_id'] ?? '';
-            if (!empty($wooviCorrelation) && strpos($wooviCorrelation, 'order_') === 0) {
+            // Also check om_pix_intents for the txid
+            if (empty($efiTxid)) {
+                $intentStmt = $db->prepare("SELECT correlation_id FROM om_pix_intents WHERE order_id = ? AND status = 'paid' LIMIT 1");
+                $intentStmt->execute([$order_id]);
+                $efiTxid = $intentStmt->fetchColumn() ?: '';
+            }
+
+            if (!empty($efiTxid)) {
                 try {
-                    require_once dirname(__DIR__, 3) . '/includes/classes/WooviClient.php';
-                    $woovi = new WooviClient();
-                    $result = $woovi->getChargeStatus($wooviCorrelation);
-                    $chargeData = $result['data']['charge'] ?? $result['data'] ?? [];
-                    $chargeStatus = $chargeData['status'] ?? '';
+                    require_once dirname(__DIR__, 3) . '/includes/classes/EfiClient.php';
+                    $efi = new EfiClient();
+                    $result = $efi->checkChargeStatus($efiTxid);
 
-                    if (in_array($chargeStatus, ['COMPLETED', 'CONFIRMED'])) {
+                    if ($result['success'] && $result['paid']) {
+                        $e2eId = $result['e2e_id'] ?? '';
+                        // Atomic update with FOR UPDATE to prevent race conditions
+                        $db->beginTransaction();
+                        $lockStmt = $db->prepare("SELECT pagamento_status FROM om_market_orders WHERE order_id = ? FOR UPDATE");
+                        $lockStmt->execute([$order_id]);
+                        $currentPayStatus = $lockStmt->fetchColumn();
+                        if ($currentPayStatus !== 'pago') {
+                            $db->prepare("UPDATE om_market_orders SET pagamento_status = 'pago', payment_status = 'paid', pix_paid = true, payment_id = COALESCE(NULLIF(payment_id,''), ?), status = CASE WHEN status = 'pendente' THEN 'aceito' ELSE status END, date_modified = NOW() WHERE order_id = ?")
+                               ->execute([$e2eId ?: $efiTxid, $order_id]);
+                            error_log("[PIX-Status] Fallback: pedido #$order_id confirmado via polling EFI txid={$efiTxid}");
+                        }
+                        $db->commit();
                         $pix_paid = true;
-                        $db->prepare("UPDATE om_market_orders SET pagamento_status = 'pago', payment_status = 'paid', pix_paid = true, status = CASE WHEN status = 'pendente' THEN 'aceito' ELSE status END, date_modified = NOW() WHERE order_id = ?")->execute([$order_id]);
-                        $db->prepare("UPDATE om_pagarme_transacoes SET status = 'paid' WHERE pedido_id = ? AND status != 'paid'")->execute([$order_id]);
                         $order['status'] = ($order['status'] === 'pendente') ? 'aceito' : $order['status'];
-                        error_log("[PIX-Status] Fallback: pedido #$order_id confirmado via polling Woovi");
                     }
-                } catch (Exception $wooviErr) {
-                    error_log("[PIX-Status] Woovi fallback error: " . $wooviErr->getMessage());
+                } catch (Exception $efiErr) {
+                    error_log("[PIX-Status] EFI fallback error: " . $efiErr->getMessage());
                 }
             }
         } catch (Exception $fallbackErr) {
