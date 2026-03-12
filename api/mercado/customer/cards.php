@@ -26,7 +26,7 @@ try {
     // GET - Listar cartoes salvos
     if ($method === "GET") {
         $stmt = $db->prepare("
-            SELECT id, card_last4, card_brand, card_exp_month, card_exp_year, is_default, created_at
+            SELECT id, card_token, card_last4, card_brand, card_exp_month, card_exp_year, is_default, created_at
             FROM om_market_saved_cards
             WHERE customer_id = ?
             ORDER BY is_default DESC, created_at DESC

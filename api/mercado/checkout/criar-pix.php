@@ -10,7 +10,7 @@
 require_once __DIR__ . "/../config/database.php";
 setCorsHeaders();
 require_once dirname(__DIR__, 2) . "/rate-limit/RateLimiter.php";
-require_once dirname(__DIR__, 3) . "/includes/classes/WooviClient.php";
+require_once dirname(__DIR__, 3) . "/includes/classes/EfiClient.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmPricing.php";
 
 if (!RateLimiter::check(10, 60)) {
@@ -109,22 +109,26 @@ try {
     $customer_email = $custData['email'] ?? '';
 
     // Get cart items from ALL partners (multi-store support)
+    // Use FOR UPDATE to lock product rows and prevent overselling
+    $db->beginTransaction();
     $placeholders = implode(',', array_fill(0, count($allPartnerIds), '?'));
     $cartSql = "SELECT c.product_id, c.partner_id, c.quantity, c.notes as item_notes,
                        p.price, p.special_price, p.name as product_name, p.quantity as stock
                 FROM om_market_cart c
                 INNER JOIN om_market_products p ON c.product_id = p.product_id
                 WHERE c.customer_id = ? AND c.partner_id IN ({$placeholders})
-                ORDER BY c.partner_id, c.cart_id ASC";
+                ORDER BY c.partner_id, c.cart_id ASC
+                FOR UPDATE OF p";
     $cartStmt = $db->prepare($cartSql);
     $cartStmt->execute(array_merge([$customer_id], $allPartnerIds));
     $cartItems = $cartStmt->fetchAll(PDO::FETCH_ASSOC);
 
     if (empty($cartItems)) {
+        $db->rollBack();
         response(false, null, "Carrinho vazio", 400);
     }
 
-    // Validate stock (without locking)
+    // Validate stock (with FOR UPDATE lock on product rows)
     $subtotal = 0;
     $orderItems = [];
     foreach ($cartItems as $item) {
@@ -132,11 +136,13 @@ try {
         if ($qty <= 0) continue; // BUG 5: skip invalid quantities
         $stock = (int)$item['stock'];
         if ($qty > $stock) {
+            $db->rollBack();
             response(false, null, "Estoque insuficiente para {$item['product_name']} (disponivel: {$stock})", 400);
         }
         $price = ($item['special_price'] && (float)$item['special_price'] > 0 && (float)$item['special_price'] < (float)$item['price'])
             ? (float)$item['special_price'] : (float)$item['price'];
         if ($price <= 0) { // BUG 7: reject zero/negative prices
+            $db->rollBack();
             response(false, null, "Preco invalido para {$item['product_name']}", 400);
         }
         $itemTotal = $price * $qty;
@@ -153,8 +159,12 @@ try {
     }
 
     if (empty($orderItems)) { // BUG 5: all items had invalid qty
+        if ($db->inTransaction()) $db->rollBack();
         response(false, null, "Carrinho vazio", 400);
     }
+
+    // Stock validated with lock — commit to release FOR UPDATE locks
+    $db->commit();
 
     // ═══════════════════════════════════════════════════════
     // FRETE — calculado server-side via OmPricing (nunca confiar no cliente)
@@ -328,33 +338,29 @@ try {
         'customer_email' => $customer_email,
     ];
 
-    // Generate PIX via Woovi
-    $correlationId = 'pix_intent_' . $customer_id . '_' . time() . '_' . bin2hex(random_bytes(4));
+    // Generate PIX via EFI (Efi/Gerencianet)
     $comment = "SuperBora - " . $combinedPartnerName;
 
-    $woovi = new WooviClient();
+    $efi = new EfiClient();
 
-    // Build customer data for Woovi
+    // Build customer data for EFI
     $cpf = $cpf_nota ?: preg_replace('/[^0-9]/', '', $custData['cpf'] ?? '');
-    $wooviCustomer = ['name' => $customer_name ?: 'Cliente SuperBora'];
-    if (strlen($cpf) === 11) $wooviCustomer['taxID'] = $cpf;
-    if (strlen($customer_phone) >= 10) $wooviCustomer['phone'] = '+55' . $customer_phone;
-    if (!empty($customer_email) && filter_var($customer_email, FILTER_VALIDATE_EMAIL)) {
-        $wooviCustomer['email'] = $customer_email;
-    }
-    if (!isset($wooviCustomer['taxID']) && !isset($wooviCustomer['phone']) && !isset($wooviCustomer['email'])) {
-        $wooviCustomer['email'] = 'customer' . $customer_id . '@superbora.com.br';
+    $efiCustomer = ['nome' => $customer_name ?: 'Cliente SuperBora'];
+    if (strlen($cpf) === 11) $efiCustomer['cpf'] = $cpf;
+
+    $chargeResult = $efi->createPixCharge($total, $comment, 600, $efiCustomer);
+
+    if (!$chargeResult['success']) {
+        error_log("[criar-pix] EFI PIX charge failed: " . ($chargeResult['error'] ?? 'unknown'));
+        response(false, null, "PIX indisponivel no momento. Tente novamente.", 503);
     }
 
-    $chargeResult = $woovi->createCharge($amountCents, $correlationId, $comment, 600, $wooviCustomer);
-    $chargeData = $chargeResult['data'] ?? [];
-    $charge = $chargeData['charge'] ?? $chargeData;
-
-    $brCode = $charge['brCode'] ?? $charge['pixCopiaECola'] ?? '';
-    $qrCodeUrl = $charge['qrCodeImage'] ?? '';
+    $brCode = $chargeResult['qrcode_text'] ?? '';
+    $qrCodeUrl = $chargeResult['qrcode_image'] ?? '';
+    $correlationId = $chargeResult['txid'];
 
     if (empty($brCode)) {
-        error_log("[criar-pix] PIX charge failed: " . json_encode($chargeData));
+        error_log("[criar-pix] EFI returned no QR code text");
         response(false, null, "PIX indisponivel no momento. Tente novamente.", 503);
     }
 
@@ -363,22 +369,34 @@ try {
     }
 
     // Save PIX intent (NO order created)
+    // Handle potential correlation_id conflict (EFI may reuse txid in edge cases)
     $db->beginTransaction();
-    $intentStmt = $db->prepare("
-        INSERT INTO om_pix_intents (customer_id, amount_cents, cart_snapshot, correlation_id, pix_code, pix_qr_url, status, expires_at)
-        VALUES (?, ?, ?::jsonb, ?, ?, ?, 'pending', NOW() + INTERVAL '10 minutes')
-        RETURNING intent_id, expires_at
-    ");
-    $intentStmt->execute([
-        $customer_id,
-        $amountCents,
-        json_encode($cartSnapshot),
-        $correlationId,
-        $brCode,
-        $qrCodeUrl,
-    ]);
-    $intent = $intentStmt->fetch(PDO::FETCH_ASSOC);
-    $db->commit();
+    try {
+        // Expire any existing intent with same correlation_id
+        $db->prepare("UPDATE om_pix_intents SET status = 'expired' WHERE correlation_id = ? AND status = 'pending'")->execute([$correlationId]);
+        // Delete expired intents with same correlation_id to avoid unique constraint
+        $db->prepare("DELETE FROM om_pix_intents WHERE correlation_id = ? AND status IN ('expired', 'cancelled')")->execute([$correlationId]);
+
+        $intentStmt = $db->prepare("
+            INSERT INTO om_pix_intents (customer_id, amount_cents, cart_snapshot, correlation_id, pix_code, pix_qr_url, status, expires_at)
+            VALUES (?, ?, ?::jsonb, ?, ?, ?, 'pending', NOW() + INTERVAL '10 minutes')
+            RETURNING intent_id, expires_at
+        ");
+        $intentStmt->execute([
+            $customer_id,
+            $amountCents,
+            json_encode($cartSnapshot),
+            $correlationId,
+            $brCode,
+            $qrCodeUrl,
+        ]);
+        $intent = $intentStmt->fetch(PDO::FETCH_ASSOC);
+        $db->commit();
+    } catch (\Exception $insertErr) {
+        if ($db->inTransaction()) $db->rollBack();
+        error_log("[criar-pix] Insert intent failed (correlation_id={$correlationId}): " . $insertErr->getMessage());
+        response(false, null, "Erro ao salvar PIX. Tente novamente.", 500);
+    }
 
     response(true, [
         'intent_id' => (int)$intent['intent_id'],
@@ -391,6 +409,7 @@ try {
     ]);
 
 } catch (Exception $e) {
+    if (isset($db) && $db->inTransaction()) $db->rollBack();
     error_log("[criar-pix] Erro: " . $e->getMessage());
     response(false, null, "Erro ao gerar PIX. Tente novamente.", 500);
 }
