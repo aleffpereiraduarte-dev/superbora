@@ -25,8 +25,10 @@ class EfiClient
     private string $clientSecret;
     private string $certPath;
     private string $pixKey;
+    private string $accountId;
     private string $pixBaseUrl;
     private string $chargesBaseUrl;
+    private string $tokenizerBaseUrl;
     private bool $sandbox;
 
     // Separate tokens per scope
@@ -50,14 +52,17 @@ class EfiClient
         $this->clientSecret = $env['EFI_CLIENT_SECRET'] ?? getenv('EFI_CLIENT_SECRET') ?: '';
         $this->certPath = $env['EFI_CERT_PATH'] ?? getenv('EFI_CERT_PATH') ?: '/var/www/html/api/certs/efi.pem';
         $this->pixKey = $env['EFI_PIX_KEY'] ?? getenv('EFI_PIX_KEY') ?: '';
+        $this->accountId = $env['EFI_ACCOUNT_ID'] ?? getenv('EFI_ACCOUNT_ID') ?: '';
         $this->sandbox = filter_var($env['EFI_SANDBOX'] ?? getenv('EFI_SANDBOX') ?: '0', FILTER_VALIDATE_BOOLEAN);
 
         if ($this->sandbox) {
             $this->pixBaseUrl = 'https://pix-h.api.efipay.com.br';
             $this->chargesBaseUrl = 'https://cobrancas-h.api.efipay.com.br';
+            $this->tokenizerBaseUrl = 'https://tokenizer-h.sejaefi.com.br';
         } else {
             $this->pixBaseUrl = 'https://pix.api.efipay.com.br';
             $this->chargesBaseUrl = 'https://cobrancas.api.efipay.com.br';
+            $this->tokenizerBaseUrl = 'https://tokenizer.sejaefi.com.br';
         }
     }
 
@@ -362,7 +367,10 @@ class EfiClient
     // ═══════════════════════════════════════
 
     /**
-     * Tokenize card data server-side via EFI API
+     * Tokenize card data via EFI tokenizer service.
+     *
+     * Flow: salt → pubkey → RSA encrypt → tokenizer → payment_token
+     * Uses tokenizer.sejaefi.com.br (no mTLS needed for tokenizer endpoints)
      *
      * @param string $number      Card number (digits only)
      * @param string $cvv         CVV (3-4 digits)
@@ -376,6 +384,10 @@ class EfiClient
     {
         if (!$this->isConfigured()) {
             return ['success' => false, 'error' => 'EFI nao configurado'];
+        }
+        if (empty($this->accountId)) {
+            error_log("[EFI] tokenizeCard: EFI_ACCOUNT_ID not configured");
+            return ['success' => false, 'error' => 'Configuracao de pagamento incompleta'];
         }
 
         $number = preg_replace('/\D/', '', $number);
@@ -392,32 +404,64 @@ class EfiClient
         }
 
         try {
-            if (!$this->authenticate('charges')) {
-                return ['success' => false, 'error' => 'Falha na autenticacao EFI'];
+            // Step 1: Get salt from EFI tokenizer (returns {"code":200,"data":"JWT_TOKEN"})
+            $saltResponse = $this->simpleGet("{$this->tokenizerBaseUrl}/salt");
+            $salt = $saltResponse['data'] ?? $saltResponse['salt'] ?? '';
+            if (empty($salt)) {
+                error_log("[EFI] tokenizeCard: salt failed: " . json_encode($saltResponse));
+                return ['success' => false, 'error' => 'Erro ao iniciar tokenizacao'];
             }
 
-            $payload = [
-                'brand' => strtolower($brand),
-                'number' => $number,
-                'cvv' => $cvv,
-                'expiration_month' => $expMonth,
-                'expiration_year' => $expYear,
-                'reuse' => $reuse,
-            ];
+            // Step 2: Get RSA public key using account identifier
+            $pubkeyResponse = $this->simpleGet("{$this->chargesBaseUrl}/v1/pubkey?code={$this->accountId}");
+            if (empty($pubkeyResponse['data'])) {
+                error_log("[EFI] tokenizeCard: pubkey failed: " . json_encode($pubkeyResponse));
+                return ['success' => false, 'error' => 'Erro ao obter chave de criptografia'];
+            }
+            $publicKeyPem = $pubkeyResponse['data'];
 
-            $response = $this->chargesRequest('POST', '/v1/card', $payload);
+            // Step 3: RSA encrypt card data
+            $payload = "{$brand};{$number};{$cvv};{$expMonth};{$expYear};{$salt}";
+            $publicKey = openssl_pkey_get_public($publicKeyPem);
+            if (!$publicKey) {
+                error_log("[EFI] tokenizeCard: invalid PEM: " . openssl_error_string());
+                return ['success' => false, 'error' => 'Erro na chave de criptografia'];
+            }
 
-            if (isset($response['data']['payment_token'])) {
-                error_log("[EFI] Card tokenized: mask=" . ($response['data']['card_mask'] ?? '****') . " reuse=" . ($reuse ? 'yes' : 'no'));
+            $encrypted = '';
+            if (!openssl_public_encrypt($payload, $encrypted, $publicKey, OPENSSL_PKCS1_PADDING)) {
+                error_log("[EFI] tokenizeCard: RSA encrypt failed: " . openssl_error_string());
+                return ['success' => false, 'error' => 'Erro na criptografia do cartao'];
+            }
+
+            // Step 4: Send encrypted data to tokenizer
+            $tokenResponse = $this->simplePost("{$this->tokenizerBaseUrl}/card", [
+                'data' => base64_encode($encrypted),
+            ]);
+
+            if (!empty($tokenResponse['payment_token'])) {
+                $cardMask = $tokenResponse['card_mask'] ?? (str_repeat('*', strlen($number) - 4) . substr($number, -4));
+                error_log("[EFI] Card tokenized: mask={$cardMask} reuse=" . ($reuse ? 'yes' : 'no'));
                 return [
                     'success' => true,
-                    'payment_token' => $response['data']['payment_token'],
-                    'card_mask' => $response['data']['card_mask'] ?? '',
+                    'payment_token' => $tokenResponse['payment_token'],
+                    'card_mask' => $cardMask,
                 ];
             }
 
-            $error = $response['error_description'] ?? $response['message'] ?? $response['detail'] ?? 'Erro ao tokenizar cartao';
-            error_log("[EFI] tokenizeCard failed: " . json_encode($response));
+            // Check nested data structure
+            if (!empty($tokenResponse['data']['payment_token'])) {
+                $cardMask = $tokenResponse['data']['card_mask'] ?? substr($number, -4);
+                error_log("[EFI] Card tokenized: mask={$cardMask} reuse=" . ($reuse ? 'yes' : 'no'));
+                return [
+                    'success' => true,
+                    'payment_token' => $tokenResponse['data']['payment_token'],
+                    'card_mask' => $cardMask,
+                ];
+            }
+
+            $error = $tokenResponse['error_description'] ?? $tokenResponse['message'] ?? $tokenResponse['error'] ?? 'Erro ao tokenizar cartao';
+            error_log("[EFI] tokenizeCard: tokenizer failed: " . json_encode($tokenResponse));
             return ['success' => false, 'error' => $error];
 
         } catch (\Exception $e) {
@@ -734,6 +778,59 @@ class EfiClient
             return ['success' => false, 'error' => "Invalid response (HTTP {$httpCode})"];
         }
         return $decoded ?: ['success' => false, 'error' => "Empty response (HTTP {$httpCode})"];
+    }
+
+    /**
+     * Simple GET request (no mTLS, no auth — for tokenizer/pubkey endpoints)
+     */
+    private function simpleGet(string $url): array
+    {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPGET => true,
+            CURLOPT_TIMEOUT => 15,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_HTTPHEADER => ['Accept: application/json'],
+            CURLOPT_SSL_VERIFYPEER => true,
+        ]);
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $err = curl_error($ch);
+        curl_close($ch);
+
+        if ($err) {
+            error_log("[EFI] simpleGet error {$url}: {$err}");
+            return ['error' => $err];
+        }
+        return json_decode($response, true) ?: ['error' => "HTTP {$httpCode}", 'raw' => substr($response, 0, 300)];
+    }
+
+    /**
+     * Simple POST request (no mTLS, no auth — for tokenizer endpoints)
+     */
+    private function simplePost(string $url, array $data): array
+    {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => json_encode($data),
+            CURLOPT_TIMEOUT => 15,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Accept: application/json'],
+            CURLOPT_SSL_VERIFYPEER => true,
+        ]);
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $err = curl_error($ch);
+        curl_close($ch);
+
+        if ($err) {
+            error_log("[EFI] simplePost error {$url}: {$err}");
+            return ['error' => $err];
+        }
+        return json_decode($response, true) ?: ['error' => "HTTP {$httpCode}", 'raw' => substr($response, 0, 300)];
     }
 
     /**

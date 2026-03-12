@@ -31,20 +31,20 @@ try {
 
     // ═══ CARD DATA ═══
     $savedCardToken = trim($input['saved_card_token'] ?? '');
-    $cardNumber = preg_replace('/\D/', '', $input['card_number'] ?? '');
-    $cardCvv = preg_replace('/\D/', '', $input['card_cvv'] ?? '');
-    $cardExpMonth = trim($input['card_exp_month'] ?? '');
-    $cardExpYear = trim($input['card_exp_year'] ?? '');
+    $paymentTokenFromClient = trim($input['payment_token'] ?? '');
+    $cardLast4Input = trim($input['card_last4'] ?? '');
     $cardBrand = strtolower(trim($input['card_brand'] ?? 'visa'));
     $cardName = trim($input['card_name'] ?? '');
+    $cardExpMonth = trim($input['card_exp_month'] ?? '');
+    $cardExpYear = trim($input['card_exp_year'] ?? '');
     $installments = max(1, min(12, (int)($input['installments'] ?? 1)));
     $saveCard = (bool)($input['save_card'] ?? false);
 
-    $hasSavedToken = !empty($savedCardToken) && strpos($savedCardToken, 'tok_') !== 0; // not placeholder
-    $hasNewCard = !empty($cardNumber) && !empty($cardCvv);
+    $hasSavedToken = !empty($savedCardToken) && strpos($savedCardToken, 'tok_') !== 0;
+    $hasPaymentToken = !empty($paymentTokenFromClient) && preg_match('/^[a-fA-F0-9]{30,50}$/', $paymentTokenFromClient);
 
-    if (!$hasSavedToken && !$hasNewCard) {
-        response(false, null, "Dados do cartao obrigatorios", 400);
+    if (!$hasSavedToken && !$hasPaymentToken) {
+        response(false, null, "Token de pagamento obrigatorio", 400);
     }
 
     // ═══ ORDER DATA (same as criar-pix.php) ═══
@@ -267,21 +267,17 @@ try {
         response(false, null, "Sistema de pagamento indisponivel", 503);
     }
 
-    // Get or create payment token
-    $paymentToken = $savedCardToken;
-    $cardLast4 = '';
+    // Get payment token (from client-side EFI SDK or saved card)
+    $paymentToken = '';
+    $cardLast4 = $cardLast4Input;
     $cardBrandFinal = $cardBrand;
 
-    if ($hasNewCard) {
-        // Tokenize new card server-side
-        $tokenResult = $efi->tokenizeCard($cardNumber, $cardCvv, $cardExpMonth, $cardExpYear, $cardBrand, $saveCard);
-        if (!$tokenResult['success']) {
-            response(false, null, $tokenResult['error'] ?: 'Erro ao processar cartao', 400);
-        }
-        $paymentToken = $tokenResult['payment_token'];
-        $cardLast4 = substr($cardNumber, -4);
+    if ($hasPaymentToken) {
+        // Client already tokenized via EFI WebView SDK
+        $paymentToken = $paymentTokenFromClient;
     } elseif ($hasSavedToken) {
-        // Use saved card — get last4 from database
+        // Use saved card token
+        $paymentToken = $savedCardToken;
         $savedStmt = $db->prepare("SELECT card_last4, card_brand FROM om_market_saved_cards WHERE card_token = ? AND customer_id = ?");
         $savedStmt->execute([$savedCardToken, $customer_id]);
         $savedCard = $savedStmt->fetch(PDO::FETCH_ASSOC);
@@ -321,7 +317,7 @@ try {
     $efiChargeId = $chargeResult['charge_id'];
 
     // ═══ SAVE CARD (if requested and new card) ═══
-    if ($saveCard && $hasNewCard && !empty($paymentToken)) {
+    if ($saveCard && $hasPaymentToken && !empty($paymentToken) && !empty($cardLast4)) {
         try {
             $existsStmt = $db->prepare("SELECT id FROM om_market_saved_cards WHERE customer_id = ? AND card_last4 = ? AND card_brand = ?");
             $existsStmt->execute([$customer_id, $cardLast4, $cardBrandFinal]);
