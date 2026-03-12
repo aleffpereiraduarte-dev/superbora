@@ -46,6 +46,15 @@ try {
         response(false, null, "Estabelecimento nao disponivel no momento", 400);
     }
 
+    // Check if store is currently open
+    $openStmt = $db->prepare("SELECT is_open, trade_name, name FROM om_market_partners WHERE partner_id = ?");
+    $openStmt->execute([$order['partner_id']]);
+    $storeStatus = $openStmt->fetch();
+    if ($storeStatus && !$storeStatus['is_open']) {
+        $storeName = $storeStatus['trade_name'] ?: $storeStatus['name'];
+        response(false, ['store_closed' => true, 'partner_name' => $storeName], "{$storeName} esta fechada agora", 400);
+    }
+
     // Buscar itens do pedido original
     $stmt = $db->prepare("
         SELECT oi.product_id, oi.product_name, oi.quantity, oi.price, oi.product_image
