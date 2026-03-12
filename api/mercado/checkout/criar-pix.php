@@ -9,13 +9,11 @@
  */
 require_once __DIR__ . "/../config/database.php";
 setCorsHeaders();
-require_once dirname(__DIR__, 2) . "/rate-limit/RateLimiter.php";
+// Rate limiting already applied by database.php → applyRateLimit() (Redis-based)
+// Removed legacy session-based RateLimiter::check() — it calls session_start()
+// which hangs when PHP-FPM session handler points to unreachable external Redis.
 require_once dirname(__DIR__, 3) . "/includes/classes/EfiClient.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmPricing.php";
-
-if (!RateLimiter::check(10, 60)) {
-    exit;
-}
 
 try {
     $input = getInput();
