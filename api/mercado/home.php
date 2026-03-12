@@ -143,7 +143,7 @@ try {
         "destaques" => $destaques,
         "promocoes" => $destaques,
         "produtos" => $produtos,
-        "populares" => $produtos
+        "populares" => buscarPopulares($db, $mercado['partner_id'])
     ]);
 
 } catch (Exception $e) {
@@ -457,6 +457,68 @@ function formatarProdutos($produtos) {
             "disponivel" => ((int)($p['quantity'] ?? 999)) > 0
         ];
     }, $produtos);
+}
+
+/**
+ * Busca produtos populares baseado em vendas reais (ultimos 90 dias)
+ * Fallback: produtos com is_featured se nao houver dados de vendas suficientes
+ */
+function buscarPopulares($db, $partnerId) {
+    // Produtos mais pedidos dos ultimos 90 dias neste parceiro
+    $stmt = $db->prepare("
+        SELECT p.*, c.name as categoria_nome,
+               COUNT(DISTINCT o.order_id) as order_count,
+               SUM(oi.quantity) as total_qty
+        FROM om_market_order_items oi
+        INNER JOIN om_market_orders o ON o.order_id = oi.order_id
+        INNER JOIN om_market_products p ON p.product_id = oi.product_id
+        LEFT JOIN om_market_categories c ON p.category_id = c.category_id
+        WHERE p.partner_id = ?
+          AND p.status::text = '1'
+          AND p.quantity > 0
+          AND o.created_at > NOW() - INTERVAL '90 days'
+          AND o.status NOT IN ('cancelled', 'rejected', 'expired')
+        GROUP BY p.product_id, c.name
+        ORDER BY order_count DESC, total_qty DESC
+        LIMIT 12
+    ");
+    $stmt->execute([$partnerId]);
+    $populares = $stmt->fetchAll();
+
+    // Se tiver pelo menos 4 produtos com vendas, usar esses
+    if (count($populares) >= 4) {
+        return formatarProdutos($populares);
+    }
+
+    // Fallback: featured + preencher com mais vendidos globais do parceiro
+    $stmt = $db->prepare("
+        SELECT p.*, c.name as categoria_nome
+        FROM om_market_products p
+        LEFT JOIN om_market_categories c ON p.category_id = c.category_id
+        WHERE p.partner_id = ? AND p.status::text = '1' AND p.quantity > 0
+          AND p.is_featured::text = '1'
+        ORDER BY p.sort_order ASC NULLS LAST, p.name
+        LIMIT 12
+    ");
+    $stmt->execute([$partnerId]);
+    $featured = $stmt->fetchAll();
+
+    if (count($featured) >= 4) {
+        return formatarProdutos($featured);
+    }
+
+    // Last fallback: most recently added products with images
+    $stmt = $db->prepare("
+        SELECT p.*, c.name as categoria_nome
+        FROM om_market_products p
+        LEFT JOIN om_market_categories c ON p.category_id = c.category_id
+        WHERE p.partner_id = ? AND p.status::text = '1' AND p.quantity > 0
+          AND p.image IS NOT NULL AND p.image != ''
+        ORDER BY p.created_at DESC NULLS LAST
+        LIMIT 12
+    ");
+    $stmt->execute([$partnerId]);
+    return formatarProdutos($stmt->fetchAll());
 }
 
 /**
