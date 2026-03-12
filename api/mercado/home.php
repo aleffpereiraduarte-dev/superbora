@@ -478,7 +478,7 @@ function buscarPopulares($db, $partnerId) {
           AND p.quantity > 0
           AND o.created_at > NOW() - INTERVAL '90 days'
           AND o.status NOT IN ('cancelled', 'rejected', 'expired')
-        GROUP BY p.product_id, c.name
+        GROUP BY p.id, c.name
         ORDER BY order_count DESC, total_qty DESC
         LIMIT 12
     ");
@@ -514,7 +514,7 @@ function buscarPopulares($db, $partnerId) {
         LEFT JOIN om_market_categories c ON p.category_id = c.category_id
         WHERE p.partner_id = ? AND p.status::text = '1' AND p.quantity > 0
           AND p.image IS NOT NULL AND p.image != ''
-        ORDER BY p.created_at DESC NULLS LAST
+        ORDER BY p.date_added DESC NULLS LAST
         LIMIT 12
     ");
     $stmt->execute([$partnerId]);
@@ -528,7 +528,9 @@ function buscarBanners($db) {
     $cacheKey = "home_banners";
     return CacheHelper::remember($cacheKey, 300, function() use ($db) {
         $stmt = $db->prepare("
-            SELECT banner_id AS id, title, subtitle, image AS image_url, link, icon, bg_color
+            SELECT banner_id AS id, title, subtitle,
+                   COALESCE(NULLIF(image, ''), 'https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?w=800&h=400&fit=crop') AS image_url,
+                   link, icon, bg_color
             FROM om_market_banners
             WHERE status::text = '1' AND (end_date IS NULL OR end_date > NOW())
             ORDER BY sort_order ASC, created_at DESC

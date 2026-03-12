@@ -71,7 +71,7 @@ try {
         SELECT code, discount_type, discount_value, min_order_value, valid_until
         FROM om_market_coupons
         WHERE status = 'active' AND (valid_until IS NULL OR valid_until > NOW())
-        AND (specific_customers IS NULL OR specific_customers @> ?::jsonb)
+        AND (specific_customers IS NULL OR specific_customers::jsonb @> ?::jsonb)
         ORDER BY created_at DESC
         LIMIT 10
     ");
