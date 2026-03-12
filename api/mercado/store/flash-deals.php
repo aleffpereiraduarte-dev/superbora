@@ -51,8 +51,11 @@ try {
         $deal['preco'] = (float)$deal['preco'];
         $deal['price'] = (float)$deal['price'];
         $deal['special_price'] = (float)$deal['special_price'];
+        $deal['preco_promocional'] = (float)$deal['special_price'];
         $deal['discount_percent'] = (int)$deal['discount_percent'];
         $deal['flash_deal'] = true;
+        $deal['partner_id'] = $partnerId;
+        $deal['imagem'] = $deal['image'] ?? null;
     }
 
     response(true, ['deals' => $deals, 'flash_deals' => $deals]);

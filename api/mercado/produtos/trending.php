@@ -81,13 +81,19 @@ try {
 
             $result[] = [
                 "id" => (int)$p['product_id'],
+                "product_id" => (int)$p['product_id'],
                 "nome" => $p['name'],
+                "name" => $p['name'],
                 "preco" => $preco,
+                "preco_promocional" => $emPromocao ? $promoPreco : null,
                 "preco_promo" => $emPromocao ? $promoPreco : null,
                 "imagem" => $p['image'],
+                "image" => $p['image'],
                 "unidade" => $p['unit'] ?? "un",
+                "partner_id" => (int)$p['partner_id'],
                 "parceiro_id" => (int)$p['partner_id'],
                 "parceiro_nome" => $p['partner_name'],
+                "loja_nome" => $p['partner_name'],
                 "parceiro_logo" => $p['partner_logo'],
                 "vezes_pedido" => (int)($p['vezes_pedido'] ?? 0)
             ];
