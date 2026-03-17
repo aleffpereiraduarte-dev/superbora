@@ -167,7 +167,9 @@ function setCorsHeaders(): void {
     header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Api-Key, X-Passageiro-Id, X-Passageiro-Telefone, X-Passageiro-Nome");
     header("X-Content-Type-Options: nosniff");
     header("X-Frame-Options: DENY");
+    header("X-XSS-Protection: 0"); // Modern best practice: rely on CSP instead of legacy XSS filter
     header("Referrer-Policy: strict-origin-when-cross-origin");
+    header("Permissions-Policy: camera=(), microphone=(), geolocation=(self)");
     header("Content-Security-Policy: default-src 'none'; frame-ancestors 'none'");
     header("Strict-Transport-Security: max-age=63072000; includeSubDomains; preload");
 
