@@ -17,7 +17,11 @@ try {
     $db = getDB();
     OmAuth::getInstance()->setDb($db);
 
-    // Rate limiting handled globally by config/ratelimit.php (5/min per IP for auth routes)
+    // Rate limiting: 10 login attempts per minute per IP
+    require_once dirname(__DIR__, 2) . "/rate-limit/RateLimiter.php";
+    if (!RateLimiter::check(10, 60)) {
+        response(false, null, "Muitas tentativas. Aguarde um momento.", 429);
+    }
 
     $email = filter_var(trim($input['email'] ?? ''), FILTER_SANITIZE_EMAIL);
     $password = $input['senha'] ?? $input['password'] ?? '';
