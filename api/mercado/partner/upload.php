@@ -7,6 +7,7 @@
  */
 
 require_once __DIR__ . "/../config/database.php";
+require_once __DIR__ . "/../helpers/image-optimizer.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
 
 setCorsHeaders();
@@ -89,6 +90,9 @@ try {
         ? "/uploads/logos/$filename"
         : "/uploads/banners/$filename";
 
+    // Generate optimized variants (thumb, medium, webp)
+    $variants = optimizeImage($filepath, $dir);
+
     // Atualizar campo no banco
     $col = $type === 'logo' ? 'logo' : 'banner';
     $stmt = $db->prepare("UPDATE om_market_partners SET $col = ?, updated_at = NOW() WHERE partner_id = ?");
@@ -97,7 +101,8 @@ try {
     response(true, [
         "type" => $type,
         "url" => $urlPath,
-        "filename" => $filename
+        "filename" => $filename,
+        "variants" => $variants
     ]);
 
 } catch (Exception $e) {

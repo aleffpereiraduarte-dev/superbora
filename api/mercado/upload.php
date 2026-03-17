@@ -8,9 +8,11 @@
  */
 require_once __DIR__ . "/config/database.php";
 require_once __DIR__ . "/helpers/csrf.php";
+require_once __DIR__ . "/helpers/image-optimizer.php";
 
 try {
     session_start();
+    session_write_close();
     verifyCsrf();
     $db = getDB();
 
@@ -155,6 +157,9 @@ try {
     ];
     $url = $relativePaths[$type] . $filename;
 
+    // Generate optimized variants (thumb, medium, webp)
+    $variants = optimizeImage($destPath, $resolvedDestDir);
+
     // Registrar no banco
     $stmt = $db->prepare("INSERT INTO om_uploads (partner_id, type, entity_id, filename, path, original_name, file_size) VALUES (?, ?, ?, ?, ?, ?, ?)");
     $stmt->execute([
@@ -171,7 +176,8 @@ try {
         "url" => $url,
         "filename" => $filename,
         "type" => $type,
-        "size" => filesize($destPath)
+        "size" => filesize($destPath),
+        "variants" => $variants
     ], "Imagem enviada com sucesso");
 
 } catch (Exception $e) {
