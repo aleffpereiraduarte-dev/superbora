@@ -88,7 +88,7 @@ class RedisService {
             }
 
             $raw->connect($host, $port, 2.0);
-            $password = $_ENV["REDIS_PASSWORD"] ?? getenv("REDIS_PASSWORD") ?: "Aleff2009@Redis";
+            $password = $_ENV['REDIS_PASSWORD'] ?? '';
             if (!empty($password)) { $raw->auth($password); }
             $raw->select($db);
             return $raw;

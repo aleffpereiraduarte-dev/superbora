@@ -36,9 +36,10 @@ function getDB() {
         try {
             // Use PostgreSQL (MySQL port 3306 is blocked on remote server)
             $dsn = "pgsql:host=" . DB_HOST . ";port=" . DB_PORT . ";dbname=" . DB_NAME;
-            // Require SSL for remote database connections
-            $isLocalDB = in_array(DB_HOST, ['localhost', '127.0.0.1', '::1'], true);
-            if (!$isLocalDB) {
+            // Require SSL for remote database connections (skip for localhost and VPN)
+            $isLocalOrVPN = in_array(DB_HOST, ['localhost', '127.0.0.1', '::1'], true)
+                || strpos(DB_HOST, '10.0.0.') === 0;
+            if (!$isLocalOrVPN) {
                 $dsn .= ";sslmode=require";
             }
             $db = new PDO($dsn, DB_USER, DB_PASS, [
@@ -89,6 +90,21 @@ function response($success, $data = null, $message = "", $code = 200) {
 function getInput() {
     $json = file_get_contents("php://input");
     return json_decode($json, true) ?: $_POST;
+}
+
+/**
+ * Execute a query with slow query logging (> 1 second)
+ */
+function dbQuery(PDO $db, string $sql, array $params = []): PDOStatement {
+    $start = microtime(true);
+    $stmt = $db->prepare($sql);
+    $stmt->execute($params);
+    $elapsed = (microtime(true) - $start) * 1000;
+    if ($elapsed > 1000) {
+        $endpoint = $_SERVER['REQUEST_URI'] ?? 'unknown';
+        error_log(sprintf("[SlowQuery] %.0fms %s: %s", $elapsed, $endpoint, substr($sql, 0, 200)));
+    }
+    return $stmt;
 }
 
 /**

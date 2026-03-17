@@ -32,16 +32,19 @@ try {
             $stats = $stmt->fetch();
 
             // Average first response time (time between ticket creation and first admin message)
+            // Uses window function instead of LATERAL join for performance
             $stmtFirstResp = $db->query("
                 SELECT
-                    ROUND(AVG(EXTRACT(EPOCH FROM (m.created_at - t.created_at)) / 3600)::numeric, 1) as avg_first_response_hours
-                FROM om_support_tickets t
-                INNER JOIN LATERAL (
-                    SELECT created_at FROM om_support_messages
-                    WHERE ticket_id = t.id AND remetente_tipo IN ('admin','support','bot')
-                    ORDER BY created_at ASC LIMIT 1
-                ) m ON TRUE
-                WHERE t.created_at > NOW() - INTERVAL '30 days'
+                    ROUND(AVG(EXTRACT(EPOCH FROM (first_response - ticket_created)) / 3600)::numeric, 1) as avg_first_response_hours
+                FROM (
+                    SELECT t.id, t.created_at as ticket_created,
+                        MIN(m.created_at) as first_response
+                    FROM om_support_tickets t
+                    INNER JOIN om_support_messages m ON m.ticket_id = t.id
+                        AND m.remetente_tipo IN ('admin','support','bot')
+                    WHERE t.created_at > NOW() - INTERVAL '30 days'
+                    GROUP BY t.id, t.created_at
+                ) sub
             ");
             $firstResp = $stmtFirstResp->fetch();
             $stats['avg_first_response_hours'] = (float)($firstResp['avg_first_response_hours'] ?? 0);

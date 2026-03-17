@@ -102,14 +102,15 @@ try {
         ]);
     }
 
-    // 5. Tem mercado - buscar produtos
-    $categorias = buscarCategorias($db, $mercado['partner_id']);
-    $produtos = buscarProdutos($db, $mercado['partner_id'], $_GET['categoria'] ?? null, $_GET['busca'] ?? null);
-    $destaques = buscarDestaques($db, $mercado['partner_id']);
-    $banners = buscarBanners($db);
+    // 5. Tem mercado - buscar produtos (with caching for slow-changing data)
+    $pid = $mercado['partner_id'];
+    $categorias = CacheHelper::remember("home_cat_{$pid}", 3600, fn() => buscarCategorias($db, $pid));
+    $produtos = buscarProdutos($db, $pid, $_GET['categoria'] ?? null, $_GET['busca'] ?? null);
+    $destaques = CacheHelper::remember("home_dest_{$pid}", 600, fn() => buscarDestaques($db, $pid));
+    $banners = CacheHelper::remember("home_banners", 1800, fn() => buscarBanners($db));
 
-    // Verificar status de abertura
-    $statusHorario = verificarSeAberto($db, $mercado['partner_id']);
+    // Verificar status de abertura (short cache - changes frequently)
+    $statusHorario = CacheHelper::remember("home_hours_{$pid}", 120, fn() => verificarSeAberto($db, $pid));
 
     response(true, [
         "status" => "ok",
