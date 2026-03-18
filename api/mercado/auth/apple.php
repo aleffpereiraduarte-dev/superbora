@@ -79,7 +79,7 @@ try {
     }
 
     // Validate audience (MUST be our app bundle ID — prevents cross-app token reuse)
-    $expectedAud = $_ENV['APPLE_BUNDLE_ID'] ?? 'com.superbora.app';
+    $expectedAud = $_ENV['APPLE_BUNDLE_ID'] ?? 'com.superbora.mercado';
     if (($payload['aud'] ?? '') !== $expectedAud) {
         error_log("[AppleAuth] Invalid aud: " . ($payload['aud'] ?? 'missing') . " expected: $expectedAud");
         response(false, null, 'Token audience invalido', 400);
@@ -90,12 +90,29 @@ try {
         response(false, null, 'Token expirado', 400);
     }
 
-    // Verify JWT signature using Apple JWKS
+    // Verify JWT signature using Apple JWKS (with caching + retry)
     $kid = $header['kid'] ?? '';
     $signatureVerified = false;
     if ($kid) {
-        $ctx = stream_context_create(['http' => ['timeout' => 5]]);
-        $jwksJson = @file_get_contents('https://appleid.apple.com/auth/keys', false, $ctx);
+        // Try APCu cache first (Apple JWKS changes rarely — cache for 1 hour)
+        $jwksJson = false;
+        $cacheKey = 'apple_jwks_v1';
+        if (function_exists('apcu_fetch') && apcu_enabled()) {
+            $jwksJson = apcu_fetch($cacheKey);
+        }
+        if (!$jwksJson) {
+            $ctx = stream_context_create(['http' => ['timeout' => 10], 'ssl' => ['verify_peer' => true]]);
+            $jwksJson = @file_get_contents('https://appleid.apple.com/auth/keys', false, $ctx);
+            // Retry once on failure
+            if (!$jwksJson) {
+                usleep(500000); // 500ms
+                $jwksJson = @file_get_contents('https://appleid.apple.com/auth/keys', false, $ctx);
+            }
+            // Cache successful fetch
+            if ($jwksJson && function_exists('apcu_store') && apcu_enabled()) {
+                apcu_store($cacheKey, $jwksJson, 3600);
+            }
+        }
         if ($jwksJson) {
             $jwks = json_decode($jwksJson, true);
             foreach (($jwks['keys'] ?? []) as $jwk) {
