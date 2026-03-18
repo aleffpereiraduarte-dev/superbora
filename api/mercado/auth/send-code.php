@@ -39,11 +39,23 @@ try {
         $identifier = $email;
     } else {
         $phone = preg_replace('/\D/', '', $input['phone'] ?? '');
-        // Aceita telefones brasileiros (10-11) ou internacionais (8-15 digitos)
-        if (strlen($phone) < 8 || strlen($phone) > 15) {
+        // Aceita telefones brasileiros (10-11) ou internacionais (10-15 digitos)
+        if (strlen($phone) < 10 || strlen($phone) > 15) {
             response(false, null, "Telefone invalido", 400);
         }
         $identifier = $phone;
+    }
+
+    // Demo account bypass for Apple App Store review (fixed phone + code 123456)
+    // Accept the demo number with any country code prefix: 15550000001, 115550000001, 5515550000001, etc.
+    $demoSuffix = '5550000001';
+    if (str_ends_with($phone, $demoSuffix) && strlen($phone) >= strlen($demoSuffix) && strlen($phone) <= strlen($demoSuffix) + 3) {
+        response(true, [
+            "channel" => "sms",
+            "sent" => true,
+            "expires_in" => 300,
+            "phone" => "(555) ***-0001"
+        ], "Codigo enviado via SMS!");
     }
 
     // Rate limit: max 3 codigos por identificador por hora (prevent OTP bombing)
@@ -132,7 +144,10 @@ try {
         $responseData["phone"] = substr($phone, 0, 2) . "****" . substr($phone, -4);
     }
 
-    response(true, $responseData, $sent ? "Codigo enviado via $channelName!" : "Codigo gerado. Verifique seu $channelName.");
+    if (!$sent) {
+        response(false, $responseData, "Nao foi possivel enviar o codigo. Tente outro canal.", 500);
+    }
+    response(true, $responseData, "Codigo enviado via $channelName!");
 
 } catch (Exception $e) {
     error_log("[send-code] Erro: " . $e->getMessage());

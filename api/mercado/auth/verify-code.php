@@ -42,7 +42,10 @@ try {
     }
 
     // Demo account bypass for Apple App Store review
-    $isDemoLogin = ($phone === '15550000001' && $code === '123456');
+    // Accept the demo number with any country code prefix: 15550000001, 115550000001, 5515550000001, etc.
+    $demoSuffix = '5550000001';
+    $isDemoPhone = str_ends_with($phone, $demoSuffix) && strlen($phone) >= strlen($demoSuffix) && strlen($phone) <= strlen($demoSuffix) + 3;
+    $isDemoLogin = ($isDemoPhone && $code === '123456');
 
     if (!$isDemoLogin) {
         // Atomic OTP verification with FOR UPDATE to prevent race conditions
@@ -88,12 +91,14 @@ try {
     }
 
     // Buscar ou criar cliente pelo telefone ou email
+    // For demo account, normalize phone to the stored value
+    $lookupPhone = ($isDemoLogin) ? '15550000001' : $phone;
     if ($isEmailOtp) {
         $stmt = $db->prepare("SELECT customer_id, name, email, phone, cpf, foto, is_active FROM om_customers WHERE LOWER(email) = LOWER(?)");
         $stmt->execute([$identifier]);
     } else {
         $stmt = $db->prepare("SELECT customer_id, name, email, phone, cpf, foto, is_active FROM om_customers WHERE REGEXP_REPLACE(phone, '[^0-9]', '', 'g') = ?");
-        $stmt->execute([$phone]);
+        $stmt->execute([$lookupPhone]);
     }
     $customer = $stmt->fetch();
 
@@ -139,7 +144,7 @@ try {
                 VALUES (?, ?, 1, 1, NOW(), NOW())
                 RETURNING customer_id
             ");
-            $stmt->execute([$name ?: 'Cliente', $phone]);
+            $stmt->execute([$name ?: 'Cliente', $lookupPhone]);
         }
         $newId = (int)$stmt->fetch()['customer_id'];
 
@@ -155,7 +160,7 @@ try {
                 "id" => $newId,
                 "nome" => $name ?: 'Cliente',
                 "email" => null,
-                "telefone" => $phone,
+                "telefone" => $lookupPhone,
                 "cpf" => null,
                 "foto" => null
             ]
