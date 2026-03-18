@@ -48,13 +48,39 @@ try {
     $cep = null;
     $customerId = null;
 
-    // 1. Verificar se cliente esta logado
-    session_set_cookie_params(['secure' => true, 'httponly' => true, 'samesite' => 'Lax']);
-    session_start();
-    session_write_close();
-    if (isset($_SESSION['customer_id'])) {
-        $customerId = $_SESSION['customer_id'];
+    // 1. Verificar se cliente esta logado (JWT or session)
+    // Try JWT auth first (mobile app)
+    $customerId = null;
+    $authHeader = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+    if (!$authHeader && function_exists('getallheaders')) {
+        $h = getallheaders();
+        $authHeader = $h['Authorization'] ?? $h['authorization'] ?? '';
+    }
+    if (str_starts_with($authHeader, 'Bearer ')) {
+        $token = substr($authHeader, 7);
+        $parts = explode('.', $token);
+        if (count($parts) === 2) {
+            $payload = json_decode(base64_decode($parts[0]), true);
+            if ($payload && ($payload['type'] ?? '') === 'customer' && !empty($payload['uid'])) {
+                $jwtSecret = $_ENV['JWT_SECRET'] ?? getenv('JWT_SECRET') ?: '';
+                if ($jwtSecret) {
+                    $expectedSig = hash_hmac('sha256', $parts[0], $jwtSecret);
+                    if (hash_equals($expectedSig, $parts[1]) && ($payload['exp'] ?? 0) > time()) {
+                        $customerId = (int)$payload['uid'];
+                    }
+                }
+            }
+        }
+    }
+    // Fallback to session (PWA/web)
+    if (!$customerId) {
+        session_set_cookie_params(['secure' => true, 'httponly' => true, 'samesite' => 'Lax']);
+        session_start();
+        session_write_close();
+        $customerId = $_SESSION['customer_id'] ?? null;
+    }
 
+    if ($customerId) {
         // Buscar CEP do endereco padrao
         $stmt = $db->prepare("
             SELECT zipcode FROM om_customer_addresses
