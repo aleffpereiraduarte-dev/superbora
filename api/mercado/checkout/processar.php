@@ -148,7 +148,7 @@ try {
     $actual_partner_id = (int)$itens[0]["partner_id"];
     if ($partner_id && $actual_partner_id !== $partner_id) {
         // Log mismatch for debugging, but don't block — SQL filter already ensures consistency
-        error_log("[Checkout] partner_id mismatch: requested={$partner_id}, actual={$actual_partner_id}, customer={$customer_id}, session={$session_id}");
+        error_log("[Checkout] partner_id mismatch: requested={$partner_id}, actual={$actual_partner_id}, customer=" . substr(md5($customer_id), 0, 8) . ", session=" . substr(md5($session_id ?? ''), 0, 8));
     }
     $partner_id = $actual_partner_id;
 
@@ -250,7 +250,7 @@ try {
     // Log mismatch entre frete do client e do server (anti-fraude + debug)
     $client_delivery_fee = (float)($input['delivery_fee'] ?? -1);
     if ($client_delivery_fee >= 0 && abs($client_delivery_fee - $delivery_fee) > 0.01) {
-        error_log("[Checkout] delivery_fee mismatch: client={$client_delivery_fee}, server={$delivery_fee}, partner={$partner_id}, customer={$customer_id}, subtotal={$subtotal}");
+        error_log("[Checkout] delivery_fee mismatch: client={$client_delivery_fee}, server={$delivery_fee}, partner={$partner_id}, customer=" . substr(md5($customer_id), 0, 8) . ", subtotal={$subtotal}");
     }
 
     // Validar cupom server-side (nunca confiar no coupon_discount do client)
@@ -450,11 +450,13 @@ try {
 
         // SECURITY: Verify amount matches order total (compare in cents to avoid float precision errors)
         // For route primary orders, PI covers all stores so amount may be higher — skip strict check
+        // Allow OVERPAYMENT (price dropped) — will auto-refund difference after lock
+        // Only reject UNDERPAYMENT (price went up)
         $paidAmountCents = (int)($stripeCheckResult['amount_cents'] ?? 0);
         $totalCents = (int)round($total * 100);
-        if ($paidAmountCents > 0 && !$is_route_primary && abs($paidAmountCents - $totalCents) > 5) { // tolerance: 5 cents
-            error_log("[Checkout] SECURITY: Stripe amount mismatch! Paid: {$paidAmountCents} cents, Total: {$totalCents} cents, PI: {$stripe_pi_id}");
-            response(false, null, "Valor do pagamento nao confere com o total do pedido.", 402);
+        if ($paidAmountCents > 0 && !$is_route_primary && ($paidAmountCents - $totalCents) < -5) {
+            error_log("[Checkout] SECURITY: Stripe underpaid! Paid: {$paidAmountCents} cents, Total: {$totalCents} cents, PI: {$stripe_pi_id}");
+            response(false, null, "Valor do pagamento insuficiente. Tente novamente.", 402);
         }
         if ($is_route_primary && $paidAmountCents > 0 && $paidAmountCents < $totalCents - 5) {
             error_log("[Checkout] SECURITY: Route primary PI underpaid! Paid: {$paidAmountCents} cents, Store total: {$totalCents} cents, PI: {$stripe_pi_id}");
@@ -516,8 +518,9 @@ try {
         // Check both stripe_payment_intent_id and payment_id columns; lock rows to block concurrent inserts
         if ($stripe_verified && $stripe_pi_id && !$is_route_secondary) {
             // Advisory lock on PI hash to prevent race condition when no order exists yet
-            $db->prepare("SELECT pg_advisory_xact_lock(?)")->execute([crc32($stripe_pi_id)]);
-            $stmtPiCheck = $db->prepare("SELECT order_id FROM om_market_orders WHERE (stripe_payment_intent_id = ? OR payment_id = ?) AND status != 'cancelado' LIMIT 1 FOR UPDATE");
+            $lockId = hexdec(substr(md5($stripe_pi_id), 0, 15)) & 0x7FFFFFFFFFFFFFFF;
+            $db->prepare("SELECT pg_advisory_xact_lock(?)")->execute([$lockId]);
+            $stmtPiCheck = $db->prepare("SELECT order_id FROM om_market_orders WHERE (stripe_payment_intent_id = ? OR payment_id = ?) LIMIT 1 FOR UPDATE");
             $stmtPiCheck->execute([$stripe_pi_id, $stripe_pi_id]);
             $existingPiOrder = $stmtPiCheck->fetch();
             if ($existingPiOrder) {
@@ -603,13 +606,52 @@ try {
         $total = $subtotal - $coupon_discount - $loyalty_discount - $cashback_discount + $delivery_fee + $tip + $service_fee;
         if ($total < 0) $total = 0;
 
+        // Max order value validation (safety limit)
+        if ($total > 15000) {
+            $db->rollBack();
+            response(false, null, "Valor do pedido excede o limite maximo permitido (R$ 15.000)", 400);
+        }
+
         // Re-verify Stripe amount after in-transaction recalculation
         if ($stripe_verified && $stripe_pi_id && !$is_route_secondary) {
             $newTotalCents = (int)round($total * 100);
-            if ($paidAmountCents > 0 && abs($paidAmountCents - $newTotalCents) > 5) {
+            $diffCents = $paidAmountCents - $newTotalCents;
+
+            if ($paidAmountCents > 0 && $diffCents < -5) {
+                // Customer UNDERPAID (price went up) — reject
                 $db->rollBack();
-                error_log("[Checkout] SECURITY: Post-lock Stripe mismatch! Paid: {$paidAmountCents} cents, New total: {$newTotalCents} cents, PI: {$stripe_pi_id}");
-                response(false, null, "Valor do pagamento divergiu. Tente novamente.", 402);
+                error_log("[Checkout] SECURITY: Post-lock Stripe underpaid! Paid: {$paidAmountCents} cents, New total: {$newTotalCents} cents, PI: {$stripe_pi_id}");
+                response(false, null, "Valor do pagamento insuficiente. O preco de alguns itens mudou. Tente novamente.", 402);
+            }
+
+            if ($paidAmountCents > 0 && $diffCents > 100) {
+                // Customer OVERPAID by more than R$1 (price dropped) — create order + auto-refund difference
+                error_log("[Checkout] Stripe overpaid: {$paidAmountCents} cents paid, {$newTotalCents} cents needed. Refunding {$diffCents} cents. PI: {$stripe_pi_id}");
+                try {
+                    $stripeKeys = getStripeKeys();
+                    $refundKey = $stripeKeys['br'] ?: $stripeKeys['us'];
+                    if ($refundKey) {
+                        $ch = curl_init("https://api.stripe.com/v1/refunds");
+                        curl_setopt_array($ch, [
+                            CURLOPT_RETURNTRANSFER => true,
+                            CURLOPT_POST => true,
+                            CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $refundKey],
+                            CURLOPT_POSTFIELDS => http_build_query([
+                                'payment_intent' => $stripe_pi_id,
+                                'amount' => $diffCents,
+                                'reason' => 'requested_by_customer',
+                            ]),
+                            CURLOPT_TIMEOUT => 15,
+                        ]);
+                        $refundResp = curl_exec($ch);
+                        curl_close($ch);
+                        $refundData = json_decode($refundResp, true);
+                        error_log("[Checkout] Auto-refund {$diffCents} cents: " . ($refundData['status'] ?? 'unknown') . " (ID: " . ($refundData['id'] ?? 'none') . ")");
+                    }
+                } catch (\Throwable $e) {
+                    error_log("[Checkout] Auto-refund failed: " . $e->getMessage());
+                    // Don't block the order — refund can be done manually
+                }
             }
         }
 
