@@ -7,6 +7,8 @@
 require_once __DIR__ . "/../config/database.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
 
+setCorsHeaders();
+
 try {
     $db = getDB();
     OmAuth::getInstance()->setDb($db);
