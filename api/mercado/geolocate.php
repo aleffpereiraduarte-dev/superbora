@@ -8,6 +8,7 @@
 require_once __DIR__ . "/config/database.php";
 require_once dirname(__DIR__) . "/cache/CacheHelper.php";
 
+setCorsHeaders();
 header('Cache-Control: public, max-age=3600');
 
 try {
