@@ -613,7 +613,8 @@ try {
         }
 
         // Re-verify Stripe amount after in-transaction recalculation
-        if ($stripe_verified && $stripe_pi_id && !$is_route_secondary) {
+        // Skip for route_primary (PI covers ALL stores, not just this one)
+        if ($stripe_verified && $stripe_pi_id && !$is_route_secondary && !$is_route_primary) {
             $newTotalCents = (int)round($total * 100);
             $diffCents = $paidAmountCents - $newTotalCents;
 
