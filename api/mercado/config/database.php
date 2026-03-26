@@ -113,7 +113,11 @@ function dbQuery(PDO $db, string $sql, array $params = []): PDOStatement {
  * Also handles OPTIONS preflight.
  */
 function setCorsHeaders(): void {
-    $allowedOrigins = array_map('trim', explode(',', $_ENV['CORS_ALLOWED_ORIGINS'] ?? 'https://superbora.com.br,https://www.superbora.com.br,https://onemundo.com.br,https://www.onemundo.com.br'));
+    $allowedOrigins = array_map('trim', explode(',', $_ENV['CORS_ALLOWED_ORIGINS'] ?? 'https://superbora.com.br,https://www.superbora.com.br,https://app.superbora.com.br,https://onemundo.com.br,https://www.onemundo.com.br'));
+    // Always allow app.superbora.com.br regardless of .env
+    if (!in_array('https://app.superbora.com.br', $allowedOrigins, true)) {
+        $allowedOrigins[] = 'https://app.superbora.com.br';
+    }
 
     $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
 
@@ -220,6 +224,7 @@ function getCustomerIdFromToken(): int {
 
     $payload = json_decode(base64_decode($parts[0]), true);
     if (!$payload) return 0;
+    if (empty($payload['uid']) && empty($payload['user_id'])) return 0;
     if (($payload['exp'] ?? 0) < time()) return 0;
 
     // Validate issuer and audience if present (defense-in-depth for homegrown JWT)
