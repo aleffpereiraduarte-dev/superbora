@@ -25,8 +25,9 @@ class OmPricing {
     // ═══════════════════════════════════════════════════════════════════════════
     // COMISSAO
     // ═══════════════════════════════════════════════════════════════════════════
-    const COMISSAO_BORAUM = 0.18;       // 18% com BoraUm
-    const COMISSAO_PROPRIO = 0.10;      // 10% entrega propria/retirada
+    const COMISSAO_BORAUM = 0.18;       // 18% entrega BoraUm
+    const COMISSAO_PROPRIO = 0.10;      // 10% entrega propria da loja
+    const COMISSAO_PICKUP = 0.08;       // 8% retirada na loja (sem custo de entrega)
 
     // ═══════════════════════════════════════════════════════════════════════════
     // BORAUM
@@ -128,7 +129,13 @@ class OmPricing {
      * @return array ['taxa' => float, 'valor' => float]
      */
     public static function calcularComissao(float $subtotal, string $tipoEntrega): array {
-        $taxa = ($tipoEntrega === 'boraum') ? self::COMISSAO_BORAUM : self::COMISSAO_PROPRIO;
+        if ($tipoEntrega === 'boraum') {
+            $taxa = self::COMISSAO_BORAUM;       // 18%
+        } elseif ($tipoEntrega === 'pickup' || $tipoEntrega === 'retirada') {
+            $taxa = self::COMISSAO_PICKUP;        // 8%
+        } else {
+            $taxa = self::COMISSAO_PROPRIO;       // 10%
+        }
         $valor = round($subtotal * $taxa, 2);
         return ['taxa' => $taxa, 'valor' => $valor];
     }

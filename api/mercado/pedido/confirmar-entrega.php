@@ -241,8 +241,10 @@ try {
         $usaBoraUm = !empty($entregaRow['boraum_delivery_id']);
         $distanciaKm = floatval($entregaRow['distancia_km'] ?? 3);
 
-        // Comissao centralizada via OmPricing
-        $comissao = OmPricing::calcularComissao($subtotal, $usaBoraUm ? 'boraum' : 'proprio');
+        // Comissao centralizada via OmPricing (pickup=8%, proprio=10%, boraum=18%)
+        $isPickup = !empty($pedido['is_pickup']) || ($pedido['delivery_type'] ?? '') === 'retirada';
+        $tipoComissao = $isPickup ? 'pickup' : ($usaBoraUm ? 'boraum' : 'proprio');
+        $comissao = OmPricing::calcularComissao($subtotal, $tipoComissao);
         $comissaoPct = $comissao['taxa'];
         $comissaoValor = $comissao['valor'];
         $valor_repasse = round($subtotal - $comissaoValor, 2);

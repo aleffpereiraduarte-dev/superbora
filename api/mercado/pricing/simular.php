@@ -53,7 +53,8 @@ try {
     $frete = OmPricing::calcularFrete($parceiro, $subtotal, $distancia_km, $is_pickup, $usaBoraUm, $db, $customer_id);
 
     // Comissao
-    $comissao = OmPricing::calcularComissao($subtotal, $usaBoraUm ? 'boraum' : 'proprio');
+    $tipoComissao = $is_pickup ? 'pickup' : ($usaBoraUm ? 'boraum' : 'proprio');
+    $comissao = OmPricing::calcularComissao($subtotal, $tipoComissao);
 
     // Pedido minimo
     $pedido_minimo = $usaBoraUm ? OmPricing::getMinimoBoraUm($distancia_km) : (float)($parceiro['min_order_value'] ?? $parceiro['min_order'] ?? 0);
