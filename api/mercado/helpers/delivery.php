@@ -184,6 +184,10 @@ function dispatchToBoraUm(PDO $db, array $pedido): array {
 
         error_log("[delivery] Pedido #$order_id: frete_cliente=R$$valor_frete, custo_boraum=R$$boraum_cost, margem=R$$delivery_margin");
 
+        // Use quote_id from order data if available (from real-time quoting)
+        $quoteId = $pedido['boraum_quote_id'] ?? null;
+        $vehicleType = $pedido['boraum_vehicle_type'] ?? 'moto';
+
         $payload = [
             'external_id' => $pedido['order_number'] ?? ('SB-' . $order_id),
             'pickup' => [
@@ -205,10 +209,15 @@ function dispatchToBoraUm(PDO $db, array $pedido): array {
                 'weight_kg' => 2.0
             ],
             'price' => $boraum_cost,
-            'vehicle_type' => 'moto',
+            'vehicle_type' => $vehicleType,
             'pickup_code' => $qr_coleta,
             'delivery_code' => $pin_entrega
         ];
+
+        // Include quote_id if available (locks in the quoted price)
+        if ($quoteId) {
+            $payload['quote_id'] = $quoteId;
+        }
 
         $ch = curl_init('https://boraum.com.br/api/partner/deliveries');
         curl_setopt_array($ch, [
@@ -285,6 +294,365 @@ function dispatchToBoraUm(PDO $db, array $pedido): array {
         error_log("[delivery] Erro ao despachar: " . $e->getMessage());
         return ['success' => false, 'entrega_id' => null, 'message' => 'Erro ao criar entrega'];
     }
+}
+
+/**
+ * Despacha uma rota multi-stop completa para o BoraUm.
+ * Chamado quando TODOS os pedidos de uma rota estao "pronto" ou alem.
+ *
+ * @param PDO $db
+ * @param int $routeId
+ * @return array ['success' => bool, 'message' => string, ...]
+ */
+function dispatchRouteToBoraUm(PDO $db, int $routeId): array {
+    try {
+        $db->beginTransaction();
+
+        // 1. Lock and load route
+        $stmtRoute = $db->prepare("SELECT * FROM om_delivery_routes WHERE route_id = ? FOR UPDATE");
+        $stmtRoute->execute([$routeId]);
+        $route = $stmtRoute->fetch(PDO::FETCH_ASSOC);
+
+        if (!$route) {
+            $db->rollBack();
+            return ['success' => false, 'message' => 'Rota nao encontrada'];
+        }
+
+        // Already dispatched?
+        if (!empty($route['boraum_delivery_id'])) {
+            $db->rollBack();
+            return ['success' => false, 'message' => 'Rota ja despachada para BoraUm'];
+        }
+
+        // 2. Load all stops ordered by stop_sequence (prefer stop_sequence, fallback stop_order)
+        $stmtStops = $db->prepare("
+            SELECT s.*, o.order_id, o.order_number, o.customer_id, o.customer_name, o.customer_phone,
+                   o.delivery_address, o.shipping_address, o.shipping_lat, o.shipping_lng,
+                   o.subtotal, o.delivery_fee, o.total, o.status AS order_status
+            FROM om_delivery_route_stops s
+            JOIN om_market_orders o ON o.order_id = s.order_id
+            WHERE s.route_id = ? AND o.status NOT IN ('cancelado', 'cancelled', 'refunded')
+            ORDER BY COALESCE(s.stop_sequence, s.stop_order, s.stop_id) ASC
+        ");
+        $stmtStops->execute([$routeId]);
+        $stops = $stmtStops->fetchAll(PDO::FETCH_ASSOC);
+
+        if (count($stops) < 1) {
+            $db->rollBack();
+            return ['success' => false, 'message' => 'Nenhuma parada valida na rota'];
+        }
+
+        // 3. Verify ALL orders are ready (pronto or beyond, excluding terminal states)
+        $readyStatuses = ['pronto', 'aguardando_entregador', 'em_entrega', 'entregue'];
+        foreach ($stops as $stop) {
+            if (!in_array($stop['order_status'], $readyStatuses)) {
+                $db->rollBack();
+                return ['success' => false, 'message' => "Pedido #{$stop['order_number']} ainda nao esta pronto (status: {$stop['order_status']})"];
+            }
+        }
+
+        // 4. Check no existing entrega for any order in this route (idempotency)
+        $orderIds = array_column($stops, 'order_id');
+        $placeholders = implode(',', array_fill(0, count($orderIds), '?'));
+        $stmtCheck = $db->prepare("SELECT referencia_id FROM om_entregas WHERE referencia_id IN ($placeholders) AND origem_sistema = 'mercado' LIMIT 1");
+        $stmtCheck->execute($orderIds);
+        if ($stmtCheck->fetch()) {
+            $db->rollBack();
+            return ['success' => false, 'message' => 'Entrega ja existe para um dos pedidos da rota'];
+        }
+
+        // 5. Get customer delivery address from route (same for all stops)
+        $customerLat = (float)($route['customer_lat'] ?? $stops[0]['shipping_lat'] ?? 0);
+        $customerLng = (float)($route['customer_lng'] ?? $stops[0]['shipping_lng'] ?? 0);
+        $customerAddress = $route['customer_address'] ?? $stops[0]['delivery_address'] ?? $stops[0]['shipping_address'] ?? '';
+        $customerName = $stops[0]['customer_name'] ?? '';
+        $customerPhone = $stops[0]['customer_phone'] ?? '';
+
+        // 6. Build pickup stops data and create om_entregas for each order
+        $pickupStops = [];
+        $entregaIds = [];
+        $totalValorProduto = 0;
+        $totalValorFrete = 0;
+
+        foreach ($stops as $stop) {
+            // Load partner data
+            $stmtPartner = $db->prepare("
+                SELECT partner_id, name, trade_name, phone, telefone, address, endereco,
+                       latitude, lat, longitude, lng
+                FROM om_market_partners WHERE partner_id = ?
+            ");
+            $stmtPartner->execute([(int)$stop['partner_id']]);
+            $parceiro = $stmtPartner->fetch(PDO::FETCH_ASSOC);
+
+            if (!$parceiro) {
+                error_log("[delivery-route] Parceiro {$stop['partner_id']} nao encontrado para stop {$stop['stop_id']}");
+                continue;
+            }
+
+            $pickupAddress = $parceiro['address'] ?? $parceiro['endereco'] ?? '';
+            $pickupLat = (float)($parceiro['latitude'] ?? $parceiro['lat'] ?? $stop['partner_lat'] ?? 0);
+            $pickupLng = (float)($parceiro['longitude'] ?? $parceiro['lng'] ?? $stop['partner_lng'] ?? 0);
+            $partnerName = $parceiro['trade_name'] ?? $parceiro['name'] ?? $stop['partner_name'] ?? '';
+            $partnerPhone = $parceiro['phone'] ?? $parceiro['telefone'] ?? '';
+
+            $qr_coleta = strtoupper(bin2hex(random_bytes(3)));
+            $pin_entrega = str_pad(random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+
+            $valorProduto = (float)($stop['subtotal'] ?? $stop['total'] ?? 0);
+            $valorFrete = (float)($stop['delivery_fee'] ?? 0);
+            $totalValorProduto += $valorProduto;
+            $totalValorFrete += $valorFrete;
+
+            // Create om_entregas record for this order
+            $stmtEntrega = $db->prepare("
+                INSERT INTO om_entregas
+                (tipo, origem_sistema, referencia_id, remetente_tipo, remetente_id, remetente_nome, remetente_telefone,
+                 coleta_endereco, coleta_lat, coleta_lng,
+                 destinatario_nome, destinatario_telefone,
+                 entrega_endereco, entrega_lat, entrega_lng,
+                 descricao, valor_declarado, valor_frete,
+                 qr_coleta, pin_entrega, metodo_entrega, status,
+                 route_id, route_stop_id)
+                VALUES ('envio', 'mercado', ?, 'loja', ?, ?, ?,
+                        ?, ?, ?,
+                        ?, ?,
+                        ?, ?, ?,
+                        ?, ?, ?,
+                        ?, ?, 'driver', 'pendente',
+                        ?, ?)
+                RETURNING id
+            ");
+            $stmtEntrega->execute([
+                (int)$stop['order_id'], (int)$stop['partner_id'],
+                $partnerName, $partnerPhone,
+                $pickupAddress, $pickupLat ?: null, $pickupLng ?: null,
+                $customerName, $customerPhone,
+                $customerAddress, $customerLat ?: null, $customerLng ?: null,
+                "Pedido #{$stop['order_number']} (Rota #$routeId)",
+                $valorProduto, $valorFrete,
+                $qr_coleta, $pin_entrega,
+                $routeId, (int)$stop['stop_id']
+            ]);
+            $entregaId = (int)$stmtEntrega->fetchColumn();
+            $entregaIds[$stop['order_id']] = $entregaId;
+
+            // Update order status to aguardando_entregador
+            $db->prepare("
+                UPDATE om_market_orders
+                SET status = 'aguardando_entregador', delivery_type = 'boraum', date_modified = NOW()
+                WHERE order_id = ? AND status IN ('pronto', 'aguardando_entregador')
+            ")->execute([(int)$stop['order_id']]);
+
+            // Build pickup stop for BoraUm API
+            $pickupStops[] = [
+                'sequence' => (int)($stop['stop_sequence'] ?? $stop['stop_order'] ?? $stop['stop_id']),
+                'type' => 'pickup',
+                'address' => $pickupAddress,
+                'lat' => $pickupLat,
+                'lng' => $pickupLng,
+                'contact_name' => $partnerName,
+                'contact_phone' => $partnerPhone,
+                'external_id' => $stop['order_number'] ?? ('SB-' . $stop['order_id']),
+                'pickup_code' => $qr_coleta,
+                'package' => [
+                    'description' => "Pedido #{$stop['order_number']}",
+                    'weight_kg' => 2.0
+                ]
+            ];
+
+            error_log("[delivery-route] Entrega #$entregaId criada para pedido #{$stop['order_number']} (rota #$routeId)");
+        }
+
+        if (empty($pickupStops)) {
+            $db->rollBack();
+            return ['success' => false, 'message' => 'Nenhum stop valido para despachar'];
+        }
+
+        // Update route status
+        $db->prepare("UPDATE om_delivery_routes SET status = 'dispatching', started_at = NOW() WHERE route_id = ?")->execute([$routeId]);
+
+        // Commit DB work before external API call
+        $db->commit();
+
+        // 7. Call BoraUm multi-stop API
+        $boraUmKey = loadEnvVar('BORAUM_API_KEY');
+
+        if (empty($boraUmKey)) {
+            error_log("[delivery-route] BORAUM_API_KEY nao configurada. Rota #$routeId criada localmente sem despacho API.");
+            return [
+                'success' => true,
+                'route_id' => $routeId,
+                'entrega_ids' => $entregaIds,
+                'boraum_dispatched' => false,
+                'message' => 'Entregas criadas localmente (API key nao configurada)'
+            ];
+        }
+
+        // Validate all coordinates
+        $hasInvalidCoords = false;
+        foreach ($pickupStops as $ps) {
+            if (($ps['lat'] == 0 && $ps['lng'] == 0)) {
+                $hasInvalidCoords = true;
+                break;
+            }
+        }
+        if ($customerLat == 0 && $customerLng == 0) {
+            $hasInvalidCoords = true;
+        }
+
+        if ($hasInvalidCoords) {
+            error_log("[delivery-route] WARN: Coordenadas invalidas na rota #$routeId. Entregas criadas sem dispatch API.");
+            return [
+                'success' => true,
+                'route_id' => $routeId,
+                'entrega_ids' => $entregaIds,
+                'boraum_dispatched' => false,
+                'message' => 'Coordenadas incompletas — entregas criadas localmente, dispatch manual necessario'
+            ];
+        }
+
+        // Calculate total route cost
+        $totalRouteCost = 0;
+        $firstPickup = $pickupStops[0];
+        $prevLat = $firstPickup['lat'];
+        $prevLng = $firstPickup['lng'];
+
+        // Cost for first pickup to customer
+        foreach ($pickupStops as $i => $ps) {
+            if ($i === 0) {
+                // Distance from first pickup to dropoff as base
+                $totalRouteCost += calcularCustoBoraUm($ps['lat'], $ps['lng'], $customerLat, $customerLng);
+            } else {
+                // Additional stops add incremental cost (distance between previous pickup and this one)
+                $addDist = calcularDistanciaKm($prevLat, $prevLng, $ps['lat'], $ps['lng']);
+                $totalRouteCost += max(1.50, round($addDist * 1.5, 2)); // R$1.50/km for additional stops, min R$1.50
+            }
+            $prevLat = $ps['lat'];
+            $prevLng = $ps['lng'];
+        }
+        $totalRouteCost = round($totalRouteCost, 2);
+
+        error_log("[delivery-route] Rota #$routeId: " . count($pickupStops) . " paradas, custo_total=R$$totalRouteCost");
+
+        $payload = [
+            'external_id' => 'ROUTE-' . $routeId,
+            'route' => true,
+            'stops' => $pickupStops,
+            'dropoff' => [
+                'address' => $customerAddress,
+                'lat' => $customerLat,
+                'lng' => $customerLng,
+                'contact_name' => $customerName,
+                'contact_phone' => $customerPhone
+            ],
+            'price' => $totalRouteCost,
+            'vehicle_type' => 'moto'
+        ];
+
+        $ch = curl_init('https://boraum.com.br/api/partner/deliveries');
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/json',
+                'X-API-Key: ' . $boraUmKey
+            ],
+            CURLOPT_POSTFIELDS => json_encode($payload),
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 20,
+            CURLOPT_CONNECTTIMEOUT => 5
+        ]);
+
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlErr = curl_error($ch);
+        curl_close($ch);
+
+        if ($curlErr) {
+            error_log("[delivery-route] BoraUm cURL error rota #$routeId: $curlErr");
+            return [
+                'success' => true,
+                'route_id' => $routeId,
+                'entrega_ids' => $entregaIds,
+                'boraum_dispatched' => false,
+                'message' => 'Entregas criadas, erro ao contactar BoraUm: ' . $curlErr
+            ];
+        }
+
+        $data = json_decode($response, true);
+        error_log("[delivery-route] BoraUm HTTP $httpCode rota #$routeId | Response: " . substr($response, 0, 500));
+
+        if ($httpCode >= 200 && $httpCode < 300 && !empty($data['delivery_id'])) {
+            $boraumDeliveryId = $data['delivery_id'];
+
+            // Update all om_entregas with the shared boraum_delivery_id
+            foreach ($entregaIds as $oid => $eid) {
+                $db->prepare("UPDATE om_entregas SET boraum_delivery_id = ?, boraum_status = ? WHERE id = ?")
+                   ->execute([$boraumDeliveryId, $data['status'] ?? 'searching', $eid]);
+                $db->prepare("UPDATE om_market_orders SET boraum_pedido_id = ? WHERE order_id = ?")
+                   ->execute([$boraumDeliveryId, $oid]);
+            }
+
+            // Update route with boraum info
+            $db->prepare("UPDATE om_delivery_routes SET boraum_delivery_id = ?, boraum_status = ?, status = 'dispatched' WHERE route_id = ?")
+               ->execute([$boraumDeliveryId, $data['status'] ?? 'searching', $routeId]);
+
+            error_log("[delivery-route] BoraUm route dispatch OK: delivery_id=$boraumDeliveryId para rota #$routeId (" . count($pickupStops) . " paradas)");
+
+            return [
+                'success' => true,
+                'route_id' => $routeId,
+                'entrega_ids' => $entregaIds,
+                'boraum_dispatched' => true,
+                'boraum_delivery_id' => $boraumDeliveryId,
+                'stops_count' => count($pickupStops),
+                'message' => 'Rota despachada para BoraUm com ' . count($pickupStops) . ' paradas'
+            ];
+        }
+
+        // API returned error but local records were created
+        $errMsg = $data['message'] ?? $data['error'] ?? "HTTP $httpCode";
+        error_log("[delivery-route] BoraUm route dispatch falhou rota #$routeId: $errMsg");
+
+        return [
+            'success' => true,
+            'route_id' => $routeId,
+            'entrega_ids' => $entregaIds,
+            'boraum_dispatched' => false,
+            'message' => 'Entregas criadas, BoraUm retornou: ' . $errMsg
+        ];
+
+    } catch (Exception $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        error_log("[delivery-route] Erro ao despachar rota #$routeId: " . $e->getMessage());
+        return ['success' => false, 'message' => 'Erro ao despachar rota: ' . $e->getMessage()];
+    }
+}
+
+/**
+ * Verifica se todos os pedidos de uma rota estao prontos (ou alem)
+ *
+ * @param PDO $db
+ * @param int $routeId
+ * @return bool
+ */
+function areAllRouteOrdersReady(PDO $db, int $routeId): bool {
+    $readyStatuses = ['pronto', 'aguardando_entregador', 'em_entrega', 'entregue'];
+    $placeholders = implode(',', array_fill(0, count($readyStatuses), '?'));
+
+    // Count orders NOT in a ready state (excluding cancelled)
+    $stmt = $db->prepare("
+        SELECT COUNT(*) FROM om_market_orders
+        WHERE route_id = ?
+          AND status NOT IN ('cancelado', 'cancelled', 'refunded')
+          AND status NOT IN ($placeholders)
+    ");
+    $params = array_merge([$routeId], $readyStatuses);
+    $stmt->execute($params);
+    $notReadyCount = (int)$stmt->fetchColumn();
+
+    return $notReadyCount === 0;
 }
 
 /**

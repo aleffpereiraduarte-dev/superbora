@@ -6,7 +6,7 @@
  * Auth: Header X-Webhook-Secret (shared secret)
  *
  * Body: {
- *   "event": "driver_accepted|driver_arrived_pickup|picked_up|driver_arrived_dropoff|delivered|cancelled",
+ *   "event": "driver_accepted|driver_arrived_pickup|picked_up|driver_arrived_dropoff|delivered|cancelled|driver_chat|driver_location|driver_arrived_stop",
  *   "delivery_id": 123,
  *   "external_id": "SB-456",
  *   "driver": {
@@ -30,6 +30,8 @@
  *   driver_arrived_dropoff  → (motorista chegou no cliente)
  *   delivered               → delivered (entrega confirmada)
  *   cancelled               → (motorista cancelou, precisa redespachar)
+ *   driver_location         → (localizacao GPS a cada ~30s, broadcast via WS)
+ *   driver_arrived_stop     → (motorista chegou em parada de rota multi-stop)
  */
 
 // Load env manually (avoid rate limiting for webhooks)
@@ -163,19 +165,40 @@ try {
     $db = getDB();
 
     // =========================================================================
-    // 3. Localizar pedido pelo external_id (order_number) ou delivery_id
+    // 3. Localizar pedido(s) pelo external_id ou delivery_id
+    //    Route deliveries: external_id = "ROUTE-{id}", multiple entregas share boraum_delivery_id
+    //    Single deliveries: external_id = order_number (e.g. SB00456)
     // =========================================================================
     $entrega = null;
     $orderId = null;
+    $isRouteDelivery = false;
+    $routeId = null;
+    $allRouteEntregas = []; // All entregas for this route delivery
 
-    if ($deliveryId) {
-        $stmt = $db->prepare("SELECT * FROM om_entregas WHERE boraum_delivery_id = ? LIMIT 1");
-        $stmt->execute([$deliveryId]);
-        $entrega = $stmt->fetch();
+    // Check if this is a route delivery by external_id format
+    if ($externalId && preg_match('/^ROUTE-(\d+)$/', $externalId, $routeMatch)) {
+        $isRouteDelivery = true;
+        $routeId = (int)$routeMatch[1];
+        error_log("[boraum-webhook] Detected route delivery: route_id=$routeId");
     }
 
-    if (!$entrega && $externalId) {
-        // external_id = order_number (ex: SB-456)
+    if ($deliveryId) {
+        // For route deliveries, there are MULTIPLE entregas with the same boraum_delivery_id
+        $stmt = $db->prepare("SELECT * FROM om_entregas WHERE boraum_delivery_id = ? ORDER BY id ASC");
+        $stmt->execute([$deliveryId]);
+        $allRouteEntregas = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        if (!empty($allRouteEntregas)) {
+            $entrega = $allRouteEntregas[0]; // Primary entrega for single-order events
+            if (count($allRouteEntregas) > 1) {
+                $isRouteDelivery = true;
+                $routeId = $routeId ?: (int)($entrega['route_id'] ?? 0);
+            }
+        }
+    }
+
+    if (!$entrega && $externalId && !$isRouteDelivery) {
+        // Single order: external_id = order_number (ex: SB-456)
         $stmt = $db->prepare("SELECT order_id FROM om_market_orders WHERE order_number = ? LIMIT 1");
         $stmt->execute([$externalId]);
         $order = $stmt->fetch();
@@ -184,6 +207,19 @@ try {
             $stmt = $db->prepare("SELECT * FROM om_entregas WHERE referencia_id = ? AND origem_sistema = 'mercado' LIMIT 1");
             $stmt->execute([$orderId]);
             $entrega = $stmt->fetch();
+            if ($entrega) {
+                $allRouteEntregas = [$entrega];
+            }
+        }
+    }
+
+    if (!$entrega && $isRouteDelivery && $routeId) {
+        // Route delivery but no entrega found by delivery_id — try by route_id
+        $stmt = $db->prepare("SELECT * FROM om_entregas WHERE route_id = ? AND origem_sistema = 'mercado' ORDER BY id ASC");
+        $stmt->execute([$routeId]);
+        $allRouteEntregas = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        if (!empty($allRouteEntregas)) {
+            $entrega = $allRouteEntregas[0];
         }
     }
 
@@ -196,7 +232,7 @@ try {
 
     $orderId = $orderId ?: (int)($entrega['referencia_id'] ?? 0);
 
-    // Buscar pedido
+    // Buscar pedido (primary order for the entrega)
     $stmt = $db->prepare("SELECT * FROM om_market_orders WHERE order_id = ?");
     $stmt->execute([$orderId]);
     $pedido = $stmt->fetch();
@@ -208,10 +244,15 @@ try {
         exit;
     }
 
+    // For route deliveries, identify which specific stop this event is for
+    // BoraUm may send stop_external_id (order_number) or stop_sequence in the payload
+    $stopExternalId = $input['stop_external_id'] ?? null;
+    $stopSequence = isset($input['stop_sequence']) ? (int)$input['stop_sequence'] : null;
+
     // =========================================================================
     // 4. Processar evento
     // =========================================================================
-    $validEvents = ['driver_accepted', 'driver_arrived_pickup', 'picked_up', 'driver_arrived_dropoff', 'delivered', 'cancelled', 'driver_chat'];
+    $validEvents = ['driver_accepted', 'driver_arrived_pickup', 'picked_up', 'driver_arrived_dropoff', 'delivered', 'cancelled', 'driver_chat', 'driver_location', 'driver_arrived_stop'];
     if (!in_array($event, $validEvents)) {
         http_response_code(400);
         echo json_encode(['success' => false, 'message' => "Unknown event: $event"]);
@@ -259,6 +300,87 @@ try {
         exit;
     }
 
+    // ── Evento especial: localizacao do motorista (alta frequencia, sem transacao) ──
+    if ($event === 'driver_location') {
+        $locLat = isset($driver['lat']) ? (float)$driver['lat'] : null;
+        $locLng = isset($driver['lng']) ? (float)$driver['lng'] : null;
+        $locDriverName = $driver['name'] ?? 'Entregador';
+
+        if (!$locLat || !$locLng) {
+            echo json_encode(['success' => false, 'message' => 'driver.lat and driver.lng required']);
+            exit;
+        }
+
+        // Update om_entregas with current driver coordinates
+        try {
+            $db->prepare("
+                UPDATE om_entregas SET
+                    motorista_lat = ?,
+                    motorista_lng = ?,
+                    updated_at = NOW()
+                WHERE id = ?
+            ")->execute([$locLat, $locLng, $entrega['id']]);
+        } catch (Exception $e) {
+            // Column may not exist yet — log and continue with tracking + broadcast
+            error_log("[boraum-webhook] driver_location update om_entregas failed (columns may not exist): " . $e->getMessage());
+        }
+
+        // Insert into tracking history
+        try {
+            $db->prepare("
+                INSERT INTO om_delivery_tracking (delivery_id, order_id, latitude, longitude, created_at)
+                VALUES (?, ?, ?, ?, NOW())
+            ")->execute([$entrega['id'], $orderId, $locLat, $locLng]);
+        } catch (Exception $e) {
+            error_log("[boraum-webhook] driver_location tracking insert failed: " . $e->getMessage());
+        }
+
+        // Broadcast to customer and order channel via WebSocket
+        try {
+            require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
+
+            $customerId = (int)$pedido['customer_id'];
+            $locationPayload = [
+                'order_id' => $orderId,
+                'driver' => [
+                    'lat' => $locLat,
+                    'lng' => $locLng,
+                    'name' => $locDriverName,
+                ],
+            ];
+
+            wsBroadcastToCustomer($customerId, 'driver_location', $locationPayload);
+            wsBroadcastToOrder($orderId, 'driver_location', $locationPayload);
+
+            // For route deliveries, broadcast to all customers in the route
+            if ($isRouteDelivery && count($allRouteEntregas) > 1) {
+                $notifiedCustomers = [$customerId];
+                foreach ($allRouteEntregas as $re) {
+                    $reOrderId = (int)$re['referencia_id'];
+                    if ($reOrderId === $orderId) continue;
+                    $stmtPed = $db->prepare("SELECT customer_id FROM om_market_orders WHERE order_id = ?");
+                    $stmtPed->execute([$reOrderId]);
+                    $rePedido = $stmtPed->fetch();
+                    if ($rePedido) {
+                        $cid = (int)$rePedido['customer_id'];
+                        if (!in_array($cid, $notifiedCustomers)) {
+                            $routeLocationPayload = $locationPayload;
+                            $routeLocationPayload['order_id'] = $reOrderId;
+                            wsBroadcastToCustomer($cid, 'driver_location', $routeLocationPayload);
+                            $notifiedCustomers[] = $cid;
+                        }
+                    }
+                    wsBroadcastToOrder($reOrderId, 'driver_location', array_merge($locationPayload, ['order_id' => $reOrderId]));
+                }
+            }
+        } catch (Exception $e) {
+            error_log("[boraum-webhook] driver_location WS broadcast failed: " . $e->getMessage());
+        }
+
+        echo json_encode(['success' => true, 'message' => 'Location updated', 'order_id' => $orderId]);
+        exit;
+    }
+
     $driverId = isset($driver['id']) ? (int)$driver['id'] : null;
     $driverName = $driver['name'] ?? null;
     $driverPhone = $driver['phone'] ?? null;
@@ -296,113 +418,465 @@ try {
             // -----------------------------------------------------------------
             case 'driver_accepted':
                 // Motorista aceitou a corrida, indo buscar na loja
-                $db->prepare("
-                    UPDATE om_entregas SET
-                        boraum_status = 'accepted',
-                        driver_id = ?,
-                        motorista_nome = ?,
-                        motorista_telefone = ?,
-                        motorista_foto = ?,
-                        motorista_veiculo = ?,
-                        status = 'motorista_aceito',
-                        updated_at = NOW()
-                    WHERE id = ?
-                ")->execute([$driverId, $driverName, $driverPhone, $driverPhoto, $driverPlate ?? '', $entrega['id']]);
+                if ($isRouteDelivery && count($allRouteEntregas) > 1) {
+                    // Route delivery: update ALL entregas and orders in the route
+                    foreach ($allRouteEntregas as $re) {
+                        $db->prepare("
+                            UPDATE om_entregas SET
+                                boraum_status = 'accepted',
+                                driver_id = ?,
+                                motorista_nome = ?,
+                                motorista_telefone = ?,
+                                motorista_foto = ?,
+                                motorista_veiculo = ?,
+                                status = 'motorista_aceito',
+                                updated_at = NOW()
+                            WHERE id = ?
+                        ")->execute([$driverId, $driverName, $driverPhone, $driverPhoto, $driverPlate ?? '', $re['id']]);
 
-                // Atualizar pedido com driver_id pra processar pagamento depois
-                $db->prepare("
-                    UPDATE om_market_orders SET
-                        driver_id = ?,
-                        driver_name = ?,
-                        driver_phone = ?,
-                        driver_photo = ?,
-                        delivery_accepted_at = NOW(),
-                        updated_at = NOW(),
-                        date_modified = NOW()
-                    WHERE order_id = ?
-                ")->execute([$driverId, $driverName, $driverPhone, $driverPhoto, $orderId]);
+                        $reOrderId = (int)$re['referencia_id'];
+                        $db->prepare("
+                            UPDATE om_market_orders SET
+                                driver_id = ?,
+                                driver_name = ?,
+                                driver_phone = ?,
+                                driver_photo = ?,
+                                delivery_accepted_at = NOW(),
+                                updated_at = NOW(),
+                                date_modified = NOW()
+                            WHERE order_id = ? AND status NOT IN ('entregue', 'retirado', 'cancelado')
+                        ")->execute([$driverId, $driverName, $driverPhone, $driverPhoto, $reOrderId]);
 
-                logEvent($db, $orderId, 'driver_accepted', "Motorista $driverName aceitou a entrega");
-                notifyCustomer($db, $pedido, 'Entregador a caminho!', "O motorista $driverName esta indo buscar seu pedido.");
+                        logEvent($db, $reOrderId, 'driver_accepted', "Motorista $driverName aceitou a entrega (rota #$routeId)");
+                    }
+
+                    // Notify all distinct customers in the route
+                    $notifiedCustomers = [];
+                    foreach ($allRouteEntregas as $re) {
+                        $reOrderId = (int)$re['referencia_id'];
+                        $stmtPed = $db->prepare("SELECT * FROM om_market_orders WHERE order_id = ?");
+                        $stmtPed->execute([$reOrderId]);
+                        $rePedido = $stmtPed->fetch();
+                        if ($rePedido) {
+                            $cid = (int)$rePedido['customer_id'];
+                            if (!in_array($cid, $notifiedCustomers)) {
+                                notifyCustomer($db, $rePedido, 'Entregador a caminho!', "O motorista $driverName esta indo buscar seus pedidos (rota com " . count($allRouteEntregas) . " paradas).");
+                                $notifiedCustomers[] = $cid;
+                            }
+                        }
+                    }
+
+                    // Update route status
+                    if ($routeId) {
+                        $db->prepare("UPDATE om_delivery_routes SET boraum_status = 'accepted', status = 'in_progress' WHERE route_id = ?")->execute([$routeId]);
+                    }
+                } else {
+                    // Single order delivery
+                    $db->prepare("
+                        UPDATE om_entregas SET
+                            boraum_status = 'accepted',
+                            driver_id = ?,
+                            motorista_nome = ?,
+                            motorista_telefone = ?,
+                            motorista_foto = ?,
+                            motorista_veiculo = ?,
+                            status = 'motorista_aceito',
+                            updated_at = NOW()
+                        WHERE id = ?
+                    ")->execute([$driverId, $driverName, $driverPhone, $driverPhoto, $driverPlate ?? '', $entrega['id']]);
+
+                    $db->prepare("
+                        UPDATE om_market_orders SET
+                            driver_id = ?,
+                            driver_name = ?,
+                            driver_phone = ?,
+                            driver_photo = ?,
+                            delivery_accepted_at = NOW(),
+                            updated_at = NOW(),
+                            date_modified = NOW()
+                        WHERE order_id = ?
+                    ")->execute([$driverId, $driverName, $driverPhone, $driverPhoto, $orderId]);
+
+                    logEvent($db, $orderId, 'driver_accepted', "Motorista $driverName aceitou a entrega");
+                    notifyCustomer($db, $pedido, 'Entregador a caminho!', "O motorista $driverName esta indo buscar seu pedido.");
+                }
                 break;
 
             // -----------------------------------------------------------------
             case 'driver_arrived_pickup':
                 // Motorista chegou na loja
-                $db->prepare("
-                    UPDATE om_entregas SET boraum_status = 'arrived_pickup', status = 'motorista_no_local', updated_at = NOW()
-                    WHERE id = ?
-                ")->execute([$entrega['id']]);
+                // For route: identify which stop the driver arrived at
+                if ($isRouteDelivery && $stopExternalId) {
+                    // Find the specific entrega for this stop
+                    $stmtStopOrder = $db->prepare("SELECT order_id FROM om_market_orders WHERE order_number = ? LIMIT 1");
+                    $stmtStopOrder->execute([$stopExternalId]);
+                    $stopOrder = $stmtStopOrder->fetch();
+                    if ($stopOrder) {
+                        $stopOrderId = (int)$stopOrder['order_id'];
+                        $db->prepare("
+                            UPDATE om_entregas SET boraum_status = 'arrived_pickup', status = 'motorista_no_local', updated_at = NOW()
+                            WHERE referencia_id = ? AND route_id = ?
+                        ")->execute([$stopOrderId, $routeId]);
+                        logEvent($db, $stopOrderId, 'driver_arrived_pickup', "Motorista chegou no estabelecimento (rota #$routeId)");
 
-                logEvent($db, $orderId, 'driver_arrived_pickup', "Motorista chegou no estabelecimento");
+                        // Update route stop status
+                        $db->prepare("UPDATE om_delivery_route_stops SET status = 'driver_arrived', arrived_at = NOW() WHERE route_id = ? AND order_id = ?")
+                           ->execute([$routeId, $stopOrderId]);
+
+                        // Notify customer for this specific stop
+                        $stmtStopPed = $db->prepare("SELECT * FROM om_market_orders WHERE order_id = ?");
+                        $stmtStopPed->execute([$stopOrderId]);
+                        $stopPedido = $stmtStopPed->fetch();
+                        if ($stopPedido) {
+                            notifyCustomer($db, $stopPedido, 'Motorista chegou na loja!', "O motorista $driverName chegou no estabelecimento para retirar seu pedido #{$stopPedido['order_number']}.");
+                        }
+                    }
+                } else {
+                    $db->prepare("
+                        UPDATE om_entregas SET boraum_status = 'arrived_pickup', status = 'motorista_no_local', updated_at = NOW()
+                        WHERE id = ?
+                    ")->execute([$entrega['id']]);
+
+                    logEvent($db, $orderId, 'driver_arrived_pickup', "Motorista chegou no estabelecimento");
+
+                    // Send push notification to customer
+                    notifyCustomer($db, $pedido, 'Motorista chegou na loja!', "O motorista $driverName chegou no estabelecimento para retirar seu pedido.");
+
+                    // If route delivery without stop info, update all
+                    if ($isRouteDelivery && $routeId) {
+                        foreach ($allRouteEntregas as $re) {
+                            if ((int)$re['id'] !== (int)$entrega['id']) {
+                                $db->prepare("
+                                    UPDATE om_entregas SET boraum_status = 'arrived_pickup', status = 'motorista_no_local', updated_at = NOW()
+                                    WHERE id = ? AND boraum_status NOT IN ('in_transit', 'delivered')
+                                ")->execute([$re['id']]);
+                            }
+                        }
+                    }
+                }
+
+                // WebSocket broadcast for driver_arrived_pickup
+                try {
+                    require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
+                    $wsPayload = [
+                        'order_id' => $orderId,
+                        'status' => 'driver_arrived_pickup',
+                        'driver_name' => $driverName ?? 'Entregador',
+                    ];
+                    wsBroadcastToCustomer((int)$pedido['customer_id'], 'order_update', $wsPayload);
+                    wsBroadcastToOrder($orderId, 'order_update', $wsPayload);
+                } catch (Exception $e) {
+                    error_log("[boraum-webhook] driver_arrived_pickup WS broadcast failed: " . $e->getMessage());
+                }
+                break;
+
+            // -----------------------------------------------------------------
+            case 'driver_arrived_stop':
+                // Motorista chegou em uma parada especifica da rota (multi-stop)
+                $arrivedStopOrderId = null;
+                $arrivedStopPedido = null;
+
+                // Identify which stop the driver arrived at
+                if ($stopExternalId) {
+                    $stmtStopOrd = $db->prepare("SELECT order_id FROM om_market_orders WHERE order_number = ? LIMIT 1");
+                    $stmtStopOrd->execute([$stopExternalId]);
+                    $stopOrd = $stmtStopOrd->fetch();
+                    if ($stopOrd) {
+                        $arrivedStopOrderId = (int)$stopOrd['order_id'];
+                    }
+                } elseif ($stopSequence !== null && $routeId) {
+                    $stmtStop = $db->prepare("SELECT order_id FROM om_delivery_route_stops WHERE route_id = ? AND COALESCE(stop_sequence, stop_order) = ? LIMIT 1");
+                    $stmtStop->execute([$routeId, $stopSequence]);
+                    $stopMatch = $stmtStop->fetch();
+                    if ($stopMatch) {
+                        $arrivedStopOrderId = (int)$stopMatch['order_id'];
+                    }
+                }
+
+                if ($arrivedStopOrderId) {
+                    // Update the specific entrega for this stop
+                    $db->prepare("
+                        UPDATE om_entregas SET boraum_status = 'arrived_stop', updated_at = NOW()
+                        WHERE referencia_id = ? AND origem_sistema = 'mercado'
+                          AND boraum_status NOT IN ('delivered', 'in_transit')
+                    ")->execute([$arrivedStopOrderId]);
+
+                    // Update route stop
+                    if ($routeId) {
+                        $db->prepare("
+                            UPDATE om_delivery_route_stops SET status = 'driver_arrived', arrived_at = NOW()
+                            WHERE route_id = ? AND order_id = ?
+                        ")->execute([$routeId, $arrivedStopOrderId]);
+                    }
+
+                    logEvent($db, $arrivedStopOrderId, 'driver_arrived_stop', "Motorista chegou na parada" . ($routeId ? " (rota #$routeId)" : ""));
+
+                    // Notify the customer for this stop
+                    $stmtStopPed = $db->prepare("SELECT * FROM om_market_orders WHERE order_id = ?");
+                    $stmtStopPed->execute([$arrivedStopOrderId]);
+                    $arrivedStopPedido = $stmtStopPed->fetch();
+                    if ($arrivedStopPedido) {
+                        notifyCustomer($db, $arrivedStopPedido, 'Entregador na parada!', "O motorista " . ($driverName ?? 'Entregador') . " chegou na parada do seu pedido #{$arrivedStopPedido['order_number']}.");
+
+                        // WebSocket broadcast
+                        try {
+                            require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
+                            $cid = (int)$arrivedStopPedido['customer_id'];
+                            $wsPayload = [
+                                'order_id' => $arrivedStopOrderId,
+                                'order_number' => $arrivedStopPedido['order_number'],
+                                'status' => 'driver_arrived_stop',
+                                'driver_name' => $driverName ?? 'Entregador',
+                                'route_id' => $routeId,
+                            ];
+                            wsBroadcastToCustomer($cid, 'order_update', $wsPayload);
+                            wsBroadcastToOrder($arrivedStopOrderId, 'order_update', $wsPayload);
+                        } catch (Exception $e) {
+                            error_log("[boraum-webhook] driver_arrived_stop WS broadcast failed: " . $e->getMessage());
+                        }
+                    }
+                } else {
+                    // No specific stop identified — log and acknowledge
+                    error_log("[boraum-webhook] driver_arrived_stop: could not identify stop (stop_external_id=$stopExternalId, stop_sequence=" . ($stopSequence ?? 'null') . ", route_id=" . ($routeId ?? 'null') . ")");
+                    logEvent($db, $orderId, 'driver_arrived_stop', "Motorista chegou em uma parada (parada nao identificada)");
+                }
                 break;
 
             // -----------------------------------------------------------------
             case 'picked_up':
-                // Motorista retirou o pedido, saiu pra entregar
-                // Validar codigo de coleta
-                $codeValid = false;
-                if ($pickupCode && !empty($entrega['qr_coleta'])) {
-                    $codeValid = strtoupper($pickupCode) === strtoupper($entrega['qr_coleta']);
-                    if (!$codeValid) {
-                        error_log("[boraum-webhook] Codigo coleta INVALIDO! Esperado={$entrega['qr_coleta']} Recebido=$pickupCode");
+                // Motorista retirou o pedido de uma parada
+
+                if ($isRouteDelivery) {
+                    // ========================================================
+                    // ROUTE PICKUP: Identify which stop was picked up
+                    // ========================================================
+                    $pickedUpEntrega = $entrega; // default to first
+                    $pickedUpOrderId = $orderId;
+                    $pickedUpPedido = $pedido;
+
+                    // Try to find the specific stop entrega
+                    if ($stopExternalId) {
+                        $stmtStopOrd = $db->prepare("SELECT order_id FROM om_market_orders WHERE order_number = ? LIMIT 1");
+                        $stmtStopOrd->execute([$stopExternalId]);
+                        $stopOrd = $stmtStopOrd->fetch();
+                        if ($stopOrd) {
+                            $pickedUpOrderId = (int)$stopOrd['order_id'];
+                            foreach ($allRouteEntregas as $re) {
+                                if ((int)$re['referencia_id'] === $pickedUpOrderId) {
+                                    $pickedUpEntrega = $re;
+                                    break;
+                                }
+                            }
+                            $stmtPed = $db->prepare("SELECT * FROM om_market_orders WHERE order_id = ? FOR UPDATE");
+                            $stmtPed->execute([$pickedUpOrderId]);
+                            $pickedUpPedido = $stmtPed->fetch() ?: $pedido;
+                        }
+                    } elseif ($stopSequence !== null) {
+                        // Find by stop_sequence
+                        foreach ($allRouteEntregas as $re) {
+                            if ((int)($re['route_stop_id'] ?? 0)) {
+                                $stmtStop = $db->prepare("SELECT order_id FROM om_delivery_route_stops WHERE stop_id = ? AND COALESCE(stop_sequence, stop_order) = ?");
+                                $stmtStop->execute([$re['route_stop_id'], $stopSequence]);
+                                $stopMatch = $stmtStop->fetch();
+                                if ($stopMatch) {
+                                    $pickedUpOrderId = (int)$stopMatch['order_id'];
+                                    $pickedUpEntrega = $re;
+                                    $stmtPed = $db->prepare("SELECT * FROM om_market_orders WHERE order_id = ? FOR UPDATE");
+                                    $stmtPed->execute([$pickedUpOrderId]);
+                                    $pickedUpPedido = $stmtPed->fetch() ?: $pedido;
+                                    break;
+                                }
+                            }
+                        }
                     }
-                }
 
-                $updateFields = "boraum_status = 'in_transit', status = 'em_transito', coletado_em = NOW(), updated_at = NOW()";
-                $params = [];
+                    // Validate pickup code against THIS specific stop's entrega
+                    $codeValid = false;
+                    if ($pickupCode && !empty($pickedUpEntrega['qr_coleta'])) {
+                        $codeValid = strtoupper($pickupCode) === strtoupper($pickedUpEntrega['qr_coleta']);
+                        if (!$codeValid) {
+                            error_log("[boraum-webhook] Route pickup codigo INVALIDO! stop_order=$pickedUpOrderId Esperado={$pickedUpEntrega['qr_coleta']} Recebido=$pickupCode");
+                        }
+                    }
 
-                if ($pickupPhoto) {
-                    $updateFields .= ", foto_coleta = ?";
-                    $params[] = $pickupPhoto;
-                }
-                if ($codeValid) {
-                    $updateFields .= ", codigo_coleta_validado = 1";
-                }
-                $params[] = $entrega['id'];
+                    // Update THIS stop's entrega
+                    $updateFields = "boraum_status = 'in_transit', status = 'em_transito', coletado_em = NOW(), updated_at = NOW()";
+                    $params = [];
+                    if ($pickupPhoto) { $updateFields .= ", foto_coleta = ?"; $params[] = $pickupPhoto; }
+                    if ($codeValid) { $updateFields .= ", codigo_coleta_validado = 1"; }
+                    $params[] = $pickedUpEntrega['id'];
+                    $db->prepare("UPDATE om_entregas SET $updateFields WHERE id = ?")->execute($params);
 
-                $db->prepare("UPDATE om_entregas SET $updateFields WHERE id = ?")->execute($params);
+                    // Mark THIS order as em_entrega (picked up from this store)
+                    $db->prepare("
+                        UPDATE om_market_orders SET
+                            status = 'em_entrega',
+                            started_delivery_at = NOW(),
+                            picked_up_at = NOW(),
+                            updated_at = NOW(),
+                            date_modified = NOW()
+                        WHERE order_id = ? AND status NOT IN ('entregue', 'retirado', 'cancelado')
+                    ")->execute([$pickedUpOrderId]);
 
-                $db->prepare("
-                    UPDATE om_market_orders SET
-                        status = 'em_entrega',
-                        started_delivery_at = NOW(),
-                        picked_up_at = NOW(),
-                        updated_at = NOW(),
-                        date_modified = NOW()
-                    WHERE order_id = ?
-                ")->execute([$orderId]);
+                    // Update route stop as completed
+                    if ($routeId) {
+                        $db->prepare("
+                            UPDATE om_delivery_route_stops SET status = 'picked_up', completed_at = NOW()
+                            WHERE route_id = ? AND order_id = ?
+                        ")->execute([$routeId, $pickedUpOrderId]);
+                    }
 
-                $pickupMsg = "Motorista retirou o pedido";
-                if ($codeValid) $pickupMsg .= " (codigo verificado)";
-                if ($pickupPhoto) $pickupMsg .= " (foto registrada)";
-                logEvent($db, $orderId, 'picked_up', $pickupMsg);
+                    $pickupMsg = "Motorista retirou o pedido (rota #$routeId, parada #{$pickedUpOrderId})";
+                    if ($codeValid) $pickupMsg .= " (codigo verificado)";
+                    if ($pickupPhoto) $pickupMsg .= " (foto registrada)";
+                    logEvent($db, $pickedUpOrderId, 'picked_up', $pickupMsg);
 
-                $notifBody = "Seu pedido saiu para entrega com o motorista $driverName.";
-                if ($pickupPhoto) {
-                    $notifBody .= "\n\n📸 Foto da coleta registrada.";
-                }
-                if ($codeValid) {
-                    $notifBody .= "\n✅ Codigo verificado com sucesso.";
-                }
-                notifyCustomer($db, $pedido, 'Pedido a caminho!', $notifBody);
+                    // Count how many stops are left
+                    $stmtRemaining = $db->prepare("
+                        SELECT COUNT(*) FROM om_delivery_route_stops
+                        WHERE route_id = ? AND status NOT IN ('picked_up', 'completed', 'cancelled')
+                    ");
+                    $stmtRemaining->execute([$routeId]);
+                    $remainingStops = (int)$stmtRemaining->fetchColumn();
 
-                // Enviar foto da coleta pro cliente via WhatsApp
-                if ($pickupPhoto) {
-                    sendPhotoToCustomer($pedido, $pickupPhoto, "📦 Foto da coleta do seu pedido #{$pedido['order_number']}");
+                    $stmtTotal = $db->prepare("
+                        SELECT COUNT(*) FROM om_delivery_route_stops
+                        WHERE route_id = ? AND status NOT IN ('cancelled')
+                    ");
+                    $stmtTotal->execute([$routeId]);
+                    $totalStops = (int)$stmtTotal->fetchColumn();
+
+                    $pickedUpCount = $totalStops - $remainingStops;
+
+                    $notifBody = "Pedido #{$pickedUpPedido['order_number']} coletado pelo motorista $driverName.";
+                    if ($remainingStops > 0) {
+                        $notifBody .= " Faltam $remainingStops de $totalStops paradas.";
+                    } else {
+                        $notifBody .= " Todas as paradas coletadas! A caminho da entrega.";
+                    }
+                    if ($codeValid) $notifBody .= "\n Codigo verificado.";
+                    notifyCustomer($db, $pickedUpPedido, 'Pedido coletado!', $notifBody);
+
+                    if ($pickupPhoto) {
+                        sendPhotoToCustomer($pickedUpPedido, $pickupPhoto, "Foto da coleta do pedido #{$pickedUpPedido['order_number']}");
+                    }
+
+                    error_log("[boraum-webhook] Route #$routeId picked_up: order #$pickedUpOrderId ($pickedUpCount/$totalStops coletados, $remainingStops restantes)");
+                } else {
+                    // ========================================================
+                    // SINGLE ORDER PICKUP (original logic)
+                    // ========================================================
+                    $codeValid = false;
+                    if ($pickupCode && !empty($entrega['qr_coleta'])) {
+                        $codeValid = strtoupper($pickupCode) === strtoupper($entrega['qr_coleta']);
+                        if (!$codeValid) {
+                            error_log("[boraum-webhook] Codigo coleta INVALIDO! Esperado={$entrega['qr_coleta']} Recebido=$pickupCode");
+                        }
+                    }
+
+                    $updateFields = "boraum_status = 'in_transit', status = 'em_transito', coletado_em = NOW(), updated_at = NOW()";
+                    $params = [];
+                    if ($pickupPhoto) { $updateFields .= ", foto_coleta = ?"; $params[] = $pickupPhoto; }
+                    if ($codeValid) { $updateFields .= ", codigo_coleta_validado = 1"; }
+                    $params[] = $entrega['id'];
+                    $db->prepare("UPDATE om_entregas SET $updateFields WHERE id = ?")->execute($params);
+
+                    $stmtPickup = $db->prepare("
+                        UPDATE om_market_orders SET
+                            status = 'em_entrega',
+                            started_delivery_at = NOW(),
+                            picked_up_at = NOW(),
+                            updated_at = NOW(),
+                            date_modified = NOW()
+                        WHERE order_id = ? AND status NOT IN ('entregue', 'retirado', 'cancelado')
+                    ");
+                    $stmtPickup->execute([$orderId]);
+
+                    $pickupMsg = "Motorista retirou o pedido";
+                    if ($codeValid) $pickupMsg .= " (codigo verificado)";
+                    if ($pickupPhoto) $pickupMsg .= " (foto registrada)";
+                    logEvent($db, $orderId, 'picked_up', $pickupMsg);
+
+                    $notifBody = "Seu pedido saiu para entrega com o motorista $driverName.";
+                    if ($pickupPhoto) { $notifBody .= "\n\nFoto da coleta registrada."; }
+                    if ($codeValid) { $notifBody .= "\nCodigo verificado com sucesso."; }
+                    notifyCustomer($db, $pedido, 'Pedido a caminho!', $notifBody);
+
+                    if ($pickupPhoto) {
+                        sendPhotoToCustomer($pedido, $pickupPhoto, "Foto da coleta do seu pedido #{$pedido['order_number']}");
+                    }
                 }
                 break;
 
             // -----------------------------------------------------------------
             case 'driver_arrived_dropoff':
                 // Motorista chegou no endereco do cliente
-                $db->prepare("
-                    UPDATE om_entregas SET boraum_status = 'arrived_dropoff', updated_at = NOW()
-                    WHERE id = ?
-                ")->execute([$entrega['id']]);
+                if ($isRouteDelivery && count($allRouteEntregas) > 1) {
+                    // Route: update all entregas for this route
+                    foreach ($allRouteEntregas as $re) {
+                        $db->prepare("
+                            UPDATE om_entregas SET boraum_status = 'arrived_dropoff', updated_at = NOW()
+                            WHERE id = ? AND boraum_status NOT IN ('delivered')
+                        ")->execute([$re['id']]);
+                    }
+                    // Notify all customers in the route
+                    $notifiedCustomers = [];
+                    foreach ($allRouteEntregas as $re) {
+                        $reOrderId = (int)$re['referencia_id'];
+                        $stmtPed = $db->prepare("SELECT * FROM om_market_orders WHERE order_id = ?");
+                        $stmtPed->execute([$reOrderId]);
+                        $rePedido = $stmtPed->fetch();
+                        if ($rePedido) {
+                            $cid = (int)$rePedido['customer_id'];
+                            if (!in_array($cid, $notifiedCustomers)) {
+                                notifyCustomer($db, $rePedido, 'Entregador chegou!', "O motorista $driverName chegou no seu endereco com seus pedidos.");
+                                $notifiedCustomers[] = $cid;
+                            }
+                            logEvent($db, $reOrderId, 'driver_arrived_dropoff', "Motorista chegou no endereco de entrega (rota #$routeId)");
+                        }
+                    }
+                } else {
+                    $db->prepare("
+                        UPDATE om_entregas SET boraum_status = 'arrived_dropoff', updated_at = NOW()
+                        WHERE id = ?
+                    ")->execute([$entrega['id']]);
+                    logEvent($db, $orderId, 'driver_arrived_dropoff', "Motorista chegou no endereco de entrega");
+                    notifyCustomer($db, $pedido, 'Entregador chegou!', "O motorista $driverName chegou no seu endereco.");
+                }
 
-                logEvent($db, $orderId, 'driver_arrived_dropoff', "Motorista chegou no endereco de entrega");
-                notifyCustomer($db, $pedido, 'Entregador chegou!', "O motorista $driverName chegou no seu endereco.");
+                // WebSocket broadcast for driver_arrived_dropoff
+                try {
+                    require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
+                    $wsPayload = [
+                        'order_id' => $orderId,
+                        'status' => 'driver_arrived_dropoff',
+                        'driver_name' => $driverName ?? 'Entregador',
+                    ];
+                    wsBroadcastToCustomer((int)$pedido['customer_id'], 'order_update', $wsPayload);
+                    wsBroadcastToOrder($orderId, 'order_update', $wsPayload);
+
+                    // For route deliveries, broadcast to all customers
+                    if ($isRouteDelivery && count($allRouteEntregas) > 1) {
+                        $wsBroadcastedCustomers = [(int)$pedido['customer_id']];
+                        foreach ($allRouteEntregas as $re) {
+                            $reOrderId = (int)$re['referencia_id'];
+                            if ($reOrderId === $orderId) continue;
+                            $stmtWsPed = $db->prepare("SELECT customer_id FROM om_market_orders WHERE order_id = ?");
+                            $stmtWsPed->execute([$reOrderId]);
+                            $wsRow = $stmtWsPed->fetch();
+                            if ($wsRow) {
+                                $wsCid = (int)$wsRow['customer_id'];
+                                if (!in_array($wsCid, $wsBroadcastedCustomers)) {
+                                    wsBroadcastToCustomer($wsCid, 'order_update', array_merge($wsPayload, ['order_id' => $reOrderId]));
+                                    $wsBroadcastedCustomers[] = $wsCid;
+                                }
+                            }
+                            wsBroadcastToOrder($reOrderId, 'order_update', array_merge($wsPayload, ['order_id' => $reOrderId]));
+                        }
+                    }
+                } catch (Exception $e) {
+                    error_log("[boraum-webhook] driver_arrived_dropoff WS broadcast failed: " . $e->getMessage());
+                }
                 break;
 
             // -----------------------------------------------------------------
@@ -412,6 +886,17 @@ try {
                 // Geofence: verify driver is near delivery address (max 500m)
                 $deliveryLat = isset($pedido['latitude_entrega']) ? (float)$pedido['latitude_entrega'] : null;
                 $deliveryLng = isset($pedido['longitude_entrega']) ? (float)$pedido['longitude_entrega'] : null;
+
+                // For route deliveries, use route customer coords if order coords missing
+                if ($isRouteDelivery && !$deliveryLat && !$deliveryLng && $routeId) {
+                    $stmtRouteCoords = $db->prepare("SELECT customer_lat, customer_lng FROM om_delivery_routes WHERE route_id = ?");
+                    $stmtRouteCoords->execute([$routeId]);
+                    $routeCoords = $stmtRouteCoords->fetch();
+                    if ($routeCoords) {
+                        $deliveryLat = (float)($routeCoords['customer_lat'] ?? 0) ?: null;
+                        $deliveryLng = (float)($routeCoords['customer_lng'] ?? 0) ?: null;
+                    }
+                }
 
                 $geofenceValid = false;
                 if ($driverLat && $driverLng && $deliveryLat && $deliveryLng) {
@@ -441,12 +926,22 @@ try {
                     error_log("[boraum-webhook] AVISO: Coordenadas ausentes para geofence (order_id=$orderId) — exigindo codigo de entrega");
                 }
 
-                // Validar codigo de entrega
+                // Validar codigo de entrega (for routes, validate against ANY entrega's pin)
                 $codeValid = false;
-                if ($deliveryCode && !empty($entrega['pin_entrega'])) {
-                    $codeValid = $deliveryCode === $entrega['pin_entrega'];
+                if ($deliveryCode) {
+                    if (!empty($entrega['pin_entrega']) && $deliveryCode === $entrega['pin_entrega']) {
+                        $codeValid = true;
+                    } elseif ($isRouteDelivery) {
+                        // Try all entregas in route for pin match
+                        foreach ($allRouteEntregas as $re) {
+                            if (!empty($re['pin_entrega']) && $deliveryCode === $re['pin_entrega']) {
+                                $codeValid = true;
+                                break;
+                            }
+                        }
+                    }
                     if (!$codeValid) {
-                        error_log("[boraum-webhook] Codigo entrega INVALIDO! Esperado={$entrega['pin_entrega']} Recebido=$deliveryCode");
+                        error_log("[boraum-webhook] Codigo entrega INVALIDO! Recebido=$deliveryCode (order_id=$orderId)");
                     }
                 }
 
@@ -462,203 +957,292 @@ try {
                     exit;
                 }
 
-                $updateFields = "boraum_status = 'delivered', status = 'entregue', entregue_em = NOW(), updated_at = NOW()";
-                $params = [];
+                if ($isRouteDelivery && count($allRouteEntregas) > 1) {
+                    // ========================================================
+                    // ROUTE DELIVERED: Mark ALL orders in the route as entregue
+                    // ========================================================
+                    error_log("[boraum-webhook] Route #$routeId delivered: marking all " . count($allRouteEntregas) . " orders as entregue");
 
-                if ($deliveryPhoto) {
-                    $updateFields .= ", foto_entrega = ?";
-                    $params[] = $deliveryPhoto;
-                }
-                if ($codeValid) {
-                    $updateFields .= ", codigo_entrega_validado = 1";
-                }
-                $params[] = $entrega['id'];
+                    $deliveredOrderIds = [];
+                    foreach ($allRouteEntregas as $re) {
+                        $reOrderId = (int)$re['referencia_id'];
 
-                $db->prepare("UPDATE om_entregas SET $updateFields WHERE id = ?")->execute($params);
+                        // Update entrega
+                        $updateFields = "boraum_status = 'delivered', status = 'entregue', entregue_em = NOW(), updated_at = NOW()";
+                        $params = [];
+                        if ($deliveryPhoto) { $updateFields .= ", foto_entrega = ?"; $params[] = $deliveryPhoto; }
+                        if ($codeValid) { $updateFields .= ", codigo_entrega_validado = 1"; }
+                        $params[] = $re['id'];
+                        $db->prepare("UPDATE om_entregas SET $updateFields WHERE id = ?")->execute($params);
 
-                // Atualizar pedido
-                $orderUpdateSql = "
-                    UPDATE om_market_orders SET
-                        status = 'entregue',
-                        delivered_at = NOW(),
-                        updated_at = NOW(),
-                        date_modified = NOW()";
-                $orderParams = [];
+                        // Update order
+                        $orderUpdateSql = "UPDATE om_market_orders SET status = 'entregue', delivered_at = NOW(), updated_at = NOW(), date_modified = NOW()";
+                        $orderParams = [];
+                        if ($deliveryPhoto) {
+                            $orderUpdateSql .= ", delivery_photo = ?, delivery_photo_at = NOW()";
+                            $orderParams[] = $deliveryPhoto;
+                            if ($driverLat) { $orderUpdateSql .= ", delivery_photo_lat = ?"; $orderParams[] = $driverLat; }
+                            if ($driverLng) { $orderUpdateSql .= ", delivery_photo_lng = ?"; $orderParams[] = $driverLng; }
+                        }
+                        $orderUpdateSql .= " WHERE order_id = ? AND status NOT IN ('entregue', 'retirado', 'cancelado')";
+                        $orderParams[] = $reOrderId;
+                        $db->prepare($orderUpdateSql)->execute($orderParams);
 
-                if ($deliveryPhoto) {
-                    $orderUpdateSql .= ", delivery_photo = ?, delivery_photo_at = NOW()";
-                    $orderParams[] = $deliveryPhoto;
-                    if ($driverLat) {
-                        $orderUpdateSql .= ", delivery_photo_lat = ?";
-                        $orderParams[] = $driverLat;
-                    }
-                    if ($driverLng) {
-                        $orderUpdateSql .= ", delivery_photo_lng = ?";
-                        $orderParams[] = $driverLng;
-                    }
-                }
-                $orderUpdateSql .= " WHERE order_id = ?";
-                $orderParams[] = $orderId;
-                $db->prepare($orderUpdateSql)->execute($orderParams);
-
-                $deliverMsg = "Pedido entregue pelo motorista BoraUm";
-                if ($codeValid) $deliverMsg .= " (codigo verificado)";
-                if ($deliveryPhoto) $deliverMsg .= " (foto registrada)";
-                logEvent($db, $orderId, 'delivered', $deliverMsg);
-
-                $notifBody = "Seu pedido foi entregue. Bom apetite! Avalie sua experiencia.";
-                if ($deliveryPhoto) {
-                    $notifBody .= "\n\n📸 Foto da entrega registrada.";
-                }
-                if ($codeValid) {
-                    $notifBody .= "\n✅ Codigo de entrega verificado.";
-                }
-                notifyCustomer($db, $pedido, 'Pedido entregue!', $notifBody);
-
-                // Enviar foto da entrega pro cliente via WhatsApp
-                if ($deliveryPhoto) {
-                    sendPhotoToCustomer($pedido, $deliveryPhoto, "✅ Foto da entrega do seu pedido #{$pedido['order_number']}");
-                }
-
-                // Processar repasse ao parceiro com comissao (IDEMPOTENTE)
-                // confirmar-entrega.php tambem cria repasse — so criar se ainda nao existe
-                try {
-                    require_once dirname(__DIR__, 3) . '/includes/classes/OmRepasse.php';
-                    require_once dirname(__DIR__, 3) . '/includes/classes/PusherService.php';
-
-                    // Verificar se repasse ja existe para este pedido (idempotencia)
-                    $stmtRepasseCheck = $db->prepare("SELECT id FROM om_repasses WHERE order_id = ? AND order_type = 'mercado' LIMIT 1");
-                    $stmtRepasseCheck->execute([$orderId]);
-                    $repasseExists = $stmtRepasseCheck->fetch();
-
-                    if ($repasseExists) {
-                        error_log("[boraum-webhook] Repasse ja existe para pedido #$orderId — pulando (idempotencia)");
-                    } else {
-                        $partnerId = (int)($pedido['partner_id'] ?? 0);
-                        $subtotal = (float)($pedido['subtotal'] ?? 0);
-                        $deliveryFee = (float)($pedido['delivery_fee'] ?? 0);
-                        $serviceFee = (float)($pedido['service_fee'] ?? 0);
-                        $expressFee = (float)($pedido['express_fee'] ?? 0);
-
-                        // Usar OmPricing para comissao centralizada
-                        require_once dirname(__DIR__, 3) . '/includes/classes/OmPricing.php';
-                        $usaBoraUm = !empty($entrega['boraum_delivery_id']);
-                        $comissao = OmPricing::calcularComissao($subtotal, $usaBoraUm ? 'boraum' : 'proprio');
-                        $comissaoPct = $comissao['taxa'];
-                        $comissaoValor = $comissao['valor'];
-                        $valorParceiro = round($subtotal - $comissaoValor, 2);
-
-                        // Se entregador proprio, parceiro tambem recebe a taxa de entrega BASE (sem express)
-                        $deliveryFeeBase = max(0, $deliveryFee - $expressFee);
-                        if (!$usaBoraUm && $deliveryFeeBase > 0) {
-                            $valorParceiro += $deliveryFeeBase;
+                        // Update route stop
+                        if ($routeId) {
+                            $db->prepare("UPDATE om_delivery_route_stops SET status = 'completed', completed_at = NOW() WHERE route_id = ? AND order_id = ?")
+                               ->execute([$routeId, $reOrderId]);
                         }
 
-                        if ($partnerId && $valorParceiro > 0) {
-                            $repasse = om_repasse()->setDb($db);
-                            $resultRepasse = $repasse->criar(
-                                $orderId,
-                                'mercado',
-                                $partnerId,
-                                $valorParceiro,
-                                [
-                                    'subtotal' => $subtotal,
-                                    'comissao_pct' => $comissaoPct * 100,
-                                    'comissao_valor' => $comissaoValor,
-                                    'delivery_fee' => $deliveryFee,
-                                    'delivery_fee_base' => $deliveryFeeBase,
-                                    'express_fee' => $expressFee,
-                                    'delivery_fee_destino' => $usaBoraUm ? 'boraum' : 'parceiro',
-                                    'service_fee' => $serviceFee,
-                                    'tier' => $usaBoraUm ? 'boraum_18pct' : 'proprio_10pct',
-                                    'receita_plataforma' => round($comissaoValor + $serviceFee + $expressFee, 2),
-                                ]
-                            );
+                        $deliverMsg = "Pedido entregue pelo motorista BoraUm (rota #$routeId)";
+                        if ($codeValid) $deliverMsg .= " (codigo verificado)";
+                        if ($deliveryPhoto) $deliverMsg .= " (foto registrada)";
+                        logEvent($db, $reOrderId, 'delivered', $deliverMsg);
 
-                            // Salvar comissao no pedido
-                            $db->prepare("UPDATE om_market_orders SET commission_rate = ?, commission_amount = ?, repasse_valor = ? WHERE order_id = ?")
-                               ->execute([$comissaoPct * 100, $comissaoValor, $valorParceiro, $orderId]);
+                        $deliveredOrderIds[] = $reOrderId;
+                    }
 
-                            // Notificar parceiro via Pusher sobre wallet update
-                            PusherService::walletUpdate($partnerId, [
-                                'order_id' => $orderId,
-                                'valor' => $valorParceiro,
-                                'comissao' => $comissaoValor,
-                                'status' => 'hold',
-                                'hold_hours' => 2
-                            ]);
+                    // Update route status
+                    if ($routeId) {
+                        $db->prepare("UPDATE om_delivery_routes SET boraum_status = 'delivered', status = 'completed', finished_at = NOW() WHERE route_id = ?")->execute([$routeId]);
+                    }
 
-                            error_log("[boraum-webhook] Repasse criado: parceiro=$partnerId valor=R$$valorParceiro comissao=" . ($comissaoPct * 100) . "% pedido=#$orderId");
+                    // Notify all distinct customers
+                    $notifiedCustomers = [];
+                    foreach ($deliveredOrderIds as $doid) {
+                        $stmtPed = $db->prepare("SELECT * FROM om_market_orders WHERE order_id = ?");
+                        $stmtPed->execute([$doid]);
+                        $rePedido = $stmtPed->fetch();
+                        if ($rePedido) {
+                            $cid = (int)$rePedido['customer_id'];
+                            if (!in_array($cid, $notifiedCustomers)) {
+                                $notifBody = "Todos os seus pedidos da rota foram entregues. Bom apetite! Avalie sua experiencia.";
+                                if ($deliveryPhoto) $notifBody .= "\n\nFoto da entrega registrada.";
+                                if ($codeValid) $notifBody .= "\nCodigo de entrega verificado.";
+                                notifyCustomer($db, $rePedido, 'Pedidos entregues!', $notifBody);
+                                $notifiedCustomers[] = $cid;
+                            }
+                            if ($deliveryPhoto) {
+                                sendPhotoToCustomer($rePedido, $deliveryPhoto, "Foto da entrega do pedido #{$rePedido['order_number']}");
+                            }
                         }
                     }
-                } catch (Exception $payErr) {
-                    error_log("[boraum-webhook] Erro repasse: " . $payErr->getMessage());
+
+                    // Process repasse for EACH order in the route
+                    foreach ($deliveredOrderIds as $doid) {
+                        processOrderRepasse($db, $doid, $allRouteEntregas);
+                    }
+                } else {
+                    // ========================================================
+                    // SINGLE ORDER DELIVERED (original logic)
+                    // ========================================================
+                    $updateFields = "boraum_status = 'delivered', status = 'entregue', entregue_em = NOW(), updated_at = NOW()";
+                    $params = [];
+                    if ($deliveryPhoto) { $updateFields .= ", foto_entrega = ?"; $params[] = $deliveryPhoto; }
+                    if ($codeValid) { $updateFields .= ", codigo_entrega_validado = 1"; }
+                    $params[] = $entrega['id'];
+                    $db->prepare("UPDATE om_entregas SET $updateFields WHERE id = ?")->execute($params);
+
+                    // Atualizar pedido
+                    $orderUpdateSql = "
+                        UPDATE om_market_orders SET
+                            status = 'entregue',
+                            delivered_at = NOW(),
+                            updated_at = NOW(),
+                            date_modified = NOW()";
+                    $orderParams = [];
+                    if ($deliveryPhoto) {
+                        $orderUpdateSql .= ", delivery_photo = ?, delivery_photo_at = NOW()";
+                        $orderParams[] = $deliveryPhoto;
+                        if ($driverLat) { $orderUpdateSql .= ", delivery_photo_lat = ?"; $orderParams[] = $driverLat; }
+                        if ($driverLng) { $orderUpdateSql .= ", delivery_photo_lng = ?"; $orderParams[] = $driverLng; }
+                    }
+                    $orderUpdateSql .= " WHERE order_id = ? AND status NOT IN ('entregue', 'retirado', 'cancelado')";
+                    $orderParams[] = $orderId;
+                    $stmtOrderUpd = $db->prepare($orderUpdateSql);
+                    $stmtOrderUpd->execute($orderParams);
+                    if ($stmtOrderUpd->rowCount() === 0) {
+                        $db->commit();
+                        response(true, null, "Order already in terminal state, skipped");
+                    }
+
+                    $deliverMsg = "Pedido entregue pelo motorista BoraUm";
+                    if ($codeValid) $deliverMsg .= " (codigo verificado)";
+                    if ($deliveryPhoto) $deliverMsg .= " (foto registrada)";
+                    logEvent($db, $orderId, 'delivered', $deliverMsg);
+
+                    $notifBody = "Seu pedido foi entregue. Bom apetite! Avalie sua experiencia.";
+                    if ($deliveryPhoto) { $notifBody .= "\n\nFoto da entrega registrada."; }
+                    if ($codeValid) { $notifBody .= "\nCodigo de entrega verificado."; }
+                    notifyCustomer($db, $pedido, 'Pedido entregue!', $notifBody);
+
+                    if ($deliveryPhoto) {
+                        sendPhotoToCustomer($pedido, $deliveryPhoto, "Foto da entrega do seu pedido #{$pedido['order_number']}");
+                    }
+
+                    // Process repasse for single order
+                    processOrderRepasse($db, $orderId, [$entrega]);
                 }
                 break;
 
             // -----------------------------------------------------------------
             case 'cancelled':
                 // Motorista cancelou - precisa redespachar
-                $db->prepare("
-                    UPDATE om_entregas SET
-                        boraum_status = 'cancelled',
-                        boraum_delivery_id = NULL,
-                        status = 'buscando_entregador',
-                        motorista_nome = NULL,
-                        motorista_telefone = NULL,
-                        motorista_foto = NULL,
-                        motorista_veiculo = NULL,
-                        updated_at = NOW()
-                    WHERE id = ?
-                ")->execute([$entrega['id']]);
+                if ($isRouteDelivery && count($allRouteEntregas) > 1) {
+                    // Route cancellation: reset ALL entregas and orders in the route
+                    foreach ($allRouteEntregas as $re) {
+                        $reOrderId = (int)$re['referencia_id'];
+                        $db->prepare("
+                            UPDATE om_entregas SET
+                                boraum_status = 'cancelled',
+                                boraum_delivery_id = NULL,
+                                status = 'buscando_entregador',
+                                motorista_nome = NULL,
+                                motorista_telefone = NULL,
+                                motorista_foto = NULL,
+                                motorista_veiculo = NULL,
+                                updated_at = NOW()
+                            WHERE id = ?
+                        ")->execute([$re['id']]);
 
-                $db->prepare("
-                    UPDATE om_market_orders SET
-                        status = 'aguardando_entregador',
-                        driver_name = NULL,
-                        driver_phone = NULL,
-                        driver_photo = NULL,
-                        updated_at = NOW(),
-                        date_modified = NOW()
-                    WHERE order_id = ?
-                ")->execute([$orderId]);
+                        $db->prepare("
+                            UPDATE om_market_orders SET
+                                status = 'aguardando_entregador',
+                                driver_name = NULL,
+                                driver_phone = NULL,
+                                driver_photo = NULL,
+                                updated_at = NOW(),
+                                date_modified = NOW()
+                            WHERE order_id = ? AND status NOT IN ('entregue', 'cancelado')
+                        ")->execute([$reOrderId]);
 
-                logEvent($db, $orderId, 'driver_cancelled', "Motorista cancelou: $reason. Buscando novo entregador.");
+                        logEvent($db, $reOrderId, 'driver_cancelled', "Motorista cancelou rota #$routeId: $reason. Buscando novo entregador.");
+                    }
 
-                // Notify customer about driver cancellation and reassignment
-                notifyCustomer($db, $pedido, 'Entregador indisponivel', 'Estamos buscando um novo entregador para seu pedido. Voce sera notificado quando um novo motorista aceitar.');
+                    // Reset route stops
+                    if ($routeId) {
+                        $db->prepare("UPDATE om_delivery_route_stops SET status = 'pending', arrived_at = NULL, completed_at = NULL WHERE route_id = ? AND status NOT IN ('cancelled')")
+                           ->execute([$routeId]);
+                        $db->prepare("UPDATE om_delivery_routes SET boraum_delivery_id = NULL, boraum_status = 'cancelled', status = 'pending' WHERE route_id = ?")
+                           ->execute([$routeId]);
+                    }
 
-                // Tentar redespachar automaticamente
-                $redispatchOk = false;
-                try {
-                    require_once __DIR__ . '/../helpers/delivery.php';
-                    $stmtRetry = $db->prepare("SELECT * FROM om_market_orders WHERE order_id = ?");
-                    $stmtRetry->execute([$orderId]);
-                    $retryOrder = $stmtRetry->fetch();
-                    if ($retryOrder) {
-                        // Limpar entrega anterior pra criar nova
-                        $db->prepare("DELETE FROM om_entregas WHERE id = ?")->execute([$entrega['id']]);
-                        $dispatchResult = dispatchToBoraUm($db, $retryOrder);
-                        if (!empty($dispatchResult['success'])) {
-                            $redispatchOk = true;
-                            logEvent($db, $orderId, 'delivery_redispatched', 'Novo entregador solicitado automaticamente');
-                        } else {
-                            error_log("[boraum-webhook] Redispatch falhou pedido #$orderId: " . ($dispatchResult['message'] ?? 'unknown'));
+                    // Notify all customers
+                    $notifiedCustomers = [];
+                    foreach ($allRouteEntregas as $re) {
+                        $reOrderId = (int)$re['referencia_id'];
+                        $stmtPed = $db->prepare("SELECT * FROM om_market_orders WHERE order_id = ?");
+                        $stmtPed->execute([$reOrderId]);
+                        $rePedido = $stmtPed->fetch();
+                        if ($rePedido) {
+                            $cid = (int)$rePedido['customer_id'];
+                            if (!in_array($cid, $notifiedCustomers)) {
+                                notifyCustomer($db, $rePedido, 'Entregador indisponivel', 'Estamos buscando um novo entregador para seus pedidos. Voce sera notificado quando um novo motorista aceitar.');
+                                $notifiedCustomers[] = $cid;
+                            }
                         }
                     }
-                } catch (Exception $retryErr) {
-                    error_log("[boraum-webhook] Erro redispatch: " . $retryErr->getMessage());
-                }
 
-                // Se redispatch falhou E pedido foi criado ha mais de 2 horas, auto-refund
-                if (!$redispatchOk) {
-                    $orderAge = (time() - strtotime($pedido['date_added'])) / 3600;
-                    if ($orderAge > 2) {
-                        error_log("[boraum-webhook] Pedido #$orderId sem entregador ha >2h — iniciando auto-refund");
-                        try {
-                            triggerAutoRefundFromWebhook($db, $pedido, "Entrega cancelada pelo BoraUm e nao foi possivel redespachar. Motivo: $reason");
-                        } catch (Exception $refundErr) {
-                            error_log("[boraum-webhook] Erro auto-refund pedido #$orderId: " . $refundErr->getMessage());
+                    // Try to redispatch the entire route
+                    $redispatchOk = false;
+                    try {
+                        require_once __DIR__ . '/../helpers/delivery.php';
+                        // Delete old entregas to allow fresh dispatch
+                        foreach ($allRouteEntregas as $re) {
+                            $db->prepare("DELETE FROM om_entregas WHERE id = ?")->execute([$re['id']]);
+                        }
+                        $dispatchResult = dispatchRouteToBoraUm($db, $routeId);
+                        if (!empty($dispatchResult['success']) && !empty($dispatchResult['boraum_dispatched'])) {
+                            $redispatchOk = true;
+                            foreach ($allRouteEntregas as $re) {
+                                logEvent($db, (int)$re['referencia_id'], 'delivery_redispatched', 'Rota redespachada automaticamente');
+                            }
+                        } else {
+                            error_log("[boraum-webhook] Route redispatch falhou rota #$routeId: " . ($dispatchResult['message'] ?? 'unknown'));
+                        }
+                    } catch (Exception $retryErr) {
+                        error_log("[boraum-webhook] Erro route redispatch: " . $retryErr->getMessage());
+                    }
+
+                    // Auto-refund if redispatch failed and orders are old
+                    if (!$redispatchOk) {
+                        $orderAge = (time() - strtotime($pedido['date_added'])) / 3600;
+                        if ($orderAge > 2) {
+                            error_log("[boraum-webhook] Rota #$routeId sem entregador ha >2h — iniciando auto-refund para todos os pedidos");
+                            foreach ($allRouteEntregas as $re) {
+                                $reOrderId = (int)$re['referencia_id'];
+                                try {
+                                    $stmtPed = $db->prepare("SELECT * FROM om_market_orders WHERE order_id = ?");
+                                    $stmtPed->execute([$reOrderId]);
+                                    $rePedido = $stmtPed->fetch();
+                                    if ($rePedido && !in_array($rePedido['status'], ['cancelado', 'entregue'])) {
+                                        triggerAutoRefundFromWebhook($db, $rePedido, "Rota cancelada pelo BoraUm e nao foi possivel redespachar. Motivo: $reason");
+                                    }
+                                } catch (Exception $refundErr) {
+                                    error_log("[boraum-webhook] Erro auto-refund pedido #$reOrderId (rota #$routeId): " . $refundErr->getMessage());
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Single order cancellation (original logic)
+                    $db->prepare("
+                        UPDATE om_entregas SET
+                            boraum_status = 'cancelled',
+                            boraum_delivery_id = NULL,
+                            status = 'buscando_entregador',
+                            motorista_nome = NULL,
+                            motorista_telefone = NULL,
+                            motorista_foto = NULL,
+                            motorista_veiculo = NULL,
+                            updated_at = NOW()
+                        WHERE id = ?
+                    ")->execute([$entrega['id']]);
+
+                    $db->prepare("
+                        UPDATE om_market_orders SET
+                            status = 'aguardando_entregador',
+                            driver_name = NULL,
+                            driver_phone = NULL,
+                            driver_photo = NULL,
+                            updated_at = NOW(),
+                            date_modified = NOW()
+                        WHERE order_id = ?
+                    ")->execute([$orderId]);
+
+                    logEvent($db, $orderId, 'driver_cancelled', "Motorista cancelou: $reason. Buscando novo entregador.");
+                    notifyCustomer($db, $pedido, 'Entregador indisponivel', 'Estamos buscando um novo entregador para seu pedido. Voce sera notificado quando um novo motorista aceitar.');
+
+                    // Tentar redespachar automaticamente
+                    $redispatchOk = false;
+                    try {
+                        require_once __DIR__ . '/../helpers/delivery.php';
+                        $stmtRetry = $db->prepare("SELECT * FROM om_market_orders WHERE order_id = ?");
+                        $stmtRetry->execute([$orderId]);
+                        $retryOrder = $stmtRetry->fetch();
+                        if ($retryOrder) {
+                            $db->prepare("DELETE FROM om_entregas WHERE id = ?")->execute([$entrega['id']]);
+                            $dispatchResult = dispatchToBoraUm($db, $retryOrder);
+                            if (!empty($dispatchResult['success'])) {
+                                $redispatchOk = true;
+                                logEvent($db, $orderId, 'delivery_redispatched', 'Novo entregador solicitado automaticamente');
+                            } else {
+                                error_log("[boraum-webhook] Redispatch falhou pedido #$orderId: " . ($dispatchResult['message'] ?? 'unknown'));
+                            }
+                        }
+                    } catch (Exception $retryErr) {
+                        error_log("[boraum-webhook] Erro redispatch: " . $retryErr->getMessage());
+                    }
+
+                    if (!$redispatchOk) {
+                        $orderAge = (time() - strtotime($pedido['date_added'])) / 3600;
+                        if ($orderAge > 2) {
+                            error_log("[boraum-webhook] Pedido #$orderId sem entregador ha >2h — iniciando auto-refund");
+                            try {
+                                triggerAutoRefundFromWebhook($db, $pedido, "Entrega cancelada pelo BoraUm e nao foi possivel redespachar. Motivo: $reason");
+                            } catch (Exception $refundErr) {
+                                error_log("[boraum-webhook] Erro auto-refund pedido #$orderId: " . $refundErr->getMessage());
+                            }
                         }
                     }
                 }
@@ -684,46 +1268,59 @@ try {
 
         // Post-commit: Process pending Stripe/PIX refunds from auto-refund (external API calls outside transaction)
         if ($event === 'cancelled') {
-            try {
-                $stmtNotes = $db->prepare("SELECT notes, order_id FROM om_market_orders WHERE order_id = ?");
-                $stmtNotes->execute([$orderId]);
-                $notesRow = $stmtNotes->fetch();
-                $orderNotes = $notesRow['notes'] ?? '';
+            // For route cancellations, process refunds for ALL orders in the route
+            $refundOrderIds = [$orderId];
+            if ($isRouteDelivery && count($allRouteEntregas) > 1) {
+                $refundOrderIds = array_map(function($re) { return (int)$re['referencia_id']; }, $allRouteEntregas);
+                $refundOrderIds = array_unique($refundOrderIds);
+            }
 
-                // Stripe refund
-                if (preg_match('/\[PENDING_STRIPE_REFUND:([^\]]+)\]/', $orderNotes, $m)) {
-                    $pendingPi = $m[1];
-                    try {
-                        processPostCommitStripeRefund($db, $pendingPi, $orderId);
-                        // Clear pending marker
-                        $db->prepare("UPDATE om_market_orders SET notes = REPLACE(notes, ?, ' [AUTO-REFUND STRIPE PROCESSED]') WHERE order_id = ?")
-                           ->execute(["[PENDING_STRIPE_REFUND:$pendingPi]", $orderId]);
-                    } catch (Exception $stripeErr) {
-                        error_log("[boraum-webhook] Post-commit Stripe refund error pedido #$orderId: " . $stripeErr->getMessage());
-                    }
-                }
+            foreach ($refundOrderIds as $refundOid) {
+                try {
+                    $stmtNotes = $db->prepare("SELECT notes, order_id FROM om_market_orders WHERE order_id = ?");
+                    $stmtNotes->execute([$refundOid]);
+                    $notesRow = $stmtNotes->fetch();
+                    $orderNotes = $notesRow['notes'] ?? '';
 
-                // PIX refund
-                if (strpos($orderNotes, '[PENDING_PIX_REFUND]') !== false) {
-                    try {
-                        $txStmt = $db->prepare("SELECT pagarme_order_id FROM om_pagarme_transacoes WHERE pedido_id = ? AND tipo = 'pix' ORDER BY created_at DESC LIMIT 1");
-                        $txStmt->execute([$orderId]);
-                        $txRow = $txStmt->fetch();
-                        if (!empty($txRow['pagarme_order_id'])) {
-                            processPostCommitPixRefund($db, $txRow['pagarme_order_id'], $orderId);
-                            $db->prepare("UPDATE om_market_orders SET notes = REPLACE(notes, '[PENDING_PIX_REFUND]', '[AUTO-REFUND PIX PROCESSED]') WHERE order_id = ?")
-                               ->execute([$orderId]);
+                    // Stripe refund
+                    if (preg_match('/\[PENDING_STRIPE_REFUND:([^\]]+)\]/', $orderNotes, $m)) {
+                        $pendingPi = $m[1];
+                        try {
+                            processPostCommitStripeRefund($db, $pendingPi, $refundOid);
+                            $db->prepare("UPDATE om_market_orders SET notes = REPLACE(notes, ?, ' [AUTO-REFUND STRIPE PROCESSED]') WHERE order_id = ?")
+                               ->execute(["[PENDING_STRIPE_REFUND:$pendingPi]", $refundOid]);
+                        } catch (Exception $stripeErr) {
+                            error_log("[boraum-webhook] Post-commit Stripe refund error pedido #$refundOid: " . $stripeErr->getMessage());
                         }
-                    } catch (Exception $pixErr) {
-                        error_log("[boraum-webhook] Post-commit PIX refund error pedido #$orderId: " . $pixErr->getMessage());
                     }
+
+                    // PIX refund
+                    if (strpos($orderNotes, '[PENDING_PIX_REFUND]') !== false) {
+                        try {
+                            $txStmt = $db->prepare("SELECT pagarme_order_id FROM om_pagarme_transacoes WHERE pedido_id = ? AND tipo = 'pix' ORDER BY created_at DESC LIMIT 1");
+                            $txStmt->execute([$refundOid]);
+                            $txRow = $txStmt->fetch();
+                            if (!empty($txRow['pagarme_order_id'])) {
+                                processPostCommitPixRefund($db, $txRow['pagarme_order_id'], $refundOid);
+                                $db->prepare("UPDATE om_market_orders SET notes = REPLACE(notes, '[PENDING_PIX_REFUND]', '[AUTO-REFUND PIX PROCESSED]') WHERE order_id = ?")
+                                   ->execute([$refundOid]);
+                            }
+                        } catch (Exception $pixErr) {
+                            error_log("[boraum-webhook] Post-commit PIX refund error pedido #$refundOid: " . $pixErr->getMessage());
+                        }
+                    }
+                } catch (Exception $postErr) {
+                    error_log("[boraum-webhook] Post-commit refund processing error pedido #$refundOid: " . $postErr->getMessage());
                 }
-            } catch (Exception $postErr) {
-                error_log("[boraum-webhook] Post-commit refund processing error: " . $postErr->getMessage());
             }
         }
 
-        echo json_encode(['success' => true, 'message' => "Event $event processed", 'order_id' => $orderId]);
+        $responsePayload = ['success' => true, 'message' => "Event $event processed", 'order_id' => $orderId];
+        if ($isRouteDelivery) {
+            $responsePayload['route_id'] = $routeId;
+            $responsePayload['route_orders'] = count($allRouteEntregas);
+        }
+        echo json_encode($responsePayload);
 
     } catch (Exception $e) {
         if ($db->inTransaction()) {
@@ -741,6 +1338,101 @@ try {
 // =========================================================================
 // Helpers
 // =========================================================================
+
+/**
+ * Process repasse (commission) for a single order after delivery.
+ * Extracted from inline code so it can be called per-order in route deliveries.
+ */
+function processOrderRepasse(PDO $db, int $orderId, array $entregas): void {
+    try {
+        require_once dirname(__DIR__, 3) . '/includes/classes/OmRepasse.php';
+        require_once dirname(__DIR__, 3) . '/includes/classes/PusherService.php';
+
+        // Load order data
+        $stmtPed = $db->prepare("SELECT * FROM om_market_orders WHERE order_id = ?");
+        $stmtPed->execute([$orderId]);
+        $pedido = $stmtPed->fetch();
+        if (!$pedido) return;
+
+        // Idempotency check
+        $stmtRepasseCheck = $db->prepare("SELECT id FROM om_repasses WHERE order_id = ? AND order_type = 'mercado' LIMIT 1");
+        $stmtRepasseCheck->execute([$orderId]);
+        if ($stmtRepasseCheck->fetch()) {
+            error_log("[boraum-webhook] Repasse ja existe para pedido #$orderId — pulando (idempotencia)");
+            return;
+        }
+
+        // Find entrega for this order
+        $entrega = null;
+        foreach ($entregas as $e) {
+            if ((int)($e['referencia_id'] ?? 0) === $orderId) {
+                $entrega = $e;
+                break;
+            }
+        }
+        if (!$entrega) {
+            // Fallback: query directly
+            $stmtE = $db->prepare("SELECT * FROM om_entregas WHERE referencia_id = ? AND origem_sistema = 'mercado' LIMIT 1");
+            $stmtE->execute([$orderId]);
+            $entrega = $stmtE->fetch();
+        }
+
+        $partnerId = (int)($pedido['partner_id'] ?? 0);
+        $subtotal = (float)($pedido['subtotal'] ?? 0);
+        $deliveryFee = (float)($pedido['delivery_fee'] ?? 0);
+        $serviceFee = (float)($pedido['service_fee'] ?? 0);
+        $expressFee = (float)($pedido['express_fee'] ?? 0);
+
+        require_once dirname(__DIR__, 3) . '/includes/classes/OmPricing.php';
+        $usaBoraUm = $entrega && !empty($entrega['boraum_delivery_id']);
+        $comissao = OmPricing::calcularComissao($subtotal, $usaBoraUm ? 'boraum' : 'proprio');
+        $comissaoPct = $comissao['taxa'];
+        $comissaoValor = $comissao['valor'];
+        $valorParceiro = round($subtotal - $comissaoValor, 2);
+
+        $deliveryFeeBase = max(0, $deliveryFee - $expressFee);
+        if (!$usaBoraUm && $deliveryFeeBase > 0) {
+            $valorParceiro += $deliveryFeeBase;
+        }
+
+        if ($partnerId && $valorParceiro > 0) {
+            $repasse = om_repasse()->setDb($db);
+            $repasse->criar(
+                $orderId,
+                'mercado',
+                $partnerId,
+                $valorParceiro,
+                [
+                    'subtotal' => $subtotal,
+                    'comissao_pct' => $comissaoPct * 100,
+                    'comissao_valor' => $comissaoValor,
+                    'delivery_fee' => $deliveryFee,
+                    'delivery_fee_base' => $deliveryFeeBase,
+                    'express_fee' => $expressFee,
+                    'delivery_fee_destino' => $usaBoraUm ? 'boraum' : 'parceiro',
+                    'service_fee' => $serviceFee,
+                    'tier' => $usaBoraUm ? 'boraum_18pct' : 'proprio_10pct',
+                    'receita_plataforma' => round($comissaoValor + $serviceFee + $expressFee, 2),
+                ]
+            );
+
+            $db->prepare("UPDATE om_market_orders SET commission_rate = ?, commission_amount = ?, repasse_valor = ? WHERE order_id = ?")
+               ->execute([$comissaoPct * 100, $comissaoValor, $valorParceiro, $orderId]);
+
+            PusherService::walletUpdate($partnerId, [
+                'order_id' => $orderId,
+                'valor' => $valorParceiro,
+                'comissao' => $comissaoValor,
+                'status' => 'hold',
+                'hold_hours' => 2
+            ]);
+
+            error_log("[boraum-webhook] Repasse criado: parceiro=$partnerId valor=R$$valorParceiro comissao=" . ($comissaoPct * 100) . "% pedido=#$orderId");
+        }
+    } catch (Exception $payErr) {
+        error_log("[boraum-webhook] Erro repasse pedido #$orderId: " . $payErr->getMessage());
+    }
+}
 
 function logEvent(PDO $db, int $orderId, string $type, string $message): void {
     try {
@@ -986,21 +1678,38 @@ function processPostCommitStripeRefund(PDO $db, string $paymentIntentId, int $or
  */
 function processPostCommitPixRefund(PDO $db, string $correlationId, int $orderId): void {
     try {
-        require_once dirname(__DIR__, 3) . '/includes/classes/WooviClient.php';
-        $woovi = new WooviClient();
-        $pixResult = $woovi->refundCharge($correlationId, "Auto-refund BoraUm cancelamento pedido #$orderId");
+        require_once dirname(__DIR__, 3) . '/includes/classes/EfiClient.php';
+        $efi = new EfiClient();
 
-        $pixRefundOk = !empty($pixResult['data']['refund']['status'])
-            || !empty($pixResult['data']['status'])
-            || (isset($pixResult['success']) && $pixResult['success']);
+        // Find e2eId: try payment_id on order first
+        $stmt = $db->prepare("SELECT payment_id, total FROM om_market_orders WHERE order_id = ?");
+        $stmt->execute([$orderId]);
+        $order = $stmt->fetch();
+        $e2eId = $order['payment_id'] ?? '';
+        $amount = (float)($order['total'] ?? 0);
 
-        if ($pixRefundOk) {
+        // If no e2eId, look up via EFI charge status using txid
+        if (empty($e2eId)) {
+            // Try om_pix_intents
+            $stmt = $db->prepare("SELECT correlation_id FROM om_pix_intents WHERE order_id = ? ORDER BY created_at DESC LIMIT 1");
+            $stmt->execute([$orderId]);
+            $intentRow = $stmt->fetch();
+            $txid = $intentRow['correlation_id'] ?? $correlationId;
+
+            if (!empty($txid)) {
+                $chargeStatus = $efi->checkChargeStatus($txid);
+                $e2eId = $chargeStatus['e2e_id'] ?? '';
+            }
+        }
+
+        if (!empty($e2eId)) {
+            $efi->refundPix($e2eId, $amount);
             $db->prepare("UPDATE om_pagarme_transacoes SET status = 'refunded' WHERE pedido_id = ? AND tipo = 'pix'")->execute([$orderId]);
-            error_log("[boraum-webhook] PIX refund OK pedido #$orderId correlation=$correlationId");
+            error_log("[boraum-webhook] PIX refund OK pedido #$orderId e2eId=$e2eId");
         } else {
-            error_log("[boraum-webhook] PIX refund FAILED pedido #$orderId correlation=$correlationId");
+            error_log("[boraum-webhook] PIX refund FAILED pedido #$orderId — no e2eId found");
             $db->prepare("UPDATE om_pagarme_transacoes SET status = 'refund_failed' WHERE pedido_id = ? AND tipo = 'pix'")->execute([$orderId]);
-            $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes, '') || ' [PIX REFUND FAILED - MANUAL]' WHERE order_id = ?")->execute([$orderId]);
+            $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes, '') || ' [PIX REFUND FAILED - NO E2EID]' WHERE order_id = ?")->execute([$orderId]);
         }
     } catch (Exception $e) {
         error_log("[boraum-webhook] PIX refund error pedido #$orderId: " . $e->getMessage());

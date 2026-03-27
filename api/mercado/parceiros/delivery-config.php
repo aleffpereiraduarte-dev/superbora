@@ -7,6 +7,7 @@
 require_once __DIR__ . "/../config/database.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmPricing.php";
 require_once dirname(__DIR__, 2) . "/rate-limit/RateLimiter.php";
+require_once __DIR__ . "/../helpers/boraum-api.php";
 
 setCorsHeaders();
 
@@ -74,6 +75,12 @@ try {
         $distancia_km = 0;
         $minimo_distancia = 0;
 
+        // BoraUm quote fields (populated below if applicable)
+        $boraum_vehicle_type = null;
+        $boraum_quote_id = null;
+        $boraum_price = null;
+        $delivery_available = true;
+
         if ($usaBoraUm) {
             // Calcular distancia se temos coordenadas
             $lat_parceiro = (float)($row['latitude'] ?? 0);
@@ -86,12 +93,41 @@ try {
             // Minimo por distancia (regra BoraUm)
             $minimo_distancia = OmPricing::getMinimoBoraUm($distancia_km);
 
-            // Frete real baseado na distancia
-            $custoBoraUm = OmPricing::calcularCustoBoraUm($distancia_km);
-            $fee = max($fee, $custoBoraUm + 1.0); // custo + R$1 margem
+            // Try real-time BoraUm quote API (requires valid coordinates)
+            $quoteUsed = false;
+            if ($lat_cliente && $lng_cliente && $lat_parceiro && $lng_parceiro) {
+                $quote = getBoraUmQuote($pid, $lat_parceiro, $lng_parceiro, $lat_cliente, $lng_cliente);
+                if ($quote !== null) {
+                    $cheapest = pickCheapestVehicle($quote);
+                    if ($cheapest !== null && $cheapest['price'] > 0) {
+                        // Real BoraUm price obtained
+                        $boraum_price = round($cheapest['price'], 2);
+                        $boraum_vehicle_type = $cheapest['vehicle_type'];
+                        $boraum_quote_id = $cheapest['quote_id'];
 
-            if ($fee < OmPricing::BORAUM_MINIMO) {
-                $fee = OmPricing::BORAUM_MINIMO;
+                        // Add SuperBora margin based on distance
+                        $margem = calcularMargemSuperBora($distancia_km);
+                        $fee = round($boraum_price + $margem, 2);
+
+                        if ($fee < OmPricing::BORAUM_MINIMO) {
+                            $fee = OmPricing::BORAUM_MINIMO;
+                        }
+                        $quoteUsed = true;
+                    } else {
+                        // Quote returned but no vehicles available
+                        $delivery_available = false;
+                    }
+                }
+            }
+
+            // Fallback: local calculation if quote API failed or no coordinates
+            if (!$quoteUsed && $delivery_available) {
+                $custoBoraUm = OmPricing::calcularCustoBoraUm($distancia_km);
+                $fee = max($fee, $custoBoraUm + 1.0); // custo + R$1 margem
+
+                if ($fee < OmPricing::BORAUM_MINIMO) {
+                    $fee = OmPricing::BORAUM_MINIMO;
+                }
             }
         }
 
@@ -136,9 +172,13 @@ try {
             'latitude' => (float)($row['latitude'] ?? 0),
             'longitude' => (float)($row['longitude'] ?? 0),
             'pickup_only' => $pickupOnly,
+            'delivery_available' => $delivery_available && $deliveryAvailableNow,
             'delivery_available_now' => $deliveryAvailableNow,
             'delivery_start_time' => $deliveryStartTime,
             'delivery_end_time' => $deliveryEndTime,
+            'boraum_vehicle_type' => $boraum_vehicle_type,
+            'boraum_quote_id' => $boraum_quote_id,
+            'boraum_price' => $boraum_price,
         ];
     }
 

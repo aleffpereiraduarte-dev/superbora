@@ -10,6 +10,7 @@
  */
 require_once __DIR__ . "/../config/database.php";
 require_once dirname(__DIR__, 2) . "/cache/CacheHelper.php";
+require_once __DIR__ . "/../helpers/boraum-api.php";
 
 setCorsHeaders();
 header('Cache-Control: public, max-age=300');
@@ -84,7 +85,8 @@ try {
                        p.open_time, p.close_time, p.is_open,
                        p.rating, p.delivery_fee, p.delivery_time_min,
                        p.busy_mode, p.current_prep_time,
-                       p.lat, p.lng
+                       p.lat, p.lng,
+                       p.aceita_boraum, p.entrega_propria
                        {$distanciaSelect},
                        (SELECT COUNT(*) FROM om_market_products mp WHERE mp.partner_id = p.partner_id AND mp.status::text = '1') as total_produtos
                 FROM om_market_partners p
@@ -96,7 +98,23 @@ try {
         $stmt->execute($params);
         $parceiros = $stmt->fetchAll();
 
-        return array_map(function($p) {
+        // Check BoraUm driver availability if customer coordinates are provided
+        $boraUmAvail = null;
+        if ($lat !== null && $lng !== null && $lat != 0 && $lng != 0) {
+            $boraUmAvail = getBoraUmAvailability($lat, $lng);
+        }
+        $driversAvailable = ($boraUmAvail !== null) ? hasAvailableDrivers($boraUmAvail) : null;
+
+        return array_map(function($p) use ($driversAvailable) {
+            // Determine if this store uses BoraUm for delivery
+            $usaBoraUm = !($p['entrega_propria'] ?? false) && ($p['aceita_boraum'] ?? true);
+
+            // delivery_available: false only if store uses BoraUm AND we confirmed no drivers
+            $deliveryAvailable = true;
+            if ($usaBoraUm && $driversAvailable === false) {
+                $deliveryAvailable = false;
+            }
+
             return [
                 "id" => (int)$p["partner_id"],
                 "nome" => $p["name"] ?? $p["trade_name"] ?? "",
@@ -116,7 +134,8 @@ try {
                     ? (int)$p["current_prep_time"]
                     : (int)($p["delivery_time_min"] ?? 60),
                 "total_produtos" => (int)($p["total_produtos"] ?? 0),
-                "distancia" => isset($p["distancia"]) ? round((float)$p["distancia"], 1) : null
+                "distancia" => isset($p["distancia"]) ? round((float)$p["distancia"], 1) : null,
+                "delivery_available" => $deliveryAvailable,
             ];
         }, $parceiros);
     });
