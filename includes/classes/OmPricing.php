@@ -28,6 +28,7 @@ class OmPricing {
     const COMISSAO_BORAUM = 0.18;       // 18% entrega BoraUm
     const COMISSAO_PROPRIO = 0.10;      // 10% entrega propria da loja
     const COMISSAO_PICKUP = 0.08;       // 8% retirada na loja (sem custo de entrega)
+    const MARGEM_MINIMA_SUPERBORA = 2.00; // SuperBora NUNCA lucra menos que R$2 por pedido BoraUm
 
     // ═══════════════════════════════════════════════════════════════════════════
     // BORAUM
@@ -128,16 +129,61 @@ class OmPricing {
      * Calcula comissao baseada no tipo de entrega
      * @return array ['taxa' => float, 'valor' => float]
      */
-    public static function calcularComissao(float $subtotal, string $tipoEntrega): array {
+    public static function calcularComissao(float $subtotal, string $tipoEntrega, float $custoBoraUm = 0): array {
         if ($tipoEntrega === 'boraum') {
             $taxa = self::COMISSAO_BORAUM;       // 18%
+            $valor = round($subtotal * $taxa, 2);
+
+            // REGRA DE OURO: SuperBora NUNCA perde dinheiro
+            // Comissão (18%) TEM que cobrir: custo BoraUm + margem mínima
+            if ($custoBoraUm > 0) {
+                $lucroSuperBora = $valor - $custoBoraUm;
+                if ($lucroSuperBora < self::MARGEM_MINIMA_SUPERBORA) {
+                    // Comissão não cobre o custo → aumentar taxa de entrega pro cliente
+                    // A diferença vai pra delivery_fee (cobrada do cliente)
+                    $deficit = self::MARGEM_MINIMA_SUPERBORA - $lucroSuperBora;
+                    $valor = round($custoBoraUm + self::MARGEM_MINIMA_SUPERBORA, 2);
+                    $taxa = $subtotal > 0 ? round($valor / $subtotal, 4) : self::COMISSAO_BORAUM;
+                }
+            }
         } elseif ($tipoEntrega === 'pickup' || $tipoEntrega === 'retirada') {
             $taxa = self::COMISSAO_PICKUP;        // 8%
+            $valor = round($subtotal * $taxa, 2);
         } else {
             $taxa = self::COMISSAO_PROPRIO;       // 10%
+            $valor = round($subtotal * $taxa, 2);
         }
-        $valor = round($subtotal * $taxa, 2);
-        return ['taxa' => $taxa, 'valor' => $valor];
+        return ['taxa' => $taxa, 'valor' => $valor, 'custo_boraum' => $custoBoraUm, 'lucro_superbora' => round($valor - $custoBoraUm, 2)];
+    }
+
+    /**
+     * Calcula o P&L completo de um pedido com BoraUm
+     * Retorna quanto SuperBora ganha/perde + taxa sugerida pro cliente
+     */
+    public static function calcularPLBoraUm(float $subtotal, float $custoBoraUm, float $taxaEntregaCliente): array {
+        $comissao = $subtotal * self::COMISSAO_BORAUM; // 18%
+        $receitaTotal = $comissao + $taxaEntregaCliente; // comissão + taxa de entrega
+        $custoTotal = $custoBoraUm; // pagamos ao BoraUm
+        $lucro = round($receitaTotal - $custoTotal, 2);
+        $saudavel = $lucro >= self::MARGEM_MINIMA_SUPERBORA;
+
+        // Se não é saudável, calcular taxa mínima que o cliente deveria pagar
+        $taxaMinimaCliente = 0;
+        if (!$saudavel) {
+            $taxaMinimaCliente = round($custoBoraUm - $comissao + self::MARGEM_MINIMA_SUPERBORA, 2);
+            if ($taxaMinimaCliente < 0) $taxaMinimaCliente = 0;
+        }
+
+        return [
+            'subtotal' => $subtotal,
+            'comissao_18pct' => round($comissao, 2),
+            'custo_boraum' => $custoBoraUm,
+            'taxa_entrega_cliente' => $taxaEntregaCliente,
+            'receita_total' => round($receitaTotal, 2),
+            'lucro_superbora' => $lucro,
+            'saudavel' => $saudavel,
+            'taxa_minima_cliente' => $taxaMinimaCliente,
+        ];
     }
 
     /**

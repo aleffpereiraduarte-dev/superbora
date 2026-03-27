@@ -174,6 +174,39 @@ function calcularMargemSuperBora(float $distanciaKm): float {
 }
 
 /**
+ * Calculate delivery fee for client that GUARANTEES SuperBora profit.
+ * Uses BoraUm quote price + ensures margem mínima.
+ *
+ * @param float $custoBoraUm  Raw BoraUm cost
+ * @param float $subtotal     Order subtotal (for 18% commission calc)
+ * @param float $distanciaKm  Distance
+ * @return array ['taxa_cliente' => float, 'lucro' => float, 'saudavel' => bool]
+ */
+function calcularTaxaEntregaSegura(float $custoBoraUm, float $subtotal, float $distanciaKm): array {
+    require_once dirname(dirname(__DIR__)) . '/includes/classes/OmPricing.php';
+
+    $margem = calcularMargemSuperBora($distanciaKm);
+    $taxaBase = $custoBoraUm + $margem;
+
+    // Verify P&L
+    $pl = OmPricing::calcularPLBoraUm($subtotal, $custoBoraUm, $taxaBase);
+
+    if (!$pl['saudavel']) {
+        // Increase fee to guarantee minimum margin
+        $taxaBase = $pl['taxa_minima_cliente'];
+        $pl = OmPricing::calcularPLBoraUm($subtotal, $custoBoraUm, $taxaBase);
+    }
+
+    return [
+        'taxa_cliente' => round($taxaBase, 2),
+        'custo_boraum' => $custoBoraUm,
+        'lucro_superbora' => $pl['lucro_superbora'],
+        'saudavel' => $pl['saudavel'],
+        'comissao_18pct' => $pl['comissao_18pct'],
+    ];
+}
+
+/**
  * Pick the cheapest available vehicle from a BoraUm quote response.
  *
  * @param array $quote  The quote API response
