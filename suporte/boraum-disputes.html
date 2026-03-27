@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Disputas BoraUm - SuperBora Admin</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; color: #1a1a2e; min-height: 100vh; }
+
+/* Header */
+.header { background: linear-gradient(135deg, #00A868 0%, #008f58 100%); color: white; padding: 20px 32px; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+.header h1 { font-size: 22px; font-weight: 700; display: flex; align-items: center; gap: 10px; }
+.header-actions { display: flex; gap: 12px; align-items: center; }
+.btn { padding: 8px 16px; border: none; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600; transition: all 0.2s; display: inline-flex; align-items: center; gap: 6px; }
+.btn:hover { transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+.btn-primary { background: white; color: #00A868; }
+.btn-secondary { background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.3); }
+.btn-success { background: #00A868; color: white; }
+.btn-danger { background: #e53935; color: white; }
+.btn-warning { background: #f9a825; color: #333; }
+.btn-info { background: #1e88e5; color: white; }
+.btn-sm { padding: 5px 10px; font-size: 12px; }
+.btn-ghost { background: transparent; color: #666; border: 1px solid #ddd; }
+
+/* Container */
+.container { max-width: 1400px; margin: 0 auto; padding: 24px; }
+
+/* Summary Cards */
+.summary-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
+.summary-card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+.summary-card .label { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+.summary-card .value { font-size: 28px; font-weight: 700; }
+.summary-card .sub { font-size: 12px; color: #888; margin-top: 4px; }
+.summary-card.highlight { border-left: 4px solid #00A868; }
+.summary-card.warning { border-left: 4px solid #f9a825; }
+.summary-card.danger { border-left: 4px solid #e53935; }
+.summary-card.info { border-left: 4px solid #1e88e5; }
+
+/* Charts */
+.charts-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+.chart-card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+.chart-card h3 { font-size: 14px; color: #666; margin-bottom: 16px; }
+.bar-chart { display: flex; flex-direction: column; gap: 8px; }
+.bar-row { display: flex; align-items: center; gap: 10px; }
+.bar-label { width: 140px; font-size: 12px; color: #555; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bar-track { flex: 1; height: 24px; background: #f0f0f0; border-radius: 4px; position: relative; overflow: hidden; }
+.bar-fill { height: 100%; border-radius: 4px; transition: width 0.5s ease; display: flex; align-items: center; padding-left: 8px; }
+.bar-fill span { font-size: 11px; font-weight: 600; color: white; white-space: nowrap; }
+.bar-count { width: 40px; font-size: 12px; font-weight: 600; color: #333; text-align: right; }
+
+/* Filters */
+.filters-bar { background: white; border-radius: 12px; padding: 16px 20px; margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.filter-group { display: flex; flex-direction: column; gap: 4px; }
+.filter-group label { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+.filter-group select, .filter-group input { padding: 7px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; background: white; min-width: 140px; }
+.filter-group select:focus, .filter-group input:focus { outline: none; border-color: #00A868; box-shadow: 0 0 0 2px rgba(0,168,104,0.15); }
+
+/* Table */
+.table-card { background: white; border-radius: 12px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); overflow: hidden; }
+.table-header { padding: 16px 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
+.table-header h2 { font-size: 16px; font-weight: 600; }
+table { width: 100%; border-collapse: collapse; }
+thead th { padding: 12px 16px; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #888; background: #fafbfc; border-bottom: 2px solid #eee; white-space: nowrap; }
+tbody td { padding: 12px 16px; border-bottom: 1px solid #f0f0f0; font-size: 13px; vertical-align: middle; }
+tbody tr { cursor: pointer; transition: background 0.15s; }
+tbody tr:hover { background: #f8fffe; }
+tbody tr.expanded { background: #f0faf6; }
+
+/* Badges */
+.badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.badge-opened { background: #fff3e0; color: #e65100; }
+.badge-investigating { background: #e3f2fd; color: #1565c0; }
+.badge-resolved { background: #e8f5e9; color: #2e7d32; }
+.badge-rejected { background: #fce4ec; color: #c62828; }
+.badge-escalated { background: #f3e5f5; color: #7b1fa2; }
+.badge-low { background: #e8f5e9; color: #2e7d32; }
+.badge-medium { background: #fff8e1; color: #f57f17; }
+.badge-high { background: #fff3e0; color: #e65100; }
+.badge-critical { background: #ffebee; color: #c62828; }
+
+/* Expand panel */
+.expand-panel { display: none; padding: 20px; background: #fafbfc; border-bottom: 2px solid #e0e0e0; }
+.expand-panel.show { display: block; }
+.detail-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+.detail-item { }
+.detail-item .dlabel { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
+.detail-item .dvalue { font-size: 14px; font-weight: 500; }
+
+/* Photos */
+.photos-grid { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+.photos-grid img { width: 80px; height: 80px; object-fit: cover; border-radius: 8px; cursor: pointer; border: 2px solid #ddd; transition: border-color 0.2s; }
+.photos-grid img:hover { border-color: #00A868; }
+
+/* Timeline */
+.timeline { margin-top: 16px; padding-top: 16px; border-top: 1px solid #e0e0e0; }
+.timeline h4 { font-size: 13px; color: #666; margin-bottom: 12px; }
+.timeline-item { display: flex; gap: 12px; padding: 8px 0; border-bottom: 1px solid #f0f0f0; }
+.timeline-item:last-child { border-bottom: none; }
+.timeline-avatar { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: white; flex-shrink: 0; }
+.timeline-avatar.system { background: #9e9e9e; }
+.timeline-avatar.admin { background: #00A868; }
+.timeline-avatar.boraum { background: #1e88e5; }
+.timeline-avatar.customer { background: #f9a825; }
+.timeline-avatar.store { background: #7b1fa2; }
+.timeline-body { flex: 1; }
+.timeline-meta { font-size: 11px; color: #999; margin-bottom: 2px; }
+.timeline-text { font-size: 13px; color: #333; line-height: 1.4; }
+
+/* Actions bar */
+.actions-bar { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; padding-top: 16px; border-top: 1px solid #e0e0e0; }
+
+/* Comment form */
+.comment-form { display: flex; gap: 8px; margin-top: 12px; }
+.comment-form textarea { flex: 1; padding: 8px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 13px; resize: vertical; min-height: 60px; font-family: inherit; }
+.comment-form textarea:focus { outline: none; border-color: #00A868; box-shadow: 0 0 0 2px rgba(0,168,104,0.15); }
+
+/* Modal */
+.modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center; }
+.modal-overlay.show { display: flex; }
+.modal { background: white; border-radius: 16px; padding: 28px; width: 90%; max-width: 600px; max-height: 90vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
+.modal h2 { font-size: 18px; margin-bottom: 20px; }
+.modal .form-group { margin-bottom: 16px; }
+.modal .form-group label { display: block; font-size: 12px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+.modal .form-group input, .modal .form-group select, .modal .form-group textarea { width: 100%; padding: 10px 14px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; font-family: inherit; }
+.modal .form-group textarea { resize: vertical; min-height: 80px; }
+.modal .form-group input:focus, .modal .form-group select:focus, .modal .form-group textarea:focus { outline: none; border-color: #00A868; box-shadow: 0 0 0 2px rgba(0,168,104,0.15); }
+.modal-actions { display: flex; gap: 12px; justify-content: flex-end; margin-top: 20px; }
+
+/* Pagination */
+.pagination { display: flex; justify-content: center; align-items: center; gap: 8px; padding: 16px; }
+.pagination button { padding: 6px 14px; border: 1px solid #ddd; border-radius: 6px; background: white; cursor: pointer; font-size: 13px; }
+.pagination button:hover:not(:disabled) { background: #f0f0f0; }
+.pagination button:disabled { opacity: 0.4; cursor: default; }
+.pagination .page-info { font-size: 13px; color: #666; }
+
+/* Loading */
+.loading { text-align: center; padding: 40px; color: #888; }
+.loading .spinner { display: inline-block; width: 32px; height: 32px; border: 3px solid #ddd; border-top-color: #00A868; border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Empty state */
+.empty-state { text-align: center; padding: 60px 20px; color: #888; }
+.empty-state .icon { font-size: 48px; margin-bottom: 12px; }
+.empty-state p { font-size: 14px; }
+
+/* Toast */
+.toast { position: fixed; bottom: 20px; right: 20px; padding: 12px 20px; border-radius: 8px; color: white; font-size: 13px; font-weight: 500; z-index: 2000; transform: translateY(100px); opacity: 0; transition: all 0.3s ease; }
+.toast.show { transform: translateY(0); opacity: 1; }
+.toast.success { background: #00A868; }
+.toast.error { background: #e53935; }
+
+/* Responsive */
+@media (max-width: 768px) {
+    .container { padding: 12px; }
+    .summary-row { grid-template-columns: 1fr 1fr; }
+    .charts-row { grid-template-columns: 1fr; }
+    .detail-grid { grid-template-columns: 1fr 1fr; }
+    .filters-bar { flex-direction: column; }
+    table { font-size: 12px; }
+    thead th, tbody td { padding: 8px; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+    <h1>&#9888;&#65039; Disputas BoraUm</h1>
+    <div class="header-actions">
+        <button class="btn btn-secondary" onclick="loadDisputes()">&#8635; Atualizar</button>
+        <button class="btn btn-primary" onclick="openCreateModal()">+ Nova Disputa</button>
+    </div>
+</div>
+
+<div class="container">
+    <!-- Summary Cards -->
+    <div class="summary-row" id="summaryCards">
+        <div class="summary-card highlight"><div class="label">Carregando...</div><div class="value">-</div></div>
+    </div>
+
+    <!-- Charts -->
+    <div class="charts-row" id="chartsRow">
+        <div class="chart-card">
+            <h3>Categorias</h3>
+            <div id="categoryChart" class="bar-chart"><div class="loading"><div class="spinner"></div></div></div>
+        </div>
+        <div class="chart-card">
+            <h3>Responsabilidade (Quem Paga)</h3>
+            <div id="payerChart" class="bar-chart"><div class="loading"><div class="spinner"></div></div></div>
+        </div>
+    </div>
+
+    <!-- Filters -->
+    <div class="filters-bar">
+        <div class="filter-group">
+            <label>Status</label>
+            <select id="filterStatus" onchange="loadDisputes()">
+                <option value="">Todos</option>
+                <option value="opened" selected>Abertos</option>
+                <option value="investigating">Investigando</option>
+                <option value="opened,investigating">Abertos + Investigando</option>
+                <option value="resolved">Resolvidos</option>
+                <option value="rejected">Rejeitados</option>
+                <option value="escalated">Escalados</option>
+            </select>
+        </div>
+        <div class="filter-group">
+            <label>Categoria</label>
+            <select id="filterCategory" onchange="loadDisputes()">
+                <option value="">Todas</option>
+                <option value="damaged">Danificado</option>
+                <option value="lost">Perdido</option>
+                <option value="late">Atrasado</option>
+                <option value="wrong_delivery">Entrega Errada</option>
+                <option value="driver_behavior">Comportamento Motorista</option>
+                <option value="cancelled_by_driver">Cancelado pelo Motorista</option>
+                <option value="food_spilled">Comida Derramada</option>
+                <option value="not_delivered">Nao Entregue</option>
+                <option value="overcharged">Cobrado a Mais</option>
+                <option value="other">Outro</option>
+            </select>
+        </div>
+        <div class="filter-group">
+            <label>Severidade</label>
+            <select id="filterSeverity" onchange="loadDisputes()">
+                <option value="">Todas</option>
+                <option value="critical">Critica</option>
+                <option value="high">Alta</option>
+                <option value="medium">Media</option>
+                <option value="low">Baixa</option>
+            </select>
+        </div>
+        <div class="filter-group">
+            <label>Periodo</label>
+            <select id="filterPeriod" onchange="loadDisputes()">
+                <option value="">Todo periodo</option>
+                <option value="today">Hoje</option>
+                <option value="week">Ultima semana</option>
+                <option value="month">Ultimo mes</option>
+            </select>
+        </div>
+        <div class="filter-group">
+            <label>Buscar</label>
+            <input type="text" id="filterSearch" placeholder="Pedido, loja, titulo..." onkeyup="debounceSearch()" />
+        </div>
+    </div>
+
+    <!-- Table -->
+    <div class="table-card">
+        <div class="table-header">
+            <h2>Disputas</h2>
+            <span id="tableCount" style="font-size:13px;color:#888;"></span>
+        </div>
+        <div id="tableBody">
+            <div class="loading"><div class="spinner"></div></div>
+        </div>
+        <div class="pagination" id="pagination"></div>
+    </div>
+</div>
+
+<!-- Create Dispute Modal -->
+<div class="modal-overlay" id="createModal">
+    <div class="modal">
+        <h2>Nova Disputa</h2>
+        <div class="form-group">
+            <label>ID do Pedido *</label>
+            <input type="number" id="createOrderId" placeholder="Ex: 456" />
+        </div>
+        <div class="form-group">
+            <label>Categoria *</label>
+            <select id="createCategory">
+                <option value="damaged">Danificado</option>
+                <option value="lost">Perdido</option>
+                <option value="late">Atrasado</option>
+                <option value="wrong_delivery">Entrega Errada</option>
+                <option value="driver_behavior">Comportamento Motorista</option>
+                <option value="cancelled_by_driver">Cancelado pelo Motorista</option>
+                <option value="food_spilled">Comida Derramada</option>
+                <option value="not_delivered">Nao Entregue</option>
+                <option value="overcharged">Cobrado a Mais</option>
+                <option value="other">Outro</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Severidade</label>
+            <select id="createSeverity">
+                <option value="low">Baixa</option>
+                <option value="medium" selected>Media</option>
+                <option value="high">Alta</option>
+                <option value="critical">Critica</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Titulo *</label>
+            <input type="text" id="createTitle" placeholder="Breve descricao do problema" />
+        </div>
+        <div class="form-group">
+            <label>Descricao</label>
+            <textarea id="createDescription" placeholder="Detalhes do ocorrido..."></textarea>
+        </div>
+        <div class="form-group">
+            <label>Reembolso Solicitado (R$)</label>
+            <input type="number" id="createRefund" step="0.01" placeholder="0.00" />
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-ghost" onclick="closeCreateModal()">Cancelar</button>
+            <button class="btn btn-success" onclick="submitCreate()">Criar Disputa</button>
+        </div>
+    </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+const API_BASE = '/api/mercado/admin/boraum-disputes.php';
+let currentPage = 1;
+let searchTimeout = null;
+
+function getToken() {
+    return localStorage.getItem('admin_token') || localStorage.getItem('token') || '';
+}
+
+async function apiFetch(url, options = {}) {
+    const token = getToken();
+    if (!token) {
+        showToast('Token de admin nao encontrado. Faca login no painel.', 'error');
+        return null;
+    }
+    const headers = { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token, ...(options.headers || {}) };
+    try {
+        const res = await fetch(url, { ...options, headers });
+        const data = await res.json();
+        if (!data.success && (res.status === 401 || res.status === 403)) {
+            showToast('Sessao expirada. Faca login novamente.', 'error');
+            return null;
+        }
+        return data;
+    } catch (e) {
+        showToast('Erro de conexao: ' + e.message, 'error');
+        return null;
+    }
+}
+
+function showToast(msg, type = 'success') {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = 'toast show ' + type;
+    setTimeout(() => t.className = 'toast', 3000);
+}
+
+// Category labels
+const CAT_LABELS = {
+    damaged: 'Danificado', lost: 'Perdido', late: 'Atrasado', wrong_delivery: 'Entrega Errada',
+    driver_behavior: 'Motorista', cancelled_by_driver: 'Cancelado Motorista', food_spilled: 'Comida Derramada',
+    not_delivered: 'Nao Entregue', overcharged: 'Cobrado a Mais', other: 'Outro'
+};
+const CAT_COLORS = {
+    damaged: '#e53935', lost: '#c62828', late: '#f57f17', wrong_delivery: '#e65100',
+    driver_behavior: '#6a1b9a', cancelled_by_driver: '#d84315', food_spilled: '#ef6c00',
+    not_delivered: '#37474f', overcharged: '#1565c0', other: '#616161'
+};
+const PAYER_LABELS = { boraum: 'BoraUm', superbora: 'SuperBora', split: 'Dividido', customer: 'Cliente', none: 'Ninguem' };
+const PAYER_COLORS = { boraum: '#1e88e5', superbora: '#00A868', split: '#f9a825', customer: '#e53935', none: '#9e9e9e' };
+
+function formatMoney(v) {
+    if (v === null || v === undefined) return '-';
+    return 'R$ ' + Number(v).toFixed(2).replace('.', ',');
+}
+
+function formatDate(d) {
+    if (!d) return '-';
+    const dt = new Date(d);
+    return dt.toLocaleDateString('pt-BR') + ' ' + dt.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+}
+
+function buildQueryParams() {
+    const params = new URLSearchParams();
+    const status = document.getElementById('filterStatus').value;
+    const category = document.getElementById('filterCategory').value;
+    const severity = document.getElementById('filterSeverity').value;
+    const period = document.getElementById('filterPeriod').value;
+    const search = document.getElementById('filterSearch').value.trim();
+    if (status) params.set('status', status);
+    if (category) params.set('category', category);
+    if (severity) params.set('severity', severity);
+    if (period) params.set('period', period);
+    if (search) params.set('search', search);
+    params.set('page', currentPage);
+    params.set('limit', 20);
+    return params.toString();
+}
+
+async function loadDisputes() {
+    const data = await apiFetch(API_BASE + '?' + buildQueryParams());
+    if (!data || !data.success) return;
+    const d = data.data;
+    renderSummary(d.summary);
+    renderCategoryChart(d.category_breakdown);
+    renderPayerChart(d.payer_breakdown);
+    renderTable(d.disputes);
+    renderPagination(d.pagination);
+    document.getElementById('tableCount').textContent = d.pagination.total + ' disputa(s)';
+}
+
+function renderSummary(s) {
+    document.getElementById('summaryCards').innerHTML = `
+        <div class="summary-card highlight">
+            <div class="label">Total Abertos</div>
+            <div class="value">${s.opened}</div>
+            <div class="sub">${s.critical_count} criticas, ${s.high_count} altas</div>
+        </div>
+        <div class="summary-card info">
+            <div class="label">Investigando</div>
+            <div class="value">${s.investigating}</div>
+        </div>
+        <div class="summary-card" style="border-left: 4px solid #2e7d32;">
+            <div class="label">Resolvidas</div>
+            <div class="value">${s.resolved}</div>
+            <div class="sub">${s.rejected} rejeitadas, ${s.escalated} escaladas</div>
+        </div>
+        <div class="summary-card warning">
+            <div class="label">Reembolso Pendente</div>
+            <div class="value">${formatMoney(s.pending_refund)}</div>
+            <div class="sub">De ${formatMoney(s.total_refund_requested)} solicitados</div>
+        </div>
+        <div class="summary-card danger">
+            <div class="label">Total Aprovado</div>
+            <div class="value">${formatMoney(s.total_refund_approved)}</div>
+            <div class="sub">${formatMoney(s.total_refund_paid)} ja pagos</div>
+        </div>
+        <div class="summary-card" style="border-left: 4px solid #666;">
+            <div class="label">Total Disputas</div>
+            <div class="value">${s.total}</div>
+        </div>
+    `;
+}
+
+function renderCategoryChart(cats) {
+    const el = document.getElementById('categoryChart');
+    if (!cats || !cats.length) { el.innerHTML = '<div class="empty-state"><p>Nenhuma disputa</p></div>'; return; }
+    const max = Math.max(...cats.map(c => parseInt(c.count)));
+    el.innerHTML = cats.map(c => {
+        const pct = max > 0 ? (parseInt(c.count) / max * 100) : 0;
+        const color = CAT_COLORS[c.category] || '#888';
+        const label = CAT_LABELS[c.category] || c.category;
+        return `<div class="bar-row">
+            <div class="bar-label" title="${label}">${label}</div>
+            <div class="bar-track"><div class="bar-fill" style="width:${Math.max(pct,8)}%;background:${color}"><span>${c.count}</span></div></div>
+        </div>`;
+    }).join('');
+}
+
+function renderPayerChart(payers) {
+    const el = document.getElementById('payerChart');
+    if (!payers || !payers.length) { el.innerHTML = '<div class="empty-state"><p>Nenhuma responsabilidade definida</p></div>'; return; }
+    const max = Math.max(...payers.map(p => parseFloat(p.total_amount)));
+    el.innerHTML = payers.map(p => {
+        const pct = max > 0 ? (parseFloat(p.total_amount) / max * 100) : 0;
+        const color = PAYER_COLORS[p.who_pays] || '#888';
+        const label = PAYER_LABELS[p.who_pays] || p.who_pays || 'N/D';
+        return `<div class="bar-row">
+            <div class="bar-label" title="${label}">${label}</div>
+            <div class="bar-track"><div class="bar-fill" style="width:${Math.max(pct,8)}%;background:${color}"><span>${formatMoney(p.total_amount)}</span></div></div>
+            <div class="bar-count">${p.count}</div>
+        </div>`;
+    }).join('');
+}
+
+function renderTable(disputes) {
+    const el = document.getElementById('tableBody');
+    if (!disputes || !disputes.length) {
+        el.innerHTML = '<div class="empty-state"><div class="icon">&#128269;</div><p>Nenhuma disputa encontrada</p></div>';
+        return;
+    }
+    let html = `<table>
+        <thead><tr>
+            <th>#ID</th><th>Pedido</th><th>Loja</th><th>Categoria</th><th>Severidade</th>
+            <th>Valor Pedido</th><th>Reembolso</th><th>Status</th><th>Quem Paga</th><th>Data</th><th></th>
+        </tr></thead><tbody>`;
+
+    disputes.forEach(d => {
+        const catLabel = CAT_LABELS[d.category] || d.category;
+        const payerLabel = PAYER_LABELS[d.who_pays] || d.who_pays || '-';
+        html += `<tr onclick="toggleExpand(${d.id})" id="row-${d.id}">
+            <td><strong>${d.id}</strong></td>
+            <td>${d.order_number || d.order_id}</td>
+            <td>${escapeHtml(d.partner_name || '-')}</td>
+            <td><span class="badge" style="background:${CAT_COLORS[d.category]||'#888'}22;color:${CAT_COLORS[d.category]||'#888'}">${catLabel}</span></td>
+            <td><span class="badge badge-${d.severity}">${d.severity}</span></td>
+            <td>${formatMoney(d.order_total)}</td>
+            <td>${formatMoney(d.refund_requested)}</td>
+            <td><span class="badge badge-${d.status}">${statusLabel(d.status)}</span></td>
+            <td>${payerLabel}</td>
+            <td style="white-space:nowrap">${formatDate(d.created_at)}</td>
+            <td>${d.comment_count > 0 ? '<span title="' + d.comment_count + ' comentarios" style="color:#888">&#128172; ' + d.comment_count + '</span>' : ''}</td>
+        </tr>
+        <tr><td colspan="11" class="expand-panel" id="expand-${d.id}" style="padding:0"></td></tr>`;
+    });
+
+    html += '</tbody></table>';
+    el.innerHTML = html;
+}
+
+function statusLabel(s) {
+    const labels = { opened: 'Aberto', investigating: 'Investigando', resolved: 'Resolvido', rejected: 'Rejeitado', escalated: 'Escalado' };
+    return labels[s] || s;
+}
+
+function escapeHtml(text) {
+    const d = document.createElement('div');
+    d.textContent = text;
+    return d.innerHTML;
+}
+
+async function toggleExpand(id) {
+    const panel = document.getElementById('expand-' + id);
+    const row = document.getElementById('row-' + id);
+    if (panel.classList.contains('show')) {
+        panel.classList.remove('show');
+        panel.style.padding = '0';
+        row.classList.remove('expanded');
+        return;
+    }
+
+    // Close others
+    document.querySelectorAll('.expand-panel.show').forEach(p => { p.classList.remove('show'); p.style.padding = '0'; });
+    document.querySelectorAll('tr.expanded').forEach(r => r.classList.remove('expanded'));
+
+    panel.style.padding = '20px';
+    panel.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+    panel.classList.add('show');
+    row.classList.add('expanded');
+
+    const data = await apiFetch(API_BASE + '?id=' + id);
+    if (!data || !data.success) { panel.innerHTML = '<p style="color:#e53935">Erro ao carregar detalhes</p>'; return; }
+    const d = data.data;
+
+    let photosHtml = '';
+    if (d.photos && d.photos.length) {
+        photosHtml = '<div class="photos-grid">' + d.photos.map(p => `<img src="${escapeHtml(p)}" onclick="window.open('${escapeHtml(p)}','_blank')" />`).join('') + '</div>';
+    }
+
+    let timelineHtml = '';
+    if (d.comments && d.comments.length) {
+        timelineHtml = '<div class="timeline"><h4>Timeline / Comentarios</h4>' +
+            d.comments.map(c => {
+                const initial = (c.author_type || 'S')[0].toUpperCase();
+                return `<div class="timeline-item">
+                    <div class="timeline-avatar ${c.author_type}">${initial}</div>
+                    <div class="timeline-body">
+                        <div class="timeline-meta">${escapeHtml(c.author_name || c.author_type)} &middot; ${formatDate(c.created_at)}</div>
+                        <div class="timeline-text">${escapeHtml(c.comment)}</div>
+                    </div>
+                </div>`;
+            }).join('') + '</div>';
+    }
+
+    panel.innerHTML = `
+        <div class="detail-grid">
+            <div class="detail-item"><div class="dlabel">Pedido</div><div class="dvalue">${d.order_number || d.order_id} (${escapeHtml(d.customer_name || '-')})</div></div>
+            <div class="detail-item"><div class="dlabel">Loja</div><div class="dvalue">${escapeHtml(d.partner_name || '-')}</div></div>
+            <div class="detail-item"><div class="dlabel">Motorista</div><div class="dvalue">${escapeHtml(d.driver_name || '-')} ${d.driver_phone ? '(' + d.driver_phone + ')' : ''}</div></div>
+            <div class="detail-item"><div class="dlabel">Valor Pedido</div><div class="dvalue">${formatMoney(d.order_total)}</div></div>
+            <div class="detail-item"><div class="dlabel">Custo Entrega</div><div class="dvalue">${formatMoney(d.delivery_cost)}</div></div>
+            <div class="detail-item"><div class="dlabel">Distancia</div><div class="dvalue">${d.distancia_km ? d.distancia_km + ' km' : '-'}</div></div>
+            <div class="detail-item"><div class="dlabel">Reembolso Solicitado</div><div class="dvalue">${formatMoney(d.refund_requested)}</div></div>
+            <div class="detail-item"><div class="dlabel">Reembolso Aprovado</div><div class="dvalue">${formatMoney(d.refund_approved)}</div></div>
+            <div class="detail-item"><div class="dlabel">Reembolso Pago</div><div class="dvalue">${formatMoney(d.refund_paid)}</div></div>
+            <div class="detail-item"><div class="dlabel">BoraUm Ticket</div><div class="dvalue">${d.boraum_ticket_id || '-'}</div></div>
+            <div class="detail-item"><div class="dlabel">BoraUm Aceitou</div><div class="dvalue">${d.boraum_accepted === true ? 'Sim' : d.boraum_accepted === false ? 'Nao' : '-'}</div></div>
+            <div class="detail-item"><div class="dlabel">Status Entrega</div><div class="dvalue">${d.delivery_status || '-'}</div></div>
+        </div>
+        ${d.description ? '<div style="margin-bottom:12px"><div class="dlabel" style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Descricao</div><div style="font-size:13px;color:#333;line-height:1.5;background:#f5f5f5;padding:10px;border-radius:6px">' + escapeHtml(d.description) + '</div></div>' : ''}
+        ${d.boraum_response ? '<div style="margin-bottom:12px"><div class="dlabel" style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Resposta BoraUm</div><div style="font-size:13px;color:#1565c0;line-height:1.5;background:#e3f2fd;padding:10px;border-radius:6px">' + escapeHtml(d.boraum_response) + '</div></div>' : ''}
+        ${photosHtml}
+        <div class="actions-bar">
+            ${d.status !== 'resolved' && d.status !== 'rejected' ? `
+                <button class="btn btn-info btn-sm" onclick="event.stopPropagation();updateStatus(${d.id},'investigating')">Investigar</button>
+                <button class="btn btn-success btn-sm" onclick="event.stopPropagation();resolveDispute(${d.id})">Resolver</button>
+                <button class="btn btn-danger btn-sm" onclick="event.stopPropagation();updateStatus(${d.id},'rejected')">Rejeitar</button>
+                <button class="btn btn-warning btn-sm" onclick="event.stopPropagation();updateStatus(${d.id},'escalated')">Escalar</button>
+                <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();setWhoPays(${d.id})">Definir Responsavel</button>
+                <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();approveRefund(${d.id}, ${d.refund_requested || 0})">Aprovar Reembolso</button>
+            ` : `
+                <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();updateStatus(${d.id},'opened')">Reabrir</button>
+            `}
+        </div>
+        <div class="comment-form" onclick="event.stopPropagation()">
+            <textarea id="comment-text-${d.id}" placeholder="Adicionar comentario..."></textarea>
+            <button class="btn btn-success btn-sm" onclick="event.stopPropagation();submitComment(${d.id})" style="align-self:flex-end">Enviar</button>
+        </div>
+        ${timelineHtml}
+    `;
+}
+
+async function updateStatus(id, status) {
+    const data = await apiFetch(API_BASE, {
+        method: 'PUT',
+        body: JSON.stringify({ id, status })
+    });
+    if (data && data.success) {
+        showToast('Status atualizado para: ' + statusLabel(status));
+        loadDisputes();
+    }
+}
+
+async function resolveDispute(id) {
+    const resolution = prompt('Resolucao (descreva como foi resolvido):');
+    if (resolution === null) return;
+    const data = await apiFetch(API_BASE, {
+        method: 'PUT',
+        body: JSON.stringify({ id, status: 'resolved', resolution })
+    });
+    if (data && data.success) {
+        showToast('Disputa resolvida!');
+        loadDisputes();
+    }
+}
+
+async function setWhoPays(id) {
+    const who = prompt('Quem paga?\n\nOpcoes: boraum, superbora, split, customer, none');
+    if (!who) return;
+    const valid = ['boraum', 'superbora', 'split', 'customer', 'none'];
+    if (!valid.includes(who.toLowerCase())) { showToast('Opcao invalida', 'error'); return; }
+    const data = await apiFetch(API_BASE, {
+        method: 'PUT',
+        body: JSON.stringify({ id, who_pays: who.toLowerCase() })
+    });
+    if (data && data.success) {
+        showToast('Responsavel definido: ' + (PAYER_LABELS[who.toLowerCase()] || who));
+        loadDisputes();
+    }
+}
+
+async function approveRefund(id, requested) {
+    const val = prompt('Valor do reembolso aprovado (R$):', requested || '0');
+    if (val === null) return;
+    const amount = parseFloat(val);
+    if (isNaN(amount) || amount < 0) { showToast('Valor invalido', 'error'); return; }
+    const data = await apiFetch(API_BASE, {
+        method: 'PUT',
+        body: JSON.stringify({ id, refund_approved: amount })
+    });
+    if (data && data.success) {
+        showToast('Reembolso de ' + formatMoney(amount) + ' aprovado');
+        loadDisputes();
+    }
+}
+
+async function submitComment(id) {
+    const textarea = document.getElementById('comment-text-' + id);
+    const comment = textarea.value.trim();
+    if (!comment) { showToast('Escreva um comentario', 'error'); return; }
+    const data = await apiFetch(API_BASE + '?action=comment', {
+        method: 'POST',
+        body: JSON.stringify({ dispute_id: id, comment, author_type: 'admin' })
+    });
+    if (data && data.success) {
+        textarea.value = '';
+        showToast('Comentario adicionado');
+        toggleExpand(id); // Close
+        setTimeout(() => toggleExpand(id), 100); // Reopen to refresh
+    }
+}
+
+function renderPagination(p) {
+    const el = document.getElementById('pagination');
+    if (p.total <= p.limit) { el.innerHTML = ''; return; }
+    const pages = Math.ceil(p.total / p.limit);
+    el.innerHTML = `
+        <button ${p.page <= 1 ? 'disabled' : ''} onclick="currentPage=${p.page-1};loadDisputes()">&#8592; Anterior</button>
+        <span class="page-info">Pagina ${p.page} de ${pages}</span>
+        <button ${p.page >= pages ? 'disabled' : ''} onclick="currentPage=${p.page+1};loadDisputes()">Proxima &#8594;</button>
+    `;
+}
+
+function debounceSearch() {
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => { currentPage = 1; loadDisputes(); }, 400);
+}
+
+// Create modal
+function openCreateModal() { document.getElementById('createModal').classList.add('show'); }
+function closeCreateModal() { document.getElementById('createModal').classList.remove('show'); }
+
+async function submitCreate() {
+    const orderId = parseInt(document.getElementById('createOrderId').value);
+    const category = document.getElementById('createCategory').value;
+    const severity = document.getElementById('createSeverity').value;
+    const title = document.getElementById('createTitle').value.trim();
+    const description = document.getElementById('createDescription').value.trim();
+    const refund = parseFloat(document.getElementById('createRefund').value) || null;
+
+    if (!orderId) { showToast('Informe o ID do pedido', 'error'); return; }
+    if (!title) { showToast('Informe o titulo', 'error'); return; }
+
+    const data = await apiFetch(API_BASE, {
+        method: 'POST',
+        body: JSON.stringify({
+            order_id: orderId, category, severity, title, description,
+            refund_requested: refund, photos: []
+        })
+    });
+
+    if (data && data.success) {
+        showToast('Disputa #' + data.data.id + ' criada!');
+        closeCreateModal();
+        document.getElementById('createOrderId').value = '';
+        document.getElementById('createTitle').value = '';
+        document.getElementById('createDescription').value = '';
+        document.getElementById('createRefund').value = '';
+        loadDisputes();
+    } else if (data) {
+        showToast(data.message || 'Erro ao criar disputa', 'error');
+    }
+}
+
+// Initial load
+document.addEventListener('DOMContentLoaded', loadDisputes);
+</script>
+</body>
+</html>

@@ -1315,6 +1315,81 @@ try {
             }
         }
 
+        // Post-commit: Auto-create dispute for cancelled deliveries
+        if ($event === 'cancelled') {
+            try {
+                $disputeOrderIds = [$orderId];
+                if ($isRouteDelivery && count($allRouteEntregas) > 1) {
+                    $disputeOrderIds = array_unique(array_map(function($re) { return (int)$re['referencia_id']; }, $allRouteEntregas));
+                }
+                foreach ($disputeOrderIds as $dispOid) {
+                    // Check for duplicate dispute before inserting
+                    $stmtDupCheck = $db->prepare("SELECT id FROM om_boraum_disputes WHERE order_id = ? AND category = 'cancelled_by_driver' AND status NOT IN ('resolved', 'rejected') LIMIT 1");
+                    $stmtDupCheck->execute([$dispOid]);
+                    if ($stmtDupCheck->fetch()) continue;
+
+                    $stmtDispOrder = $db->prepare("SELECT order_number, total, delivery_fee FROM om_market_orders WHERE order_id = ?");
+                    $stmtDispOrder->execute([$dispOid]);
+                    $dispOrder = $stmtDispOrder->fetch();
+                    $dispOrderNum = $dispOrder['order_number'] ?? $dispOid;
+                    $dispOrderTotal = $dispOrder ? round((float)$dispOrder['total'], 2) : null;
+                    $dispDeliveryCost = $dispOrder ? round((float)$dispOrder['delivery_fee'], 2) : null;
+
+                    // Find entrega for this order
+                    $stmtDispE = $db->prepare("SELECT id, boraum_delivery_id, valor_frete FROM om_entregas WHERE referencia_id = ? AND origem_sistema = 'mercado' ORDER BY id DESC LIMIT 1");
+                    $stmtDispE->execute([$dispOid]);
+                    $dispEntrega = $stmtDispE->fetch();
+                    $dispEntregaId = $dispEntrega ? (int)$dispEntrega['id'] : null;
+                    $dispBoraumId = $dispEntrega['boraum_delivery_id'] ?? $deliveryId;
+                    if ($dispEntrega && $dispEntrega['valor_frete']) {
+                        $dispDeliveryCost = round((float)$dispEntrega['valor_frete'], 2);
+                    }
+
+                    $db->prepare("
+                        INSERT INTO om_boraum_disputes (order_id, entrega_id, boraum_delivery_id, opened_by, category, severity, title, description, order_total, delivery_cost, refund_requested, who_pays, status, created_at, updated_at)
+                        VALUES (?, ?, ?, 'system', 'cancelled_by_driver', 'high', ?, ?, ?, ?, ?, 'boraum', 'opened', NOW(), NOW())
+                    ")->execute([
+                        $dispOid, $dispEntregaId, $dispBoraumId,
+                        "Entrega cancelada pelo motorista - Pedido #{$dispOrderNum}",
+                        "Motivo: " . ($reason ?: 'Nao informado') . ($isRouteDelivery ? " (Rota #{$routeId})" : ''),
+                        $dispOrderTotal, $dispDeliveryCost, $dispDeliveryCost,
+                    ]);
+                    error_log("[boraum-webhook] Auto-dispute created for cancelled delivery on order #{$dispOid}");
+                }
+            } catch (\Throwable $e) {
+                error_log("[boraum-webhook] Auto-dispute creation failed: " . $e->getMessage());
+            }
+        }
+
+        // Post-commit: Auto-create dispute for expired deliveries (no driver accepted)
+        if ($event === 'expired' || (isset($input['sub_event']) && $input['sub_event'] === 'expired')) {
+            try {
+                $stmtDupCheck = $db->prepare("SELECT id FROM om_boraum_disputes WHERE order_id = ? AND category = 'not_delivered' AND status NOT IN ('resolved', 'rejected') LIMIT 1");
+                $stmtDupCheck->execute([$orderId]);
+                if (!$stmtDupCheck->fetch()) {
+                    $stmtDispOrder = $db->prepare("SELECT order_number, total, delivery_fee FROM om_market_orders WHERE order_id = ?");
+                    $stmtDispOrder->execute([$orderId]);
+                    $dispOrder = $stmtDispOrder->fetch();
+                    $dispOrderNum = $dispOrder['order_number'] ?? $orderId;
+                    $dispOrderTotal = $dispOrder ? round((float)$dispOrder['total'], 2) : null;
+                    $dispDeliveryCost = $dispOrder ? round((float)$dispOrder['delivery_fee'], 2) : null;
+
+                    $db->prepare("
+                        INSERT INTO om_boraum_disputes (order_id, entrega_id, boraum_delivery_id, opened_by, category, severity, title, description, order_total, delivery_cost, refund_requested, who_pays, status, created_at, updated_at)
+                        VALUES (?, ?, ?, 'system', 'not_delivered', 'low', ?, ?, ?, ?, ?, 'boraum', 'opened', NOW(), NOW())
+                    ")->execute([
+                        $orderId, $entrega['id'] ?? null, $deliveryId,
+                        "Nenhum motorista aceitou a entrega - Pedido #{$dispOrderNum}",
+                        "Entrega expirou sem nenhum motorista disponivel aceitar.",
+                        $dispOrderTotal, $dispDeliveryCost, $dispDeliveryCost,
+                    ]);
+                    error_log("[boraum-webhook] Auto-dispute created for expired delivery on order #{$orderId}");
+                }
+            } catch (\Throwable $e) {
+                error_log("[boraum-webhook] Auto-dispute creation (expired) failed: " . $e->getMessage());
+            }
+        }
+
         $responsePayload = ['success' => true, 'message' => "Event $event processed", 'order_id' => $orderId];
         if ($isRouteDelivery) {
             $responsePayload['route_id'] = $routeId;
