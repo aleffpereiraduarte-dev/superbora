@@ -794,6 +794,48 @@ try {
             }
         }
 
+        // ═══ CASHBACK CREDIT (pending) ═══
+        // Create pending cashback that becomes available after delivery
+        if ($customer_id > 0 && $subtotal > 0) {
+            try {
+                $cbConfig = null;
+                // Check partner-specific config
+                $stmtCbCfg = $db->prepare("SELECT * FROM om_cashback_config WHERE partner_id = ? AND status = '1' LIMIT 1");
+                $stmtCbCfg->execute([$partner_id]);
+                $cbConfig = $stmtCbCfg->fetch(PDO::FETCH_ASSOC);
+                if (!$cbConfig) {
+                    // Fallback to global config
+                    $stmtCbCfg = $db->prepare("SELECT * FROM om_cashback_config WHERE partner_id IS NULL AND status = '1' LIMIT 1");
+                    $stmtCbCfg->execute();
+                    $cbConfig = $stmtCbCfg->fetch(PDO::FETCH_ASSOC);
+                }
+
+                if ($cbConfig && $subtotal >= (float)($cbConfig['min_order_value'] ?? 0)) {
+                    $cbPercent = (float)$cbConfig['cashback_percent'];
+                    $cbMax = (float)$cbConfig['max_cashback'];
+                    $cbAmount = round($subtotal * ($cbPercent / 100), 2);
+                    if ($cbMax > 0 && $cbAmount > $cbMax) $cbAmount = $cbMax;
+                    $cbValidDays = (int)($cbConfig['valid_days'] ?? $cbConfig['expiry_days'] ?? 90);
+                    $cbExpires = date('Y-m-d H:i:s', strtotime("+{$cbValidDays} days"));
+                    $partnerName = $parceiro['trade_name'] ?? $parceiro['name'] ?? 'Loja';
+
+                    if ($cbAmount > 0) {
+                        // Insert in om_cashback (legacy table used by confirmar-entrega)
+                        $db->prepare("
+                            INSERT INTO om_cashback (customer_id, order_id, type, amount, description, status, expires_at)
+                            VALUES (?, ?, 'earned', ?, ?, 'pending', ?)
+                        ")->execute([$customer_id, $order_id, $cbAmount, "Cashback pedido #{$order_number} - {$partnerName}", $cbExpires]);
+
+                        // Save cashback_earned on order for display
+                        $db->prepare("UPDATE om_market_orders SET cashback_earned = ? WHERE order_id = ?")->execute([$cbAmount, $order_id]);
+                    }
+                }
+            } catch (\Throwable $cbErr) {
+                error_log("[Checkout] Cashback pending creation error: " . $cbErr->getMessage());
+                // Non-fatal — don't block order creation
+            }
+        }
+
         // Limpar carrinho — SECURITY: use customer_id only (no session_id OR leak)
         $stmtClear = $db->prepare("DELETE FROM om_market_cart WHERE customer_id = ? AND partner_id = ?");
         $stmtClear->execute([$customer_id, $partner_id]);

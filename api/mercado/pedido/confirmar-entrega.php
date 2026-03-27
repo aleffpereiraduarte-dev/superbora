@@ -482,13 +482,32 @@ try {
         try {
             $customer_id = (int)($pedido['customer_id'] ?? 0);
             if ($customer_id) {
-                // Mudar status de 'pending' para 'available' para este pedido
-                $stmt = $db->prepare("
-                    UPDATE om_cashback
-                    SET status = 'available'
+                // 1. Mudar status de 'pending' para 'available' em om_cashback (legacy)
+                $stmtCb = $db->prepare("
+                    SELECT amount FROM om_cashback
                     WHERE customer_id = ? AND order_id = ? AND status = 'pending'
                 ");
-                $stmt->execute([$customer_id, $order_id]);
+                $stmtCb->execute([$customer_id, $order_id]);
+                $cbRow = $stmtCb->fetch();
+
+                if ($cbRow) {
+                    $cbAmount = (float)$cbRow['amount'];
+                    $db->prepare("
+                        UPDATE om_cashback SET status = 'available'
+                        WHERE customer_id = ? AND order_id = ? AND status = 'pending'
+                    ")->execute([$customer_id, $order_id]);
+
+                    // 2. Also credit to om_cashback_wallet (new system) for balance tracking
+                    $db->prepare("
+                        INSERT INTO om_cashback_wallet (customer_id, balance, total_earned)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT (customer_id) DO UPDATE SET
+                            balance = om_cashback_wallet.balance + EXCLUDED.balance,
+                            total_earned = om_cashback_wallet.total_earned + EXCLUDED.total_earned
+                    ")->execute([$customer_id, $cbAmount, $cbAmount]);
+
+                    error_log("[confirmar-entrega] Cashback R\${$cbAmount} liberado para customer #{$customer_id} pedido #{$order_id}");
+                }
             }
         } catch (Exception $cbErr) {
             error_log("[confirmar-entrega] Cashback error: " . $cbErr->getMessage());
