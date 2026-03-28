@@ -273,3 +273,77 @@ function hasAvailableDrivers(array $availability): bool {
 
     return false;
 }
+
+/**
+ * Get current surge multiplier based on active time-based rules.
+ * Checks om_surge_rules table for matching rules and manual override.
+ *
+ * @param PDO $db
+ * @return float  Multiplier (1.0 = no surge)
+ */
+function getSurgeMultiplier(PDO $db): float {
+    // First check manual override in om_config
+    try {
+        $stmt = $db->query("SELECT valor FROM om_config WHERE chave = 'surge_manual_override' LIMIT 1");
+        $row = $stmt->fetch();
+        if ($row) {
+            $data = json_decode($row['valor'], true);
+            if ($data && isset($data['expires_at'])) {
+                if (strtotime($data['expires_at']) > time()) {
+                    return max(1.0, (float)($data['multiplier'] ?? 1.0));
+                }
+                // Expired - clean up
+                $db->exec("DELETE FROM om_config WHERE chave = 'surge_manual_override'");
+            }
+        }
+    } catch (Exception $e) {
+        // Config table might not have the key, continue to rules
+    }
+
+    // Check auto rules
+    try {
+        $now = date('H:i');
+        $dayOfWeek = strtolower(date('D')); // mon, tue, wed, etc.
+
+        $stmt = $db->prepare("
+            SELECT multiplier, days
+            FROM om_surge_rules
+            WHERE active = true
+            AND hours_start <= ?::time
+            AND hours_end >= ?::time
+            ORDER BY multiplier DESC
+        ");
+        $stmt->execute([$now, $now]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($rows as $rule) {
+            $days = $rule['days'] ?? 'all';
+            if ($days === 'all') {
+                return max(1.0, (float)$rule['multiplier']);
+            }
+
+            // Check day ranges like "mon-fri" or "sat-sun"
+            $parts = array_map('trim', explode('-', $days));
+            if (count($parts) === 2) {
+                $dayOrder = ['mon' => 1, 'tue' => 2, 'wed' => 3, 'thu' => 4, 'fri' => 5, 'sat' => 6, 'sun' => 7];
+                $start = $dayOrder[$parts[0]] ?? 0;
+                $end = $dayOrder[$parts[1]] ?? 0;
+                $current = $dayOrder[$dayOfWeek] ?? 0;
+                if ($current >= $start && $current <= $end) {
+                    return max(1.0, (float)$rule['multiplier']);
+                }
+            }
+
+            // Check comma-separated list
+            $dayList = array_map('trim', explode(',', $days));
+            if (in_array($dayOfWeek, $dayList)) {
+                return max(1.0, (float)$rule['multiplier']);
+            }
+        }
+    } catch (Exception $e) {
+        // Table might not exist yet, return no surge
+        error_log("[getSurgeMultiplier] Error: " . $e->getMessage());
+    }
+
+    return 1.0;
+}
