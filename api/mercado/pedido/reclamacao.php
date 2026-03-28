@@ -185,11 +185,10 @@ function handlePostComplaint(PDO $db, int $customerId): void {
     $stmtOrder = $db->prepare("
         SELECT o.order_id, o.customer_id, o.partner_id, o.status, o.subtotal, o.total,
                o.order_number, o.updated_at, o.payment_method,
-               p.trade_name as partner_name
+               COALESCE(p.trade_name, p.name, 'Loja') as partner_name
         FROM om_market_orders o
         LEFT JOIN om_market_partners p ON p.partner_id = o.partner_id
         WHERE o.order_id = ?
-        FOR UPDATE
     ");
     $stmtOrder->execute([$orderId]);
     $order = $stmtOrder->fetch(PDO::FETCH_ASSOC);
@@ -260,9 +259,10 @@ function handlePostComplaint(PDO $db, int $customerId): void {
     $title = ($rule['label'] ?? ucfirst(str_replace('_', ' ', $category)))
         . ' - Pedido #' . ($order['order_number'] ?? $orderId);
 
-    $autoApply = $rule && (bool)($rule['auto_apply'] ?? false);
     $refundCustomer = $rule && (bool)($rule['refund_customer'] ?? false);
-    $status = $autoApply ? 'confirmed' : 'opened';
+    // iFood-style: store resolves first (15 min deadline)
+    $status = 'waiting_store';
+    $storeDeadline = date('Y-m-d H:i:s', strtotime('+15 minutes'));
     $refundAmount = ($refundCustomer && $wantsRefund) ? $penaltyAmount : 0;
 
     // Build extended description with items
@@ -274,12 +274,13 @@ function handlePostComplaint(PDO $db, int $customerId): void {
         }
     }
 
-    // 5. Create penalty entry
+    // 5. Create penalty entry — store gets 15 min to resolve (iFood-style)
     $stmtInsert = $db->prepare("
         INSERT INTO om_store_penalties
             (order_id, partner_id, reported_by, reported_by_id, category, severity, title,
-             description, photos, order_total, penalty_amount, refund_to_customer, status)
-        VALUES (?, ?, 'customer', ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?)
+             description, photos, order_total, penalty_amount, refund_to_customer, status,
+             mediation_step, store_deadline)
+        VALUES (?, ?, 'customer', ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?, 'store', ?::timestamp)
     ");
     $stmtInsert->execute([
         $orderId,
@@ -294,6 +295,7 @@ function handlePostComplaint(PDO $db, int $customerId): void {
         $penaltyAmount,
         $refundAmount,
         $status,
+        $storeDeadline,
     ]);
     $penaltyId = (int)$db->lastInsertId('om_store_penalties_id_seq');
 
@@ -389,24 +391,15 @@ function handlePostComplaint(PDO $db, int $customerId): void {
         'category_label' => $rule['label'] ?? ucfirst(str_replace('_', ' ', $category)),
         'severity' => $severity,
         'status' => $status,
+        'mediation_step' => 'store',
+        'store_deadline' => $storeDeadline,
         'penalty_amount' => $penaltyAmount,
         'penalty_amount_formatted' => 'R$ ' . number_format($penaltyAmount, 2, ',', '.'),
-        'auto_applied' => $autoApply,
     ];
 
-    if ($refundResult) {
-        $responseData['refund'] = $refundResult;
-    }
+    $statusMessage = 'Reclamacao enviada pra loja! Eles tem 15 minutos pra resolver. Se nao resolverem, a gente entra pra te ajudar.';
 
-    $statusMessage = $autoApply
-        ? 'Reclamacao registrada e confirmada automaticamente!'
-        : 'Reclamacao registrada! Vamos analisar e resolver em ate 24h.';
-
-    if ($refundResult) {
-        $statusMessage .= ' Voce recebera R$ ' . number_format($refundAmount, 2, ',', '.') . ' de cashback em instantes!';
-    }
-
-    error_log("[reclamacao] Complaint #{$penaltyId} created: order={$orderId} category={$category} penalty={$penaltyAmount} refund={$refundAmount} auto={$autoApply}");
+    error_log("[reclamacao] Complaint #{$penaltyId} created: order={$orderId} category={$category} penalty={$penaltyAmount} mediation=store deadline={$storeDeadline}");
 
     response(true, $responseData, $statusMessage);
 }

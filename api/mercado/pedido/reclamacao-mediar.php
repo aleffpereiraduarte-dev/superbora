@@ -53,7 +53,7 @@ try {
                 response(false, null, 'Nao autorizado', 401);
             }
 
-            if ($complaint['mediation_step'] !== 'store') {
+            if (!in_array($complaint['mediation_step'], ['store', null, ''], true) || $complaint['status'] === 'resolved') {
                 $db->rollBack();
                 response(false, null, 'Fora da etapa de resolucao da loja', 400);
             }
@@ -78,7 +78,9 @@ try {
                 $complaintId,
             ]);
 
-            // Notify customer: "A loja respondeu sua reclamacao!"
+            $db->commit();
+
+            // Notify customer AFTER commit (non-blocking)
             try {
                 require_once __DIR__ . '/../config/notify.php';
                 sendNotification($db, $complaint['reported_by_id'], 'customer',
@@ -87,8 +89,6 @@ try {
                     ['type' => 'complaint_response', 'complaint_id' => $complaintId, 'order_id' => $complaint['order_id']]
                 );
             } catch (\Throwable $e) {}
-
-            $db->commit();
             response(true, ['mediation_step' => 'customer_review'], 'Resposta enviada! Aguardando cliente avaliar.');
             break;
 
@@ -132,17 +132,17 @@ try {
                     WHERE id = ?
                 ")->execute([$complaintId]);
 
-                // Notify admin
+                $db->commit();
+
+                // Notify admin AFTER commit
                 try {
                     require_once __DIR__ . '/../config/notify.php';
                     sendNotification($db, 1, 'admin',
-                        'Reclamacao escalada — cliente insatisfeito',
-                        "Pedido #" . ($complaint['order_number'] ?? $complaint['order_id']) . ": cliente rejeitou resolucao da loja",
+                        'Reclamacao escalada',
+                        "Cliente rejeitou resolucao da loja",
                         ['type' => 'complaint_escalated', 'complaint_id' => $complaintId]
                     );
                 } catch (\Throwable $e) {}
-
-                $db->commit();
                 response(true, ['status' => 'escalated', 'mediation_step' => 'superbora'], 'Entendi! Nossa equipe vai analisar e resolver pra voce em ate 1 hora.');
             }
             break;
@@ -234,7 +234,12 @@ try {
                     "Reembolso reclamacao #{$complaintId}"
                 ]);
 
-                // Notify customer
+            }
+
+            $db->commit();
+
+            // Notify customer AFTER commit
+            if (in_array($decision, ['refund_customer', 'both']) && $refundAmount > 0 && $complaint['reported_by_id']) {
                 try {
                     require_once __DIR__ . '/../config/notify.php';
                     sendNotification($db, $complaint['reported_by_id'], 'customer',
@@ -244,8 +249,6 @@ try {
                     );
                 } catch (\Throwable $e) {}
             }
-
-            $db->commit();
             response(true, ['status' => $newStatus, 'decision' => $decision], "Decisao aplicada: $decision");
             break;
 
