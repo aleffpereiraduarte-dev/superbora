@@ -45,6 +45,43 @@ const TWILIO_TOKEN = process.env.TWILIO_AUTH_TOKEN || process.env.TWILIO_TOKEN;
 const WS_HOST = process.env.VOICE_WS_HOST || 'superbora.com.br';
 const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
 
+// ─── Telnyx Config ──────────────────────────────────────────
+const VOICE_PROVIDER = (process.env.VOICE_PROVIDER || 'twilio').toLowerCase();
+const TELNYX_API_KEY = process.env.TELNYX_API_KEY || '';
+const TELNYX_CONNECTION_ID = process.env.TELNYX_CONNECTION_ID || '';
+const TELNYX_PHONE = process.env.TELNYX_PHONE || process.env.TELNYX_PHONE_BR || '';
+const TELNYX_PHONE_US = process.env.TELNYX_PHONE_US || '';
+const IS_TELNYX = VOICE_PROVIDER === 'telnyx';
+
+// Telnyx API helper
+async function telnyxAPI(method, path, body = null) {
+    const url = `https://api.telnyx.com/v2${path}`;
+    const opts = {
+        method,
+        headers: {
+            'Authorization': `Bearer ${TELNYX_API_KEY}`,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+        },
+    };
+    if (body && method !== 'GET') opts.body = JSON.stringify(body);
+    try {
+        const resp = await fetch(url, opts);
+        const text = await resp.text();
+        try { return JSON.parse(text); } catch { return text; }
+    } catch (e) {
+        console.error(`[voice] Telnyx API error (${method} ${path}):`, e.message);
+        return null;
+    }
+}
+
+// Pick best caller ID for Telnyx based on destination
+function telnyxCallerFor(to) {
+    const clean = (to || '').replace(/\D/g, '');
+    if (clean.startsWith('55') && TELNYX_PHONE) return TELNYX_PHONE;
+    return TELNYX_PHONE_US || TELNYX_PHONE;
+}
+
 // ─── Database ───────────────────────────────────────────────
 const pool = new pg.Pool({
     host: process.env.DB_HOST || '127.0.0.1',
@@ -52,13 +89,18 @@ const pool = new pg.Pool({
     user: process.env.DB_USER || 'love1',
     password: process.env.DB_PASS || process.env.DB_PASSWORD,
     database: process.env.DB_NAME || process.env.DB_DATABASE || 'love1',
-    max: 5,
+    max: 20,
     idleTimeoutMillis: 10000,
     connectionTimeoutMillis: 5000,
     allowExitOnIdle: true,
 });
 
 pool.on('error', (err) => console.error('[voice] Pool error:', err.message));
+
+// Strip accents for fuzzy name matching (e.g. "Conveniência" → "Conveniencia")
+function stripAccents(str) {
+    return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
 
 // Resilient query wrapper — retries once on connection errors
 async function dbQuery(text, params) {
@@ -93,69 +135,164 @@ function buildSystemPrompt(callerPhone, customerData) {
         const recentOrders = customerData.recent_orders?.slice(0, 3)
             .map(o => `${o.store_name} (${o.date})`)
             .join(', ');
+        const orderCount = customerData.order_count || 0;
+        const isVip = orderCount >= 10;
         customerContext = `CLIENTE IDENTIFICADO:
 - Nome: ${customerData.name}
 - ID: ${customerData.customer_id}
+${isVip ? `- CLIENTE VIP! (${orderCount} pedidos) — trate com carinho especial` : ''}
 ${addrStr ? `- Endereço principal: ${addrStr}` : '- Sem endereço salvo'}
 ${customerData.addresses?.length > 1 ? `- Total de endereços salvos: ${customerData.addresses.length}` : ''}
 ${recentOrders ? `- Pedidos recentes: ${recentOrders}` : '- Primeiro pedido!'}
 ${customerData.cashback > 0 ? `- Cashback disponível: R$${customerData.cashback.toFixed(2)}` : ''}
 
-Você JÁ sabe quem é o cliente. NÃO precisa pedir telefone ou usar lookup_customer.`;
+Você JÁ sabe quem é o cliente. NÃO precisa pedir telefone ou usar lookup_customer.
+- VERIFICAÇÃO JÁ FEITA: o cliente foi identificado pelo caller ID. NÃO peça CPF nem envie código de verificação. Vá direto para submit_order quando o pedido estiver pronto.`;
     } else {
-        customerContext = `CLIENTE NOVO (telefone ${callerPhone} não encontrado no cadastro).
-NÃO use lookup_customer — já foi verificado e o cliente não está cadastrado.
+        customerContext = `TELEFONE NÃO CADASTRADO (${callerPhone}).
+O cliente pode já ter cadastro com outro número. Pergunte:
+"Se você já tem cadastro conosco, pode me dizer seu CPF? Se não, é um prazer te conhecer, qual é seu nome?"
+- Se informar CPF: use lookup_customer_by_cpf
+- Se disser que não tem cadastro ou falar o nome: é cliente novo, siga normalmente
 NÃO diga "não encontrei seu telefone" ou "não está cadastrado". Isso é rude.
-Seja natural e acolhedora. Pergunte o nome com carinho e depois a cidade ou CEP pra entrega.
-Exemplo de primeira resposta: "Claro! Me diz seu nome pra eu te ajudar melhor?"`;
+IMPORTANTE sobre nomes: O STT vai transcrever nomes errado (ex: "a leve" = "Aleff", "jefeson" = "Jefferson"). Aceite qualquer coisa que pareça um nome, confirme a pronúncia e siga em frente. NÃO fique muda se não entender — diga "desculpa, não peguei, pode repetir seu nome?"`;
+
     }
 
     return `Você é a Bora, assistente virtual do SuperBora — um app de delivery de comida como iFood.
-Você está atendendo uma ligação telefônica. Seja simpática, natural e eficiente como uma atendente humana.
+Você está atendendo uma LIGAÇÃO TELEFÔNICA ao vivo. A qualidade do STT (speech-to-text) pode errar.
 
-PERSONALIDADE:
-- Fale como uma pessoa real — calorosa, simpática, acolhedora, brasileira
-- Não seja robótica. Varie suas respostas. Use expressões naturais como "beleza", "ótimo", "perfeito", "pode deixar", "claro!"
+## REGRA MAIS IMPORTANTE — LEIA PRIMEIRO
+Sua resposta será lida em VOZ ALTA direto no ouvido do cliente por um sintetizador de voz.
+Escreva APENAS a fala pro cliente. NADA MAIS. ZERO análise, ZERO raciocínio, ZERO notas internas.
+PROIBIDO escrever: <think>, <thinking>, "transcrição:", "intenção:", "etapa:", "contexto:", "o cliente quer...", listas numeradas de análise.
+NÃO USE tags <think> ou <thinking> — isso NÃO é um chat, é voz ao vivo. Não existe bloco de raciocínio aqui.
+Se você escrever QUALQUER coisa que não seja fala direta, o cliente vai OUVIR e vai ser bizarro.
+EXEMPLO ERRADO: "<think>1. Transcrição: cliente quer fazer pedido. 2. Intenção: pedir comida.</think> Oi! De qual restaurante?"
+EXEMPLO ERRADO: "1. Transcrição: cliente quer fazer pedido. 2. Intenção: pedir comida. Oi! De qual restaurante?"
+EXEMPLO CORRETO: "Oi! De qual restaurante você quer pedir?"
+Raciocine MENTALMENTE. Na resposta vai SÓ o que o cliente ouve. Sem tags, sem análise, sem numeração.
+
+## PERSONALIDADE
+- Fale como uma pessoa REAL — calorosa, simpática, acolhedora, brasileira
+- Use expressões naturais: "beleza", "ótimo", "perfeito", "pode deixar", "claro!", "fechou!"
 - Se o cliente falar algo engraçado, dê risada ("haha")
 - Demonstre entusiasmo com os produtos: "esse é muito bom!", "ótima escolha!"
 - Seja SEMPRE educada e paciente, mesmo se o cliente estiver irritado
-- Na primeira resposta, SEMPRE explique brevemente o que você pode fazer: fazer pedidos, ver status, ajudar com dúvidas
-- Diga que o cliente pode apertar zero pra falar com uma pessoa, se preferir
+- NUNCA soe robótica — varie suas respostas, não repita as mesmas frases
 
-REGRAS TÉCNICAS:
+## PRIMEIRA RESPOSTA — QUANDO O CLIENTE NÃO ESPECIFICOU O QUE QUER
+Se o cliente disse só "oi", "olá", "boa tarde", ou qualquer coisa vaga, SEMPRE explique as opções:
+"Posso te ajudar de várias formas! Pra fazer um pedido, fala 'quero fazer um pedido' ou aperta 1. Pra ver o status de um pedido, fala 'meu pedido' ou aperta 2. Pra falar com um atendente, aperta 0."
+NUNCA responda apenas "o que vai ser hoje?" ou "como posso te ajudar?" sem explicar as opções.
+As pessoas precisam saber EXATAMENTE o que podem fazer — falar ou apertar botão.
+
+## REGRAS TÉCNICAS
 - NUNCA use emojis, bullets, asteriscos, ou formatação — sua fala vira áudio
 - Fale números por extenso: "doze reais e cinquenta" não "R$12,50"
-- Respostas CURTAS — máximo 2-3 frases por vez. É conversa por telefone, não texto
-- NUNCA invente preços, produtos, lojas, tempos de espera, ou posição na fila — use as ferramentas
-- NUNCA diga que tem pessoas na fila ou na frente — você NÃO tem essa informação
+- Respostas CURTAS — máximo 2 frases por vez. É conversa por telefone, não texto
+- NUNCA invente preços, produtos, lojas, tempos — use as ferramentas
 - "Quero pizza" é TIPO DE COMIDA, não nome de restaurante
+
+## RESPOSTAS IMPLÍCITAS — ENTENDA O QUE O CLIENTE QUER DIZER
+- "pode ser" / "tá bom" / "beleza" / "ok" / "isso" = SIM, aceita o que você sugeriu
+- "o primeiro" / "o segundo" / "esse aí" = selecionou um item da lista que você apresentou
+- "adiciona mais um" / "bota mais" = quer mais 1 unidade do último item
+- "tira esse" / "remove" / "não quero mais" = remove o último item adicionado
+- "manda ver" / "fecha" / "é isso" = quer finalizar o pedido
+- "e aí" / "fala" / "oi" no meio da conversa = quer que você continue/repita
+- "humm" / "deixa eu ver" / silêncio = está pensando, NÃO interrompa com pressa
+- "quanto ficou?" / "quanto tá?" = quer saber o total atual
+
+## INTELIGÊNCIA DE CONVERSA TELEFÔNICA
+- BARULHO DE FUNDO é normal — não pergunte "pode repetir?" por qualquer coisa
+- Se ouvir "alô" no meio da conversa = o cliente acha que caiu, diga "tô aqui!"
+- VELOCIDADE importa — o cliente tá no telefone, não tem paciência pra texto longo
+- Se o STT transcrever errado, interprete pelo CONTEXTO, não pela letra
+- Exemplo: "quero uma coquinha" = Coca-Cola, "me vê um x" = X-burguer/X-salada
+- NOMES: O STT erra nomes próprios frequentemente. "a leve" pode ser "Aleff", "jefeson" pode ser "Jefferson", "hana" pode ser "Hannah". ACEITE o que parecer um nome e continue. Confirme a grafia: "Legal! Como escreve seu nome?" ou "É com dois efes?" Se não entender, peça pra soletrar: "Pode soletrar pra mim?"
+- NUNCA fique em silêncio — se não entendeu algo, SEMPRE responda pedindo pra repetir
 
 ${customerContext}
 
-FLUXO PARA PEDIDO:
-1. Se o cliente quer pedir algo:
+## FLUXO PARA PEDIDO
+1. IDENTIFICAÇÃO DO CLIENTE (primeiro passo SEMPRE):
+   - Pergunte: "Se você já tem cadastro conosco, pode me informar seu CPF? Se não, é um prazer te conhecer, qual é seu nome?"
+   - Se informar CPF: use lookup_customer_by_cpf → se encontrar, cumprimente pelo nome
+   - Se informar CPF mas não encontrar: "Não encontrei esse CPF no cadastro. Sem problema! Qual seu nome?"
+   - Se informar nome diretamente: é cliente novo → use create_customer com nome e telefone
+2. ENDEREÇO:
    - Cliente conhecido COM endereço: Pergunte "Entrega no endereço X?" → busque lojas na cidade
    - Cliente conhecido SEM endereço: Pergunte a cidade ou CEP pra entrega
-   - Cliente novo: Pergunte nome → pergunte cidade ou CEP pra entrega
-2. Se informar CEP: use lookup_cep para descobrir cidade e bairro automaticamente
-3. Use get_nearby_stores com a cidade. Se mencionou tipo de comida, filtre por food_type
-4. Apresente 2-3 lojas abertas de forma natural: "Tem a Pizzaria Napoli que é muito boa, tem o Burger House..."
-5. Se o cliente pedir por NOME de loja: use search_stores. Se encontrar a mesma loja em cidades diferentes, pergunte qual.
-6. Quando escolher loja: use get_store_menu → ofereça itens populares
-7. Monte o pedido com add_to_order, confirme cada item
-8. No final: confirme tudo, peça pagamento, use submit_order
+   - Cliente novo: pergunte cidade ou CEP pra entrega → use save_address pra salvar
+3. Se informar CEP: use lookup_cep para descobrir cidade e bairro automaticamente → pergunte o número → use save_address
+4. Use get_nearby_stores com a cidade. Se mencionou tipo de comida, filtre por food_type
+5. IMPORTANTE: Só apresente lojas com is_open=true! Ignore as fechadas. Diga: "Tem a Pizzaria Napoli, o Burger House..." (só as abertas)
+   - Se NENHUMA loja estiver aberta: "Poxa, nesse horário as lojas já fecharam. Quer que eu veja o que abre mais cedo amanhã?"
+   - Se o cliente pedir uma loja FECHADA: "A [loja] já fechou, o horário dela é das [horario]. Mas tem a [outra loja aberta] que é parecida, quer dar uma olhada?"
+6. Se o cliente pedir por NOME de loja: use search_stores
+7. Quando escolher loja: use get_store_menu → se is_open=false, avise que está fechada e sugira alternativas abertas
+8. Monte o pedido com add_to_order, confirme cada item
+9. PAGAMENTO: confirme tudo, pergunte forma de pagamento (PIX, cartão de crédito ou dinheiro)
+10. VERIFICAÇÃO:
+    - Se o cliente já foi IDENTIFICADO pelo telefone (campo "CLIENTE IDENTIFICADO" acima), a verificação JÁ ESTÁ FEITA automaticamente — pode ir direto para submit_order SEM pedir CPF ou código
+    - Se o cliente NÃO foi identificado (telefone não cadastrado):
+      a) Peça o nome para criar cadastro (create_customer)
+      b) Depois use send_verification_code → verify_code
+    - Se o cliente informou CPF: use lookup_customer_by_cpf — verificação feita
+    - RESUMO: cliente identificado pelo caller ID = verificado. Cliente novo = precisa verificar
 
-SOBRE CEP:
-- O cliente pode falar o CEP por extenso (ex: "três cinco zero um cinco dois dois zero") — reconheça e use lookup_cep
-- Se der erro no CEP, peça o endereço normal: cidade e bairro
+## FORMAS DE PAGAMENTO
+Ofereça as opções de forma natural: "Como prefere pagar? Aceita PIX, cartão de crédito ou dinheiro."
 
-SOBRE LOJAS COM MESMO NOME:
-- Se search_stores retornar multiple_cities=true, pergunte "Encontrei esse restaurante em duas cidades. Qual seria?"
-- Sempre use a cidade do endereço de entrega do cliente no filtro quando possível
+- **PIX**: submit_order com payment_method="pix"
+- **Dinheiro**: pergunte "Precisa de troco pra quanto?" → submit_order com payment_method="dinheiro" e change_for
+- **Cartão de crédito**: pergunte "Prefere pagar pelo celular agora ou na maquininha na entrega?"
+  - **Pelo celular** (link): submit_order com payment_method="cartao_credito" → gera link Stripe por SMS
+    - Diga: "Perfeito! Vou enviar um link de pagamento pelo WhatsApp pro seu celular. É só clicar e pagar com seu cartão. O link vale por 30 minutos."
+  - **Na maquininha**: submit_order com payment_method="cartao_credito" e change_for=-1
+    - Diga: "Beleza! O entregador vai levar a maquininha pra você pagar com cartão na entrega."
+- NUNCA peça dados do cartão por telefone
+
+## APÓS PEDIDO CONFIRMADO COM SUCESSO
+Quando submit_order retornar success=true, diga de forma natural:
+- "Pronto, seu pedido foi confirmado! O código do seu pedido é [order_number]. Vou mandar o código do pedido e um link pra você acompanhar o status da sua entrega pelo WhatsApp, tá bom?"
+- Para cartão no link: acrescente "E o link de pagamento também vai pelo WhatsApp."
+- Para maquininha: acrescente "O entregador vai levar a maquininha."
+- Sempre informe o código do pedido por voz e diga que vai mandar pelo WhatsApp
+
+## CUPOM DE DESCONTO
+Se o cliente falar "tenho um cupom" ou informar um código: use apply_coupon com o código.
+- Se válido: "Cupom aplicado! Desconto de R$X."
+- Se inválido: informe o motivo (expirado, valor mínimo, etc.)
+
+## REPETIR PEDIDO
+Se o cliente disser "quero o de sempre", "repete o último", "mesmo pedido" → use repeat_last_order.
+- Se deu certo: confirme os itens e pergunte se quer alterar algo
+- Se a loja está fechada: informe e sugira alternativas
+
+## OPÇÕES DE PRODUTO
+Quando o cardápio mostrar opções (tamanho, sabor, extras), pergunte ao cliente. Exemplo:
+- "Qual tamanho? Pequena, média ou grande?"
+- "Quer algum adicional? Tem bacon, queijo extra..."
+Os preços extras serão somados automaticamente.
+
+## PEDIDO MÍNIMO
+Se a loja tiver pedido mínimo, verifique antes de finalizar. Se o subtotal for menor, avise:
+"O pedido mínimo dessa loja é R$X. Quer adicionar mais alguma coisa?"
+
+SOBRE CEP: O cliente pode falar por extenso — reconheça e use lookup_cep
+SOBRE LOJAS: Se search_stores retornar multiple_cities=true, pergunte qual cidade
 
 FLUXO PARA STATUS: use check_order_status com o customer_id
-DÚVIDA/PROBLEMA: responda se souber, senão use transfer_to_agent
-ATENDENTE: se pedir humano, use transfer_to_agent IMEDIATAMENTE
+ATENDENTE: se pedir humano ou apertar 0, use transfer_to_agent IMEDIATAMENTE
+
+## PROTOCOLO DE ATENDIMENTO
+- Cada ligação tem um código de protocolo único
+- Ao ENCERRAR a ligação (cliente se despedindo, pedido finalizado, etc.), SEMPRE informe:
+  "Seu protocolo de atendimento é [PROTOCOLO]. Anote pra caso precise. Obrigada e tenha um ótimo dia!"
+- Se o cliente pedir o protocolo a qualquer momento, informe imediatamente
+- Se o cliente pedir gravação da ligação, informe que pode solicitar pelo protocolo
 
 Horário: ${horaNum}h (${periodo})
 Telefone: ${callerPhone}`;
@@ -254,13 +391,13 @@ const TOOLS = [
     },
     {
         name: 'submit_order',
-        description: 'Finaliza e envia o pedido. SÓ usar depois que o cliente CONFIRMAR tudo. Envia SMS de confirmação.',
+        description: 'Finaliza e envia o pedido. SÓ usar depois que o cliente CONFIRMAR tudo. Envia SMS de confirmação. Para cartão de crédito: use payment_method="cartao_credito" — o sistema gera um link de pagamento Stripe e envia por SMS pro cliente.',
         input_schema: {
             type: 'object',
             properties: {
                 address_id: { type: 'integer', description: 'ID do endereço de entrega (dos endereços salvos)' },
-                payment_method: { type: 'string', enum: ['pix', 'cartao', 'dinheiro'], description: 'Forma de pagamento' },
-                change_for: { type: 'number', description: 'Troco para quanto (só pra dinheiro)' }
+                payment_method: { type: 'string', enum: ['pix', 'cartao_credito', 'dinheiro'], description: 'Forma de pagamento: pix, cartao_credito (link Stripe por SMS), ou dinheiro' },
+                change_for: { type: 'number', description: 'Troco para quanto (só pra dinheiro). Para cartão na maquininha na entrega, use -1' }
             },
             required: ['payment_method']
         }
@@ -274,6 +411,87 @@ const TOOLS = [
                 customer_id: { type: 'integer', description: 'ID do cliente' }
             },
             required: ['customer_id']
+        }
+    },
+    {
+        name: 'lookup_customer_by_cpf',
+        description: 'Busca cliente pelo CPF. Use quando o cliente informar CPF para se identificar.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                cpf: { type: 'string', description: 'CPF do cliente (só números)' }
+            },
+            required: ['cpf']
+        }
+    },
+    {
+        name: 'send_verification_code',
+        description: 'Envia código de verificação de 4 dígitos por SMS para o celular do cliente. OBRIGATÓRIO antes de finalizar o pedido.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                phone: { type: 'string', description: 'Número do celular do cliente' }
+            },
+            required: ['phone']
+        }
+    },
+    {
+        name: 'verify_code',
+        description: 'Verifica se o código informado pelo cliente é o correto. Se sim, libera para finalizar pedido.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                code: { type: 'string', description: 'Código de 4 dígitos informado pelo cliente' }
+            },
+            required: ['code']
+        }
+    },
+    {
+        name: 'create_customer',
+        description: 'Cria um novo cliente com nome e telefone. Use quando o cliente é novo (não tem cadastro).',
+        input_schema: {
+            type: 'object',
+            properties: {
+                name: { type: 'string', description: 'Nome completo do cliente' },
+                phone: { type: 'string', description: 'Telefone do cliente' }
+            },
+            required: ['name', 'phone']
+        }
+    },
+    {
+        name: 'save_address',
+        description: 'Salva um novo endereço para o cliente. Use quando o cliente informar CEP ou endereço pra entrega e não tem endereço salvo.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                street: { type: 'string', description: 'Rua' },
+                number: { type: 'string', description: 'Número' },
+                complement: { type: 'string', description: 'Complemento (apto, bloco, etc)' },
+                neighborhood: { type: 'string', description: 'Bairro' },
+                city: { type: 'string', description: 'Cidade' },
+                state: { type: 'string', description: 'Estado (sigla, ex: SP)' },
+                zipcode: { type: 'string', description: 'CEP' }
+            },
+            required: ['street', 'number', 'city']
+        }
+    },
+    {
+        name: 'apply_coupon',
+        description: 'Valida e aplica um cupom de desconto ao pedido atual.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                code: { type: 'string', description: 'Código do cupom' }
+            },
+            required: ['code']
+        }
+    },
+    {
+        name: 'repeat_last_order',
+        description: 'Repete o último pedido do cliente — adiciona todos os itens do último pedido ao carrinho atual. Útil quando o cliente diz "quero o de sempre" ou "repete o último".',
+        input_schema: {
+            type: 'object',
+            properties: {}
         }
     },
     {
@@ -312,14 +530,96 @@ async function executeTool(name, input, callState) {
                 const menu = await getStoreMenu(input.partner_id);
                 // Track selected store
                 if (menu.store_name) {
-                    callState.store = { partner_id: input.partner_id, name: menu.store_name, delivery_fee: menu.delivery_fee };
+                    callState.store = {
+                        partner_id: input.partner_id,
+                        name: menu.store_name,
+                        delivery_fee: menu.delivery_fee,
+                        min_order_value: menu.min_order_value || 0
+                    };
                 }
                 return menu;
             }
             case 'add_to_order': return addToOrder(callState, input);
             case 'remove_from_order': return removeFromOrder(callState, input.index);
             case 'get_order_summary': return getOrderSummary(callState);
-            case 'submit_order': return await submitOrder(callState, input);
+            case 'submit_order': {
+                // Block submit if verification not done
+                if (!callState.phoneVerified) {
+                    return { success: false, error: 'Verificação de telefone pendente. Use send_verification_code primeiro, depois verify_code com o código que o cliente informar.' };
+                }
+                return await submitOrder(callState, input);
+            }
+            case 'lookup_customer_by_cpf': {
+                const result = await lookupCustomerByCpf(input.cpf);
+                if (result.found) {
+                    callState.customer = {
+                        customer_id: result.customer_id,
+                        name: result.name,
+                        addresses: result.addresses
+                    };
+                    // CPF verification counts as identity verification
+                    callState.phoneVerified = true;
+                    console.log(`[voice] ${callState.callSid} Identity verified via CPF for customer ${result.customer_id}`);
+                }
+                return result;
+            }
+            case 'send_verification_code': {
+                console.log(`[voice] ${callState.callSid} send_verification_code called, phoneVerified=${callState.phoneVerified}`);
+                // Skip if already verified (pre-identified customer)
+                if (callState.phoneVerified) {
+                    console.log(`[voice] ${callState.callSid} SKIPPING verification - already verified`);
+                    return { success: true, already_verified: true, message: 'Cliente já verificado pelo caller ID. Pode prosseguir direto com submit_order.' };
+                }
+                callState.verificationPhone = input.phone;
+                const result = await sendVerificationCode(input.phone);
+                console.log(`[voice] ${callState.callSid} Verification sent to ${input.phone}: ${result.sent_via || 'failed'}`);
+                if (result.success) {
+                    const via = result.sent_via === 'whatsapp' ? 'pelo WhatsApp' : 'por SMS';
+                    return { success: true, sent_via: result.sent_via, message: `Código de 4 dígitos enviado ${via}.` };
+                }
+                return { success: false, error: 'Falha ao enviar código. Tente novamente.' };
+            }
+            case 'verify_code': {
+                const userCode = (input.code || '').replace(/\D/g, '');
+                if (!callState.verificationPhone) {
+                    return { success: false, error: 'Nenhum código foi enviado ainda. Use send_verification_code primeiro.' };
+                }
+                const result = await checkVerificationCode(callState.verificationPhone, userCode);
+                if (result.verified) {
+                    callState.phoneVerified = true;
+                    console.log(`[voice] ${callState.callSid} Phone verified: ${callState.verificationPhone}`);
+                    return { success: true, verified: true, message: 'Código correto! Telefone verificado.' };
+                } else {
+                    console.log(`[voice] ${callState.callSid} Wrong code from ${callState.verificationPhone}`);
+                    return { success: false, verified: false, message: 'Código incorreto. Peça o cliente pra verificar e tentar de novo.' };
+                }
+            }
+            case 'create_customer': {
+                const result = await createCustomer(input.name, input.phone || callState.callerPhone);
+                if (result.success) {
+                    callState.customer = {
+                        customer_id: result.customer_id,
+                        name: input.name,
+                        addresses: []
+                    };
+                    console.log(`[voice] ${callState.callSid} Created customer ${result.customer_id}: ${input.name}`);
+                }
+                return result;
+            }
+            case 'save_address': {
+                if (!callState.customer?.customer_id) {
+                    return { success: false, error: 'Cliente não identificado. Crie o cliente primeiro.' };
+                }
+                const result = await saveAddress(callState.customer.customer_id, input);
+                if (result.success) {
+                    // Add to callState addresses
+                    if (!callState.customer.addresses) callState.customer.addresses = [];
+                    callState.customer.addresses.push({ address_id: result.address_id, ...input });
+                }
+                return result;
+            }
+            case 'apply_coupon': return await applyCoupon(callState, input.code);
+            case 'repeat_last_order': return await repeatLastOrder(callState);
             case 'check_order_status': return await checkOrderStatus(input.customer_id);
             case 'transfer_to_agent': {
                 callState.transferRequested = true;
@@ -378,6 +678,69 @@ async function lookupCustomer(phone) {
     };
 }
 
+function validateCpf(cpf) {
+    if (cpf.length !== 11) return false;
+    if (/^(\d)\1{10}$/.test(cpf)) return false; // all same digits
+    for (let t = 9; t < 11; t++) {
+        let d = 0;
+        for (let c = 0; c < t; c++) {
+            d += parseInt(cpf[c]) * ((t + 1) - c);
+        }
+        d = ((10 * d) % 11) % 10;
+        if (parseInt(cpf[t]) !== d) return false;
+    }
+    return true;
+}
+
+async function lookupCustomerByCpf(cpf) {
+    const cleanCpf = cpf.replace(/\D/g, '');
+    if (cleanCpf.length !== 11) {
+        return { found: false, error: 'CPF deve ter 11 dígitos' };
+    }
+    if (!validateCpf(cleanCpf)) {
+        return { found: false, error: 'CPF inválido. Verifique os números e tente novamente.' };
+    }
+    const custResult = await dbQuery(
+        `SELECT customer_id, name, email, phone, cpf
+         FROM om_customers
+         WHERE REPLACE(REPLACE(REPLACE(cpf, '.', ''), '-', ''), ' ', '') = $1
+         LIMIT 1`,
+        [cleanCpf]
+    );
+    if (custResult.rows.length === 0) {
+        return { found: false, message: 'CPF não encontrado no cadastro. Pergunte o nome do cliente para criar uma conta nova.' };
+    }
+    const c = custResult.rows[0];
+    const addrResult = await dbQuery(
+        `SELECT address_id, label, street, number, complement, neighborhood, city, state, zipcode, is_default
+         FROM om_customer_addresses WHERE customer_id = $1 AND is_active = 1
+         ORDER BY is_default DESC`, [c.customer_id]
+    );
+    const ordersResult = await dbQuery(
+        `SELECT o.order_number, o.status, o.total, p.name as store_name,
+                TO_CHAR(o.date_added, 'DD/MM') as date
+         FROM om_market_orders o
+         JOIN om_market_partners p ON p.partner_id = o.partner_id
+         WHERE o.customer_id = $1 ORDER BY o.date_added DESC LIMIT 5`,
+        [c.customer_id]
+    );
+    let cashback = 0;
+    try {
+        const cbResult = await dbQuery(
+            `SELECT balance FROM om_cashback_wallet WHERE customer_id = $1`, [c.customer_id]
+        );
+        if (cbResult.rows.length > 0) cashback = parseFloat(cbResult.rows[0].balance || 0);
+    } catch(e) { /* cashback table may not exist */ }
+    return {
+        found: true,
+        customer_id: c.customer_id,
+        name: c.name,
+        cashback,
+        addresses: addrResult.rows,
+        recent_orders: ordersResult.rows
+    };
+}
+
 async function lookupCep(cep) {
     const cleanCep = cep.replace(/\D/g, '');
     if (cleanCep.length !== 8) {
@@ -403,19 +766,30 @@ async function lookupCep(cep) {
 }
 
 async function searchStores(name, city) {
+    // Strip accents for fuzzy matching (DB may have unaccented names)
+    const nameNorm = stripAccents(name);
+    // Also try abbreviated versions: "24 horas" → "24h", "express" → etc
+    const nameShort = nameNorm.replace(/\s+horas?\b/gi, 'h').replace(/\s+/g, ' ').trim();
+
     let query = `SELECT partner_id, name, city, neighborhood, categoria,
-                        rating, delivery_time_min, delivery_fee, min_order_value, is_open
+                        rating, delivery_time_min, delivery_fee, min_order_value, is_open,
+                        open_time, close_time,
+                        CASE WHEN is_open = 0 THEN false
+                             WHEN open_time IS NULL OR close_time IS NULL THEN (is_open = 1)
+                             WHEN close_time > open_time THEN CURRENT_TIME BETWEEN open_time AND close_time
+                             ELSE CURRENT_TIME >= open_time OR CURRENT_TIME <= close_time
+                        END as really_open
                  FROM om_market_partners
                  WHERE status = '1'
-                   AND (name ILIKE $1 OR nome ILIKE $1)`;
-    const params = ['%' + name + '%'];
+                   AND (name ILIKE $1 OR nome ILIKE $1 OR name ILIKE $2 OR nome ILIKE $2)`;
+    const params = ['%' + name + '%', '%' + nameShort + '%'];
 
     if (city) {
-        query += ` AND city ILIKE $2`;
+        query += ` AND city ILIKE $${params.length + 1}`;
         params.push('%' + city + '%');
     }
 
-    query += ` ORDER BY is_open DESC, rating DESC NULLS LAST LIMIT 10`;
+    query += ` ORDER BY really_open DESC, rating DESC NULLS LAST LIMIT 10`;
 
     const result = await dbQuery(query, params);
 
@@ -430,7 +804,8 @@ async function searchStores(name, city) {
             city: s.city,
             neighborhood: s.neighborhood,
             tipo: s.categoria,
-            is_open: s.is_open === 1,
+            is_open: s.really_open,
+            horario: s.open_time && s.close_time ? `${s.open_time.substring(0,5)}-${s.close_time.substring(0,5)}` : null,
             rating: s.rating,
             delivery_fee: parseFloat(s.delivery_fee || 0),
             delivery_time: s.delivery_time_min
@@ -445,7 +820,12 @@ async function searchStores(name, city) {
 async function getNearbyStores(city, category, foodType) {
     let query = `SELECT partner_id, name, city, neighborhood, categoria,
                         rating, delivery_time_min, delivery_fee, min_order_value, is_open,
-                        description
+                        description, open_time, close_time,
+                        CASE WHEN is_open = 0 THEN false
+                             WHEN open_time IS NULL OR close_time IS NULL THEN (is_open = 1)
+                             WHEN close_time > open_time THEN CURRENT_TIME BETWEEN open_time AND close_time
+                             ELSE CURRENT_TIME >= open_time OR CURRENT_TIME <= close_time
+                        END as really_open
                  FROM om_market_partners
                  WHERE status = '1' AND city ILIKE $1`;
     const params = ['%' + city + '%'];
@@ -463,7 +843,7 @@ async function getNearbyStores(city, category, foodType) {
         paramIdx++;
     }
 
-    query += ` ORDER BY is_open DESC, rating DESC NULLS LAST LIMIT 15`;
+    query += ` ORDER BY really_open DESC, rating DESC NULLS LAST LIMIT 15`;
 
     const result = await dbQuery(query, params);
     return {
@@ -473,7 +853,8 @@ async function getNearbyStores(city, category, foodType) {
             name: s.name,
             tipo: s.categoria,
             neighborhood: s.neighborhood,
-            is_open: s.is_open === 1,
+            is_open: s.really_open,
+            horario: s.open_time && s.close_time ? `${s.open_time.substring(0,5)}-${s.close_time.substring(0,5)}` : null,
             rating: s.rating,
             delivery_fee: parseFloat(s.delivery_fee || 0),
             delivery_time: s.delivery_time_min
@@ -486,7 +867,13 @@ async function getNearbyStores(city, category, foodType) {
 async function getStoreMenu(partnerId) {
     // Get store info
     const storeResult = await dbQuery(
-        `SELECT name, delivery_fee, delivery_time_min, min_order_value, is_open
+        `SELECT name, delivery_fee, delivery_time_min, min_order_value, is_open,
+                open_time, close_time,
+                CASE WHEN is_open = 0 THEN false
+                     WHEN open_time IS NULL OR close_time IS NULL THEN (is_open = 1)
+                     WHEN close_time > open_time THEN CURRENT_TIME BETWEEN open_time AND close_time
+                     ELSE CURRENT_TIME >= open_time OR CURRENT_TIME <= close_time
+                END as really_open
          FROM om_market_partners WHERE partner_id = $1`, [partnerId]
     );
     const store = storeResult.rows[0];
@@ -503,18 +890,61 @@ async function getStoreMenu(partnerId) {
         [partnerId]
     );
 
+    // Get product options (sizes, extras, complements)
+    const productIds = prodResult.rows.map(p => p.product_id);
+    const optionsMap = {};
+    if (productIds.length > 0) {
+        try {
+            const placeholders = productIds.map((_, i) => `$${i + 1}`).join(',');
+            const optResult = await dbQuery(
+                `SELECT g.product_id, g.name as group_name, g.required, g.min_select, g.max_select,
+                        o.id as option_id, o.name as option_name, o.price_extra
+                 FROM om_product_option_groups g
+                 LEFT JOIN om_product_options o ON g.id = o.group_id AND (o.available IS NULL OR o.available::text = '1')
+                 WHERE g.product_id IN (${placeholders}) AND g.active::text = '1'
+                 ORDER BY g.sort_order, g.id, o.sort_order, o.id`,
+                productIds
+            );
+            for (const row of optResult.rows) {
+                if (!optionsMap[row.product_id]) optionsMap[row.product_id] = {};
+                const groupName = row.group_name;
+                if (!optionsMap[row.product_id][groupName]) {
+                    optionsMap[row.product_id][groupName] = {
+                        required: row.required,
+                        min: row.min_select, max: row.max_select,
+                        options: []
+                    };
+                }
+                if (row.option_id) {
+                    optionsMap[row.product_id][groupName].options.push({
+                        id: row.option_id,
+                        name: row.option_name,
+                        extra: parseFloat(row.price_extra || 0)
+                    });
+                }
+            }
+        } catch (e) {
+            // Options table may not exist for all setups
+            console.log('[voice] Product options query skipped:', e.message);
+        }
+    }
+
     // Group by category, limit to available items
     const menu = {};
     for (const p of prodResult.rows) {
         const cat = p.category_name || 'Outros';
         if (!menu[cat]) menu[cat] = [];
         if (p.available === 1 || p.available === null) {
-            menu[cat].push({
+            const item = {
                 product_id: p.product_id,
                 name: p.name,
                 description: p.description ? p.description.slice(0, 80) : null,
                 price: parseFloat(p.price)
-            });
+            };
+            if (optionsMap[p.product_id]) {
+                item.options = optionsMap[p.product_id];
+            }
+            menu[cat].push(item);
         }
     }
 
@@ -523,7 +953,8 @@ async function getStoreMenu(partnerId) {
         delivery_fee: parseFloat(store.delivery_fee || 0),
         delivery_time: store.delivery_time_min,
         min_order_value: parseFloat(store.min_order_value || 0),
-        is_open: store.is_open === '1' || store.is_open === true,
+        is_open: store.really_open,
+        horario: store.open_time && store.close_time ? `${store.open_time.substring(0,5)}-${store.close_time.substring(0,5)}` : null,
         menu
     };
 }
@@ -562,7 +993,10 @@ function getOrderSummary(callState) {
     }
     const subtotal = callState.items.reduce((s, i) => s + i.price * i.quantity, 0);
     const deliveryFee = callState.store?.delivery_fee || 0;
-    return {
+    const serviceFee = Math.round(subtotal * 0.05 * 100) / 100;
+    const couponDiscount = callState.coupon?.discount || 0;
+    const total = subtotal + deliveryFee + serviceFee - couponDiscount;
+    const summary = {
         store: callState.store?.name || 'Não definida',
         items: callState.items.map((i, idx) => ({
             index: idx,
@@ -574,8 +1008,14 @@ function getOrderSummary(callState) {
         })),
         subtotal,
         delivery_fee: deliveryFee,
-        total: subtotal + deliveryFee
+        service_fee: serviceFee,
+        total
     };
+    if (couponDiscount > 0) {
+        summary.coupon = callState.coupon.code;
+        summary.coupon_discount = couponDiscount;
+    }
+    return summary;
 }
 
 async function checkOrderStatus(customerId) {
@@ -609,6 +1049,234 @@ async function checkOrderStatus(customerId) {
     };
 }
 
+async function createCustomer(name, phone) {
+    const cleanPhone = (phone || '').replace(/\D/g, '');
+    if (!cleanPhone || cleanPhone.length < 8) {
+        return { success: false, error: 'Telefone inválido. Peça o número do celular ao cliente.' };
+    }
+    const formattedPhone = cleanPhone.startsWith('55') ? '+' + cleanPhone : '+55' + cleanPhone;
+    try {
+        // Check if phone already exists first
+        const existing = await dbQuery(
+            `SELECT customer_id, name FROM om_customers WHERE phone LIKE $1 LIMIT 1`,
+            ['%' + cleanPhone.slice(-11)]
+        );
+        if (existing.rows.length > 0) {
+            return { success: true, customer_id: existing.rows[0].customer_id, name: existing.rows[0].name, already_exists: true, message: `Encontrei o cadastro: ${existing.rows[0].name}` };
+        }
+        // INSERT without RETURNING (PgBouncer transaction mode compatibility)
+        await dbQuery(
+            `INSERT INTO om_customers (name, phone, created_at) VALUES ($1, $2, NOW())`,
+            [name, formattedPhone]
+        );
+        // Fetch the newly created customer
+        const newCustomer = await dbQuery(
+            `SELECT customer_id, name FROM om_customers WHERE phone = $1 LIMIT 1`,
+            [formattedPhone]
+        );
+        if (newCustomer.rows.length > 0) {
+            return { success: true, customer_id: newCustomer.rows[0].customer_id, message: `Cliente ${name} criado com sucesso.` };
+        }
+        return { success: false, error: 'Cliente criado mas não encontrado. Tente novamente.' };
+    } catch (err) {
+        if (err.message.includes('unique') || err.message.includes('duplicate')) {
+            const existing = await dbQuery(
+                `SELECT customer_id, name FROM om_customers WHERE phone LIKE $1 LIMIT 1`,
+                ['%' + cleanPhone.slice(-11)]
+            );
+            if (existing.rows.length > 0) {
+                return { success: true, customer_id: existing.rows[0].customer_id, name: existing.rows[0].name, already_exists: true, message: `Encontrei o cadastro: ${existing.rows[0].name}` };
+            }
+        }
+        console.error('[voice] createCustomer error:', err.message);
+        return { success: false, error: 'Erro ao criar cliente: ' + err.message };
+    }
+}
+
+async function saveAddress(customerId, addr) {
+    try {
+        // INSERT without RETURNING (PgBouncer compatibility)
+        await dbQuery(
+            `INSERT INTO om_customer_addresses (customer_id, label, street, number, complement, neighborhood, city, state, zipcode, is_default, is_active, created_at)
+             VALUES ($1, 'Casa', $2, $3, $4, $5, $6, $7, $8, 1, 1, NOW())`,
+            [customerId, addr.street || '', addr.number || 'S/N', addr.complement || '', addr.neighborhood || '', addr.city || '', addr.state || 'SP', addr.zipcode || '']
+        );
+        // Fetch the address_id
+        const addrResult = await dbQuery(
+            `SELECT address_id FROM om_customer_addresses WHERE customer_id = $1 ORDER BY created_at DESC LIMIT 1`,
+            [customerId]
+        );
+        const addressId = addrResult.rows[0]?.address_id;
+        return { success: true, address_id: addressId, message: 'Endereço salvo.' };
+    } catch (err) {
+        console.error('[voice] saveAddress error:', err.message);
+        return { success: false, error: 'Erro ao salvar endereço' };
+    }
+}
+
+async function applyCoupon(callState, code) {
+    if (!callState.items || callState.items.length === 0) {
+        return { success: false, error: 'Carrinho vazio. Adicione itens antes de aplicar cupom.' };
+    }
+    const subtotal = callState.items.reduce((s, i) => s + i.price * i.quantity, 0);
+    try {
+        const result = await dbQuery(
+            `SELECT * FROM om_market_coupons WHERE code = $1 AND status = 'active'`, [code.toUpperCase()]
+        );
+        if (result.rows.length === 0) {
+            return { success: false, error: 'Cupom inválido ou expirado.' };
+        }
+        const coupon = result.rows[0];
+        const now = new Date().toISOString();
+        if (coupon.valid_until && now > coupon.valid_until) {
+            return { success: false, error: 'Cupom expirado.' };
+        }
+        if (coupon.min_order_value && subtotal < parseFloat(coupon.min_order_value)) {
+            return { success: false, error: `Pedido mínimo pra esse cupom: R$${parseFloat(coupon.min_order_value).toFixed(2)}. Seu subtotal: R$${subtotal.toFixed(2)}` };
+        }
+        // Check partner restriction
+        if (coupon.specific_partners) {
+            try {
+                const partners = JSON.parse(coupon.specific_partners);
+                if (Array.isArray(partners) && partners.length > 0 && callState.store?.partner_id && !partners.includes(callState.store.partner_id)) {
+                    return { success: false, error: 'Cupom não válido pra essa loja.' };
+                }
+            } catch {}
+        }
+        // Check usage limits
+        if (coupon.max_uses && parseInt(coupon.max_uses) > 0 && parseInt(coupon.current_uses || 0) >= parseInt(coupon.max_uses)) {
+            return { success: false, error: 'Cupom esgotado.' };
+        }
+        // Calculate discount (columns: discount_type, discount_value)
+        let discount = 0;
+        const discountType = coupon.discount_type || 'fixed';
+        const discountValue = parseFloat(coupon.discount_value || 0);
+        if (discountType === 'percentage' || discountType === 'percentual') {
+            discount = Math.round(subtotal * discountValue / 100 * 100) / 100;
+            if (coupon.max_discount && discount > parseFloat(coupon.max_discount)) {
+                discount = parseFloat(coupon.max_discount);
+            }
+        } else {
+            discount = discountValue;
+        }
+        if (discount > subtotal) discount = subtotal;
+
+        callState.coupon = { id: coupon.id, code: coupon.code, discount, type: discountType };
+        return {
+            success: true,
+            code: coupon.code,
+            discount,
+            type: discountType,
+            new_subtotal: subtotal - discount,
+            message: `Cupom ${coupon.code} aplicado! Desconto de R$${discount.toFixed(2)}.`
+        };
+    } catch (err) {
+        console.error('[voice] applyCoupon error:', err.message);
+        return { success: false, error: 'Erro ao validar cupom.' };
+    }
+}
+
+async function repeatLastOrder(callState) {
+    if (!callState.customer?.customer_id) {
+        return { success: false, error: 'Cliente não identificado.' };
+    }
+    try {
+        // Get last completed order
+        const orderResult = await dbQuery(
+            `SELECT o.order_id, o.partner_id, p.name as store_name, p.delivery_fee,
+                    p.is_open, p.open_time, p.close_time,
+                    CASE WHEN p.is_open = 0 THEN false
+                         WHEN p.open_time IS NULL OR p.close_time IS NULL THEN (p.is_open = 1)
+                         WHEN p.close_time > p.open_time THEN CURRENT_TIME BETWEEN p.open_time AND p.close_time
+                         ELSE CURRENT_TIME >= p.open_time OR CURRENT_TIME <= p.close_time
+                    END as really_open
+             FROM om_market_orders o
+             JOIN om_market_partners p ON p.partner_id = o.partner_id
+             WHERE o.customer_id = $1 AND o.status NOT IN ('cancelled','refunded')
+             ORDER BY o.date_added DESC LIMIT 1`,
+            [callState.customer.customer_id]
+        );
+        if (orderResult.rows.length === 0) {
+            return { success: false, error: 'Não encontrei pedidos anteriores.' };
+        }
+        const lastOrder = orderResult.rows[0];
+        if (!lastOrder.really_open) {
+            const horario = lastOrder.open_time && lastOrder.close_time
+                ? `${lastOrder.open_time.substring(0,5)}-${lastOrder.close_time.substring(0,5)}` : '';
+            return { success: false, error: `A ${lastOrder.store_name} está fechada agora${horario ? ` (horário: ${horario})` : ''}. Quer pedir de outro lugar?` };
+        }
+        // Get order items
+        const itemsResult = await dbQuery(
+            `SELECT product_id, COALESCE(product_name, name) as name, COALESCE(unit_price, price) as price, quantity, notes
+             FROM om_market_order_items WHERE order_id = $1`,
+            [lastOrder.order_id]
+        );
+        if (itemsResult.rows.length === 0) {
+            return { success: false, error: 'Pedido anterior sem itens.' };
+        }
+        // Set store and add items
+        callState.store = { partner_id: lastOrder.partner_id, name: lastOrder.store_name, delivery_fee: parseFloat(lastOrder.delivery_fee || 0) };
+        callState.items = itemsResult.rows.map(i => ({
+            product_id: i.product_id,
+            product_name: i.name,
+            price: parseFloat(i.price),
+            quantity: i.quantity,
+            notes: i.notes || ''
+        }));
+        const subtotal = callState.items.reduce((s, i) => s + i.price * i.quantity, 0);
+        return {
+            success: true,
+            store: lastOrder.store_name,
+            items: callState.items.map(i => `${i.quantity}x ${i.product_name} (R$${(i.price * i.quantity).toFixed(2)})`),
+            subtotal,
+            delivery_fee: callState.store.delivery_fee,
+            total: subtotal + callState.store.delivery_fee,
+            message: `Repeti seu último pedido da ${lastOrder.store_name}! Confirme os itens e podemos finalizar.`
+        };
+    } catch (err) {
+        console.error('[voice] repeatLastOrder error:', err.message);
+        return { success: false, error: 'Erro ao buscar último pedido.' };
+    }
+}
+
+async function createPaymentLink(callState, orderNumber, total) {
+    try {
+        const items = callState.items.map(i => ({
+            name: i.product_name,
+            price: i.price,
+            quantity: i.quantity
+        }));
+
+        const res = await fetch('http://localhost/api/mercado/webhooks/voice-payment-link.php', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Internal-Key': 'superbora-voice-2026'
+            },
+            body: JSON.stringify({
+                phone: callState.callerPhone,
+                total,
+                items,
+                store_name: callState.store?.name || 'SuperBora',
+                order_number: orderNumber,
+                call_sid: callState.callSid
+            })
+        });
+
+        const data = await res.json();
+        if (data.success) {
+            console.log(`[voice] ${callState.callSid} Payment link created: ${data.payment_url}`);
+            return { success: true, payment_url: data.payment_url, sms_sent: data.sms_sent };
+        } else {
+            console.error(`[voice] ${callState.callSid} Payment link failed:`, data.error);
+            return { success: false, error: data.error };
+        }
+    } catch (err) {
+        console.error(`[voice] ${callState.callSid} Payment link error:`, err.message);
+        return { success: false, error: err.message };
+    }
+}
+
 async function submitOrder(callState, input) {
     if (!callState.items || callState.items.length === 0) {
         return { success: false, error: 'Pedido vazio — adicione itens primeiro' };
@@ -620,14 +1288,24 @@ async function submitOrder(callState, input) {
         return { success: false, error: 'Cliente não identificado — peça o telefone cadastrado' };
     }
 
+    const isCreditCard = input.payment_method === 'cartao_credito' || input.payment_method === 'cartao';
+
+    // Validate minimum order
+    const subtotalCheck = callState.items.reduce((s, i) => s + i.price * i.quantity, 0);
+    const minOrder = callState.store.min_order_value || 0;
+    if (minOrder > 0 && subtotalCheck < minOrder) {
+        return { success: false, error: `Pedido mínimo dessa loja é R$${minOrder.toFixed(2)}. Seu subtotal: R$${subtotalCheck.toFixed(2)}. Adicione mais itens.` };
+    }
+
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
 
-        const subtotal = callState.items.reduce((s, i) => s + i.price * i.quantity, 0);
+        const subtotal = subtotalCheck;
         const deliveryFee = callState.store.delivery_fee || 0;
         const serviceFee = Math.round(subtotal * 0.05 * 100) / 100;
-        const total = subtotal + deliveryFee + serviceFee;
+        const couponDiscount = callState.coupon?.discount || 0;
+        const total = subtotal + deliveryFee + serviceFee - couponDiscount;
 
         // Generate order number
         const orderNumber = 'SB' + Date.now().toString(36).toUpperCase();
@@ -637,36 +1315,40 @@ async function submitOrder(callState, input) {
         if (input.address_id) {
             const addrResult = await client.query(
                 `SELECT street, number, complement, neighborhood, city, state, zipcode
-                 FROM om_customer_addresses WHERE address_id = $1`,
-                [input.address_id]
+                 FROM om_customer_addresses WHERE address_id = $1 AND customer_id = $2`,
+                [input.address_id, callState.customer.customer_id]
             );
             if (addrResult.rows.length > 0) addr = addrResult.rows[0];
         } else if (callState.customer.addresses?.length > 0) {
             addr = callState.customer.addresses[0];
         }
 
-        const orderResult = await client.query(
+        const orderStatus = isCreditCard ? 'awaiting_payment' : 'pending';
+
+        await client.query(
             `INSERT INTO om_market_orders (
                 customer_id, partner_id, order_number, status,
                 customer_name, customer_phone,
-                subtotal, delivery_fee, service_fee, total,
+                subtotal, delivery_fee, service_fee, coupon_discount, coupon_id, total,
                 payment_method, change_for,
                 delivery_address, shipping_address, shipping_number, shipping_complement,
                 shipping_neighborhood, shipping_city, shipping_state, shipping_cep,
                 source, notes, date_added
-            ) VALUES ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, $9, $10, $11,
-                      $12, $13, $14, $15, $16, $17, $18, $19,
-                      'voice_ai', $20, NOW())
-            RETURNING order_id, order_number`,
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                      $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
+                      'voice_ai', $23, NOW())`,
             [
                 callState.customer.customer_id,
                 callState.store.partner_id,
                 orderNumber,
+                orderStatus,
                 callState.customer.name || '',
                 callState.callerPhone,
-                subtotal, deliveryFee, serviceFee, total,
-                input.payment_method || 'dinheiro',
-                input.change_for || null,
+                subtotal, deliveryFee, serviceFee, couponDiscount,
+                callState.coupon?.id || null,
+                total,
+                isCreditCard ? 'cartao_credito' : (input.payment_method || 'dinheiro'),
+                (input.change_for && input.change_for > 0) ? input.change_for : null,
                 addr.street ? `${addr.street}, ${addr.number || 'S/N'} - ${addr.neighborhood || ''}, ${addr.city || ''}` : '',
                 addr.street || '', addr.number || '', addr.complement || '',
                 addr.neighborhood || '', addr.city || '', addr.state || 'SP', addr.zipcode || '',
@@ -674,13 +1356,19 @@ async function submitOrder(callState, input) {
             ]
         );
 
-        const { order_id } = orderResult.rows[0];
+        // Fetch the order_id (PgBouncer-safe, no RETURNING)
+        const orderResult = await client.query(
+            `SELECT order_id FROM om_market_orders WHERE order_number = $1 LIMIT 1`,
+            [orderNumber]
+        );
+        const order_id = orderResult.rows[0]?.order_id;
+        if (!order_id) throw new Error('Order created but not found');
 
         for (const item of callState.items) {
             await client.query(
-                `INSERT INTO om_market_order_products (
-                    order_id, product_id, name, price, quantity, total, notes
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                `INSERT INTO om_market_order_items (
+                    order_id, product_id, name, product_name, price, unit_price, quantity, total, total_price, notes
+                ) VALUES ($1, $2, $3, $3, $4, $4, $5, $6, $6, $7)`,
                 [order_id, item.product_id, item.product_name, item.price, item.quantity,
                  item.price * item.quantity, item.notes || '']
             );
@@ -695,7 +1383,71 @@ async function submitOrder(callState, input) {
             [order_id, callState.store.name, callState.callSid]
         ).catch(() => {});
 
-        // Send SMS confirmation (fire and forget via PHP)
+        // Record coupon usage
+        if (callState.coupon?.id) {
+            pool.query(
+                `INSERT INTO om_market_coupon_usage (coupon_id, customer_id, order_id, created_at) VALUES ($1, $2, $3, NOW())`,
+                [callState.coupon.id, callState.customer.customer_id, order_id]
+            ).catch(() => {});
+            pool.query(
+                `UPDATE om_market_coupons SET current_uses = COALESCE(current_uses, 0) + 1 WHERE id = $1`,
+                [callState.coupon.id]
+            ).catch(() => {});
+        }
+
+        // Notify partner (push notification + WebSocket broadcast)
+        notifyPartner(callState.store.partner_id, orderNumber, callState.customer.name || '', total);
+
+        // Notify customer via WebSocket
+        broadcastEvent('order_update', {
+            order_id, order_number: orderNumber, status: orderStatus,
+            store_name: callState.store.name, total
+        }, `user_${callState.customer.customer_id}`);
+
+        // Credit card payment
+        if (isCreditCard) {
+            const isMaquininha = input.change_for === -1;
+
+            if (isMaquininha) {
+                // Pay on card machine at delivery — regular flow, just different payment method label
+                sendOrderSMS(callState.callerPhone, orderNumber, callState.store.name, callState.items, total);
+                callState.orderSubmitted = true;
+                return {
+                    success: true,
+                    order_number: orderNumber,
+                    total,
+                    payment_at_delivery: true,
+                    message: `Pedido ${orderNumber} criado! Total: R$${total.toFixed(2)}. O entregador levará a maquininha. Confirmação com código do pedido e link de tracking enviados por WhatsApp.`
+                };
+            }
+
+            // Pay via Stripe link (SMS)
+            const paymentResult = await createPaymentLink(callState, orderNumber, total);
+            callState.orderSubmitted = true;
+
+            if (paymentResult.success) {
+                return {
+                    success: true,
+                    order_number: orderNumber,
+                    total,
+                    payment_url: paymentResult.payment_url,
+                    sms_sent: paymentResult.sms_sent,
+                    message: `Pedido ${orderNumber} criado! Total: R$${total.toFixed(2)}. Link de pagamento enviado por WhatsApp. O cliente tem 30 minutos pra pagar.`
+                };
+            } else {
+                // Order was created but payment link failed — still inform
+                sendOrderSMS(callState.callerPhone, orderNumber, callState.store.name, callState.items, total);
+                return {
+                    success: true,
+                    order_number: orderNumber,
+                    total,
+                    payment_link_failed: true,
+                    message: `Pedido ${orderNumber} criado! Total: R$${total.toFixed(2)}. Não consegui gerar o link do cartão, mas enviei confirmação por WhatsApp com o código do pedido e link de tracking. O cliente pode pagar pelo app ou pedir outro meio de pagamento.`
+                };
+            }
+        }
+
+        // PIX / Dinheiro: send regular order SMS
         sendOrderSMS(callState.callerPhone, orderNumber, callState.store.name, callState.items, total);
 
         callState.orderSubmitted = true;
@@ -704,7 +1456,7 @@ async function submitOrder(callState, input) {
             success: true,
             order_number: orderNumber,
             total,
-            message: `Pedido ${orderNumber} criado! Total: R$${total.toFixed(2)}. SMS de confirmação enviado.`
+            message: `Pedido ${orderNumber} criado! Total: R$${total.toFixed(2)}. Confirmação com código do pedido e link de tracking enviados por WhatsApp.`
         };
     } catch (err) {
         await client.query('ROLLBACK').catch(() => {});
@@ -713,6 +1465,49 @@ async function submitOrder(callState, input) {
     } finally {
         client.release();
     }
+}
+
+// Notify partner about new order (via PHP endpoint that handles push + in-app)
+function notifyPartner(partnerId, orderNumber, customerName, total) {
+    const totalStr = total.toFixed(2).replace('.', ',');
+    // Call PHP notify endpoint (fire and forget)
+    fetch('http://localhost/api/mercado/webhooks/voice-notify-partner.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Internal-Key': 'superbora-voice-2026' },
+        body: JSON.stringify({ partner_id: partnerId, order_number: orderNumber, customer_name: customerName, total })
+    }).catch(e => console.error('[voice] Partner notify failed:', e.message));
+
+    // Also broadcast via WebSocket
+    broadcastEvent('new_order', {
+        partner_id: partnerId, order_number: orderNumber,
+        customer_name: customerName, total, source: 'voice_ai'
+    }, `partner_${partnerId}`);
+}
+
+// Broadcast event via WebSocket server
+function broadcastEvent(event, data, channel) {
+    fetch('http://localhost:8080/broadcast', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel, event, data })
+    }).catch(() => {});
+}
+
+// Send protocol SMS at end of every call
+function sendProtocolSMS(phone, protocolCode, customerName) {
+    if (!phone || !protocolCode) return;
+    const firstName = customerName ? customerName.split(' ')[0] : '';
+    const greeting = firstName ? `Olá, ${firstName}!` : 'Olá!';
+    const body = new URLSearchParams({
+        phone,
+        message: `${greeting} Obrigada por ligar pro SuperBora.\n\nSeu protocolo de atendimento: ${protocolCode}\n\nGuarde este código caso precise da gravação ou tenha qualquer dúvida.\n\nSuperBora - Sempre pra você!`
+    });
+    fetch('http://localhost/api/mercado/webhooks/voice-protocol-sms.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded',
+                    'X-Internal-Key': 'superbora-voice-2026' },
+        body
+    }).catch(e => console.error('[voice] Protocol SMS failed:', e.message));
 }
 
 function sendOrderSMS(phone, orderNumber, storeName, items, total) {
@@ -728,6 +1523,34 @@ function sendOrderSMS(phone, orderNumber, storeName, items, total) {
                     'X-Internal-Key': 'superbora-voice-2026' },
         body
     }).catch(e => console.error('[voice] SMS send failed:', e.message));
+}
+
+async function sendVerificationCode(phone) {
+    try {
+        const res = await fetch('http://localhost/api/mercado/webhooks/voice-verify.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Internal-Key': 'superbora-voice-2026' },
+            body: JSON.stringify({ action: 'send', phone })
+        });
+        return await res.json();
+    } catch (e) {
+        console.error('[voice] Verification send failed:', e.message);
+        return { success: false, error: e.message };
+    }
+}
+
+async function checkVerificationCode(phone, code) {
+    try {
+        const res = await fetch('http://localhost/api/mercado/webhooks/voice-verify.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Internal-Key': 'superbora-voice-2026' },
+            body: JSON.stringify({ action: 'check', phone, code })
+        });
+        return await res.json();
+    } catch (e) {
+        console.error('[voice] Verification check failed:', e.message);
+        return { verified: false, error: e.message };
+    }
 }
 
 // ─── Claude Conversation Engine ─────────────────────────────
@@ -752,16 +1575,111 @@ async function getClaudeResponse(callState) {
 
         const toolBlocks = response.content.filter(b => b.type === 'tool_use');
 
-        // Add assistant response to history
-        messages.push({ role: 'assistant', content: response.content });
+        // Add assistant response to history — but CLEAN any <think> tags from text blocks
+        // to prevent Claude from learning the <think> pattern from its own history
+        const cleanedContent = response.content.map(b => {
+            if (b.type === 'text' && b.text) {
+                let cleaned = b.text.replace(/<think(?:ing)?[\s\S]*?<\/think(?:ing)?>/gi, '');
+                cleaned = cleaned.replace(/<\/?think(?:ing)?>/gi, '');
+                return { ...b, text: cleaned.trim() };
+            }
+            return b;
+        });
+        messages.push({ role: 'assistant', content: cleanedContent });
 
         if (toolBlocks.length === 0) {
             // No tool calls — return the text
-            const text = response.content
+            let text = response.content
                 .filter(b => b.type === 'text')
                 .map(b => b.text)
                 .join(' ')
                 .trim();
+
+            // Strip leaked internal reasoning (Claude sometimes outputs chain-of-thought as spoken text)
+            const originalText = text;
+
+            // Remove closed <think>/<thinking> blocks (with closing tag)
+            text = text.replace(/<think(?:ing)?[\s\S]*?<\/think(?:ing)?>/gi, '');
+            // Remove orphan opening/closing tags (without matching pair)
+            text = text.replace(/<\/?think(?:ing)?>/gi, '');
+            text = text.trim();
+
+            if (originalText !== text) {
+                console.log(`[voice] ${callState.callSid} THINK-STRIP: removed think tags. Was ${originalText.length} chars, now ${text.length} chars`);
+            }
+
+            // CRITICAL: If text STILL starts with reasoning content after tag removal
+            // (e.g. Claude wrote <think>\n1. TRANSCRIÇÃO:... without closing tag)
+            // the tag is removed but numbered reasoning remains
+            const BAD = /transcri[çc][aã]o|inten[çc][aã]o\b|an[aá]lise:|racioc[ií]nio|pensamento|etapa\s*atual|slots?\s*faltando|ferramenta[s]?\s*:/i;
+
+            if (!BAD.test(text)) {
+                // Clean text — just strip standalone prefixes
+                text = text.replace(/^(tom|resposta)\s*:\s*/i, '').trim();
+            } else {
+                console.log(`[voice] ${callState.callSid} DETECTED reasoning leak, stripping...`);
+
+                // Strategy 1: If there's a "Resposta:" keyword, everything after it is the real speech
+                const respostaMatch = text.match(/(?:^|\.\s*|\n)\s*(?:\d+[\.\)]\s*)?resposta\s*:\s*/i);
+                if (respostaMatch) {
+                    const afterResposta = text.slice(respostaMatch.index + respostaMatch[0].length).trim();
+                    if (afterResposta.length > 3) {
+                        text = afterResposta;
+                    }
+                }
+
+                // Strategy 2: Find the LAST reasoning keyword, skip past its sentence
+                // (run even after Strategy 1 to clean any remaining reasoning)
+                if (BAD.test(text)) {
+                    const allKeywords = ['transcrição', 'transcricao', 'intenção', 'intencao', 'análise:', 'analise:',
+                                         'raciocínio', 'raciocinio', 'pensamento', 'etapa atual', 'slots faltando',
+                                         'ferramenta:', 'ferramentas:', 'tom:', 'contexto:', 'etapa:', 'marcador:',
+                                         'o cliente', 'ele quer', 'ela quer', 'próximo passo'];
+                    let lastKeywordEnd = -1;
+                    const lowerText = text.toLowerCase();
+
+                    for (const kw of allKeywords) {
+                        let searchFrom = 0;
+                        while (true) {
+                            const idx = lowerText.indexOf(kw, searchFrom);
+                            if (idx === -1) break;
+                            let endIdx = idx + kw.length;
+                            const nextDot = text.indexOf('. ', endIdx);
+                            const nextNewline = text.indexOf('\n', endIdx);
+                            let segEnd;
+                            if (nextDot === -1 && nextNewline === -1) segEnd = text.length;
+                            else if (nextDot === -1) segEnd = nextNewline + 1;
+                            else if (nextNewline === -1) segEnd = nextDot + 2;
+                            else segEnd = Math.min(nextDot + 2, nextNewline + 1);
+                            if (segEnd > lastKeywordEnd) lastKeywordEnd = segEnd;
+                            searchFrom = idx + 1;
+                        }
+                    }
+
+                    if (lastKeywordEnd > 0 && lastKeywordEnd < text.length) {
+                        text = text.slice(lastKeywordEnd).trim();
+                    } else if (lastKeywordEnd >= text.length) {
+                        // Everything was reasoning — no real speech found
+                        text = '';
+                    }
+                }
+
+                // Remove orphan number prefixes "3. " at start
+                text = text.replace(/^\d+[\.\)]\s*/, '').trim();
+                // Remove leftover "Resposta:" prefix
+                text = text.replace(/^resposta\s*:\s*/i, '').trim();
+
+                // Final safety: if after all cleaning there's STILL reasoning, nuke it
+                if (BAD.test(text)) {
+                    console.log(`[voice] ${callState.callSid} STILL has reasoning after cleanup, using fallback`);
+                    text = '';
+                }
+            }
+
+            if (text !== originalText) {
+                console.log(`[voice] ${callState.callSid} WARNING: Stripped leaked reasoning. Before: "${originalText.slice(0,150)}" After: "${text.slice(0,150)}"`);
+            }
+
             console.log(`[voice] ${callState.callSid} Final text (${(Date.now() - startTime)}ms): "${(text || '').slice(0, 80)}"`);
             // Never return empty response — ask to repeat
             return text || 'Oi, como posso te ajudar?';
@@ -792,30 +1710,147 @@ async function getClaudeResponse(callState) {
 async function fullCustomerLookup(phone) {
     try {
         const result = await lookupCustomer(phone);
+        if (result.found) {
+            // Get order count for VIP detection
+            try {
+                const cntResult = await dbQuery(
+                    `SELECT COUNT(*) as cnt FROM om_market_orders WHERE customer_id = $1 AND status NOT IN ('cancelled','refunded')`,
+                    [result.customer_id]
+                );
+                result.order_count = parseInt(cntResult.rows[0]?.cnt || 0);
+            } catch { result.order_count = 0; }
+            // Get active order
+            try {
+                const actResult = await dbQuery(
+                    `SELECT o.order_number, o.status, p.name as store_name
+                     FROM om_market_orders o
+                     JOIN om_market_partners p ON p.partner_id = o.partner_id
+                     WHERE o.customer_id = $1
+                       AND o.status IN ('pending','accepted','preparing','ready','delivering','em_preparo','saiu_entrega')
+                     ORDER BY o.date_added DESC LIMIT 1`,
+                    [result.customer_id]
+                );
+                result.active_order = actResult.rows[0] || null;
+            } catch { result.active_order = null; }
+            // Get days since last order
+            try {
+                const recResult = await dbQuery(
+                    `SELECT p.name as store_name, EXTRACT(DAY FROM NOW() - o.date_added)::int as days_ago
+                     FROM om_market_orders o
+                     JOIN om_market_partners p ON p.partner_id = o.partner_id
+                     WHERE o.customer_id = $1 AND o.status NOT IN ('cancelled','refunded')
+                     ORDER BY o.date_added DESC LIMIT 1`,
+                    [result.customer_id]
+                );
+                result.last_order = recResult.rows[0] || null;
+            } catch { result.last_order = null; }
+        }
         return result;
     } catch {
         return { found: false };
     }
 }
 
+// ─── Smart Greeting Builder ─────────────────────────────────
+
+function buildSmartGreeting(customerData) {
+    const hora = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: 'numeric', hour12: false });
+    const horaNum = parseInt(hora);
+    const periodo = horaNum < 12 ? 'Bom dia' : horaNum < 18 ? 'Boa tarde' : 'Boa noite';
+
+    if (!customerData?.found) {
+        return `${periodo}! Aqui é a Bora, do SuperBora. Pra fazer um pedido, fala "quero fazer um pedido" ou aperta 1. Se precisa de ajuda com um pedido que já fez, fala "ajuda" ou aperta 2. Pra falar com um atendente, aperta 0. Pode falar comigo normalmente que eu te entendo!`;
+    }
+
+    const firstName = customerData.name?.split(' ')[0] || '';
+    const orderCount = customerData.order_count || 0;
+    const activeOrder = customerData.active_order;
+    const lastOrder = customerData.last_order;
+    const daysAgo = lastOrder?.days_ago ?? 999;
+
+    // Active order — give status proactively
+    if (activeOrder) {
+        const statusLabels = {
+            pendente: 'esperando confirmação da loja',
+            aceito: 'já foi aceito',
+            preparando: 'tá sendo preparado',
+            pronto: 'tá prontinho, saindo já',
+            em_entrega: 'tá a caminho'
+        };
+        const statusText = statusLabels[activeOrder.status] || 'em andamento';
+        return `${periodo}, ${firstName}! Seu pedido da ${activeOrder.store_name} ${statusText}. Pra saber mais fala "meu pedido" ou aperta 2. Pra fazer outro pedido, fala "novo pedido" ou aperta 1. Pra falar com atendente, aperta 0.`;
+    }
+
+    // VIP customer (10+ orders)
+    if (orderCount >= 10) {
+        const vipGreets = [
+            `${periodo}, ${firstName}! Que bom te ouvir de novo. Pra fazer um pedido, fala "quero fazer um pedido" ou aperta 1. Pra saber o status de um pedido, fala "meu pedido" ou aperta 2. Pra falar com atendente, aperta 0.`,
+            `${periodo}, ${firstName}! Tudo bem? Pra fazer um pedido, fala "quero pedir" ou aperta 1. Precisa de ajuda com um pedido? Fala "ajuda" ou aperta 2. Pra falar com atendente, aperta 0.`,
+            `${periodo}, ${firstName}! Sempre bom falar com você. Pra fazer um pedido novo, fala "quero pedir" ou aperta 1. Pra ajuda com pedido, fala "ajuda" ou aperta 2. Atendente, aperta 0.`
+        ];
+        return vipGreets[Math.floor(Math.random() * vipGreets.length)];
+    }
+
+    // Recent order (last 7 days)
+    if (lastOrder && daysAgo <= 7) {
+        return `${periodo}, ${firstName}! Vi que você pediu da ${lastOrder.store_name} esses dias. Quer repetir? Fala "quero pedir" ou aperta 1. Precisa de ajuda? Fala "ajuda" ou aperta 2. Atendente? Aperta 0.`;
+    }
+
+    // Ordered within 30 days
+    if (lastOrder && daysAgo <= 30) {
+        return `${periodo}, ${firstName}! Faz um tempinho que você não pede. Pra fazer pedido, fala o que quer ou aperta 1. Precisa de ajuda? Aperta 2. Atendente? Aperta 0.`;
+    }
+
+    // Known customer, default
+    return `${periodo}, ${firstName}! Aqui é a Bora, do SuperBora. Pra fazer um pedido, fala "quero pedir" ou aperta 1. Precisa de ajuda? Fala "ajuda" ou aperta 2. Pra falar com atendente, aperta 0. Pode falar comigo normalmente!`;
+}
+
 // ─── Call Record Management ─────────────────────────────────
+
+// Generate protocol code: SUP2603-00123 (SUP + YYMM + - + 5-digit sequence)
+function generateProtocolCode() {
+    const now = new Date();
+    const yy = String(now.getFullYear()).slice(-2);
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    // Random 5-digit suffix (collision-safe with UNIQUE constraint + retry)
+    const seq = String(Math.floor(10000 + Math.random() * 90000));
+    return `SUP${yy}${mm}-${seq}`;
+}
 
 async function createCallRecord(callSid, phone, customer) {
     try {
-        await dbQuery(
-            `INSERT INTO om_callcenter_calls
-             (twilio_call_sid, customer_phone, customer_id, customer_name, direction, status, started_at)
-             VALUES ($1, $2, $3, $4, 'inbound', 'ai_handling', NOW())
-             ON CONFLICT (twilio_call_sid) DO UPDATE SET status = 'ai_handling'`,
-            [callSid, phone, customer?.customer_id || null, customer?.name || null]
-        );
+        // Try up to 3 times in case of protocol code collision
+        for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+                const protocol = generateProtocolCode();
+                await dbQuery(
+                    `INSERT INTO om_callcenter_calls
+                     (twilio_call_sid, customer_phone, customer_id, customer_name, direction, status, protocol_code, started_at)
+                     VALUES ($1, $2, $3, $4, 'inbound', 'ai_handling', $5, NOW())
+                     ON CONFLICT (twilio_call_sid) DO UPDATE SET status = 'ai_handling'`,
+                    [callSid, phone, customer?.customer_id || null, customer?.name || null, protocol]
+                );
+                console.log(`[voice] Call record created: ${callSid} | Protocol: ${protocol}`);
+                return protocol;
+            } catch (e) {
+                if (e.message.includes('protocol_code') && attempt < 2) continue;
+                throw e;
+            }
+        }
     } catch (e) {
         console.error('[voice] Call record insert failed:', e.message);
     }
+    return null;
 }
 
 async function finalizeCall(callSid, status, summary) {
     try {
+        // Send protocol SMS
+        const callInfo = activeCalls.get(callSid);
+        if (callInfo?.protocolCode && callInfo?.callerPhone) {
+            sendProtocolSMS(callInfo.callerPhone, callInfo.protocolCode, callInfo.customer?.name || '');
+        }
+
         await dbQuery(
             `UPDATE om_callcenter_calls
              SET status = $2, ai_summary = $3, ended_at = NOW(),
@@ -872,9 +1907,31 @@ async function getAvailableAgents(skillRequired = null) {
 }
 
 // ─── Call Recording ─────────────────────────────────────────
-// Starts recording the entire call via Twilio REST API (covers AI + agent portions)
+// Starts recording the entire call via Twilio/Telnyx REST API
 
 async function startCallRecording(callSid) {
+    if (IS_TELNYX) {
+        // Telnyx: start recording via Call Control API
+        if (!TELNYX_API_KEY) return;
+        try {
+            const resp = await telnyxAPI('POST', `/calls/${callSid}/actions/record_start`, {
+                format: 'mp3',
+                channels: 'dual',
+            });
+            if (resp?.data) {
+                console.log(`[voice] Telnyx recording started: ${callSid}`);
+                const cs = activeCalls.get(callSid);
+                if (cs) cs.recordingSid = resp.data.record_control_id || callSid;
+            } else {
+                console.error(`[voice] Telnyx recording start failed:`, JSON.stringify(resp)?.slice(0, 200));
+            }
+        } catch (e) {
+            console.error('[voice] Telnyx recording error:', e.message);
+        }
+        return;
+    }
+
+    // Twilio: start recording via REST API
     if (!TWILIO_SID || !TWILIO_TOKEN) return;
     try {
         const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Calls/${callSid}/Recordings.json`;
@@ -922,7 +1979,14 @@ async function saveTranscript(callSid, history, callState) {
         // Format as readable text
         const transcriptLines = history.map(h => {
             const speaker = h.role === 'user' ? 'Cliente' : 'Bora (IA)';
-            return `[${speaker}] ${h.content}`;
+            // content can be string or array of {type:'text', text:'...'} blocks
+            let text = h.content;
+            if (Array.isArray(text)) {
+                text = text.map(b => b.text || b.content || '').join('');
+            } else if (typeof text === 'object' && text !== null) {
+                text = text.text || text.content || JSON.stringify(text);
+            }
+            return `[${speaker}] ${text}`;
         });
         const transcriptText = transcriptLines.join('\n');
 
@@ -1006,28 +2070,52 @@ async function transferCall(callSid) {
             );
         } catch (e) {}
 
-        const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Calls/${callSid}.json`;
-        const callerId = process.env.TWILIO_PHONE || '+15705299780';
-        const dialStatusUrl = `https://${WS_HOST}/voice/dial-status`;
-        const twiml = `<Response>
-            <Say language="pt-BR" voice="Polly.Camila">Estou te transferindo pra um atendente. Aguarda só um pouquinho, tá?</Say>
-            <Dial timeout="45" callerId="${callerId}" action="${dialStatusUrl}" method="POST">
-                ${agentClients}
-            </Dial>
-        </Response>`;
+        if (IS_TELNYX) {
+            // Telnyx: speak announcement then transfer to first available agent's SIP
+            console.log(`[voice] Telnyx transfer: ${callSid} → agents [${agentIds.join(', ')}]`);
+            // Speak hold message
+            await telnyxAPI('POST', `/calls/${callSid}/actions/speak`, {
+                payload: 'Estou te transferindo pra um atendente. Aguarda só um pouquinho, tá?',
+                language: 'pt-BR',
+                voice: 'female',
+            });
+            // Transfer to first available agent via SIP
+            const agentSipUser = `agent_${agentIds[0]}`;
+            const sipUri = `sip:${agentSipUser}@sip.telnyx.com`;
+            const transferResp = await telnyxAPI('POST', `/calls/${callSid}/actions/transfer`, {
+                to: sipUri,
+                from: telnyxCallerFor(''),
+                timeout_secs: 45,
+                webhook_url: `https://${WS_HOST}/voice/telnyx-webhook`,
+            });
+            if (!transferResp?.data) {
+                console.error(`[voice] Telnyx transfer failed:`, JSON.stringify(transferResp)?.slice(0, 300));
+            }
+        } else {
+            // Twilio: update call with TwiML
+            const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Calls/${callSid}.json`;
+            const callerId = process.env.TWILIO_PHONE || '+15705299780';
+            const dialStatusUrl = `https://${WS_HOST}/voice/dial-status`;
+            const twiml = `<Response>
+                <Say language="pt-BR" voice="Polly.Camila">Estou te transferindo pra um atendente. Aguarda só um pouquinho, tá?</Say>
+                <Dial timeout="45" callerId="${callerId}" action="${dialStatusUrl}" method="POST">
+                    ${agentClients}
+                </Dial>
+            </Response>`;
 
-        console.log(`[voice] REST transfer: ${callSid} → agents [${agentIds.join(', ')}]`);
-        const auth = Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString('base64');
-        const resp = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Basic ${auth}`,
-                'Content-Type': 'application/x-www-form-urlencoded'
-            },
-            body: new URLSearchParams({ Twiml: twiml })
-        });
-        if (!resp.ok) {
-            console.error(`[voice] Twilio transfer API error (${resp.status}):`, await resp.text());
+            console.log(`[voice] REST transfer: ${callSid} → agents [${agentIds.join(', ')}]`);
+            const auth = Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString('base64');
+            const resp = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Basic ${auth}`,
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                },
+                body: new URLSearchParams({ Twiml: twiml })
+            });
+            if (!resp.ok) {
+                console.error(`[voice] Twilio transfer API error (${resp.status}):`, await resp.text());
+            }
         }
     } catch (e) {
         console.error('[voice] Transfer failed:', e.message);
@@ -1059,6 +2147,39 @@ app.get('/test-client', async (req, reply) => {
     try {
         const agents = await getAvailableAgents();
         const agentList = agents.map(a => ({ id: a.id, name: a.display_name, active: a.active_calls }));
+
+        if (IS_TELNYX) {
+            // Telnyx test call — call agent_5 SIP endpoint
+            const testResp = await telnyxAPI('POST', '/calls', {
+                connection_id: TELNYX_CONNECTION_ID,
+                to: `sip:agent_5@sip.telnyx.com`,
+                from: telnyxCallerFor(''),
+                webhook_url: `https://${WS_HOST}/voice/telnyx-webhook`,
+                timeout_secs: 15,
+            });
+
+            if (!testResp?.data) {
+                reply.send({ error: 'Telnyx call creation failed', details: testResp, agents_available: agentList, provider: 'telnyx' });
+                return;
+            }
+
+            const testCallId = testResp.data.call_control_id || testResp.data.id;
+            console.log(`[voice] Telnyx test call: ${testCallId}`);
+
+            // Wait 10s and check
+            await new Promise(r => setTimeout(r, 10000));
+
+            // Try to hang up
+            await telnyxAPI('POST', `/calls/${testCallId}/actions/hangup`, {});
+
+            reply.send({
+                diagnosis: 'Test call placed via Telnyx — check agent softphone for ring',
+                call_id: testCallId,
+                agents_available: agentList,
+                provider: 'telnyx',
+            });
+            return;
+        }
 
         // Make a test call via Twilio REST API
         const testCallRes = await fetch(
@@ -1117,6 +2238,7 @@ app.get('/test-client', async (req, reply) => {
             call_status: result.status,
             call_duration: result.duration,
             agents_available: agentList,
+            provider: 'twilio',
         });
     } catch (e) {
         reply.send({ error: e.message });
@@ -1304,6 +2426,27 @@ app.post('/connect-action', async (req, reply) => {
         console.log(`[voice] TwiML sent:\n${twiml}`);
         reply.type('text/xml').send(twiml);
     } else {
+        // Normal call end (no handoff) — finalize as completed
+        console.log(`[voice] Connect action: normal end for ${callSid} — finalizing`);
+        const callInfo = activeCalls.get(callSid);
+        if (callInfo && !callInfo.transferRequested) {
+            const summary = callInfo.orderSubmitted
+                ? `Pedido realizado via IA (${callInfo.items?.length || 0} itens)`
+                : `Conversa IA sem pedido (${callInfo.history?.length || 0} turnos)`;
+            finalizeCall(callSid, 'completed', summary);
+            if (callInfo.inactivityTimer) clearInterval(callInfo.inactivityTimer);
+            activeCalls.delete(callSid);
+        } else {
+            // Safety net: finalize even if not in activeCalls (might have been on different server)
+            try {
+                await dbQuery(
+                    `UPDATE om_callcenter_calls SET status = 'completed', ended_at = COALESCE(ended_at, NOW()),
+                     duration_seconds = COALESCE(duration_seconds, EXTRACT(EPOCH FROM (NOW() - started_at))::int)
+                     WHERE twilio_call_sid = $1 AND status = 'ai_handling'`,
+                    [callSid]
+                );
+            } catch (e) {}
+        }
         reply.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>');
     }
   } catch (err) {
@@ -1366,7 +2509,227 @@ app.post('/dial-status', async (req, reply) => {
   }
 });
 
-// ─── HTTP: Incoming Call → TwiML with ConversationRelay ─────
+// ─── HTTP: Telnyx Webhook — Call Control events ─────────────
+
+app.post('/telnyx-webhook', async (req, reply) => {
+    try {
+        const event = req.body?.data || req.body;
+        const eventType = event?.event_type || event?.record_type || '';
+        const payload = event?.payload || event || {};
+        const callControlId = payload?.call_control_id || payload?.call_leg_id || '';
+        const callerPhone = payload?.from || '';
+        const callSid = callControlId; // Telnyx uses call_control_id as the call identifier
+
+        console.log(`[voice] Telnyx webhook: ${eventType} | callControlId=${callControlId} | from=${callerPhone}`);
+
+        switch (eventType) {
+            case 'call.initiated': {
+                // Inbound call initiated — answer it
+                if (payload.direction === 'incoming') {
+                    console.log(`[voice] Telnyx incoming call from ${callerPhone} | answering...`);
+                    await telnyxAPI('POST', `/calls/${callControlId}/actions/answer`, {
+                        webhook_url: `https://${WS_HOST}/voice/telnyx-webhook`,
+                    });
+                }
+                break;
+            }
+            case 'call.answered': {
+                // Call answered — set up AI conversation via gather+speak loop
+                console.log(`[voice] Telnyx call answered: ${callControlId} | from=${callerPhone}`);
+
+                // Full customer lookup
+                const customerData = await fullCustomerLookup(callerPhone);
+                const greeting = buildSmartGreeting(customerData);
+
+                // Create call record
+                const customer = customerData?.found ? { customer_id: customerData.customer_id, name: customerData.name } : null;
+                const protocolCode = await createCallRecord(callControlId, callerPhone, customer);
+
+                // Initialize call state for Telnyx (similar to WS setup)
+                const callState = {
+                    callSid: callControlId,
+                    streamSid: callControlId,
+                    callerPhone,
+                    protocolCode,
+                    customer: customerData?.found ? {
+                        customer_id: customerData.customer_id,
+                        name: customerData.name,
+                        addresses: customerData.addresses
+                    } : null,
+                    store: null,
+                    items: [],
+                    history: [
+                        { role: 'assistant', content: [{ type: 'text', text: greeting }] }
+                    ],
+                    systemPrompt: buildSystemPrompt(callerPhone, customerData) +
+                        (protocolCode ? `\n\nPROTOCOLO DESTA LIGAÇÃO: ${protocolCode}` : ''),
+                    transferRequested: false,
+                    orderSubmitted: false,
+                    phoneVerified: !!(customerData?.found),
+                    noiseCount: 0,
+                    lastAiResponse: greeting,
+                    startTime: Date.now(),
+                    lastActivityAt: Date.now(),
+                    isTelnyx: true,
+                };
+
+                activeCalls.set(callControlId, callState);
+
+                // Speak the greeting
+                await telnyxAPI('POST', `/calls/${callControlId}/actions/speak`, {
+                    payload: greeting,
+                    language: 'pt-BR',
+                    voice: 'female',
+                });
+
+                // Start recording
+                startCallRecording(callControlId);
+
+                // Start gathering speech input
+                await telnyxAPI('POST', `/calls/${callControlId}/actions/gather`, {
+                    input: 'speech dtmf',
+                    language: 'pt-BR',
+                    minimum_input_length: 1,
+                    timeout_millis: 10000,
+                    inter_digit_timeout_millis: 3000,
+                    webhook_url: `https://${WS_HOST}/voice/telnyx-webhook`,
+                });
+                break;
+            }
+            case 'call.gather.ended': {
+                // Speech or DTMF gathered — process with Claude
+                const callState = activeCalls.get(callControlId);
+                if (!callState) {
+                    console.log(`[voice] Telnyx gather for unknown call: ${callControlId}`);
+                    break;
+                }
+
+                callState.lastActivityAt = Date.now();
+                const userText = payload?.speech?.text || '';
+                const digit = payload?.dtmf?.digit || '';
+
+                if (digit === '0') {
+                    // Transfer to agent
+                    callState.transferRequested = true;
+                    callState.transferReason = 'DTMF 0 — pediu atendente';
+                    await telnyxAPI('POST', `/calls/${callControlId}/actions/speak`, {
+                        payload: 'Claro! Vou te transferir pra um atendente agora. Só um momentinho, tá?',
+                        language: 'pt-BR',
+                        voice: 'female',
+                    });
+                    transferCall(callControlId);
+                    finalizeCall(callControlId, 'transferred', 'DTMF 0 — pediu atendente');
+                    break;
+                }
+
+                const input = digit ? `Digitou ${digit}` : userText;
+                if (!input || input.trim().length === 0) {
+                    // No input — re-gather
+                    await telnyxAPI('POST', `/calls/${callControlId}/actions/gather`, {
+                        input: 'speech dtmf',
+                        language: 'pt-BR',
+                        timeout_millis: 10000,
+                        webhook_url: `https://${WS_HOST}/voice/telnyx-webhook`,
+                    });
+                    break;
+                }
+
+                console.log(`[voice] ${callControlId} Telnyx User: "${input}"`);
+                callState.history.push({ role: 'user', content: input });
+
+                try {
+                    const aiResponse = await Promise.race([
+                        getClaudeResponse(callState),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error('Claude timeout (20s)')), 20000))
+                    ]);
+
+                    console.log(`[voice] ${callControlId} Telnyx AI: "${aiResponse.slice(0, 100)}"`);
+                    callState.lastAiResponse = aiResponse.slice(0, 250);
+
+                    // Speak AI response
+                    await telnyxAPI('POST', `/calls/${callControlId}/actions/speak`, {
+                        payload: aiResponse,
+                        language: 'pt-BR',
+                        voice: 'female',
+                    });
+
+                    if (callState.transferRequested) {
+                        setTimeout(() => transferCall(callControlId), 3000);
+                        finalizeCall(callControlId, 'transferred', `Transferido: ${callState.transferReason}`);
+                        break;
+                    }
+                } catch (err) {
+                    console.error(`[voice] ${callControlId} Telnyx AI error:`, err.message);
+                    await telnyxAPI('POST', `/calls/${callControlId}/actions/speak`, {
+                        payload: 'Desculpa, deu um probleminha aqui. Pode repetir?',
+                        language: 'pt-BR',
+                        voice: 'female',
+                    });
+                }
+
+                // Re-gather for next input
+                await telnyxAPI('POST', `/calls/${callControlId}/actions/gather`, {
+                    input: 'speech dtmf',
+                    language: 'pt-BR',
+                    timeout_millis: 10000,
+                    webhook_url: `https://${WS_HOST}/voice/telnyx-webhook`,
+                });
+                break;
+            }
+            case 'call.speak.ended': {
+                // TTS finished — nothing to do, gather is already running
+                break;
+            }
+            case 'call.hangup': {
+                // Call ended
+                const callState = activeCalls.get(callControlId);
+                if (callState) {
+                    const duration = Math.round((Date.now() - callState.startTime) / 1000);
+                    console.log(`[voice] Telnyx call ended: ${callControlId} | ${duration}s`);
+                    if (callState.history?.length > 0) {
+                        saveTranscript(callControlId, callState.history, callState);
+                    }
+                    if (!callState.transferRequested) {
+                        const summary = callState.orderSubmitted
+                            ? `Pedido realizado via IA (${callState.items.length} itens)`
+                            : `Conversa IA sem pedido (${callState.history.length} turnos)`;
+                        finalizeCall(callControlId, 'completed', summary);
+                    }
+                    activeCalls.delete(callControlId);
+                }
+                break;
+            }
+            case 'call.recording.saved': {
+                // Recording ready
+                const recordingUrl = payload?.recording_urls?.mp3 || payload?.public_recording_urls?.mp3 || '';
+                const recordingDuration = parseInt(payload?.recording_duration_secs || '0');
+                if (recordingUrl) {
+                    try {
+                        await dbQuery(
+                            `UPDATE om_callcenter_calls SET recording_url = $2, recording_duration = $3
+                             WHERE twilio_call_sid = $1`,
+                            [callControlId, recordingUrl, recordingDuration]
+                        );
+                        console.log(`[voice] Telnyx recording saved: ${callControlId} | ${recordingDuration}s`);
+                    } catch (e) {
+                        console.error('[voice] Telnyx recording save failed:', e.message);
+                    }
+                }
+                break;
+            }
+            default:
+                console.log(`[voice] Telnyx unhandled event: ${eventType}`);
+        }
+
+        reply.send({ ok: true });
+    } catch (err) {
+        console.error(`[voice] Telnyx webhook FATAL:`, err.message);
+        reply.send({ ok: true }); // Always 200 to prevent retries
+    }
+});
+
+// ─── HTTP: Incoming Call → TwiML with ConversationRelay (Twilio) ─────
+// For Telnyx, incoming calls are handled via /telnyx-webhook above.
 
 app.post('/incoming-call', async (req, reply) => {
   try {
@@ -1375,26 +2738,21 @@ app.post('/incoming-call', async (req, reply) => {
 
     console.log(`[voice] Incoming call from ${callerPhone} | CallSid: ${callSid}`);
 
-    // Full customer lookup — name, addresses, recent orders
+    // Full customer lookup — name, addresses, recent orders, VIP status, active order
     const customerData = await fullCustomerLookup(callerPhone);
-    const firstName = customerData?.found ? customerData.name?.split(' ')[0] : null;
 
-    const hora = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: 'numeric', hour12: false });
-    const horaNum = parseInt(hora);
-    const periodo = horaNum < 12 ? 'Bom dia' : horaNum < 18 ? 'Boa tarde' : 'Boa noite';
+    // Smart greeting based on customer history
+    const greeting = buildSmartGreeting(customerData);
 
-    const greeting = firstName
-        ? `${periodo}, ${firstName}! Tudo bem? Aqui é a Bora, do SuperBora! Posso te ajudar a fazer um pedido, ver o status da sua entrega, ou qualquer outra coisa. Me conta, no que posso te ajudar?`
-        : `${periodo}! Tudo bem? Aqui é a Bora, do SuperBora! Posso te ajudar a fazer um pedido, ver status de entrega, ou tirar qualquer dúvida. Se quiser falar com uma pessoa, é só apertar zero. Me conta, no que posso te ajudar?`;
-
-    // Create call record
+    // Create call record with protocol code
     const customer = customerData?.found ? { customer_id: customerData.customer_id, name: customerData.name } : null;
-    createCallRecord(callSid, callerPhone, customer);
+    const protocolCode = await createCallRecord(callSid, callerPhone, customer);
 
-    // Pass full customer data via URL params (JSON-encoded for the WS handler)
+    // Pass full customer data + protocol via URL params (JSON-encoded for the WS handler)
     const wsParams = new URLSearchParams({
         phone: callerPhone,
-        cd: JSON.stringify(customerData || { found: false })
+        cd: JSON.stringify(customerData || { found: false }),
+        protocol: protocolCode || ''
     });
     const wsUrl = `wss://${WS_HOST}/voice/ws?${wsParams}`;
 
@@ -1445,7 +2803,7 @@ app.register(async (fastify) => {
                 // ── Call connected ──
                 case 'setup': {
                     const params = new URL(req.url, 'http://localhost').searchParams;
-                    const callerPhone = params.get('phone') || msg.from || '';
+                    const callerPhone = params.get('phone') || params.get('from') || msg.from || '';
 
                     // Parse full customer data from URL
                     let customerData = { found: false };
@@ -1453,10 +2811,16 @@ app.register(async (fastify) => {
                         customerData = JSON.parse(params.get('cd') || '{}');
                     } catch { /* ignore parse errors */ }
 
+                    const protocolCode = params.get('protocol') || '';
+
+                    // Build the greeting text that ConversationRelay already spoke
+                    const spokenGreeting = buildSmartGreeting(customerData);
+
                     callState = {
                         callSid: msg.callSid,
                         streamSid: msg.streamSid,
                         callerPhone,
+                        protocolCode,
                         customer: customerData?.found ? {
                             customer_id: customerData.customer_id,
                             name: customerData.name,
@@ -1464,15 +2828,49 @@ app.register(async (fastify) => {
                         } : null,
                         store: null,
                         items: [],
-                        history: [],
-                        systemPrompt: buildSystemPrompt(callerPhone, customerData),
+                        // Seed history with the greeting so Claude knows it already spoke
+                        history: [
+                            { role: 'assistant', content: [{ type: 'text', text: spokenGreeting }] }
+                        ],
+                        systemPrompt: buildSystemPrompt(callerPhone, customerData) +
+                            (protocolCode ? `\n\nPROTOCOLO DESTA LIGAÇÃO: ${protocolCode}` : ''),
                         transferRequested: false,
                         orderSubmitted: false,
+                        phoneVerified: !!(customerData?.found),  // Auto-verify if customer identified by caller ID
+                        noiseCount: 0,
+                        lastAiResponse: spokenGreeting,
                         startTime: Date.now()
                     };
 
                     activeCalls.set(msg.callSid, callState);
-                    console.log(`[voice] Call setup: ${msg.callSid} | ${callerPhone} | ${customerData?.name || 'new customer'}`);
+                    console.log(`[voice] DEBUG phoneVerified=${callState.phoneVerified} cdFound=${customerData?.found}`);
+                    console.log(`[voice] Call setup: ${msg.callSid} | ${callerPhone} | ${customerData?.name || 'new customer'} | Protocol: ${protocolCode} | phoneVerified: ${callState.phoneVerified} | cd.found: ${customerData?.found}`);
+
+                    // Inactivity timeout: if no input for 2 minutes, warn; 3 minutes, hang up
+                    callState.lastActivityAt = Date.now();
+                    callState.inactivityTimer = setInterval(() => {
+                        const idleMs = Date.now() - callState.lastActivityAt;
+                        if (idleMs > 180000) { // 3 min — hang up
+                            console.log(`[voice] ${msg.callSid} Inactivity timeout (3min) — ending call`);
+                            try {
+                                if (socket.readyState === 1) {
+                                    socket.send(JSON.stringify({ type: 'text', token: 'Como não recebi resposta, vou encerrar a ligação. Se precisar, ligue de volta! Tenha um ótimo dia!', last: true }));
+                                    setTimeout(() => {
+                                        try { socket.send(JSON.stringify({ type: 'end', handoffData: '{}' })); } catch {}
+                                    }, 4000);
+                                }
+                            } catch {}
+                            clearInterval(callState.inactivityTimer);
+                        } else if (idleMs > 120000 && !callState.inactivityWarned) { // 2 min — warn
+                            callState.inactivityWarned = true;
+                            try {
+                                if (socket.readyState === 1) {
+                                    socket.send(JSON.stringify({ type: 'text', token: 'Oi, ainda está aí? Posso te ajudar com mais alguma coisa?', last: true }));
+                                }
+                            } catch {}
+                        }
+                    }, 30000); // check every 30s
+
                     break;
                 }
 
@@ -1501,12 +2899,42 @@ app.register(async (fastify) => {
                     );
 
                     if (isNoise) {
-                        console.log(`[voice] ${callState.callSid} Noise filtered: "${userText}"`);
+                        // Track consecutive noise to avoid spamming "didn't catch that"
+                        callState.noiseCount = (callState.noiseCount || 0) + 1;
+                        console.log(`[voice] ${callState.callSid} Noise filtered: "${userText}" (count: ${callState.noiseCount})`);
+
+                        // After 2+ consecutive noise inputs, OR if the last AI response
+                        // ended with a question (Claude asked something and expects an answer),
+                        // send a gentle nudge instead of silence
+                        const lastResponse = (callState.lastAiResponse || '').trim();
+                        const aiAskedQuestion = lastResponse.endsWith('?');
+
+                        if (callState.noiseCount >= 2 || aiAskedQuestion) {
+                            const nudge = aiAskedQuestion
+                                ? 'Desculpa, não consegui ouvir. Pode repetir, por favor?'
+                                : 'Estou aqui! Pode falar.';
+                            try {
+                                if (socket.readyState === 1) {
+                                    socket.send(JSON.stringify({ type: 'text', token: nudge, last: true }));
+                                    callState.lastAiResponse = nudge;
+                                    console.log(`[voice] ${callState.callSid} Noise nudge sent: "${nudge}"`);
+                                }
+                            } catch (e) {
+                                console.error(`[voice] ${callState.callSid} Nudge send error:`, e.message);
+                            }
+                            callState.noiseCount = 0; // reset after nudge
+                        }
                         return;
                     }
 
+                    // Reset noise counter and inactivity timer on valid input
+                    callState.noiseCount = 0;
+                    callState.lastActivityAt = Date.now();
+                    callState.inactivityWarned = false;
+
                     console.log(`[voice] ${callState.callSid} User: "${userText}"`);
 
+                    // Inject turn context so Claude knows what happened last
                     // Add user message to history
                     callState.history.push({ role: 'user', content: userText });
 
@@ -1536,6 +2964,10 @@ app.register(async (fastify) => {
                         ]);
 
                         console.log(`[voice] ${callState.callSid} AI: "${aiResponse.slice(0, 100)}"`);
+
+                        // Track last AI response for turn context
+                        callState.lastAiResponse = aiResponse.slice(0, 250);
+
                         safeSend(aiResponse);
 
                         // Handle transfer after response — use ConversationRelay end-session
@@ -1603,8 +3035,26 @@ app.register(async (fastify) => {
                             }));
                             finalizeCall(callState.callSid, 'transferred', 'DTMF 0 — pediu atendente');
                         }, 3000);
+                    } else if (digit === '1') {
+                        // Fazer pedido
+                        callState.history.push({ role: 'user', content: 'Quero fazer um pedido' });
+                        try {
+                            const resp = await getClaudeResponse(callState);
+                            socket.send(JSON.stringify({ type: 'text', token: resp, last: true }));
+                        } catch {
+                            socket.send(JSON.stringify({ type: 'text', token: 'Beleza! De qual loja ou restaurante você quer pedir?', last: true }));
+                        }
+                    } else if (digit === '2') {
+                        // Ajuda com pedido
+                        callState.history.push({ role: 'user', content: 'Preciso de ajuda com meu pedido' });
+                        try {
+                            const resp = await getClaudeResponse(callState);
+                            socket.send(JSON.stringify({ type: 'text', token: resp, last: true }));
+                        } catch {
+                            socket.send(JSON.stringify({ type: 'text', token: 'Claro! Me fala o número do pedido ou o que aconteceu que eu te ajudo.', last: true }));
+                        }
                     } else {
-                        // Treat digit as text input
+                        // Other digits — treat as text input
                         callState.history.push({ role: 'user', content: `Digitou ${digit}` });
                         try {
                             const resp = await getClaudeResponse(callState);
@@ -1623,6 +3073,9 @@ app.register(async (fastify) => {
 
         socket.on('close', () => {
             if (callState) {
+                // Clear inactivity timer
+                if (callState.inactivityTimer) clearInterval(callState.inactivityTimer);
+
                 const duration = Math.round((Date.now() - callState.startTime) / 1000);
                 console.log(`[voice] Call ended: ${callState.callSid} | ${duration}s | items: ${callState.items?.length || 0} | turns: ${callState.history?.length || 0}`);
 
@@ -1656,6 +3109,12 @@ app.listen({ port: PORT, host: '0.0.0.0' }, (err, address) => {
         process.exit(1);
     }
     console.log(`[voice] SuperBora Voice Server running on ${address}`);
-    console.log(`[voice] ConversationRelay WS: wss://${WS_HOST}/voice/ws`);
-    console.log(`[voice] Incoming call webhook: ${address}/incoming-call`);
+    console.log(`[voice] Provider: ${VOICE_PROVIDER.toUpperCase()}`);
+    if (IS_TELNYX) {
+        console.log(`[voice] Telnyx webhook: ${address}/telnyx-webhook`);
+        console.log(`[voice] Telnyx phone BR: ${TELNYX_PHONE} | US: ${TELNYX_PHONE_US}`);
+    } else {
+        console.log(`[voice] ConversationRelay WS: wss://${WS_HOST}/voice/ws`);
+        console.log(`[voice] Incoming call webhook: ${address}/incoming-call`);
+    }
 });
