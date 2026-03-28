@@ -215,25 +215,59 @@ try {
                 WHERE id = ?
             ")->execute([$newStatus, $resolution ?: "Decisao SuperBora: $decision", $penaltyAmount, $refundAmount, (int)$payload['uid'], $complaintId]);
 
-            // If refunding customer
-            if (in_array($decision, ['refund_customer', 'both']) && $refundAmount > 0 && $complaint['reported_by_id']) {
-                require_once __DIR__ . '/../helpers/cashback.php';
+            // If refunding customer — also REVERSE any cashback/points the order generated
+            $customerId = (int)$complaint['reported_by_id'];
+            $orderId = (int)$complaint['order_id'];
+
+            if (in_array($decision, ['refund_customer', 'both']) && $refundAmount > 0 && $customerId) {
+
+                // 1. Credit refund as cashback
                 $db->prepare("
                     INSERT INTO om_cashback_wallet (customer_id, balance, total_earned)
                     VALUES (?, ?, ?)
                     ON CONFLICT (customer_id) DO UPDATE SET
                         balance = om_cashback_wallet.balance + EXCLUDED.balance,
                         total_earned = om_cashback_wallet.total_earned + EXCLUDED.total_earned
-                ")->execute([$complaint['reported_by_id'], $refundAmount, $refundAmount]);
+                ")->execute([$customerId, $refundAmount, $refundAmount]);
 
                 $db->prepare("
                     INSERT INTO om_cashback (customer_id, order_id, type, amount, description, status, expires_at)
                     VALUES (?, ?, 'refund', ?, ?, 'available', NOW() + INTERVAL '90 days')
-                ")->execute([
-                    $complaint['reported_by_id'], $complaint['order_id'], $refundAmount,
-                    "Reembolso reclamacao #{$complaintId}"
-                ]);
+                ")->execute([$customerId, $orderId, $refundAmount, "Reembolso reclamacao #{$complaintId}"]);
+            }
 
+            // 2. REVERSE cashback that the order originally earned (if any)
+            if (in_array($decision, ['penalize_store', 'both']) && $customerId && $orderId) {
+                try {
+                    // Find original cashback earned for this order
+                    $cbStmt = $db->prepare("SELECT id, amount FROM om_cashback WHERE customer_id = ? AND order_id = ? AND type = 'earned' AND status = 'available' LIMIT 1");
+                    $cbStmt->execute([$customerId, $orderId]);
+                    $origCb = $cbStmt->fetch(PDO::FETCH_ASSOC);
+                    if ($origCb) {
+                        $cbAmount = (float)$origCb['amount'];
+                        // Mark as reversed
+                        $db->prepare("UPDATE om_cashback SET status = 'reversed' WHERE id = ?")->execute([$origCb['id']]);
+                        // Deduct from wallet
+                        $db->prepare("UPDATE om_cashback_wallet SET balance = GREATEST(balance - ?, 0), total_earned = GREATEST(total_earned - ?, 0) WHERE customer_id = ?")->execute([$cbAmount, $cbAmount, $customerId]);
+                        error_log("[mediar] Reversed cashback R\${$cbAmount} for order #{$orderId}");
+                    }
+
+                    // 3. REVERSE loyalty points earned for this order
+                    $ptsStmt = $db->prepare("SELECT id, points FROM om_market_loyalty_transactions WHERE reference_id = ? AND type = 'earned' AND source = 'order_delivered' LIMIT 1");
+                    $ptsStmt->execute([$orderId]);
+                    $origPts = $ptsStmt->fetch(PDO::FETCH_ASSOC);
+                    if ($origPts) {
+                        $pts = abs((int)$origPts['points']);
+                        // Deduct points
+                        $db->prepare("UPDATE om_market_loyalty_points SET current_points = GREATEST(current_points - ?, 0), updated_at = NOW() WHERE customer_id = ?")->execute([$pts, $customerId]);
+                        // Log reversal
+                        $db->prepare("INSERT INTO om_market_loyalty_transactions (customer_id, points, type, source, reference_id, description, created_at) VALUES (?, ?, 'reversed', 'complaint', ?, ?, NOW())")
+                           ->execute([$customerId, -$pts, $orderId, "Pontos revertidos — reclamacao #{$complaintId}"]);
+                        error_log("[mediar] Reversed {$pts} loyalty points for order #{$orderId}");
+                    }
+                } catch (\Throwable $e) {
+                    error_log("[mediar] Reversal error (non-fatal): " . $e->getMessage());
+                }
             }
 
             $db->commit();
