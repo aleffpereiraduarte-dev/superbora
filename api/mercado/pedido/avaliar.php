@@ -56,7 +56,7 @@ try {
 
     // Verify customer owns this order — use FOR UPDATE to prevent race condition on duplicate ratings
     $db->beginTransaction();
-    $stmtOwner = $db->prepare("SELECT customer_id, status, updated_at, shopper_id, avaliacao_cliente FROM om_market_orders WHERE order_id = ? FOR UPDATE");
+    $stmtOwner = $db->prepare("SELECT customer_id, partner_id, status, updated_at, shopper_id, avaliacao_cliente, order_number, subtotal, total FROM om_market_orders WHERE order_id = ? FOR UPDATE");
     $stmtOwner->execute([$order_id]);
     $pedido = $stmtOwner->fetch();
 
@@ -65,7 +65,7 @@ try {
         response(false, null, "Voce nao pode avaliar este pedido", 403);
     }
 
-    if (!in_array($pedido["status"], ["entregue", "delivered", "finalizado"])) {
+    if (!in_array($pedido["status"], ["entregue", "delivered", "finalizado", "retirado"])) {
         $db->rollBack();
         response(false, null, "Pedido ainda nao foi entregue", 400);
     }
@@ -104,6 +104,36 @@ try {
     }
 
     $db->commit();
+
+    // Auto-detect: low rating = potential issue → auto-create complaint
+    if ($nota <= 2) {
+        try {
+            $partnerId = (int)($pedido['partner_id'] ?? 0);
+            $orderNumber = $pedido['order_number'] ?? $order_id;
+            $orderTotal = (float)($pedido['subtotal'] ?: $pedido['total'] ?: 0);
+
+            // Check if system complaint already exists for this order
+            $checkStmt = $db->prepare("SELECT id FROM om_store_penalties WHERE order_id = ? AND reported_by = 'system' LIMIT 1");
+            $checkStmt->execute([$order_id]);
+            if (!$checkStmt->fetch()) {
+                $db->prepare("
+                    INSERT INTO om_store_penalties
+                        (order_id, partner_id, reported_by, reported_by_id, category, severity, title, description, order_total, penalty_amount, status)
+                    VALUES (?, ?, 'system', ?, 'bad_quality', 'medium', ?, ?, ?, 0, 'opened')
+                ")->execute([
+                    $order_id,
+                    $partnerId,
+                    $customer_id,
+                    'Avaliacao baixa (' . $nota . ' estrelas) - Pedido #' . $orderNumber,
+                    $comentario ?: 'Cliente deu nota baixa sem comentario',
+                    $orderTotal,
+                ]);
+                error_log("[avaliar] Auto-complaint created for order #$order_id (rating: $nota)");
+            }
+        } catch (\Throwable $e) {
+            error_log("[avaliar] Auto-complaint creation failed: " . $e->getMessage());
+        }
+    }
 
     // Log da avaliação
     error_log("Pedido avaliado: #$order_id | Nota: $nota");
