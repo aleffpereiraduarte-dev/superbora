@@ -39,10 +39,11 @@ try {
             SELECT oi.product_id, SUM(oi.quantity) as total_sold
             FROM om_market_order_items oi
             JOIN om_market_orders o ON o.order_id = oi.order_id
-            WHERE o.partner_id = ? AND o.status NOT IN ('cancelled', 'refunded')
+            WHERE o.partner_id = ? AND o.status NOT IN ('cancelado', 'reembolsado')
             GROUP BY oi.product_id
         ) sales ON sales.product_id = p.product_id
         WHERE p.partner_id = ? AND p.status = '1'
+              AND (p.image IS NOT NULL AND TRIM(p.image) != '' AND p.image NOT LIKE '%.svg' AND LOWER(p.image) NOT LIKE '%placeholder%' AND LOWER(p.image) NOT LIKE '%no-image%' AND LOWER(p.image) NOT LIKE '%noimage%')
         ORDER BY COALESCE(sales.total_sold, 0) DESC, p.sort_order ASC
         LIMIT ?
     ");

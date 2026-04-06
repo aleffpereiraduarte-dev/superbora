@@ -131,6 +131,18 @@ try {
         }
     }
 
+    // Installments support (Stripe Brazil — card installments)
+    $installments = max(1, min(12, (int)($input['installments'] ?? 1)));
+    if ($installments > 1) {
+        // Minimum R$10.00 per installment (1000 centavos)
+        $installment_amount = (int)floor($amount / $installments);
+        if ($installment_amount < 1000) {
+            $db->rollBack();
+            $min_total = number_format(($installments * 10), 2, ',', '.');
+            response(false, null, "Valor minimo para {$installments}x e R$ {$min_total} (R$ 10,00 por parcela)", 400);
+        }
+    }
+
     // Criar Payment Intent
     // Inclui card, Apple Pay, Google Pay via Payment Request, e Link (1-click checkout)
     $piData = [
@@ -141,8 +153,15 @@ try {
         'metadata[order_id]' => $orderId,
         'metadata[order_number]' => $order['order_number'],
         'metadata[customer_id]' => $customerId,
-        'metadata[source]' => 'superbora_mercado'
+        'metadata[source]' => 'superbora_mercado',
+        'metadata[installments]' => $installments,
     ];
+
+    // Enable card installments for Stripe Brazil (parcelas)
+    if ($installments > 1) {
+        $piData['payment_method_options[card][installments][enabled]'] = 'true';
+    }
+
     if ($stripeCustomerId) {
         $piData['customer'] = $stripeCustomerId;
         $piData['setup_future_usage'] = 'off_session';
@@ -155,23 +174,29 @@ try {
 
     if ($r['code'] !== 200 || empty($r['data']['client_secret'])) {
         $err = $r['data']['error']['message'] ?? 'Erro ao criar pagamento';
-        error_log("[stripe-payment] Stripe error for order {$orderId}: {$err}");
+        error_log("[stripe-payment] Stripe error for order {$orderId}: {$err}" . ($installments > 1 ? " (installments={$installments})" : ''));
         $db->rollBack();
         response(false, null, "Erro ao processar pagamento. Tente novamente.", 500);
     }
 
-    // Salvar payment_intent_id no pedido (both columns for compatibility)
-    $db->prepare("UPDATE om_market_orders SET payment_id = ?, stripe_payment_intent_id = ?, pagarme_status = 'pending' WHERE order_id = ?")
-        ->execute([$r['data']['id'], $r['data']['id'], $orderId]);
+    // Salvar payment_intent_id e installments no pedido (both columns for compatibility)
+    $db->prepare("UPDATE om_market_orders SET payment_id = ?, stripe_payment_intent_id = ?, pagarme_status = 'pending', installments = ?, installment_value = ? WHERE order_id = ?")
+        ->execute([$r['data']['id'], $r['data']['id'], $installments, round($order['total'] / $installments, 2), $orderId]);
     $db->commit();
 
-    response(true, [
+    $responseData = [
         "client_secret" => $r['data']['client_secret'],
         "payment_intent_id" => $r['data']['id'],
         "publishable_key" => $STRIPE_PK,
         "amount" => $amount,
-        "amount_formatted" => "R$ " . number_format($order['total'], 2, ',', '.')
-    ]);
+        "amount_formatted" => "R$ " . number_format($order['total'], 2, ',', '.'),
+    ];
+    if ($installments > 1) {
+        $responseData['installments'] = $installments;
+        $responseData['installment_value'] = round($order['total'] / $installments, 2);
+        $responseData['installment_formatted'] = "{$installments}x R$ " . number_format($order['total'] / $installments, 2, ',', '.');
+    }
+    response(true, $responseData);
 
 } catch (Exception $e) {
     if (isset($db) && $db->inTransaction()) $db->rollBack();

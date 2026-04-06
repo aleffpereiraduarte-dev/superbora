@@ -14,6 +14,13 @@ try {
     $admin_id = $payload['uid'];
 
     if ($_SERVER["REQUEST_METHOD"] === "GET") {
+        // SECURITY: Only RH or admin role can view security dashboard
+        $adminType = $payload['type'] ?? '';
+        $adminRole = $payload['data']['role'] ?? '';
+        if ($adminType !== 'rh' && $adminRole !== 'admin') {
+            response(false, null, "Acesso restrito", 403);
+        }
+
         // Recent logins
         $stmt = $db->query("
             SELECT action, entity_type, entity_id, ip_address, created_at, description

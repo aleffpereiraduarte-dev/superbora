@@ -33,7 +33,7 @@ try {
                 $stmt = $db->prepare("
                     SELECT order_id as id, delivery_fee as amount, 'delivery' as type, status as description, status, created_at
                     FROM om_market_orders
-                    WHERE shopper_id = ? AND status IN ('entregue', 'delivered')
+                    WHERE shopper_id = ? AND status IN ('entregue')
                     ORDER BY created_at DESC LIMIT 50
                 ");
                 $stmt->execute([$id]);
@@ -78,7 +78,7 @@ try {
         // Stats
         $deliveryCount = 0;
         try {
-            $stmt = $db->prepare("SELECT COUNT(*) as total FROM om_market_orders WHERE shopper_id = ? AND status IN ('entregue', 'delivered')");
+            $stmt = $db->prepare("SELECT COUNT(*) as total FROM om_market_orders WHERE shopper_id = ? AND status IN ('entregue')");
             $stmt->execute([$id]);
             $deliveryCount = (int)$stmt->fetch()['total'];
         } catch (\Exception $e) {}

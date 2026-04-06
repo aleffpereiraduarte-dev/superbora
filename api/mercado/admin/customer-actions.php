@@ -88,7 +88,7 @@ try {
                        c.created_at, c.last_login,
                        (SELECT COUNT(*) FROM om_market_orders o WHERE o.customer_id = c.customer_id) as orders_count,
                        (SELECT COALESCE(SUM(o2.total), 0) FROM om_market_orders o2
-                        WHERE o2.customer_id = c.customer_id AND o2.status NOT IN ('cancelled','refunded')) as total_spent,
+                        WHERE o2.customer_id = c.customer_id AND o2.status NOT IN ('cancelado','reembolsado')) as total_spent,
                        (SELECT COUNT(*) FROM om_customer_fraud_flags f
                         WHERE f.customer_id = c.customer_id AND f.resolved = FALSE) as active_flags
                 FROM om_customers c
@@ -144,11 +144,11 @@ try {
             // Estatisticas de pedidos
             $stmt = $db->prepare("
                 SELECT COUNT(*) as total_orders,
-                       COALESCE(SUM(CASE WHEN status NOT IN ('cancelled','refunded') THEN total ELSE 0 END), 0) as total_spent,
-                       COALESCE(AVG(CASE WHEN status NOT IN ('cancelled','refunded') THEN total END), 0) as avg_order,
+                       COALESCE(SUM(CASE WHEN status NOT IN ('cancelado','reembolsado') THEN total ELSE 0 END), 0) as total_spent,
+                       COALESCE(AVG(CASE WHEN status NOT IN ('cancelado','reembolsado') THEN total END), 0) as avg_order,
                        MAX(created_at) as last_order_date,
-                       SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_count,
-                       SUM(CASE WHEN status = 'refunded' THEN 1 ELSE 0 END) as refunded_count
+                       SUM(CASE WHEN status = 'cancelado' THEN 1 ELSE 0 END) as cancelled_count,
+                       SUM(CASE WHEN status = 'reembolsado' THEN 1 ELSE 0 END) as refunded_count
                 FROM om_market_orders
                 WHERE customer_id = ?
             ");
@@ -234,6 +234,33 @@ try {
                 // Tabela pode nao existir
             }
 
+            // Enderecos do cliente
+            $enderecos = [];
+            try {
+                $stmt = $db->prepare("
+                    SELECT address_id as id, label, street, number, complement, neighborhood,
+                           city, state, zipcode, lat, lng, is_default
+                    FROM om_customer_addresses
+                    WHERE customer_id = ?
+                    ORDER BY is_default DESC, address_id DESC
+                ");
+                $stmt->execute([$customer_id]);
+                $rawAddrs = $stmt->fetchAll();
+                foreach ($rawAddrs as $a) {
+                    $enderecos[] = [
+                        'id' => (int)$a['id'],
+                        'label' => $a['label'] ?? 'Casa',
+                        'rua' => trim(($a['street'] ?? '') . ', ' . ($a['number'] ?? '')),
+                        'bairro' => $a['neighborhood'] ?? '',
+                        'cidade' => ($a['city'] ?? '') . ($a['state'] ? ' - ' . $a['state'] : ''),
+                        'cep' => $a['zipcode'] ?? '',
+                        'principal' => (bool)($a['is_default'] ?? false),
+                    ];
+                }
+            } catch (Exception $e) {
+                // Tabela pode nao existir
+            }
+
             response(true, [
                 'customer' => $customer,
                 'orders' => $orders,
@@ -242,7 +269,8 @@ try {
                 'refunds' => $refunds,
                 'wallet_balance' => $wallet_balance,
                 'fraud_flags' => $fraud_flags,
-                'admin_notes' => $admin_notes
+                'admin_notes' => $admin_notes,
+                'enderecos' => $enderecos
             ], "Detalhes do cliente");
         }
 
@@ -687,13 +715,16 @@ try {
                 "Senha temporaria gerada para cliente '{$customer['name']}' ({$customer['email']})"
             );
 
+            // SECURITY: Do NOT return temp_password in the response — it should be
+            // sent to the customer via SMS/WhatsApp, never exposed in API responses.
+            // TODO: Send temp_password via SMS/WhatsApp to customer's phone
+
             response(true, [
                 'customer_id' => $customer_id,
                 'action' => 'reset_password',
-                'temp_password' => $temp_password,
                 'customer_email' => $customer['email'],
                 'customer_name' => $customer['name']
-            ], "Senha temporaria gerada com sucesso. Compartilhe com o cliente de forma segura.");
+            ], "Senha temporaria gerada. Sera enviada ao cliente via SMS/WhatsApp.");
         }
 
         // --- Exclusao LGPD (anonimizar dados) ---
@@ -727,7 +758,7 @@ try {
             $cancelled_orders = 0;
             $stmt = $db->prepare("
                 SELECT order_id FROM om_market_orders
-                WHERE customer_id = ? AND status NOT IN ('entregue', 'cancelado', 'cancelled', 'completed', 'retirado', 'finalizado')
+                WHERE customer_id = ? AND status NOT IN ('entregue', 'cancelado', 'cancelado', 'reembolsado')
                 FOR UPDATE
             ");
             $stmt->execute([$customer_id]);

@@ -131,7 +131,7 @@ try {
         response(false, null, "Pedido ja foi " . ($pedido['status'] === 'retirado' ? 'retirado' : 'entregue'), 400);
     }
 
-    $isPickupOrder = (bool)($pedido['is_pickup'] ?? false);
+    $isPickupOrder = !empty($pedido['is_pickup']) || ($pedido['delivery_type'] ?? '') === 'retirada';
 
     if (!in_array($pedido['status'], ['em_entrega', 'coletando', 'pronto'])) {
         $db->rollBack();
@@ -229,7 +229,6 @@ try {
         $subtotal = floatval($pedido['subtotal']);
         $deliveryFee = floatval($pedido['delivery_fee'] ?? 0);
         $expressFee = floatval($pedido['express_fee'] ?? 0);
-        $isPickup = (bool)($pedido['is_pickup'] ?? false);
         $partnerId = (int)$pedido['partner_id'];
         $paymentMethod = $pedido['payment_method'] ?? $pedido['forma_pagamento'] ?? 'pix';
         $isCashOrder = in_array($paymentMethod, ['dinheiro', 'cartao_entrega']);
@@ -242,8 +241,7 @@ try {
         $distanciaKm = floatval($entregaRow['distancia_km'] ?? 3);
 
         // Comissao centralizada via OmPricing (pickup=8%, proprio=10%, boraum=18%)
-        $isPickup = !empty($pedido['is_pickup']) || ($pedido['delivery_type'] ?? '') === 'retirada';
-        $tipoComissao = $isPickup ? 'pickup' : ($usaBoraUm ? 'boraum' : 'proprio');
+        $tipoComissao = $isPickupOrder ? 'pickup' : ($usaBoraUm ? 'boraum' : 'proprio');
         $comissao = OmPricing::calcularComissao($subtotal, $tipoComissao);
         $comissaoPct = $comissao['taxa'];
         $comissaoValor = $comissao['valor'];
@@ -254,6 +252,12 @@ try {
         $deliveryFeeBase = max(0, $deliveryFee - $expressFee);
         if (!$usaBoraUm && $deliveryFeeBase > 0) {
             $valor_repasse += $deliveryFeeBase;
+        }
+
+        // SECURITY: Ensure repasse value is non-negative
+        if ($valor_repasse < 0) {
+            error_log("[confirmar-entrega] SECURITY: valor_repasse negativo (R\${$valor_repasse}) para pedido #{$order_id} — forçando 0");
+            $valor_repasse = 0;
         }
 
         if ($repasseJaExiste) {
@@ -328,7 +332,7 @@ try {
                     'express_fee' => $expressFee,
                     'service_fee' => $serviceFee,
                     'delivery_fee_destino' => $usaBoraUm ? 'boraum' : 'parceiro',
-                    'is_pickup' => $isPickup,
+                    'is_pickup' => $isPickupOrder,
                     'tier' => $usaBoraUm ? 'boraum_18pct' : 'proprio_10pct',
                     'receita_plataforma' => round($comissaoValor + $serviceFee + $expressFee, 2),
                 ]
@@ -500,15 +504,24 @@ try {
                     ")->execute([$customer_id, $order_id]);
 
                     // 2. Also credit to om_cashback_wallet (new system) for balance tracking
-                    $db->prepare("
-                        INSERT INTO om_cashback_wallet (customer_id, balance, total_earned)
-                        VALUES (?, ?, ?)
-                        ON CONFLICT (customer_id) DO UPDATE SET
-                            balance = om_cashback_wallet.balance + EXCLUDED.balance,
-                            total_earned = om_cashback_wallet.total_earned + EXCLUDED.total_earned
-                    ")->execute([$customer_id, $cbAmount, $cbAmount]);
+                    // SECURITY: Idempotency — check if already credited to wallet for this order
+                    $stmtCbWalletCheck = $db->prepare("SELECT 1 FROM om_cashback_transactions WHERE order_id = ? AND type = 'credit' AND expired = 0 LIMIT 1");
+                    $stmtCbWalletCheck->execute([$order_id]);
+                    $alreadyCredited = $stmtCbWalletCheck->fetch();
 
-                    error_log("[confirmar-entrega] Cashback R\${$cbAmount} liberado para customer #{$customer_id} pedido #{$order_id}");
+                    if (!$alreadyCredited) {
+                        $db->prepare("
+                            INSERT INTO om_cashback_wallet (customer_id, balance, total_earned)
+                            VALUES (?, ?, ?)
+                            ON CONFLICT (customer_id) DO UPDATE SET
+                                balance = om_cashback_wallet.balance + EXCLUDED.balance,
+                                total_earned = om_cashback_wallet.total_earned + EXCLUDED.total_earned
+                        ")->execute([$customer_id, $cbAmount, $cbAmount]);
+
+                        error_log("[confirmar-entrega] Cashback R\${$cbAmount} liberado para customer #{$customer_id} pedido #{$order_id}");
+                    } else {
+                        error_log("[confirmar-entrega] Cashback wallet already credited for order #{$order_id} — skipping (idempotency)");
+                    }
                 }
             }
         } catch (Exception $cbErr) {

@@ -397,7 +397,7 @@ function fraud_run_pattern_check(PDO $db, int $customerId): array {
             SELECT COUNT(*) as cnt
             FROM om_market_orders
             WHERE customer_id = ?
-              AND status NOT IN ('cancelled', 'cancelado')
+              AND status NOT IN ('cancelado')
         ");
         $stmtOrders->execute([$customerId]);
         $totalOrders = (int)$stmtOrders->fetch(\PDO::FETCH_ASSOC)['cnt'];

@@ -28,6 +28,7 @@ function validateCsrfToken(): bool {
 
     // Get session token - check both session and cookie
     session_start();
+    session_write_close();
     $sessionToken = $_SESSION['csrf_token'] ?? '';
 
     // Also accept token from secure cookie as fallback for SPA
@@ -299,7 +300,7 @@ try {
             }
             // Validate first_order_only
             if ($coupon && !empty($coupon['first_order_only'])) {
-                $stmtOrders = $db->prepare("SELECT COUNT(*) FROM om_market_orders WHERE customer_id = ? AND status NOT IN ('cancelado','cancelled')");
+                $stmtOrders = $db->prepare("SELECT COUNT(*) FROM om_market_orders WHERE customer_id = ? AND status NOT IN ('cancelado')");
                 $stmtOrders->execute([$customerId]);
                 if ($stmtOrders->fetchColumn() > 0) {
                     $coupon = null; // Not first order
@@ -395,9 +396,9 @@ try {
     };
 
     // Feature: Auto-accept orders - check if partner has auto_accept enabled
-    // SECURITY: Only auto-accept for cash/PIX (credit/debit needs payment confirmation first)
+    // SECURITY: Only auto-accept for cash (PIX/credit/debit needs payment confirmation first)
     $autoAccept = (bool)($parceiro['auto_accept'] ?? false);
-    if ($autoAccept && in_array($paymentMethod, ['credito', 'debito'])) {
+    if ($autoAccept && in_array($paymentMethod, ['credito', 'debito', 'pix'])) {
         $autoAccept = false; // Wait for payment confirmation before accepting
     }
     $initialStatus = $autoAccept ? 'aceito' : 'pendente';
@@ -512,7 +513,7 @@ try {
         // Check if this is the customer's first completed order
         $stmtOrderCount = $db->prepare("
             SELECT COUNT(*) as cnt FROM om_market_orders
-            WHERE customer_id = ? AND status NOT IN ('cancelled', 'cancelado') AND order_id != ?
+            WHERE customer_id = ? AND status NOT IN ('cancelado') AND order_id != ?
         ");
         $stmtOrderCount->execute([$customerId, $orderId]);
         $previousOrders = (int)$stmtOrderCount->fetch()['cnt'];

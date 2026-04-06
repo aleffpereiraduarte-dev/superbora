@@ -21,7 +21,7 @@ try {
         $stmtFind = $db->prepare("
             SELECT order_id FROM om_market_orders
             WHERE partner_id = ? AND customer_id = ?
-              AND status NOT IN ('entregue', 'retirado', 'cancelado', 'cancelled', 'refunded')
+              AND status NOT IN ('entregue', 'cancelado', 'reembolsado')
             ORDER BY date_added DESC LIMIT 1
         ");
         $stmtFind->execute([$partner_id, $customer_id]);
@@ -268,6 +268,7 @@ try {
             "entrega_inicio" => $pedido["entrega_iniciada_em"],
             "entregue" => $pedido["entrega_finalizada_em"]
         ],
+        "is_editable" => in_array($pedido["status"], ['pendente', 'confirmado']),
         "route_id" => $routeId ? (int)$routeId : null,
         "route_orders" => $routeOrders,
     ]);

@@ -116,8 +116,8 @@ try {
             // Order stats
             $stmt = $db->prepare("
                 SELECT COUNT(*) as total_orders,
-                       COALESCE(SUM(CASE WHEN status NOT IN ('cancelled','refunded') THEN total ELSE 0 END), 0) as total_spent,
-                       SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_count
+                       COALESCE(SUM(CASE WHEN status NOT IN ('cancelado','reembolsado') THEN total ELSE 0 END), 0) as total_spent,
+                       SUM(CASE WHEN status = 'cancelado' THEN 1 ELSE 0 END) as cancelled_count
                 FROM om_market_orders WHERE customer_id = ?
             ");
             $stmt->execute([$customer_id]);
@@ -133,19 +133,18 @@ try {
         $ticket_id = (int)$context['ticket_id'];
         try {
             $stmt = $db->prepare("
-                SELECT id, customer_id, order_id, category, subject, description,
-                       status, priority, created_at, resolved_at
+                SELECT id, entidade_id, assunto, categoria,
+                       status, prioridade, created_at, resolvido_em
                 FROM om_support_tickets WHERE id = ?
             ");
             $stmt->execute([$ticket_id]);
             $ticket = $stmt->fetch();
             if ($ticket) {
                 $contextInfo .= "\n\n--- TICKET DE SUPORTE #{$ticket_id} ---\n";
-                $contextInfo .= "Categoria: {$ticket['category']}\n";
-                $contextInfo .= "Assunto: {$ticket['subject']}\n";
-                $contextInfo .= "Descricao: {$ticket['description']}\n";
+                $contextInfo .= "Categoria: {$ticket['categoria']}\n";
+                $contextInfo .= "Assunto: {$ticket['assunto']}\n";
                 $contextInfo .= "Status: {$ticket['status']}\n";
-                $contextInfo .= "Prioridade: {$ticket['priority']}\n";
+                $contextInfo .= "Prioridade: {$ticket['prioridade']}\n";
                 $contextInfo .= "Criado em: {$ticket['created_at']}\n";
             }
         } catch (Exception $e) {

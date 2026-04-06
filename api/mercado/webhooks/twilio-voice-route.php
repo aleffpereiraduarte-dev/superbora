@@ -202,7 +202,9 @@ try {
         // Build <Client> tags for Dial (Twilio Client softphone)
         $dialStatusUrl = 'https://superbora.com.br/api/mercado/webhooks/twilio-status.php';
         $dialStatusEsc = htmlspecialchars($dialStatusUrl, ENT_XML1 | ENT_QUOTES, 'UTF-8');
-        $callerIdNumber = $_ENV['TWILIO_PHONE'] ?? getenv('TWILIO_PHONE') ?: '+15705299780';
+        $phoneBR = $_ENV['TWILIO_PHONE_BR'] ?? getenv('TWILIO_PHONE_BR') ?: '';
+        $callerFrom = $_POST['From'] ?? $_GET['From'] ?? '';
+        $callerIdNumber = ($phoneBR && preg_match('/^\+55/', $callerFrom)) ? $phoneBR : ($_ENV['TWILIO_PHONE'] ?? getenv('TWILIO_PHONE') ?: '+15705299780');
 
         if (!empty($agents)) {
             $clientTags = '';
@@ -276,11 +278,14 @@ try {
     $wantsComplaint = false;
 
     if (!empty($speechResult)) {
+        // Check if speech has clear ordering intent (guards against "meu pedido" false positive)
+        $hasOrderingIntent = preg_match('/\b(?:fazer|quero|vou|bora)\b.*\b(?:pedido|pedir)\b/iu', $speechLower);
+
         // 1. Order status / tracking — "status"/"pedido"/"onde está"
         $statusKeywords = ['status', 'rastrear', 'rastreio', 'cadê meu pedido', 'cade meu pedido',
                            'onde ta meu', 'onde está meu', 'onde esta meu', 'meu pedido', 'acompanhar'];
         foreach ($statusKeywords as $sk) {
-            if (mb_strpos($speechLower, $sk) !== false) { $wantsSupport = true; break; }
+            if (mb_strpos($speechLower, $sk) !== false && !$hasOrderingIntent) { $wantsSupport = true; break; }
         }
 
         // 2. Cancellation — "cancelar"/"cancela"
@@ -475,7 +480,9 @@ try {
     // Try to match store by name — multi-strategy fuzzy matching (phonetic + levenshtein + substring)
     $storeIdentified = null;
     $storeId = null;
-    if (!$wantsSupport && !$detectedCep && empty($detectedCuisine) && !empty($speechResult)) {
+    // Skip store matching if speech is a pure order intent with no store name
+    $pureOrderIntent = $wantsOrder && preg_match('/^(?:quero|vou|bora|fazer?|me faz|pode fazer|preciso)\s+(?:um |o )?(?:pedido|pedir|encomendar|comer)/iu', $speechLower);
+    if (!$wantsSupport && !$detectedCep && empty($detectedCuisine) && !empty($speechResult) && !$pureOrderIntent) {
         // Strategy 1: Exact substring match (fastest)
         $storeStmt = $db->prepare("
             SELECT partner_id, name FROM om_market_partners
@@ -585,12 +592,13 @@ try {
         }
 
         // Strategy 3: Customer's recent stores (if caller identified)
-        if (!$store && $customerId) {
+        $speechWords = array_filter(preg_split('/\s+/', $speechLower), fn($w) => mb_strlen($w) >= 3);
+        if (!$store && $customerId && !empty($speechWords)) {
             $favStmt = $db->prepare("
                 SELECT DISTINCT p.partner_id, p.name
                 FROM om_market_orders o
                 JOIN om_market_partners p ON p.partner_id = o.partner_id
-                WHERE o.customer_id = ? AND o.status NOT IN ('cancelled','refunded') AND p.status = '1'
+                WHERE o.customer_id = ? AND o.status NOT IN ('cancelado','reembolsado') AND p.status = '1'
                 ORDER BY o.date_added DESC LIMIT 10
             ");
             $favStmt->execute([$customerId]);
@@ -654,17 +662,14 @@ try {
         ]
     ];
 
-    // Populate history with context
+    // Populate history with context (user input always added; assistant response added after $ssml is built below)
     if ($storeIdentified) {
         $aiContext['_ai_context']['history'][] = ['role' => 'user', 'content' => $speechResult];
         $aiContext['_ai_context']['history'][] = ['role' => 'assistant', 'content' => "Show! Encontrei a {$storeIdentified}. O que você vai querer?"];
     } elseif (!empty($speechResult)) {
         $aiContext['_ai_context']['history'][] = ['role' => 'user', 'content' => $speechResult];
     }
-
-    // Save context
-    $db->prepare("UPDATE om_callcenter_calls SET notes = ? WHERE id = ?")
-       ->execute([json_encode($aiContext, JSON_UNESCAPED_UNICODE), $callId]);
+    // NOTE: assistant response is added to history after $ssml is built (see below)
 
     ccBroadcastDashboard('call_ai_started', [
         'call_id' => $callId,
@@ -707,6 +712,7 @@ try {
             $ssml .= "Vamos montar seu pedido. ";
             $ssml .= '<break time="200ms"/>';
             $ssml .= "Me fala o nome do restaurante que você quer, ou se preferir, me diz seu CEP que eu mostro as opções perto de você.";
+            $aiContext['_ai_context']['asked_for_cep'] = true;
         }
     } elseif ($storeIdentified) {
         $ssml .= "Show" . ($firstName ? ", {$firstName}" : "") . "! ";
@@ -766,6 +772,7 @@ try {
             $ssml .= "Quer saber sobre esse pedido, ou fazer um pedido novo de {$label}?";
         } else {
             $ssml .= "Vou procurar as melhores opções de {$label} pra você. Me fala seu CEP ou o nome do restaurante que você gosta!";
+            $aiContext['_ai_context']['asked_for_cep'] = true;
         }
     } else {
         // No clear match — smart retry with more specific prompts
@@ -794,6 +801,20 @@ try {
     // Strip SSML tags for TTS
     $plainSsml = preg_replace('/<[^>]+>/', ' ', $ssml);
     $plainSsml = preg_replace('/\s+/', ' ', trim($plainSsml));
+
+    // Save assistant response to history so AI handler knows what was already said
+    if (!empty($plainSsml)) {
+        $aiContext['_ai_context']['history'][] = ['role' => 'assistant', 'content' => $plainSsml];
+    }
+    // Persist context to DB
+    try {
+        $db->prepare("UPDATE om_callcenter_calls SET notes = ? WHERE id = ?")->execute([
+            json_encode($aiContext, JSON_UNESCAPED_UNICODE),
+            $callId
+        ]);
+    } catch (\Throwable $e) {
+        error_log("[twilio-voice-route] Failed to save AI context: " . $e->getMessage());
+    }
 
     $aiUrlEsc = htmlspecialchars($aiUrl, ENT_XML1 | ENT_QUOTES, 'UTF-8');
 

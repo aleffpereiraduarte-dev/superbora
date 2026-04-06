@@ -18,14 +18,17 @@ try {
     // Full order with JOINs
     $stmt = $db->prepare("
         SELECT o.*,
-               c.firstname as customer_firstname, c.lastname as customer_lastname,
-               c.email as customer_email, c.telephone as customer_phone,
+               COALESCE(c.firstname, om.name) as customer_firstname,
+               c.lastname as customer_lastname,
+               COALESCE(c.email, om.email) as customer_email,
+               COALESCE(c.telephone, om.phone) as customer_phone,
                p.name as partner_name, p.email as partner_email,
                p.phone as partner_phone, p.address as partner_address,
                s.name as shopper_name, s.email as shopper_email,
                s.phone as shopper_phone
         FROM om_market_orders o
         LEFT JOIN oc_customer c ON o.customer_id = c.customer_id
+        LEFT JOIN om_customers om ON o.customer_id = om.customer_id
         LEFT JOIN om_market_partners p ON o.partner_id = p.partner_id
         LEFT JOIN om_market_shoppers s ON o.shopper_id = s.shopper_id
         WHERE o.order_id = ?

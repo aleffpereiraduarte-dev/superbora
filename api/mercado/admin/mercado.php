@@ -84,9 +84,9 @@ try {
         $stmt = $db->prepare("
             SELECT COUNT(*) as total_orders,
                    COALESCE(SUM(total), 0) as total_revenue,
-                   COALESCE(SUM(CASE WHEN status = 'refunded' THEN refund_amount ELSE 0 END), 0) as total_refunds
+                   COALESCE(SUM(CASE WHEN status = 'reembolsado' THEN refund_amount ELSE 0 END), 0) as total_refunds
             FROM om_market_orders
-            WHERE partner_id = ? AND status NOT IN ('cancelado', 'cancelled')
+            WHERE partner_id = ? AND status NOT IN ('cancelado', 'reembolsado')
         ");
         $stmt->execute([$id]);
         $revenue = $stmt->fetch();
@@ -124,8 +124,8 @@ try {
     // Order stats
     $stmt = $db->prepare("
         SELECT COUNT(*) as total_orders,
-               COALESCE(SUM(CASE WHEN status NOT IN ('cancelled','refunded') THEN total ELSE 0 END), 0) as total_revenue,
-               COALESCE(AVG(CASE WHEN status NOT IN ('cancelled','refunded') THEN total END), 0) as avg_order
+               COALESCE(SUM(CASE WHEN status NOT IN ('cancelado','reembolsado') THEN total ELSE 0 END), 0) as total_revenue,
+               COALESCE(AVG(CASE WHEN status NOT IN ('cancelado','reembolsado') THEN total END), 0) as avg_order
         FROM om_market_orders WHERE partner_id = ?
     ");
     $stmt->execute([$id]);

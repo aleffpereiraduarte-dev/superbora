@@ -90,9 +90,10 @@ try {
     if ($auto_refund && (float)$order['total'] > 0) {
         $refund_amount = (float)$order['total'] - (float)($order['refund_amount'] ?? 0);
         if ($refund_amount > 0) {
-            // Update refund amount on order
-            $stmt = $db->prepare("UPDATE om_market_orders SET refund_amount = ?, status = 'refunded' WHERE order_id = ?");
-            $stmt->execute([(float)$order['total'], $order_id]);
+            // Update refund amount on order (add to existing partial refunds)
+            $new_refund_total = (float)($order['refund_amount'] ?? 0) + $refund_amount;
+            $stmt = $db->prepare("UPDATE om_market_orders SET refund_amount = ?, status = 'cancelado' WHERE order_id = ?");
+            $stmt->execute([$new_refund_total, $order_id]);
 
             // Create refund record
             try {

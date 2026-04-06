@@ -203,20 +203,35 @@ function queueWhatsApp(string $phone, string $type, array $params = []): bool {
 }
 
 /**
- * Queue an email job
+ * Queue an email job (Redis preferred, DB fallback)
  */
 function queueEmail(string $to, string $subject, string $template, array $data = []): bool {
+    // Try Redis queue first (faster, processed by queue-worker)
     $queue = JobQueue::getInstance();
-    if (!$queue->isAvailable()) return false;
+    if ($queue->isAvailable()) {
+        $jobId = $queue->push('email', [
+            'to' => $to,
+            'subject' => $subject,
+            'template' => $template,
+            'data' => $data,
+        ]);
+        if ($jobId !== null) return true;
+    }
 
-    $jobId = $queue->push('email', [
-        'to' => $to,
-        'subject' => $subject,
-        'template' => $template,
-        'data' => $data,
-    ]);
-
-    return $jobId !== null;
+    // Fallback: DB-backed queue (processed by cron/process-email-queue.php)
+    // This requires the HTML body to be pre-rendered, so we build a simple wrapper
+    try {
+        require_once dirname(__DIR__) . '/helpers/email.php';
+        $htmlBody = "<p>" . htmlspecialchars($subject, ENT_QUOTES, 'UTF-8') . "</p>";
+        if (!empty($data['html'])) {
+            $htmlBody = $data['html'];
+        }
+        $result = queueMarketEmail($to, $subject, $htmlBody, null, $data['customer_id'] ?? null, $template);
+        return $result !== false;
+    } catch (Exception $e) {
+        error_log("[Queue] DB email fallback failed: " . $e->getMessage());
+        return false;
+    }
 }
 
 /**

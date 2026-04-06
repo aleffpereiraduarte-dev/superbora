@@ -19,7 +19,7 @@ try {
     $stmt = $db->prepare("
         SELECT DATE(created_at) as date,
                COUNT(*) as pedidos,
-               COALESCE(SUM(CASE WHEN status NOT IN ('cancelled', 'refunded') THEN total ELSE 0 END), 0) as receita
+               COALESCE(SUM(CASE WHEN status NOT IN ('cancelado', 'reembolsado') THEN total ELSE 0 END), 0) as receita
         FROM om_market_orders
         WHERE created_at >= CURRENT_DATE - (? || ' days')::INTERVAL
         GROUP BY DATE(created_at)

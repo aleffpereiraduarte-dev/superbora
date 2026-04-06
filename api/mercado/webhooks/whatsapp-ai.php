@@ -503,7 +503,7 @@ function getSmartReorderSuggestion(PDO $db, int $customerId): ?array
                    o.date_added, o.created_at
             FROM om_market_orders o
             WHERE o.customer_id = ?
-              AND o.status IN ('entregue', 'delivered', 'retirado')
+              AND o.status IN ('entregue')
             ORDER BY o.date_added DESC
             LIMIT 20
         ");
@@ -5392,7 +5392,7 @@ function handleQuickCommand(PDO $db, string $message, array $conversation, array
                 $referralCode = $existingCode;
             } else {
                 // Generate new code: SUPERBORA-{FIRST_NAME}-{RANDOM4}
-                $nameStmt = $db->prepare("SELECT name FROM om_market_customers WHERE customer_id = ? LIMIT 1");
+                $nameStmt = $db->prepare("SELECT COALESCE(mc.name, oc.name) as name FROM (SELECT ?::int as cid) q LEFT JOIN om_market_customers mc ON mc.customer_id = q.cid LEFT JOIN om_customers oc ON oc.customer_id = q.cid LIMIT 1");
                 $nameStmt->execute([$customerId]);
                 $custName = $nameStmt->fetchColumn() ?: 'AMIGO';
                 $firstName = strtoupper(explode(' ', trim($custName))[0]);
@@ -6718,7 +6718,7 @@ function submitWhatsAppOrder(PDO $db, array $conversation): array
     $customerEmail = '';
 
     if ($customerId) {
-        $custStmt = $db->prepare("SELECT name, email, phone FROM om_market_customers WHERE customer_id = ?");
+        $custStmt = $db->prepare("SELECT COALESCE(mc.name, oc.name) as name, COALESCE(mc.email, oc.email) as email, COALESCE(mc.phone, oc.phone) as phone FROM (SELECT ?::int as cid) q LEFT JOIN om_market_customers mc ON mc.customer_id = q.cid LEFT JOIN om_customers oc ON oc.customer_id = q.cid");
         $custStmt->execute([$customerId]);
         $custData = $custStmt->fetch(PDO::FETCH_ASSOC);
         if ($custData) {

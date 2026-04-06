@@ -28,10 +28,12 @@ try {
         response(false, null, "Metodo nao permitido", 405);
     }
 
-    // SECURITY: Only manager/rh can process manual repasses
-    $admin_role = $payload['data']['role'] ?? $payload['type'] ?? '';
-    if (!in_array($admin_role, ['manager', 'rh', 'superadmin'])) {
-        response(false, null, "Apenas manager ou RH podem criar repasses manuais", 403);
+    // SECURITY: Only manager/admin role or RH type can process manual repasses
+    $admin_role = $payload['data']['role'] ?? '';
+    $admin_type = $payload['type'] ?? '';
+    // RH type users always have access
+    if ($admin_type !== 'rh' && !in_array($admin_role, ['manager', 'admin'], true)) {
+        response(false, null, "Apenas manager ou superior podem criar repasses manuais", 403);
     }
 
     $input = getInput();

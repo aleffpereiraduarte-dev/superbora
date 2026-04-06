@@ -55,12 +55,12 @@ try {
             // Order stats aggregated
             $stmt = $db->prepare("
                 SELECT COUNT(*) as total_orders,
-                       COALESCE(SUM(CASE WHEN status NOT IN ('cancelled','refunded') THEN total ELSE 0 END), 0) as gmv,
-                       COALESCE(AVG(CASE WHEN status NOT IN ('cancelled','refunded') THEN total END), 0) as avg_ticket,
+                       COALESCE(SUM(CASE WHEN status NOT IN ('cancelado','reembolsado') THEN total ELSE 0 END), 0) as gmv,
+                       COALESCE(AVG(CASE WHEN status NOT IN ('cancelado','reembolsado') THEN total END), 0) as avg_ticket,
                        COALESCE(SUM(COALESCE(platform_fee, service_fee, 0)), 0) as total_commission,
                        MAX(created_at) as last_order_date,
-                       SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_count,
-                       SUM(CASE WHEN status = 'refunded' THEN 1 ELSE 0 END) as refunded_count,
+                       SUM(CASE WHEN status = 'cancelado' THEN 1 ELSE 0 END) as cancelled_count,
+                       SUM(CASE WHEN status = 'reembolsado' THEN 1 ELSE 0 END) as refunded_count,
                        SUM(CASE WHEN status = 'entregue' THEN 1 ELSE 0 END) as delivered_count
                 FROM om_market_orders
                 WHERE partner_id = ?
@@ -99,7 +99,7 @@ try {
                        COALESCE(SUM(COALESCE(platform_fee, service_fee, 0)), 0) as commission
                 FROM om_market_orders
                 WHERE partner_id = ?
-                  AND status NOT IN ('cancelled','refunded')
+                  AND status NOT IN ('cancelado','reembolsado')
                   AND created_at >= CURRENT_DATE - INTERVAL '6 months'
                 GROUP BY DATE_TRUNC('month', created_at)
                 ORDER BY month DESC
@@ -243,8 +243,8 @@ try {
             FROM om_market_partners p
             LEFT JOIN LATERAL (
                 SELECT COUNT(*) as total_orders,
-                       COALESCE(SUM(CASE WHEN o.status NOT IN ('cancelled','refunded') THEN o.total ELSE 0 END), 0) as gmv,
-                       COALESCE(AVG(CASE WHEN o.status NOT IN ('cancelled','refunded') THEN o.total END), 0) as avg_rating
+                       COALESCE(SUM(CASE WHEN o.status NOT IN ('cancelado','reembolsado') THEN o.total ELSE 0 END), 0) as gmv,
+                       COALESCE(AVG(CASE WHEN o.status NOT IN ('cancelado','reembolsado') THEN o.total END), 0) as avg_rating
                 FROM om_market_orders o
                 WHERE o.partner_id = p.partner_id
             ) os ON TRUE

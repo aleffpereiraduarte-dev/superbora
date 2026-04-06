@@ -121,8 +121,17 @@ try {
     // Validar specific_partners
     if (!empty($cupom['specific_partners'])) {
         $partners = json_decode($cupom['specific_partners'], true);
-        if (is_array($partners) && !empty($partners) && $partner_id && !in_array($partner_id, $partners)) {
-            response(false, ["valido" => false], "Cupom nao valido para esta loja", 400);
+        if (is_array($partners) && !empty($partners)) {
+            // Use cart's actual partner if client didn't provide partner_id
+            $checkPartnerId = $partner_id;
+            if (!$checkPartnerId && $customer_id) {
+                $stmtCartPartner = $db->prepare("SELECT DISTINCT partner_id FROM om_market_cart WHERE customer_id = ? LIMIT 1");
+                $stmtCartPartner->execute([$customer_id]);
+                $checkPartnerId = (int)$stmtCartPartner->fetchColumn();
+            }
+            if ($checkPartnerId && !in_array($checkPartnerId, $partners)) {
+                response(false, ["valido" => false], "Cupom nao valido para esta loja", 400);
+            }
         }
     }
 

@@ -2,76 +2,102 @@
 /**
  * POST /api/mercado/gift-cards/purchase.php
  * Purchase a gift card
+ *
+ * Body: { amount, recipient_name, recipient_email?, message? }
+ * Amounts: R$25, R$50, R$100, R$200 (fixed options)
+ * Generates unique 16-char alphanumeric code (XXXX-XXXX-XXXX-XXXX)
+ * Returns: { code, amount, expires_at (1 year), share_url }
+ * Auth required (buyer customer_id)
  */
 require_once __DIR__ . "/../config/database.php";
-require_once __DIR__ . "/../helpers/rate-limit.php";
-require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
 
-try {
-    $input = getInput();
-    $db = getDB();
-    OmAuth::getInstance()->setDb($db);
+setCorsHeaders();
 
-    // Auth is optional for gift card purchase (guests can buy too)
-    $buyerId = null;
-    $token = om_auth()->getTokenFromRequest();
-    if ($token) {
-        $payload = om_auth()->validateToken($token);
-        if ($payload && $payload['type'] === 'customer') {
-            $buyerId = (int)$payload['uid'];
+if ($_SERVER["REQUEST_METHOD"] !== "POST") {
+    response(false, null, "Metodo nao permitido", 405);
+}
+
+$customerId = requireCustomerAuth();
+$db = getDB();
+$input = getInput();
+
+// Validate amount - fixed options only
+$allowedAmounts = [25, 50, 100, 200];
+$amount = (float)($input['amount'] ?? 0);
+
+if (!in_array($amount, $allowedAmounts, false)) {
+    // Check with float tolerance
+    $validAmount = false;
+    foreach ($allowedAmounts as $a) {
+        if (abs($amount - $a) < 0.01) {
+            $amount = (float)$a;
+            $validAmount = true;
+            break;
         }
     }
+    if (!$validAmount) {
+        response(false, null, "Valor invalido. Opcoes: R$25, R$50, R$100 ou R$200", 400);
+    }
+}
 
-    // Rate limiting: 10 purchases per hour per customer (or IP for guests)
-    $rateLimitKey = $buyerId ? "giftcard_purchase_c{$buyerId}" : "giftcard_purchase_" . getRateLimitIP();
-    if (!checkRateLimit($rateLimitKey, 10, 60)) {
-        response(false, null, "Muitas compras de cartao presente. Tente novamente em 1 hora.", 429);
-    }
+$recipientName = trim(sanitizeOutput($input['recipient_name'] ?? ''));
+$recipientEmail = trim($input['recipient_email'] ?? '');
+$message = trim(sanitizeOutput($input['message'] ?? ''));
 
-    $amount = (float)($input['amount'] ?? 0);
-    $recipientName = trim($input['recipient_name'] ?? '');
-    $recipientEmail = trim($input['recipient_email'] ?? '');
-    $message = trim($input['message'] ?? '');
+if (empty($recipientName)) {
+    response(false, null, "Nome do destinatario obrigatorio", 400);
+}
+if (mb_strlen($recipientName) > 255) {
+    response(false, null, "Nome do destinatario muito longo", 400);
+}
+if (!empty($recipientEmail) && !filter_var($recipientEmail, FILTER_VALIDATE_EMAIL)) {
+    response(false, null, "Email invalido", 400);
+}
+if (mb_strlen($message) > 500) {
+    response(false, null, "Mensagem muito longa (maximo 500 caracteres)", 400);
+}
 
-    if ($amount < 10 || $amount > 1000 || !is_finite($amount)) {
-        response(false, null, "Valor deve ser entre R$10 e R$1000", 400);
-    }
-    if (empty($recipientName)) {
-        response(false, null, "Nome do destinatario obrigatorio", 400);
-    }
-    if (mb_strlen($recipientName) > 100) {
-        response(false, null, "Nome muito longo", 400);
-    }
-    if (!empty($recipientEmail) && !filter_var($recipientEmail, FILTER_VALIDATE_EMAIL)) {
-        response(false, null, "Email invalido", 400);
-    }
-    if (mb_strlen($message) > 500) {
-        response(false, null, "Mensagem muito longa", 400);
-    }
+try {
+    // Get purchaser name
+    $stmt = dbQuery($db, "SELECT name FROM om_market_customers WHERE customer_id = ?", [$customerId]);
+    $purchaserName = $stmt->fetchColumn() ?: 'Cliente';
 
-    // Generate unique 16-char code
+    // Generate unique 16-char alphanumeric code
     $code = '';
     $attempts = 0;
     do {
-        $code = strtoupper(substr(bin2hex(random_bytes(10)), 0, 16));
-        // Format: XXXX-XXXX-XXXX-XXXX
-        $check = $db->prepare("SELECT id FROM om_market_gift_cards WHERE code = ?");
-        $check->execute([$code]);
+        // SECURITY: Cryptographically secure random
+        $raw = strtoupper(bin2hex(random_bytes(8))); // 16 hex chars
+        $code = substr($raw, 0, 16);
+        $check = dbQuery($db, "SELECT 1 FROM om_gift_cards WHERE code = ?", [$code]);
         $attempts++;
-    } while ($check->fetch() && $attempts < 10);
+        if ($attempts > 20) {
+            response(false, null, "Erro ao gerar codigo. Tente novamente.", 500);
+        }
+    } while ($check->fetch());
 
-    // Gift card is created as 'pending_payment' until payment is confirmed.
-    // Payment confirmation webhook should update status to 'active'.
-    $stmt = $db->prepare("
-        INSERT INTO om_market_gift_cards (code, amount, balance, buyer_id, recipient_name, recipient_email, message, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_payment')
-    ");
-    $stmt->execute([$code, $amount, $amount, $buyerId, $recipientName, $recipientEmail, $message]);
+    // Format: XXXX-XXXX-XXXX-XXXX
+    $formattedCode = implode('-', str_split($code, 4));
+
+    // Expires in 1 year
+    $expiresAt = date('Y-m-d H:i:s', strtotime('+1 year'));
+
+    // Insert gift card
+    $stmt = dbQuery($db, "
+        INSERT INTO om_gift_cards
+            (code, amount, value, balance, purchaser_id, purchased_by, purchaser_name,
+             recipient_name, recipient_email, message, status, is_active, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', true, ?)
+    ", [
+        $code, $amount, $amount, $amount,
+        $customerId, $customerId, $purchaserName,
+        $recipientName, $recipientEmail, $message,
+        $expiresAt
+    ]);
 
     $cardId = (int)$db->lastInsertId();
 
-    // Format code for display
-    $formattedCode = implode('-', str_split($code, 4));
+    $shareUrl = "https://superbora.com.br/gift-card?code={$code}";
 
     response(true, [
         'card_id' => $cardId,
@@ -81,9 +107,12 @@ try {
         'recipient_name' => $recipientName,
         'recipient_email' => $recipientEmail,
         'message' => $message,
-    ], "Cartao presente criado com sucesso!");
+        'purchaser_name' => $purchaserName,
+        'expires_at' => $expiresAt,
+        'share_url' => $shareUrl,
+    ], "Vale-presente criado com sucesso!");
 
 } catch (Exception $e) {
-    error_log("[API Gift Card Purchase] Erro: " . $e->getMessage());
-    response(false, null, "Erro ao criar cartao presente", 500);
+    error_log("[GiftCard Purchase] Erro: " . $e->getMessage());
+    response(false, null, "Erro ao criar vale-presente", 500);
 }

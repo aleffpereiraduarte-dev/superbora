@@ -10,10 +10,12 @@
  */
 require_once __DIR__ . "/../config/database.php";
 require_once dirname(__DIR__, 2) . "/cache/CacheHelper.php";
+require_once __DIR__ . "/../helpers/cache.php";
 require_once __DIR__ . "/../helpers/boraum-api.php";
+require_once __DIR__ . '/horarios.php'; // isOpenNow() for store hours
 
 setCorsHeaders();
-header('Cache-Control: public, max-age=300');
+header('Cache-Control: public, max-age=60');
 
 try {
     $categoria = $_GET["categoria"] ?? null;
@@ -29,10 +31,10 @@ try {
         $categoria = null;
     }
 
-    // Cache key baseado nos parametros
-    $cacheKey = "vitrine_" . md5(($categoria ?? '') . ($busca ?? '') . ($lat ?? '') . ($lng ?? '') . ($city ?? '') . ($state ?? ''));
+    // Cache key baseado nos parametros — Redis cache 60s (was CacheHelper 300s)
+    $cacheKey = "vitrine:" . md5(($categoria ?? '') . ($busca ?? '') . ($lat ?? '') . ($lng ?? '') . ($city ?? '') . ($state ?? ''));
 
-    $data = CacheHelper::remember($cacheKey, 300, function() use ($categoria, $busca, $lat, $lng, $city, $state) {
+    $data = cachedQuery($cacheKey, 60, function() use ($categoria, $busca, $lat, $lng, $city, $state) {
         $db = getDB();
 
         $params = [];
@@ -83,6 +85,9 @@ try {
         $sql = "SELECT p.partner_id, p.name, p.trade_name, p.logo, p.categoria,
                        p.address, p.city, p.state, p.phone,
                        p.open_time, p.close_time, p.is_open,
+                       p.opens_at, p.closes_at, p.weekly_hours, p.horario_funcionamento,
+                       p.horario_abre, p.horario_fecha,
+                       p.open_sunday, p.sunday_opens_at, p.sunday_closes_at,
                        p.rating, p.delivery_fee, p.delivery_time_min,
                        p.busy_mode, p.current_prep_time,
                        p.lat, p.lng,
@@ -115,7 +120,20 @@ try {
                 $deliveryAvailable = false;
             }
 
-            return [
+            // Compute open/close status from partner hours table
+        $horarioStatus = null;
+        try {
+            $horarioStatus = isOpenNow($p);
+        } catch (\Throwable $e) {
+            // Fallback: use is_open flag
+        }
+
+        $isAberto = $horarioStatus ? (bool)$horarioStatus['is_open'] : ((int)($p["is_open"] ?? 0) === 1);
+        $horarioMsg = $horarioStatus['message'] ?? null;
+        $fechaAs = $horarioStatus['closes_at'] ?? null;
+        $abreAs = $horarioStatus['opens_at'] ?? null;
+
+        return [
                 "id" => (int)$p["partner_id"],
                 "nome" => $p["name"] ?? $p["trade_name"] ?? "",
                 "logo" => $p["logo"] ?? null,
@@ -126,7 +144,10 @@ try {
                 "telefone" => $p["phone"] ?? "",
                 "horario_abertura" => $p["open_time"] ?? null,
                 "horario_fechamento" => $p["close_time"] ?? null,
-                "aberto" => (int)($p["is_open"] ?? 0) === 1,
+                "aberto" => $isAberto,
+                "fecha_as" => $fechaAs,
+                "abre_as" => $abreAs,
+                "horario_status" => $horarioMsg,
                 "busy_mode" => (bool)($p["busy_mode"] ?? false),
                 "avaliacao" => (float)($p["rating"] ?? 5.0),
                 "taxa_entrega" => (float)($p["delivery_fee"] ?? 0),

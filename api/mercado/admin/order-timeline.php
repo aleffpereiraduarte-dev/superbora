@@ -21,7 +21,7 @@ try {
                    WHEN t.actor_type = 'admin' THEN (SELECT name FROM om_admins WHERE admin_id = t.actor_id)
                    WHEN t.actor_type = 'shopper' THEN (SELECT name FROM om_market_shoppers WHERE shopper_id = t.actor_id)
                    WHEN t.actor_type = 'partner' THEN (SELECT name FROM om_market_partners WHERE partner_id = t.actor_id)
-                   WHEN t.actor_type = 'customer' THEN (SELECT firstname FROM oc_customer WHERE customer_id = t.actor_id)
+                   WHEN t.actor_type = 'customer' THEN COALESCE((SELECT firstname FROM oc_customer WHERE customer_id = t.actor_id), (SELECT name FROM om_customers WHERE customer_id = t.actor_id))
                    ELSE 'Sistema'
                END as actor_name
         FROM om_order_timeline t

@@ -18,12 +18,13 @@ try {
                o.shopper_id,
                s.name as shopper_name, s.phone as shopper_phone, s.photo as shopper_photo,
                p.name as partner_name, p.address as partner_address,
-               c.firstname as customer_name, c.telephone as customer_phone,
+               COALESCE(c.firstname, om.name) as customer_name, COALESCE(c.telephone, om.phone) as customer_phone,
                w.current_lat AS lat, w.current_lng AS lng, w.is_online as worker_online
         FROM om_market_orders o
         INNER JOIN om_market_shoppers s ON o.shopper_id = s.shopper_id
         LEFT JOIN om_market_partners p ON o.partner_id = p.partner_id
         LEFT JOIN oc_customer c ON o.customer_id = c.customer_id
+        LEFT JOIN om_customers om ON o.customer_id = om.customer_id
         LEFT JOIN om_workers w ON w.email = s.email
         WHERE o.status IN ('collecting', 'in_transit')
         ORDER BY o.created_at ASC

@@ -1,11 +1,10 @@
 <?php
 /**
  * POST /api/mercado/webhooks/voice-sms.php
- * Internal endpoint — sends order confirmation SMS from voice server
+ * Internal endpoint — sends order confirmation via WhatsApp (preferred) or SMS (fallback)
  * Protected by X-Internal-Key header
  */
 
-// Load env
 if (file_exists(__DIR__ . '/../../../.env')) {
     $envFile = file(__DIR__ . '/../../../.env', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     foreach ($envFile as $line) {
@@ -19,9 +18,7 @@ if (file_exists(__DIR__ . '/../../../.env')) {
 
 header('Content-Type: application/json');
 
-// Validate internal key
-$internalKey = $_SERVER['HTTP_X_INTERNAL_KEY'] ?? '';
-if ($internalKey !== 'superbora-voice-2026') {
+if (($_SERVER['HTTP_X_INTERNAL_KEY'] ?? '') !== 'superbora-voice-2026') {
     http_response_code(403);
     echo json_encode(['error' => 'Unauthorized']);
     exit;
@@ -33,7 +30,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     exit;
 }
 
-require_once __DIR__ . '/../helpers/twilio-sms.php';
+require_once __DIR__ . '/../helpers/twilio-whatsapp.php';
 
 $phone = preg_replace('/[^0-9+]/', '', $_POST['phone'] ?? '');
 $orderNumber = preg_replace('/[^a-zA-Z0-9\-_#]/', '', $_POST['order_number'] ?? '');
@@ -47,17 +44,13 @@ if (empty($phone) || empty($orderNumber)) {
     exit;
 }
 
-$smsBody = "SuperBora - Pedido Confirmado!\n\n"
+$body = "SuperBora - Pedido Confirmado!\n\n"
     . "Pedido: {$orderNumber}\n"
     . "Loja: {$storeName}\n"
     . "Itens: {$items}\n"
     . "Total: R\${$total}\n\n"
     . "Acompanhe: superbora.com.br/tracking/{$orderNumber}";
 
-try {
-    $result = sendSMS($phone, $smsBody);
-    echo json_encode(['success' => true, 'result' => $result], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
-} catch (Exception $e) {
-    error_log("[voice-sms] Failed: " . $e->getMessage());
-    echo json_encode(['success' => false, 'error' => 'Failed to send SMS'], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
-}
+$result = sendWhatsAppOrSMS($phone, $body);
+error_log("[voice-sms] order={$orderNumber} sent_via={$result['sent_via']} to={$phone}");
+echo json_encode(['success' => $result['success'], 'sent_via' => $result['sent_via']]);

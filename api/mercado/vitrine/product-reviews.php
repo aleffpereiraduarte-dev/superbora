@@ -91,11 +91,12 @@ try {
             r.comment,
             r.photo as main_photo,
             r.created_at,
-            COALESCE(c.firstname, 'Cliente') as customer_name,
-            c.customer_id
+            COALESCE(c.firstname, om.name, 'Cliente') as customer_name,
+            r.customer_id
         FROM om_market_order_reviews r
         INNER JOIN om_market_order_items oi ON r.order_id = oi.order_id
         LEFT JOIN oc_customer c ON r.customer_id = c.customer_id
+        LEFT JOIN om_customers om ON r.customer_id = om.customer_id
         WHERE oi.product_id = ?
         ORDER BY {$orderBy}
         LIMIT ? OFFSET ?

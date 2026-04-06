@@ -298,8 +298,8 @@ try {
             // Notify customer
             try {
                 $db->prepare("
-                    INSERT INTO om_market_notifications (customer_id, titulo, mensagem, tipo, referencia_tipo, referencia_id, created_at)
-                    VALUES (?, ?, ?, 'dispute', 'dispute', ?, NOW())
+                    INSERT INTO om_market_notifications (recipient_id, recipient_type, title, message, type, related_type, related_id)
+                    VALUES (?, 'customer', ?, ?, 'dispute', 'dispute', ?)
                 ")->execute([
                     $dispute['customer_id'],
                     "Disputa #{$disputeId} resolvida",

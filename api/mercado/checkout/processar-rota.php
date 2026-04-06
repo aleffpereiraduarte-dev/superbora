@@ -82,7 +82,7 @@ try {
     // Block duplicate partner on same route
     $existingRouteId = (int)($primary['route_id'] ?? 0);
     if ($existingRouteId) {
-        $stmtDup = $db->prepare("SELECT 1 FROM om_market_orders WHERE route_id = ? AND partner_id = ? AND status NOT IN ('cancelado','cancelled') LIMIT 1");
+        $stmtDup = $db->prepare("SELECT 1 FROM om_market_orders WHERE route_id = ? AND partner_id = ? AND status NOT IN ('cancelado') LIMIT 1");
         $stmtDup->execute([$existingRouteId, $partner_id]);
         if ($stmtDup->fetch()) {
             $db->rollBack();

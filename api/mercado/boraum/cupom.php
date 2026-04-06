@@ -117,7 +117,7 @@ try {
     if (!empty($coupon['first_order_only']) && $user['customer_id']) {
         $stmtOrders = $db->prepare("
             SELECT COUNT(*) as total FROM om_market_orders
-            WHERE customer_id = ? AND status NOT IN ('cancelled','rejected')
+            WHERE customer_id = ? AND status NOT IN ('cancelado','rejeitado')
         ");
         $stmtOrders->execute([$user['customer_id']]);
         $orderCount = (int)$stmtOrders->fetch()['total'];

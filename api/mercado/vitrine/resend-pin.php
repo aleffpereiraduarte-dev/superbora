@@ -69,9 +69,8 @@ try {
     }
 
     // Verificar se pedido esta em status valido
-    $validStatuses = ['pendente', 'confirmed', 'aceito', 'preparando', 'shopping', 'coletando',
-                      'purchased', 'coleta_finalizada', 'pronto', 'ready_for_delivery',
-                      'aguardando_entregador', 'delivering', 'out_for_delivery', 'em_entrega'];
+    $validStatuses = ['pendente', 'aceito', 'confirmado', 'preparando', 'coletando',
+                      'coleta_finalizada', 'pronto', 'em_entrega'];
     if (!in_array($pedido['status'], $validStatuses)) {
         response(false, null, "PIN nao pode ser reenviado. Status: " . $pedido['status'], 400);
     }

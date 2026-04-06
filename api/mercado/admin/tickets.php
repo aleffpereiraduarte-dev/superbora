@@ -95,6 +95,66 @@ try {
             response(true, ['sla' => $stats]);
         }
 
+        // Single ticket fetch by ID
+        $ticketId = (int)($_GET["id"] ?? 0);
+        if ($ticketId > 0 && empty($_GET["activity"])) {
+            $stmt = $db->prepare("
+                SELECT t.id, t.ticket_number, t.entidade_tipo, t.entidade_id, t.entidade_nome,
+                       t.assunto AS subject, t.categoria AS category,
+                       t.prioridade AS priority, t.status,
+                       t.atendente_id, t.atendente_nome AS assigned_name,
+                       t.created_at, t.updated_at,
+                       t.pedido_id AS order_id
+                FROM om_support_tickets t
+                WHERE t.id = ?
+            ");
+            $stmt->execute([$ticketId]);
+            $ticket = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$ticket) response(false, null, "Ticket nao encontrado", 404);
+
+            // Enrich with customer data if entity is a customer
+            if ($ticket['entidade_tipo'] === 'cliente' && $ticket['entidade_id']) {
+                $stmtCust = $db->prepare("SELECT name, email, phone, created_at FROM om_customers WHERE customer_id = ?");
+                $stmtCust->execute([(int)$ticket['entidade_id']]);
+                $cust = $stmtCust->fetch(PDO::FETCH_ASSOC);
+                if ($cust) {
+                    $ticket['customer_name'] = $cust['name'] ?: $ticket['entidade_nome'];
+                    $ticket['customer_email'] = $cust['email'];
+                    $ticket['customer_phone'] = $cust['phone'];
+                    $ticket['customer_since'] = $cust['created_at'];
+                }
+
+                // Order count
+                $stmtOrders = $db->prepare("SELECT COUNT(*) FROM om_market_orders WHERE customer_id = ?");
+                $stmtOrders->execute([(int)$ticket['entidade_id']]);
+                $ticket['customer_orders_count'] = (int)$stmtOrders->fetchColumn();
+
+                // Membership data
+                try {
+                    $stmtMember = $db->prepare("
+                        SELECT m.plan, m.status, p.name as plan_name, p.priority_support
+                        FROM om_customer_memberships m
+                        LEFT JOIN om_membership_plans p ON p.slug = m.plan
+                        WHERE m.customer_id = ?
+                        AND m.status IN ('active', 'trialing')
+                        AND (m.current_period_end > NOW() OR m.expires_at > NOW())
+                        LIMIT 1
+                    ");
+                    $stmtMember->execute([(int)$ticket['entidade_id']]);
+                    $membership = $stmtMember->fetch(PDO::FETCH_ASSOC);
+                    if ($membership) {
+                        $ticket['membership_plan'] = $membership['plan'];
+                        $ticket['membership_plan_name'] = $membership['plan_name'];
+                        $ticket['membership_support'] = $membership['priority_support'] ?? 'normal';
+                    }
+                } catch (Exception $e) {
+                    // Non-fatal
+                }
+            }
+
+            response(true, ['ticket' => $ticket]);
+        }
+
         $status = $_GET["status"] ?? null;
         $priority = $_GET["priority"] ?? null;
         $page = max(1, (int)($_GET["page"] ?? 1));

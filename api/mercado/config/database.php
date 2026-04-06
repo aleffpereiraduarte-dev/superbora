@@ -16,9 +16,12 @@ if (file_exists(__DIR__ . '/../../../.env')) {
 // Sentry error monitoring (loads early to catch all errors)
 require_once __DIR__ . '/sentry.php';
 
-// Rate limiting
+// Rate limiting (skip for auth endpoints — they handle their own limits)
 require_once __DIR__ . '/ratelimit.php';
-applyRateLimit();
+$_uri = $_SERVER['REQUEST_URI'] ?? '';
+if (!preg_match('#/auth/(send-code|verify-code|login|register|social-login)#', $_uri)) {
+    applyRateLimit();
+}
 
 
 // Database credentials - PostgreSQL ONLY (MySQL port 3306 is blocked on remote)

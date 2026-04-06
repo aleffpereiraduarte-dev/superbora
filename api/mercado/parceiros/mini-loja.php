@@ -224,6 +224,7 @@ try {
                 "preco" => $preco,
                 "preco_promo" => $emPromocao ? $promoPreco : null,
                 "imagem" => $p["image"],
+                "has_image" => !empty($p["image"]) && trim($p["image"]) !== "" && !str_ends_with($p["image"], ".svg") && stripos($p["image"], "placeholder") === false && stripos($p["image"], "no-image") === false && stripos($p["image"], "noimage") === false,
                 "categoria" => $p["categoria_nome"],
                 "categoria_id" => (int)$p["category_id"],
                 "unidade" => $p["unit"] ?? "un",

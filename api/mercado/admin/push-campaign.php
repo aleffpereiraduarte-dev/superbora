@@ -19,14 +19,9 @@ try {
     $db = getDB();
     OmAuth::getInstance()->setDb($db);
 
-    // Admin auth required
-    $token = om_auth()->getTokenFromRequest();
-    if (!$token) response(false, null, "Autenticacao necessaria", 401);
-    $payload = om_auth()->validateToken($token);
-    $userType = $payload['type'] ?? '';
-    if (!in_array($userType, ['admin', 'partner'])) {
-        response(false, null, "Acesso negado", 403);
-    }
+    // Admin auth required (token revocation, active status, RH acceptance)
+    $payload = om_auth()->requireAdmin();
+    $admin_id = (int)$payload['uid'];
 
     $method = $_SERVER["REQUEST_METHOD"];
 

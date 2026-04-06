@@ -145,7 +145,7 @@ if ($cust && $cust['customer_id']) {
             SELECT o.order_number, o.status, p.name as partner_name
             FROM om_market_orders o
             JOIN om_market_partners p ON p.partner_id = o.partner_id
-            WHERE o.customer_id = ? AND o.status IN ('pending','accepted','preparing','ready','delivering','em_preparo','saiu_entrega')
+            WHERE o.customer_id = ? AND o.status IN ('pendente','aceito','preparando','pronto','em_entrega')
             ORDER BY o.date_added DESC LIMIT 1
         ");
         $actStmt->execute([$cust['customer_id']]);
@@ -168,7 +168,7 @@ if ($cust && $cust['name']) {
                    EXTRACT(DAY FROM NOW() - o.date_added) as days_ago
             FROM om_market_orders o
             JOIN om_market_partners p ON p.partner_id = o.partner_id
-            WHERE o.customer_id = ? AND o.status NOT IN ('cancelled','refunded')
+            WHERE o.customer_id = ? AND o.status NOT IN ('cancelado','reembolsado')
             ORDER BY o.date_added DESC LIMIT 1
         ");
         $recStmt->execute([$cust['customer_id']]);
@@ -179,20 +179,18 @@ if ($cust && $cust['name']) {
     // Count total orders for VIP treatment
     $orderCount = 0;
     try {
-        $cntStmt = $db->prepare("SELECT COUNT(*) as cnt FROM om_market_orders WHERE customer_id = ? AND status NOT IN ('cancelled','refunded')");
+        $cntStmt = $db->prepare("SELECT COUNT(*) as cnt FROM om_market_orders WHERE customer_id = ? AND status NOT IN ('cancelado','reembolsado')");
         $cntStmt->execute([$cust['customer_id']]);
         $orderCount = (int)$cntStmt->fetch()['cnt'];
     } catch (Exception $e) {}
 
     if ($activeOrder) {
         $statusLabels = [
-            'pending' => 'esperando confirmação da loja',
-            'accepted' => 'já foi aceito',
-            'preparing' => 'tá sendo preparado',
-            'em_preparo' => 'tá sendo preparado',
-            'ready' => 'tá prontinho, saindo já',
-            'delivering' => 'tá a caminho',
-            'saiu_entrega' => 'tá a caminho',
+            'pendente' => 'esperando confirmação da loja',
+            'aceito' => 'já foi aceito',
+            'preparando' => 'tá sendo preparado',
+            'pronto' => 'tá prontinho, saindo já',
+            'em_entrega' => 'tá a caminho',
         ];
         $statusText = $statusLabels[$activeOrder['status']] ?? 'em andamento';
         $greetText = "{$periodo}, {$firstName}! Seu pedido da {$activeOrder['partner_name']} {$statusText}. "

@@ -141,7 +141,7 @@ try {
             WHERE partner_id = ?
             AND express_fee IS NOT NULL AND express_fee > 0
             AND date_added >= NOW() - INTERVAL '1 hours'
-            AND status NOT IN ('cancelled', 'entregue')
+            AND status NOT IN ('cancelado', 'entregue')
         ");
         $stmtExpressOrders->execute([$partnerId]);
         $expressOrdersRow = $stmtExpressOrders->fetch();

@@ -9,6 +9,7 @@ setCorsHeaders();
 
 try {
     session_start();
+    session_write_close();
     $db = getDB();
 
     $mercado_id = $_SESSION['mercado_id'] ?? 0;

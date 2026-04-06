@@ -28,6 +28,13 @@ try {
     $payload = om_auth()->requireAdmin();
     $admin_id = (int)$payload['uid'];
 
+    // SECURITY: Only manager, admin, or rh can process refunds
+    $adminRole = $payload['data']['role'] ?? '';
+    $adminType = $payload['type'] ?? '';
+    if ($adminType !== 'rh' && !in_array($adminRole, ['manager', 'admin'], true)) {
+        response(false, null, "Permissao insuficiente para processar reembolsos", 403);
+    }
+
     if ($_SERVER["REQUEST_METHOD"] !== "POST") response(false, null, "Metodo nao permitido", 405);
 
     $input = getInput();
@@ -164,13 +171,25 @@ try {
         $stripePi = $order['stripe_payment_intent_id'] ?? $order['payment_id'] ?? '';
 
         // --- STRIPE REFUND ---
-        if (in_array($paymentMethod, ['stripe_card', 'stripe_wallet', 'credito', 'cartao_credito', 'cartao_debito', 'apple_pay', 'google_pay']) && $stripePi) {
+        if (in_array($paymentMethod, ['stripe_card', 'stripe_wallet']) && $stripePi) {
             $stripeResult = refundStripeAdmin($stripePi, $order_id, $amount, $isFullyRefunded, $reason);
             $gateway_status = $stripeResult['status'];
             $gateway_message = $stripeResult['message'];
             $stripe_refund_id = $stripeResult['refund_id'] ?? null;
         }
-        // --- PIX REFUND (via Woovi/OpenPix) ---
+        // --- EFI CARD REFUND ---
+        elseif ($paymentMethod === 'efi_card') {
+            $efiChargeId = (int)($order['efi_charge_id'] ?? 0);
+            if ($efiChargeId) {
+                $efiCardResult = refundEfiCardAdmin($efiChargeId, $order_id);
+                $gateway_status = $efiCardResult['status'];
+                $gateway_message = $efiCardResult['message'];
+            } else {
+                $gateway_status = 'no_charge_id';
+                $gateway_message = 'EFI charge ID nao encontrado — reembolso manual necessario';
+            }
+        }
+        // --- PIX REFUND (via EFI) ---
         elseif ($paymentMethod === 'pix') {
             $pixPaid = ($order['pagamento_status'] ?? '') === 'pago'
                     || ($order['payment_status'] ?? '') === 'paid'
@@ -345,43 +364,77 @@ function refundStripeAdmin(string $paymentIntentId, int $orderId, float $amount,
 }
 
 /**
- * PIX refund via Woovi/OpenPix
+ * PIX refund via EFI (devolucao)
  */
 function refundPixAdmin(PDO $db, int $orderId, float $amount, string $reason): array {
     try {
-        // Find PIX correlation ID
-        $stmt = $db->prepare("SELECT pagarme_order_id FROM om_pagarme_transacoes WHERE pedido_id = ? AND tipo = 'pix' ORDER BY created_at DESC LIMIT 1");
+        require_once dirname(__DIR__, 3) . '/includes/classes/EfiClient.php';
+        $efi = new \EfiClient();
+
+        // Try to find e2eId from payment_id on the order
+        $stmt = $db->prepare("SELECT payment_id FROM om_market_orders WHERE order_id = ?");
         $stmt->execute([$orderId]);
-        $txRow = $stmt->fetch();
+        $order = $stmt->fetch();
+        $e2eId = $order['payment_id'] ?? '';
 
-        if (empty($txRow['pagarme_order_id'])) {
-            return ['status' => 'no_pix_record', 'message' => 'Sem registro PIX para reembolsar (sem correlation ID)'];
+        // If no e2eId, try to find txid and look up via EFI API
+        if (empty($e2eId)) {
+            // Check om_pix_intents first
+            $stmt = $db->prepare("SELECT correlation_id FROM om_pix_intents WHERE order_id = ? ORDER BY created_at DESC LIMIT 1");
+            $stmt->execute([$orderId]);
+            $intentRow = $stmt->fetch();
+            $txid = $intentRow['correlation_id'] ?? '';
+
+            // Fallback to om_pagarme_transacoes
+            if (empty($txid)) {
+                $stmt = $db->prepare("SELECT pagarme_order_id FROM om_pagarme_transacoes WHERE pedido_id = ? AND tipo = 'pix' ORDER BY created_at DESC LIMIT 1");
+                $stmt->execute([$orderId]);
+                $txRow = $stmt->fetch();
+                $txid = $txRow['pagarme_order_id'] ?? '';
+            }
+
+            if (!empty($txid)) {
+                try {
+                    $chargeStatus = $efi->checkChargeStatus($txid);
+                    $e2eId = $chargeStatus['e2e_id'] ?? '';
+                } catch (\Exception $e) {
+                    error_log("[admin/order-refund] EFI check status error: " . $e->getMessage());
+                }
+            }
         }
 
-        $correlationId = $txRow['pagarme_order_id'];
-
-        require_once dirname(__DIR__, 3) . '/includes/classes/WooviClient.php';
-        $woovi = new \WooviClient();
-        $pixRefundResult = $woovi->refundCharge($correlationId, "Admin refund pedido #{$orderId}: {$reason}");
-
-        $pixRefundOk = !empty($pixRefundResult['data']['refund']['status'])
-            || !empty($pixRefundResult['data']['status'])
-            || (isset($pixRefundResult['success']) && $pixRefundResult['success']);
-
-        if ($pixRefundOk) {
-            try {
-                $db->prepare("UPDATE om_pagarme_transacoes SET status = 'refunded' WHERE pedido_id = ? AND tipo = 'pix'")->execute([$orderId]);
-            } catch (\Exception $e) {}
-
-            error_log("[admin/order-refund] PIX refund OK pedido #{$orderId} correlation={$correlationId}");
-            return ['status' => 'refunded', 'message' => "PIX reembolso processado via Woovi (correlation: {$correlationId})"];
+        if (empty($e2eId)) {
+            return ['status' => 'no_pix_record', 'message' => 'Sem e2eId PIX para reembolsar'];
         }
 
-        error_log("[admin/order-refund] PIX refund FAILED pedido #{$orderId} correlation={$correlationId}");
-        return ['status' => 'failed', 'message' => 'PIX reembolso falhou — necessita processamento manual'];
+        $efi->refundPix($e2eId, $amount);
+
+        try {
+            $db->prepare("UPDATE om_pagarme_transacoes SET status = 'refunded' WHERE pedido_id = ? AND tipo = 'pix'")->execute([$orderId]);
+        } catch (\Exception $e) {}
+
+        error_log("[admin/order-refund] PIX refund OK pedido #{$orderId} e2eId={$e2eId}");
+        return ['status' => 'refunded', 'message' => "PIX reembolso processado via EFI (e2eId: {$e2eId})"];
 
     } catch (\Exception $e) {
         error_log("[admin/order-refund] PIX refund error pedido #{$orderId}: " . $e->getMessage());
         return ['status' => 'error', 'message' => 'Erro ao processar PIX refund: ' . $e->getMessage()];
+    }
+}
+
+/**
+ * EFI card refund
+ */
+function refundEfiCardAdmin(int $efiChargeId, int $orderId): array {
+    try {
+        require_once dirname(__DIR__, 3) . '/includes/classes/EfiClient.php';
+        $efi = new \EfiClient();
+        $efi->refundCard($efiChargeId);
+
+        error_log("[admin/order-refund] EFI card refund OK pedido #{$orderId} chargeId={$efiChargeId}");
+        return ['status' => 'refunded', 'message' => "EFI cartao reembolso processado (chargeId: {$efiChargeId})"];
+    } catch (\Exception $e) {
+        error_log("[admin/order-refund] EFI card refund error pedido #{$orderId}: " . $e->getMessage());
+        return ['status' => 'error', 'message' => 'Erro ao processar EFI card refund: ' . $e->getMessage()];
     }
 }

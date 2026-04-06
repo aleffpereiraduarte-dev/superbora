@@ -22,6 +22,7 @@ if (stripos($ct, 'application/json') === false) {
 
 try {
     session_start();
+    session_write_close();
     $db = getDB();
 
     $mercado_id = $_SESSION['mercado_id'] ?? 0;
@@ -63,9 +64,13 @@ try {
             cancel_reason = ?,
             cancelled_at = NOW(),
             date_modified = NOW()
-        WHERE order_id = ?
+        WHERE order_id = ? AND status IN ('pendente', 'confirmado', 'aceito', 'preparando')
     ");
     $stmt->execute([$motivo, $order_id]);
+    if ($stmt->rowCount() === 0) {
+        $db->rollBack();
+        response(false, null, "Pedido ja foi processado por outra sessao", 409);
+    }
 
     // Devolver estoque
     $stmt = $db->prepare("SELECT product_id, quantity FROM om_market_order_items WHERE order_id = ?");
@@ -86,27 +91,26 @@ try {
 
     // Save payment info for refund after commit (external calls must be outside transaction)
     $paymentMethod = $pedido['forma_pagamento'] ?? $pedido['payment_method'] ?? '';
-    $stripePi = $pedido['stripe_payment_intent_id'] ?? $pedido['payment_id'] ?? '';
-    $needsStripeRefund = in_array($paymentMethod, ['stripe_card', 'stripe_wallet', 'credito']) && $stripePi;
-    // Check for PIX correlation in order row, om_pagarme_transacoes, or om_pix_intents
-    $pixCorrelationId = $pedido['pix_correlation_id'] ?? $pedido['correlation_id'] ?? '';
-    if (empty($pixCorrelationId) && in_array($paymentMethod, ['pix', 'pix_woovi'])) {
-        // Try om_pagarme_transacoes first
+    $stripePi = $pedido['stripe_payment_intent_id'] ?? '';
+    // Only Stripe for wallet payments (Apple Pay, Google Pay)
+    $needsStripeRefund = in_array($paymentMethod, ['stripe_wallet']) && $stripePi;
+
+    // EFI PIX refund: find the e2eId (stored in payment_id) or txid from om_pix_intents
+    $efiE2eId = $pedido['payment_id'] ?? '';
+    $efiTxid = '';
+    if (in_array($paymentMethod, ['pix'])) {
+        // Try om_pix_intents for the txid (correlation_id stores the EFI txid)
         try {
-            $txStmt = $db->prepare("SELECT correlation_id FROM om_pagarme_transacoes WHERE pedido_id = ? AND tipo = 'pix' LIMIT 1");
-            $txStmt->execute([$order_id]);
-            $pixCorrelationId = $txStmt->fetchColumn() ?: '';
+            $intentStmt = $db->prepare("SELECT correlation_id FROM om_pix_intents WHERE order_id = ? AND status = 'paid' LIMIT 1");
+            $intentStmt->execute([$order_id]);
+            $efiTxid = $intentStmt->fetchColumn() ?: '';
         } catch (\Exception $e) {}
-        // Fallback to om_pix_intents (intent-based PIX flow)
-        if (empty($pixCorrelationId)) {
-            try {
-                $intentStmt = $db->prepare("SELECT correlation_id FROM om_pix_intents WHERE order_id = ? AND status = 'paid' LIMIT 1");
-                $intentStmt->execute([$order_id]);
-                $pixCorrelationId = $intentStmt->fetchColumn() ?: '';
-            } catch (\Exception $e) {}
-        }
     }
-    $needsPixRefund = in_array($paymentMethod, ['pix', 'pix_woovi']) && !empty($pixCorrelationId);
+    $needsEfiPixRefund = in_array($paymentMethod, ['pix']) && (!empty($efiE2eId) || !empty($efiTxid));
+
+    // EFI Card refund: check for efi_charge_id
+    $efiChargeId = (int)($pedido['efi_charge_id'] ?? 0);
+    $needsEfiCardRefund = in_array($paymentMethod, ['efi_card', 'credito', 'debito']) && $efiChargeId > 0;
 
     // Restaurar pontos e cashback
     $pointsUsed = (int)($pedido['loyalty_points_used'] ?? 0);
@@ -162,7 +166,7 @@ try {
     try {
         require_once dirname(__DIR__, 3) . '/includes/classes/OmRepasse.php';
         $repasse = new OmRepasse($db);
-        $stmtRepasses = $db->prepare("SELECT id FROM om_repasses WHERE order_id = ? AND order_type = 'market' AND status IN ('hold', 'pendente')");
+        $stmtRepasses = $db->prepare("SELECT id FROM om_repasses WHERE order_id = ? AND order_type = 'mercado' AND status IN ('hold', 'pendente')");
         $stmtRepasses->execute([$order_id]);
         foreach ($stmtRepasses->fetchAll(PDO::FETCH_COLUMN) as $repasseId) {
             $repasse->cancelar((int)$repasseId, "Pedido #$order_id recusado: $motivo", 'sistema');
@@ -225,24 +229,60 @@ try {
         }
     }
 
-    // Estornar PIX APOS commit (external call outside transaction)
-    if ($needsPixRefund) {
+    // Estornar PIX via EFI APOS commit (external call outside transaction)
+    if ($needsEfiPixRefund) {
         try {
-            require_once dirname(__DIR__, 3) . '/includes/classes/WooviClient.php';
-            $woovi = new WooviClient();
-            $pixRefundResult = $woovi->refundCharge($pixCorrelationId);
-            $pixRefundOk = !empty($pixRefundResult['data']) || !empty($pixRefundResult['refund']) || (isset($pixRefundResult['status']) && $pixRefundResult['status'] === 'OK');
-            if ($pixRefundOk) {
-                error_log("[recusar] PIX refund OK para pedido #$order_id correlationId=$pixCorrelationId");
-                $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ? WHERE order_id = ?")
-                   ->execute([" [PIX REFUND OK]", $order_id]);
+            require_once dirname(__DIR__, 3) . '/includes/classes/EfiClient.php';
+            $efi = new EfiClient();
+
+            // If we have e2eId, refund directly. Otherwise, look up via txid.
+            $refundE2eId = $efiE2eId;
+            if (empty($refundE2eId) && !empty($efiTxid)) {
+                $chargeStatus = $efi->checkChargeStatus($efiTxid);
+                $refundE2eId = $chargeStatus['e2e_id'] ?? '';
+            }
+
+            if (!empty($refundE2eId)) {
+                $refundAmount = (float)$pedido['total'];
+                $pixRefundResult = $efi->refundPix($refundE2eId, $refundAmount);
+                if ($pixRefundResult['success']) {
+                    error_log("[recusar] EFI PIX refund OK para pedido #$order_id e2e=$refundE2eId");
+                    $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ? WHERE order_id = ?")
+                       ->execute([" [PIX REFUND OK: {$pixRefundResult['devolucao_id']}]", $order_id]);
+                } else {
+                    error_log("[recusar] FALHA EFI PIX refund e2e=$refundE2eId error=" . ($pixRefundResult['error'] ?? ''));
+                    $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ' [PIX REFUND FAILED - MANUAL]' WHERE order_id = ?")
+                       ->execute([$order_id]);
+                }
             } else {
-                error_log("[recusar] FALHA PIX refund correlationId=$pixCorrelationId resp=" . json_encode($pixRefundResult));
-                $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ' [PIX REFUND FAILED - MANUAL]' WHERE order_id = ?")->execute([$order_id]);
+                error_log("[recusar] No e2eId found for PIX refund pedido #$order_id");
+                $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ' [PIX REFUND NO E2EID]' WHERE order_id = ?")
+                   ->execute([$order_id]);
             }
         } catch (Exception $pixErr) {
-            error_log("[recusar] Erro PIX refund: " . $pixErr->getMessage());
-            $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ' [PIX REFUND ERROR]' WHERE order_id = ?")->execute([$order_id]);
+            error_log("[recusar] Erro EFI PIX refund: " . $pixErr->getMessage());
+            $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ' [PIX REFUND ERROR]' WHERE order_id = ?")
+               ->execute([$order_id]);
+        }
+    }
+
+    // Estornar cartao EFI APOS commit
+    if ($needsEfiCardRefund) {
+        try {
+            require_once dirname(__DIR__, 3) . '/includes/classes/EfiClient.php';
+            $efi = new EfiClient();
+            $cardRefundResult = $efi->refundCard($efiChargeId);
+            if ($cardRefundResult['success']) {
+                error_log("[recusar] EFI card refund OK para pedido #$order_id chargeId=$efiChargeId");
+                $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ' [CARD REFUND OK]' WHERE order_id = ?")
+                   ->execute([$order_id]);
+            } else {
+                error_log("[recusar] FALHA EFI card refund chargeId=$efiChargeId");
+                $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ' [CARD REFUND FAILED]' WHERE order_id = ?")
+                   ->execute([$order_id]);
+            }
+        } catch (Exception $cardErr) {
+            error_log("[recusar] Erro EFI card refund: " . $cardErr->getMessage());
         }
     }
 
@@ -265,6 +305,20 @@ try {
         }
     } catch (\Throwable $waErr) {
         error_log("[recusar] WhatsApp error: " . $waErr->getMessage());
+    }
+
+    // Cancel BoraUm delivery if dispatched
+    try {
+        $stmtEntrega = $db->prepare("SELECT boraum_delivery_id FROM om_entregas WHERE referencia_id = ? AND origem_sistema = 'mercado' AND status NOT IN ('cancelled', 'delivered') LIMIT 1");
+        $stmtEntrega->execute([$order_id]);
+        $entregaRow = $stmtEntrega->fetch();
+        if ($entregaRow && !empty($entregaRow['boraum_delivery_id'])) {
+            require_once __DIR__ . '/../helpers/delivery.php';
+            cancelBoraUmDelivery($entregaRow['boraum_delivery_id'], "Pedido recusado pelo parceiro: $motivo");
+            $db->prepare("UPDATE om_entregas SET status = 'cancelled', cancelled_at = NOW() WHERE referencia_id = ? AND origem_sistema = 'mercado'")->execute([$order_id]);
+        }
+    } catch (\Throwable $boraErr) {
+        error_log("[recusar] Erro cancelar BoraUm pedido #$order_id: " . $boraErr->getMessage());
     }
 
     error_log("[recusar] Pedido #$order_id recusado por parceiro #$mercado_id | Motivo: $motivo");

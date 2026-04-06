@@ -74,7 +74,7 @@ try {
         response(false, null, "Pedido nao encontrado", 404);
     }
 
-    if ($order['status'] !== 'entregue') {
+    if (!in_array($order['status'], ['entregue', 'delivered', 'finalizado', 'retirado'])) {
         response(false, null, "Apenas pedidos entregues podem receber fotos", 400);
     }
 

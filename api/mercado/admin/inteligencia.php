@@ -20,7 +20,7 @@ try {
         FROM om_market_partners p
         INNER JOIN om_market_orders o ON p.partner_id = o.partner_id
         WHERE o.created_at >= CURRENT_DATE - INTERVAL '30 days'
-          AND o.status NOT IN ('cancelled','refunded')
+          AND o.status NOT IN ('cancelado','reembolsado')
         GROUP BY p.partner_id, p.name
         ORDER BY revenue DESC LIMIT 5
     ");
@@ -51,13 +51,13 @@ try {
 
     // Anomalies
     $anomalies = [];
-    $stmt = $db->query("SELECT COUNT(*) as c FROM om_market_orders WHERE status = 'cancelled' AND DATE(created_at) = CURRENT_DATE");
+    $stmt = $db->query("SELECT COUNT(*) as c FROM om_market_orders WHERE status = 'cancelado' AND DATE(created_at) = CURRENT_DATE");
     $cancelled_today = (int)$stmt->fetch()['c'];
 
     $stmt = $db->query("
         SELECT AVG(daily_cancelled) as avg_c
         FROM (SELECT COUNT(*) as daily_cancelled FROM om_market_orders
-              WHERE status = 'cancelled' AND created_at >= CURRENT_DATE - INTERVAL '30 days'
+              WHERE status = 'cancelado' AND created_at >= CURRENT_DATE - INTERVAL '30 days'
               GROUP BY DATE(created_at)) t
     ");
     $avg_cancelled = (float)($stmt->fetch()['avg_c'] ?? 0);

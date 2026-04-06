@@ -40,11 +40,12 @@ try {
     $stmt = $db->prepare("
         SELECT o.order_id, o.status, o.total, o.delivery_fee, o.delivery_address,
                o.created_at, o.updated_at,
-               c.firstname as customer_name, c.telephone as customer_phone,
+               COALESCE(c.firstname, om.name) as customer_name, COALESCE(c.telephone, om.phone) as customer_phone,
                p.name as partner_name, p.address as partner_address,
                s.name as shopper_name, s.phone as shopper_phone
         FROM om_market_orders o
         LEFT JOIN oc_customer c ON o.customer_id = c.customer_id
+        LEFT JOIN om_customers om ON o.customer_id = om.customer_id
         LEFT JOIN om_market_partners p ON o.partner_id = p.partner_id
         LEFT JOIN om_market_shoppers s ON o.shopper_id = s.shopper_id
         WHERE {$where_sql}

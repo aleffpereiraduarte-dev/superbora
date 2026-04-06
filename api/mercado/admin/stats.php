@@ -18,7 +18,7 @@ try {
     $stmt = $db->query("
         SELECT COALESCE(SUM(total), 0) as total
         FROM om_market_orders
-        WHERE status NOT IN ('cancelled', 'refunded')
+        WHERE status NOT IN ('cancelado', 'reembolsado')
     ");
     $total_revenue = (float)$stmt->fetch()['total'];
 

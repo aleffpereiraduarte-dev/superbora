@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pedido Confirmado</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f4f7fa;font-family:'Helvetica Neue',Arial,sans-serif;">
+  <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background-color:#f4f7fa;">
+    <tr>
+      <td align="center" style="padding:24px 16px;">
+        <!-- Container -->
+        <table role="presentation" cellpadding="0" cellspacing="0" width="600" style="max-width:600px;width:100%;background-color:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.06);">
+          <!-- Header -->
+          <tr>
+            <td style="background:linear-gradient(135deg,#00A868 0%,#036B52 100%);padding:40px 32px;text-align:center;">
+              <div style="width:56px;height:56px;background-color:rgba(255,255,255,0.2);border-radius:50%;display:inline-block;line-height:56px;margin-bottom:16px;">
+                <span style="font-size:28px;">&#x2714;</span>
+              </div>
+              <h1 style="margin:0;font-size:24px;font-weight:700;color:#ffffff;">Pedido #{numero} confirmado!</h1>
+              <p style="margin:8px 0 0;font-size:14px;color:rgba(255,255,255,0.85);">Estamos preparando tudo para voce</p>
+            </td>
+          </tr>
+          <!-- Estimated Delivery -->
+          <tr>
+            <td style="padding:24px 32px 0;">
+              <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background-color:#ecfdf5;border-radius:12px;">
+                <tr>
+                  <td style="padding:20px;text-align:center;">
+                    <p style="margin:0 0 4px;font-size:13px;color:#047857;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Previsao de entrega</p>
+                    <p style="margin:0;font-size:28px;font-weight:800;color:#00A868;">{tempo_estimado}</p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <!-- Order Summary -->
+          <tr>
+            <td style="padding:24px 32px;">
+              <p style="margin:0 0 16px;font-size:16px;font-weight:700;color:#0f172a;">Resumo do pedido</p>
+
+              <!-- Items -->
+              <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom:16px;">
+                {items_start}
+                <tr>
+                  <td style="padding:10px 0;border-bottom:1px solid #f1f5f9;">
+                    <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
+                      <tr>
+                        <td style="font-size:14px;color:#0f172a;">{item_qty}x {item_nome}</td>
+                        <td align="right" style="font-size:14px;color:#0f172a;font-weight:600;white-space:nowrap;">R$ {item_preco}</td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+                {items_end}
+              </table>
+
+              <!-- Totals -->
+              <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom:24px;">
+                <tr>
+                  <td style="padding:8px 0;font-size:14px;color:#64748b;">Subtotal</td>
+                  <td align="right" style="padding:8px 0;font-size:14px;color:#64748b;">R$ {subtotal}</td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 0;font-size:14px;color:#64748b;">Taxa de entrega</td>
+                  <td align="right" style="padding:8px 0;font-size:14px;color:#64748b;">R$ {taxa_entrega}</td>
+                </tr>
+                {desconto_row_start}
+                <tr>
+                  <td style="padding:8px 0;font-size:14px;color:#00A868;">Desconto</td>
+                  <td align="right" style="padding:8px 0;font-size:14px;color:#00A868;font-weight:600;">-R$ {desconto}</td>
+                </tr>
+                {desconto_row_end}
+                <tr>
+                  <td style="padding:12px 0;border-top:2px solid #e2e8f0;font-size:18px;font-weight:800;color:#0f172a;">Total</td>
+                  <td align="right" style="padding:12px 0;border-top:2px solid #e2e8f0;font-size:18px;font-weight:800;color:#0f172a;">R$ {total}</td>
+                </tr>
+              </table>
+
+              <!-- Delivery Address -->
+              <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background-color:#f8fafc;border-radius:10px;margin-bottom:24px;">
+                <tr>
+                  <td style="padding:16px;">
+                    <p style="margin:0 0 6px;font-size:13px;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Entregar em</p>
+                    <p style="margin:0;font-size:14px;color:#0f172a;line-height:1.5;">{endereco}</p>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Payment -->
+              <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background-color:#f8fafc;border-radius:10px;margin-bottom:32px;">
+                <tr>
+                  <td style="padding:16px;">
+                    <p style="margin:0 0 6px;font-size:13px;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Pagamento</p>
+                    <p style="margin:0;font-size:14px;color:#0f172a;">{forma_pagamento}</p>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- CTA -->
+              <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
+                <tr>
+                  <td align="center">
+                    <a href="https://superbora.com.br/tracking/{pedido_id}" style="display:inline-block;background-color:#00A868;color:#ffffff;font-size:16px;font-weight:700;text-decoration:none;padding:14px 40px;border-radius:12px;min-width:220px;text-align:center;">Acompanhar Pedido</a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <!-- Footer -->
+          <tr>
+            <td style="background-color:#f8fafc;padding:24px 32px;text-align:center;border-top:1px solid #e2e8f0;">
+              <p style="margin:0 0 8px;font-size:13px;color:#94a3b8;">SuperBora - Delivery para voce</p>
+              <p style="margin:0 0 8px;font-size:12px;color:#94a3b8;">Duvidas? Fale conosco pelo app ou WhatsApp.</p>
+              <a href="https://superbora.com.br/unsubscribe?email={email}" style="font-size:12px;color:#64748b;text-decoration:underline;">Cancelar inscricao</a>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

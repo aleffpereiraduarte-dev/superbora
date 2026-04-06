@@ -30,11 +30,11 @@ if ($method === 'GET') {
                    CASE WHEN ci.tipo = 'produto' THEN p.name
                         WHEN ci.tipo = 'loja' THEN s.name END as name,
                    CASE WHEN ci.tipo = 'produto' THEN p.image_url
-                        WHEN ci.tipo = 'loja' THEN s.logo_url END as image_url,
+                        WHEN ci.tipo = 'loja' THEN s.logo END as image_url,
                    CASE WHEN ci.tipo = 'produto' THEN p.price END as price
             FROM om_market_colecao_items ci
             LEFT JOIN om_market_products p ON p.id = ci.item_id AND ci.tipo = 'produto'
-            LEFT JOIN om_market_stores s ON s.id = ci.item_id AND ci.tipo = 'loja'
+            LEFT JOIN om_market_partners s ON s.partner_id = ci.item_id AND ci.tipo = 'loja'
             WHERE ci.colecao_id = ?
             ORDER BY ci.posicao ASC
         ");

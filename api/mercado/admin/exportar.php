@@ -42,6 +42,7 @@ try {
                 LEFT JOIN om_market_shoppers s ON o.shopper_id = s.shopper_id
                 WHERE DATE(o.created_at) BETWEEN ? AND ?
                 ORDER BY o.created_at DESC
+                LIMIT 10000
             ");
             $stmt->execute([$date_from, $date_to]);
             $data = $stmt->fetchAll();
@@ -49,17 +50,39 @@ try {
 
         case 'customers':
             $stmt = $db->prepare("
-                SELECT c.customer_id, c.firstname, c.lastname, c.email, c.telephone,
-                       COUNT(o.order_id) as total_orders,
-                       COALESCE(SUM(o.total), 0) as total_spent
-                FROM oc_customer c
-                LEFT JOIN om_market_orders o ON c.customer_id = o.customer_id
-                    AND DATE(o.created_at) BETWEEN ? AND ?
-                GROUP BY c.customer_id
+                SELECT customer_id, name as firstname, '' as lastname, email, phone as telephone,
+                       total_orders, total_spent
+                FROM (
+                    SELECT c.customer_id, c.firstname as name, c.email, c.telephone as phone,
+                           COUNT(o.order_id) as total_orders,
+                           COALESCE(SUM(o.total), 0) as total_spent
+                    FROM oc_customer c
+                    LEFT JOIN om_market_orders o ON c.customer_id = o.customer_id
+                        AND DATE(o.created_at) BETWEEN ? AND ?
+                    GROUP BY c.customer_id, c.firstname, c.email, c.telephone
+                    UNION ALL
+                    SELECT om.customer_id, om.name, om.email, om.phone,
+                           COUNT(o.order_id) as total_orders,
+                           COALESCE(SUM(o.total), 0) as total_spent
+                    FROM om_customers om
+                    LEFT JOIN om_market_orders o ON om.customer_id = o.customer_id
+                        AND DATE(o.created_at) BETWEEN ? AND ?
+                    WHERE om.customer_id NOT IN (SELECT customer_id FROM oc_customer)
+                    GROUP BY om.customer_id, om.name, om.email, om.phone
+                ) combined
                 ORDER BY total_spent DESC
+                LIMIT 10000
             ");
-            $stmt->execute([$date_from, $date_to]);
+            $stmt->execute([$date_from, $date_to, $date_from, $date_to]);
             $data = $stmt->fetchAll();
+
+            // SECURITY: Mask CPF in customer exports (PII protection)
+            foreach ($data as &$row) {
+                if (!empty($row['cpf']) && strlen($row['cpf']) >= 5) {
+                    $row['cpf'] = substr($row['cpf'], 0, 3) . '.***.***-' . substr($row['cpf'], -2);
+                }
+            }
+            unset($row);
             break;
 
         case 'shoppers':
@@ -67,6 +90,7 @@ try {
                 SELECT shopper_id, name, email, phone, status, rating, is_online, saldo, created_at
                 FROM om_market_shoppers
                 ORDER BY name ASC
+                LIMIT 10000
             ");
             $data = $stmt->fetchAll();
             break;
@@ -79,6 +103,7 @@ try {
                 INNER JOIN om_market_partners p ON s.partner_id = p.partner_id
                 WHERE DATE(s.created_at) BETWEEN ? AND ?
                 ORDER BY s.created_at DESC
+                LIMIT 10000
             ");
             $stmt->execute([$date_from, $date_to]);
             $data = $stmt->fetchAll();

@@ -55,6 +55,10 @@ try {
     $cpf_nota = preg_replace('/[^0-9]/', '', $input["cpf_nota"] ?? "");
     if ($cpf_nota && strlen($cpf_nota) !== 11) $cpf_nota = "";
 
+    // Basket editing: customer preference for unavailable items
+    $unavailable_pref_raw = $input["unavailable_preference"] ?? "contact";
+    $unavailable_preference = in_array($unavailable_pref_raw, ['substitute', 'contact', 'remove']) ? $unavailable_pref_raw : 'contact';
+
     $addressRaw = $input["address"] ?? "";
     if (is_array($addressRaw)) {
         $addressRaw = implode(", ", array_filter(array_map('strval', array_values($addressRaw))));
@@ -366,10 +370,10 @@ try {
         timer_started, timer_expires,
         delivery_type, cpf_nota, service_fee,
         pix_paid, pagamento_status, payment_status,
-        payment_id, efi_charge_id, date_added
+        payment_id, efi_charge_id, unavailable_preference, date_added
     ) VALUES (?, ?, ?, ?, ?, ?, 'aceito', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'cartao_efi',
               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-              false, 'pago', 'paid', ?, ?, NOW())
+              false, 'pago', 'paid', ?, ?, ?, NOW())
     RETURNING order_id");
 
     $orderStmt->execute([
@@ -393,7 +397,7 @@ try {
         $timer_started, $timer_expires,
         $delivery_type, $cpf_nota ?: null,
         $service_fee,
-        "efi_card_{$efiChargeId}", $efiChargeId,
+        "efi_card_{$efiChargeId}", $efiChargeId, $unavailable_preference,
     ]);
 
     $orderId = (int)$orderStmt->fetchColumn();

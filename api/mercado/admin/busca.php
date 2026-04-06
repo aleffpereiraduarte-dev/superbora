@@ -24,20 +24,26 @@ try {
     $stmt = $db->prepare("
         SELECT order_id as id, CONCAT('Pedido #', order_id) as label, status, total, 'order' as type
         FROM om_market_orders
-        WHERE CAST(order_id AS CHAR) LIKE ? OR delivery_address LIKE ?
+        WHERE CAST(order_id AS TEXT) LIKE ? OR delivery_address LIKE ?
         ORDER BY created_at DESC LIMIT 5
     ");
     $stmt->execute([$search, $search]);
     $results['orders'] = $stmt->fetchAll();
 
-    // Customers
+    // Customers (legacy oc_customer + new om_customers)
     $stmt = $db->prepare("
-        SELECT customer_id as id, CONCAT(firstname, ' ', lastname) as label, email, 'customer' as type
+        (SELECT customer_id as id, CONCAT(firstname, ' ', lastname) as label, email, 'customer' as type
         FROM oc_customer
         WHERE firstname LIKE ? OR lastname LIKE ? OR email LIKE ? OR telephone LIKE ?
-        ORDER BY firstname ASC LIMIT 5
+        ORDER BY firstname ASC LIMIT 5)
+        UNION ALL
+        (SELECT customer_id as id, name as label, email, 'customer' as type
+        FROM om_customers
+        WHERE name LIKE ? OR email LIKE ? OR phone LIKE ?
+        ORDER BY name ASC LIMIT 5)
+        LIMIT 5
     ");
-    $stmt->execute([$search, $search, $search, $search]);
+    $stmt->execute([$search, $search, $search, $search, $search, $search, $search]);
     $results['customers'] = $stmt->fetchAll();
 
     // Shoppers

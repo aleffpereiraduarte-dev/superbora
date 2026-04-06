@@ -38,10 +38,11 @@ try {
         $stmt = $db->query("
             SELECT o.order_id, o.status, o.total, o.delivery_address, o.created_at,
                    p.name as partner_name, p.address as partner_address,
-                   c.firstname as customer_name
+                   COALESCE(c.firstname, om.name) as customer_name
             FROM om_market_orders o
             LEFT JOIN om_market_partners p ON o.partner_id = p.partner_id
             LEFT JOIN oc_customer c ON o.customer_id = c.customer_id
+            LEFT JOIN om_customers om ON o.customer_id = om.customer_id
             WHERE o.status IN ('ready', 'confirmed', 'preparing')
               AND (o.shopper_id IS NULL OR o.shopper_id = 0)
             ORDER BY o.created_at ASC

@@ -85,7 +85,11 @@ try {
     ");
     $stmtInsert->execute([$eventId, $event['type']]);
 
-    if ($stmtInsert->rowCount() === 0) {
+    if ($stmtInsert->rowCount() > 0) {
+        // Immediately claim for processing to prevent race with concurrent webhooks
+        $db->prepare("UPDATE om_stripe_webhook_events SET status = 'processing', updated_at = NOW() WHERE event_id = ?")
+           ->execute([$eventId]);
+    } elseif ($stmtInsert->rowCount() === 0) {
         // Row already exists — atomically claim for processing to prevent double-processing
         $stmtClaim = $db->prepare("
             UPDATE om_stripe_webhook_events
@@ -121,6 +125,16 @@ try {
             }
 
             if ($orderId) {
+                // Verify payment amount matches order total (security)
+                $amountReceived = round(($object['amount_received'] ?? 0) / 100, 2);
+                $stmtOrder = $db->prepare("SELECT total FROM om_market_orders WHERE order_id = ?");
+                $stmtOrder->execute([$orderId]);
+                $orderTotal = (float)($stmtOrder->fetchColumn() ?: 0);
+                if ($amountReceived > 0 && $orderTotal > 0 && abs($amountReceived - $orderTotal) > 1.00) {
+                    error_log("[stripe-webhook] AMOUNT MISMATCH order=$orderId expected=$orderTotal received=$amountReceived");
+                    // Still mark as paid but flag for review
+                }
+
                 $db->prepare("
                     UPDATE om_market_orders
                     SET payment_status = 'paid', paid_at = NOW(), payment_id = ?, pagamento_status = 'pago'

@@ -24,6 +24,7 @@ if (stripos($ct, 'application/json') === false) {
 
 try {
     session_start();
+    session_write_close();
     $db = getDB();
 
     $mercado_id = $_SESSION['mercado_id'] ?? 0;
@@ -86,7 +87,7 @@ try {
                 ready_at = NOW(),
                 delivery_type = ?,
                 date_modified = NOW()
-            WHERE order_id = ?
+            WHERE order_id = ? AND status = 'preparando'
         ");
         $stmt->execute([$deliveryType, $order_id]);
     } else {
@@ -95,9 +96,13 @@ try {
                 status = 'pronto',
                 ready_at = NOW(),
                 date_modified = NOW()
-            WHERE order_id = ?
+            WHERE order_id = ? AND status = 'preparando'
         ");
         $stmt->execute([$order_id]);
+    }
+    if ($stmt->rowCount() === 0) {
+        $db->rollBack();
+        response(false, null, "Pedido ja foi alterado por outra sessao (status atual: {$pedido['status']})", 409);
     }
     $db->commit();
 
@@ -176,12 +181,51 @@ try {
 
     // Post-commit: Auto-dispatch BoraUm (external API call, must be outside transaction)
     $entrega = null;
+    $routeId = (int)($pedido['route_id'] ?? 0);
+
     if ($isPickup) {
         error_log("[pronto] Pedido #$order_id e retirada - sem dispatch");
     } elseif ($entregaPropria && !$aceitaBoraum) {
         error_log("[pronto] Pedido #$order_id usa entrega propria do parceiro");
+    } elseif ($aceitaBoraum && $routeId) {
+        // ============================================================
+        // ROUTE-AWARE DISPATCH: Check if all route orders are ready
+        // ============================================================
+        error_log("[pronto] Pedido #$order_id pertence a rota #$routeId - verificando se todos os pedidos estao prontos");
+
+        if (areAllRouteOrdersReady($db, $routeId)) {
+            // All orders in route are ready - dispatch the full route
+            error_log("[pronto] Rota #$routeId: TODOS os pedidos prontos - despachando rota completa");
+            $entrega = dispatchRouteToBoraUm($db, $routeId);
+            error_log("[pronto] Route dispatch rota #$routeId | Resultado: " . json_encode($entrega));
+
+            // Notify all customers in the route via WebSocket
+            try {
+                $stmtRouteOrders = $db->prepare("
+                    SELECT order_id, customer_id FROM om_market_orders
+                    WHERE route_id = ? AND status NOT IN ('cancelado', 'cancelled', 'refunded')
+                ");
+                $stmtRouteOrders->execute([$routeId]);
+                $routeOrders = $stmtRouteOrders->fetchAll(PDO::FETCH_ASSOC);
+                foreach ($routeOrders as $ro) {
+                    if ((int)$ro['order_id'] !== $order_id && (int)$ro['customer_id']) {
+                        wsBroadcastToCustomer((int)$ro['customer_id'], 'order_update', [
+                            'order_id' => (int)$ro['order_id'],
+                            'status' => 'aguardando_entregador',
+                            'route_id' => $routeId,
+                            'route_dispatched' => true,
+                        ]);
+                    }
+                }
+            } catch (\Throwable $e) {
+                error_log("[pronto] Route WS broadcast error: " . $e->getMessage());
+            }
+        } else {
+            // Not all orders ready yet - just wait
+            error_log("[pronto] Rota #$routeId: ainda aguardando outros pedidos ficarem prontos - sem dispatch");
+        }
     } elseif ($aceitaBoraum) {
-        // Despachar BoraUm para qualquer parceiro que aceita (mercado, restaurante, loja)
+        // Single order dispatch (no route)
         $entrega = dispatchToBoraUm($db, $pedido);
         error_log("[pronto] Auto-dispatch BoraUm para pedido #$order_id | Categoria: $categoria | Resultado: " . json_encode($entrega));
     } else {
@@ -194,9 +238,17 @@ try {
         "ready_at" => date('c'),
         "entrega" => $entrega,
     ];
+    if ($routeId) {
+        $responseData['route_id'] = $routeId;
+        $responseData['route_all_ready'] = $routeId ? areAllRouteOrdersReady($db, $routeId) : false;
+    }
     $msg = "Pedido pronto!";
-    if ($entrega && !empty($entrega['success'])) {
+    if ($entrega && !empty($entrega['success']) && !empty($entrega['boraum_dispatched'])) {
+        $msg .= $routeId ? " Rota despachada para entregador." : " Entregador sendo chamado.";
+    } elseif ($entrega && !empty($entrega['success'])) {
         $msg .= " Entregador sendo chamado.";
+    } elseif ($routeId && !areAllRouteOrdersReady($db, $routeId)) {
+        $msg .= " Aguardando outros pedidos da rota ficarem prontos.";
     } elseif ($aceitaBoraum && !$isPickup && !($entregaPropria && !$aceitaBoraum)) {
         $responseData['delivery_dispatch'] = 'failed';
         $msg .= " Aviso: falha ao chamar entregador. Tente despachar manualmente.";

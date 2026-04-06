@@ -48,10 +48,12 @@ try {
                p.logo, p.banner, p.categoria, p.description, p.status,
                p.is_open, p.opening_hours, p.delivery_fee, p.min_order,
                p.rating, p.commission_rate,
-               p.city, p.state, p.created_at, p.updated_at,
+               p.address, p.neighborhood, p.city, p.state, p.cep as zip_code,
+               p.latitude, p.longitude, p.delivery_radius_km,
+               p.created_at, p.updated_at,
                (SELECT COUNT(*) FROM om_market_orders o WHERE o.partner_id = p.partner_id) as total_orders,
                (SELECT COALESCE(SUM(o2.total), 0) FROM om_market_orders o2
-                WHERE o2.partner_id = p.partner_id AND o2.status NOT IN ('cancelled','refunded')) as total_revenue
+                WHERE o2.partner_id = p.partner_id AND o2.status NOT IN ('cancelado','reembolsado')) as total_revenue
         FROM om_market_partners p
         WHERE {$where_sql}
         ORDER BY p.name ASC

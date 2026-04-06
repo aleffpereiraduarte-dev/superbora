@@ -24,7 +24,7 @@ try {
                 SELECT m.*,
                     CASE
                         WHEN m.remetente_tipo = 'admin' THEN (SELECT name FROM om_admins WHERE admin_id = m.remetente_id)
-                        WHEN m.remetente_tipo = 'customer' THEN (SELECT firstname FROM oc_customer WHERE customer_id = m.remetente_id)
+                        WHEN m.remetente_tipo = 'customer' THEN COALESCE((SELECT firstname FROM oc_customer WHERE customer_id = m.remetente_id), (SELECT name FROM om_customers WHERE customer_id = m.remetente_id))
                         WHEN m.remetente_tipo = 'shopper' THEN (SELECT name FROM om_market_shoppers WHERE shopper_id = m.remetente_id)
                         WHEN m.remetente_tipo = 'partner' THEN (SELECT name FROM om_market_partners WHERE partner_id = m.remetente_id)
                         ELSE 'Sistema'
@@ -42,7 +42,7 @@ try {
                 SELECT ch.*,
                     CASE
                         WHEN ch.sender_type = 'admin' THEN (SELECT name FROM om_admins WHERE admin_id = ch.sender_id)
-                        WHEN ch.sender_type = 'customer' THEN (SELECT firstname FROM oc_customer WHERE customer_id = ch.sender_id)
+                        WHEN ch.sender_type = 'customer' THEN COALESCE((SELECT firstname FROM oc_customer WHERE customer_id = ch.sender_id), (SELECT name FROM om_customers WHERE customer_id = ch.sender_id))
                         WHEN ch.sender_type = 'shopper' THEN (SELECT name FROM om_market_shoppers WHERE shopper_id = ch.sender_id)
                         WHEN ch.sender_type = 'partner' THEN (SELECT name FROM om_market_partners WHERE partner_id = ch.sender_id)
                         ELSE 'Sistema'

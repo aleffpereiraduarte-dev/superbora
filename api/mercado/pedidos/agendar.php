@@ -21,7 +21,7 @@ try {
             FROM om_market_orders o
             WHERE customer_id = ?
               AND (schedule_date IS NOT NULL OR scheduled_date IS NOT NULL)
-              AND status NOT IN ('entregue', 'cancelado', 'cancelled')
+              AND status NOT IN ('entregue', 'cancelado')
             ORDER BY COALESCE(scheduled_date, schedule_date) ASC");
         $stmt->execute([$customerId]);
         $orders = $stmt->fetchAll(PDO::FETCH_ASSOC);

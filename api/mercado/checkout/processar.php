@@ -13,10 +13,11 @@ require_once dirname(__DIR__, 3) . "/includes/classes/OmRealtimeNotify.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmPricing.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmDailyBudget.php";
 require_once __DIR__ . "/../helpers/EmailService.php";
+require_once __DIR__ . "/../config/redis.php";
 
 // Rate limiting: 10 pedidos por minuto
 if (!RateLimiter::check(10, 60)) {
-    exit;
+    response(false, null, "Rate limit exceeded", 429);
 }
 
 try {
@@ -28,7 +29,8 @@ try {
 
     // Sanitizar entrada — usar customer_id autenticado, ignorar valor do client
     $customer_id = $auth_customer_id;
-    $session_id = preg_replace('/[^a-zA-Z0-9_-]/', '', $input["session_id"] ?? session_id());
+    $raw_session = preg_replace('/[^a-zA-Z0-9_-]/', '', $input["session_id"] ?? session_id());
+    $session_id = substr($raw_session, 0, 64); // Limit length to prevent abuse
     $partner_id = (int)($input["partner_id"] ?? 0);
     $payment_method = preg_replace('/[^a-z_]/', '', $input["payment_method"] ?? "pix");
     $coupon_id = (int)($input["coupon_id"] ?? 0);
@@ -41,6 +43,19 @@ try {
     $change_for = (float)($input["change_for"] ?? 0);
     $cpf_nota = preg_replace('/[^0-9]/', '', $input["cpf_nota"] ?? "");
     if ($cpf_nota && strlen($cpf_nota) !== 11) $cpf_nota = "";
+
+    // Basket editing: customer preference for unavailable items
+    $unavailable_pref_raw = $input["unavailable_preference"] ?? "contact";
+    $unavailable_preference = in_array($unavailable_pref_raw, ['substitute', 'contact', 'remove']) ? $unavailable_pref_raw : 'contact';
+    // Per-item preferences: { product_id: "substitute"|"contact"|"remove" }
+    $item_preferences = [];
+    if (!empty($input["item_preferences"]) && is_array($input["item_preferences"])) {
+        foreach ($input["item_preferences"] as $pid => $pref) {
+            if (in_array($pref, ['substitute', 'contact', 'remove'])) {
+                $item_preferences[(int)$pid] = $pref;
+            }
+        }
+    }
 
     // Multi-stop route fields
     $is_route_primary = !empty($input['is_route_primary']);
@@ -336,6 +351,70 @@ try {
     // Service fee: sempre usar valor do servidor. Client nao pode alterar.
     $service_fee = OmPricing::TAXA_SERVICO;
 
+    // ═══════════════════════════════════════════════════════
+    // MEMBERSHIP BENEFITS — Apply Club/Plus/Black benefits
+    // ═══════════════════════════════════════════════════════
+    $membership_plan = null;
+    $membership_free_delivery = false;
+    $membership_cashback_rate = 0;
+    if ($customer_id > 0) {
+        try {
+            $stmtMember = $db->prepare("
+                SELECT m.plan, p.free_delivery_min, p.cashback_rate, p.no_service_fee,
+                       p.express_discount, p.express_free, p.priority_support
+                FROM om_customer_memberships m
+                JOIN om_membership_plans p ON p.slug = m.plan
+                WHERE m.customer_id = ?
+                AND m.status IN ('active', 'trialing')
+                AND (m.current_period_end > NOW() OR m.expires_at > NOW())
+                LIMIT 1
+            ");
+            $stmtMember->execute([$customer_id]);
+            $memberData = $stmtMember->fetch(PDO::FETCH_ASSOC);
+
+            if ($memberData) {
+                $membership_plan = $memberData['plan'];
+                $membership_cashback_rate = (float)$memberData['cashback_rate'];
+
+                // Free delivery benefit
+                $freeDeliveryMin = $memberData['free_delivery_min'];
+                if ($freeDeliveryMin === null || (float)$freeDeliveryMin == 0) {
+                    // All orders free delivery
+                    if (!$is_pickup && !$free_delivery_coupon) {
+                        $delivery_fee = 0;
+                        $membership_free_delivery = true;
+                    }
+                } elseif ($subtotal >= (float)$freeDeliveryMin) {
+                    if (!$is_pickup && !$free_delivery_coupon) {
+                        $delivery_fee = 0;
+                        $membership_free_delivery = true;
+                    }
+                }
+
+                // No service fee for Black members
+                if ($memberData['no_service_fee']) {
+                    $service_fee = 0;
+                }
+
+                // Express delivery discount
+                if ($express_fee > 0 && !$is_pickup) {
+                    if ($memberData['express_free']) {
+                        $delivery_fee = max(0, $delivery_fee - $express_fee);
+                        $express_fee = 0;
+                    } elseif ((float)$memberData['express_discount'] > 0) {
+                        $expressDiscount = round($express_fee * (float)$memberData['express_discount'] / 100, 2);
+                        $express_fee = max(0, $express_fee - $expressDiscount);
+                        // Recalculate delivery with discounted express
+                        $delivery_fee = $base_delivery_fee + $express_fee;
+                        if ($membership_free_delivery) $delivery_fee = $express_fee;
+                    }
+                }
+            }
+        } catch (Exception $e) {
+            error_log("[Checkout] Membership check error (non-fatal): " . $e->getMessage());
+        }
+    }
+
     // Loyalty/cashback pre-calc (preliminary — re-validated inside transaction with FOR UPDATE)
     $loyalty_points_used = 0;
     $loyalty_discount = 0;
@@ -384,6 +463,64 @@ try {
     $totalDiscounts = $coupon_discount + $loyalty_discount + $cashback_discount;
     if ($total <= 0 && $totalDiscounts <= 0) {
         response(false, null, "Erro no calculo do pedido. Tente novamente.", 400);
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // DISTRIBUTED LOCK: Prevent double-charging via concurrent requests
+    // ═══════════════════════════════════════════���═══════════
+    $redis = om_redis();
+    $orderLockKey = null;
+    $idempotencyKey = null;
+
+    // Build idempotency fingerprint: customer + partner + items + total
+    $itemFingerprint = '';
+    foreach ($itens as $item) {
+        $itemFingerprint .= $item['product_id'] . ':' . $item['quantity'] . ',';
+    }
+    $idempotencyHash = md5("{$customer_id}:{$partner_id}:{$itemFingerprint}:{$total}");
+    $idempotencyKey = "checkout_idem:{$idempotencyHash}";
+    $orderLockKey = "checkout_lock:{$customer_id}:{$partner_id}";
+
+    if ($redis->isAvailable()) {
+        // Check idempotency: same customer + same items + same total within 30s = duplicate
+        $existingOrderId = $redis->get($idempotencyKey);
+        if ($existingOrderId) {
+            $ordId = is_array($existingOrderId) ? ($existingOrderId[0] ?? 0) : (int)$existingOrderId;
+            // Return the existing order instead of creating a duplicate
+            $stmtExisting = $db->prepare("SELECT order_id, order_number, status, total, codigo_entrega FROM om_market_orders WHERE order_id = ? AND customer_id = ? LIMIT 1");
+            $stmtExisting->execute([$ordId, $customer_id]);
+            $existingOrder = $stmtExisting->fetch(PDO::FETCH_ASSOC);
+            if ($existingOrder) {
+                error_log("[Checkout] Idempotency: returning existing order #{$existingOrder['order_number']} for customer {$customer_id}");
+                response(true, [
+                    "order_id" => (int)$existingOrder['order_id'],
+                    "order_number" => $existingOrder['order_number'],
+                    "status" => $existingOrder['status'],
+                    "total" => (float)$existingOrder['total'],
+                    "codigo_entrega" => $existingOrder['codigo_entrega'],
+                    "duplicate" => true,
+                ]);
+            }
+        }
+
+        // Acquire distributed lock (30s TTL) — prevents concurrent checkout for same customer+partner
+        // Use raw connection to perform atomic SET NX EX (not available via RedisService wrapper)
+        $rawConn = $redis->getRawConnection(0);
+        if ($rawConn) {
+            try {
+                // Prefix to match RedisService namespace
+                $fullLockKey = "sb:{$orderLockKey}";
+                $lockAcquired = $rawConn->set($fullLockKey, '1', ['NX', 'EX' => 30]);
+                if (!$lockAcquired) {
+                    error_log("[Checkout] Lock blocked: customer={$customer_id}, partner={$partner_id}");
+                    response(false, null, "Pedido ja esta sendo processado. Aguarde alguns segundos.", 409);
+                }
+            } catch (\RedisException $e) {
+                // Redis failure: proceed without lock (don't block checkout)
+                error_log("[Checkout] Redis lock error: " . $e->getMessage());
+                $orderLockKey = null;
+            }
+        }
     }
 
     // Gerar codigo_entrega (order_number sera gerado apos INSERT com o order_id)
@@ -553,6 +690,12 @@ try {
                 $loyalty_discount = $maxLoyaltyDiscount;
                 $loyalty_points_used = (int)floor($loyalty_discount / OmPricing::PONTO_VALOR);
             }
+
+            // SECURITY: Deduct points immediately after lock to prevent double-spend
+            if ($loyalty_points_used > 0) {
+                $db->prepare("UPDATE om_market_loyalty_points SET current_points = current_points - ?, updated_at = NOW() WHERE customer_id = ?")
+                   ->execute([$loyalty_points_used, $customer_id]);
+            }
         }
 
         // Re-validate cashback inside transaction with FOR UPDATE
@@ -656,8 +799,20 @@ try {
             }
         }
 
-        // Criar pedido
+        // Criar pedido — installments validation
         $installments = max(1, min(12, (int)($input['installments'] ?? 1)));
+        if ($installments > 1) {
+            // Only card payments support installments
+            if (!in_array($payment_method, ['stripe_card', 'efi_card', 'credito'])) {
+                $installments = 1;
+            }
+            // Minimum R$10.00 per installment
+            if ($installments > 1 && ($total / $installments) < 10.00) {
+                $db->rollBack();
+                $min_total = number_format($installments * 10, 2, ',', '.');
+                response(false, null, "Valor minimo para {$installments}x e R$ {$min_total} (R$ 10,00 por parcela)", 400);
+            }
+        }
         $installment_value = $installments > 1 ? round($total / $installments, 2) : $total;
 
         $partner_name_insert = $parceiro['trade_name'] ?? $parceiro['name'] ?? null;
@@ -675,8 +830,9 @@ try {
             service_fee, express_fee, installments, installment_value,
             cashback_discount, stripe_payment_intent_id, efi_charge_id,
             route_id, route_stop_sequence, shipping_lat, shipping_lng,
+            unavailable_preference,
             date_added
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pendente', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pendente', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
         RETURNING order_id");
 
         // Route sequence: primary=1, secondary=next stop
@@ -706,7 +862,8 @@ try {
             $delivery_type, $cpf_nota ?: null,
             $service_fee, $express_fee, $installments, $installment_value,
             $cashback_discount, $stripe_pi_id ?: null, $efi_charge_id ?: null,
-            $order_route_id, $route_stop_seq, $lat_cliente ?: null, $lng_cliente ?: null
+            $order_route_id, $route_stop_seq, $lat_cliente ?: null, $lng_cliente ?: null,
+            $unavailable_preference
         ]);
 
         $order_id = (int)$stmt->fetchColumn();
@@ -716,8 +873,10 @@ try {
             response(false, null, "Erro ao criar pedido. Tente novamente.", 500);
         }
 
-        // Gerar order_number bonito com o order_id: SB00025
-        $order_number = 'SB' . str_pad($order_id, 5, '0', STR_PAD_LEFT);
+        // Gerar order_number profissional: SB-YYMMDD-XXXX (letras + numeros)
+        $datePart = date('ymd');
+        $alphanum = strtoupper(substr(bin2hex(random_bytes(2)), 0, 4));
+        $order_number = "SB-{$datePart}-{$alphanum}";
         $db->prepare("UPDATE om_market_orders SET order_number = ? WHERE order_id = ?")->execute([$order_number, $order_id]);
 
         // Multi-stop route: create route record for primary order, add stop for secondary
@@ -738,14 +897,15 @@ try {
                 ->execute([$incoming_route_id, $order_id, $partner_id, $route_stop_seq, $lat_parceiro ?: null, $lng_parceiro ?: null, $parceiro['trade_name'] ?? $parceiro['name']]);
         }
 
-        // Criar itens do pedido
-        $stmtItem = $db->prepare("INSERT INTO om_market_order_items (order_id, product_id, name, quantity, price, total) VALUES (?, ?, ?, ?, ?, ?)");
+        // Criar itens do pedido (with per-item unavailable preference)
+        $stmtItem = $db->prepare("INSERT INTO om_market_order_items (order_id, product_id, name, quantity, price, total, unavailable_preference) VALUES (?, ?, ?, ?, ?, ?, ?)");
 
         foreach ($itens as $item) {
             $preco = ($item['special_price'] && (float)$item['special_price'] > 0 && (float)$item['special_price'] < (float)$item['price'])
                 ? (float)$item['special_price'] : (float)$item['price'];
             $itemTotal = $preco * (int)$item['quantity'];
-            $stmtItem->execute([$order_id, $item['product_id'], $item['name'], $item['quantity'], $preco, $itemTotal]);
+            $itemUnavailPref = $item_preferences[(int)$item['product_id']] ?? null;
+            $stmtItem->execute([$order_id, $item['product_id'], $item['name'], $item['quantity'], $preco, $itemTotal, $itemUnavailPref]);
 
             // Decrementar estoque — defensive WHERE prevents negative stock
             $stmtEstoque = $db->prepare("UPDATE om_market_products SET quantity = quantity - ? WHERE product_id = ? AND quantity >= ?");
@@ -758,6 +918,14 @@ try {
 
         // Registrar uso do cupom + incrementar current_uses (atomic max_uses check)
         if ($coupon_id) {
+            // SECURITY: Lock coupon row to prevent race condition on max_uses
+            $stmtCouponLock = $db->prepare("SELECT id, current_uses, max_uses FROM om_market_coupons WHERE id = ? FOR UPDATE");
+            $stmtCouponLock->execute([$coupon_id]);
+            $couponLocked = $stmtCouponLock->fetch();
+            if ($couponLocked && $couponLocked['max_uses'] > 0 && $couponLocked['current_uses'] >= $couponLocked['max_uses']) {
+                $db->rollBack();
+                response(false, null, "Cupom esgotado", 400);
+            }
             $stmtCoupon = $db->prepare("INSERT INTO om_market_coupon_usage (coupon_id, customer_id, order_id) VALUES (?, ?, ?)");
             $stmtCoupon->execute([$coupon_id, $customer_id, $order_id]);
             $stmtInc = $db->prepare("UPDATE om_market_coupons SET current_uses = current_uses + 1 WHERE id = ? AND (max_uses IS NULL OR max_uses = 0 OR current_uses < max_uses)");
@@ -768,10 +936,8 @@ try {
             }
         }
 
-        // Deduzir pontos de fidelidade
+        // Registrar transacao de pontos de fidelidade (deduction already done at FOR UPDATE lock above)
         if ($loyalty_points_used > 0 && $customer_id > 0) {
-            $db->prepare("UPDATE om_market_loyalty_points SET current_points = current_points - ?, updated_at = NOW() WHERE customer_id = ?")
-               ->execute([$loyalty_points_used, $customer_id]);
             $db->prepare("INSERT INTO om_market_loyalty_transactions (customer_id, points, type, source, reference_id, description, created_at) VALUES (?, ?, 'redeem', 'checkout', ?, ?, NOW())")
                ->execute([$customer_id, -$loyalty_points_used, $order_id, "Resgate no pedido #$order_number"]);
         }
@@ -812,6 +978,10 @@ try {
 
                 if ($cbConfig && $subtotal >= (float)($cbConfig['min_order_value'] ?? 0)) {
                     $cbPercent = (float)$cbConfig['cashback_percent'];
+                    // Membership cashback rate overrides if higher
+                    if ($membership_cashback_rate > $cbPercent) {
+                        $cbPercent = $membership_cashback_rate;
+                    }
                     $cbMax = (float)$cbConfig['max_cashback'];
                     $cbAmount = round($subtotal * ($cbPercent / 100), 2);
                     if ($cbMax > 0 && $cbAmount > $cbMax) $cbAmount = $cbMax;
@@ -879,6 +1049,16 @@ try {
 
         $db->commit();
 
+        // Store idempotency key + release lock after successful order creation
+        if ($redis->isAvailable()) {
+            if ($idempotencyKey) {
+                $redis->set($idempotencyKey, (string)$order_id, 30); // 30s idempotency window
+            }
+            if ($orderLockKey) {
+                $redis->delete($orderLockKey);
+            }
+        }
+
         // P&L DIARIO — NAO registrar no checkout.
         // O P&L e registrado SOMENTE em confirmar-entrega.php (quando pedido e entregue)
         // para evitar contabilizar pedidos cancelados/nao entregues.
@@ -909,6 +1089,11 @@ try {
                 "desconto_plus" => $freteCalc['desconto_plus'] ?? 0,
                 "distancia_km" => $distancia_km ?? 0,
             ],
+            "membership" => $membership_plan ? [
+                "plan" => $membership_plan,
+                "free_delivery" => $membership_free_delivery,
+                "cashback_rate" => $membership_cashback_rate,
+            ] : null,
             "route_id" => $created_route_id ?: ($incoming_route_id ?: null),
             "route_stop_sequence" => $route_stop_seq,
         ];
@@ -1002,10 +1187,18 @@ try {
 
     } catch (Exception $e) {
         $db->rollBack();
+        // Release lock on failure
+        if (isset($redis) && $redis->isAvailable() && !empty($orderLockKey)) {
+            $redis->delete($orderLockKey);
+        }
         throw $e;
     }
 
 } catch (Exception $e) {
+    // Release lock on outer failure
+    if (isset($redis) && $redis->isAvailable() && !empty($orderLockKey)) {
+        $redis->delete($orderLockKey);
+    }
     error_log("[Checkout] Erro: " . $e->getMessage());
     response(false, null, "Erro ao processar pedido", 500);
 }

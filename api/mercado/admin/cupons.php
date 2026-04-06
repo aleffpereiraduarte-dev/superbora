@@ -58,8 +58,8 @@ try {
 
         // Filter by partner
         if ($partner_id !== null && $partner_id > 0) {
-            $where[] = "c.partner_id = ?";
-            $params[] = $partner_id;
+            $where[] = "c.specific_partners LIKE ?";
+            $params[] = "%\"$partner_id\"%";
         }
 
         $where_sql = implode(' AND ', $where);
@@ -74,9 +74,8 @@ try {
             SELECT c.*,
                    COALESCE(c.current_uses, 0) as times_used,
                    COALESCE(us.total_discount, 0) as total_discount_given,
-                   p.name as partner_name
+                   NULL as partner_name
             FROM om_market_coupons c
-            LEFT JOIN om_market_partners p ON c.partner_id = p.partner_id
             LEFT JOIN LATERAL (
                 SELECT COALESCE(SUM(CASE
                     WHEN c.discount_type = 'percent' THEN o.total * (c.discount_value / 100)
@@ -84,7 +83,7 @@ try {
                 END), 0) as total_discount
                 FROM om_market_orders o
                 WHERE o.coupon_id = c.id
-                  AND o.status NOT IN ('cancelled','refunded')
+                  AND o.status NOT IN ('cancelado','reembolsado')
             ) us ON TRUE
             WHERE {$where_sql}
             ORDER BY c.created_at DESC

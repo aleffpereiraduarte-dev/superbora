@@ -52,7 +52,7 @@ try {
         $partner = $stmt->fetch();
         if (!$partner) response(false, null, "Parceiro nao encontrado", 404);
 
-        $final_statuses = ['entregue', 'delivered', 'cancelado', 'cancelled', 'refunded'];
+        $final_statuses = ['entregue', 'cancelado', 'reembolsado'];
         $placeholders = implode(',', array_fill(0, count($final_statuses), '?'));
 
         $db->beginTransaction();
@@ -154,6 +154,13 @@ try {
 
     // =================== MAINTENANCE MODE ===================
     if ($action === 'maintenance_mode') {
+        // SECURITY: Only manager, admin, or rh can toggle maintenance mode
+        $adminRole = $payload['data']['role'] ?? '';
+        $adminType = $payload['type'] ?? '';
+        if ($adminType !== 'rh' && !in_array($adminRole, ['manager', 'admin'], true)) {
+            response(false, null, "Permissao insuficiente", 403);
+        }
+
         $enabled = (bool)($input['enabled'] ?? false);
         $message = strip_tags(trim($input['message'] ?? ''));
 

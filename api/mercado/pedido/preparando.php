@@ -23,6 +23,7 @@ if (stripos($ct, 'application/json') === false) {
 
 try {
     session_start();
+    session_write_close();
     $db = getDB();
 
     $mercado_id = $_SESSION['mercado_id'] ?? 0;
@@ -59,8 +60,12 @@ try {
     $updates = "status = 'preparando', preparing_started_at = NOW(), date_modified = NOW()";
     $params = [$order_id];
 
-    $stmt = $db->prepare("UPDATE om_market_orders SET $updates WHERE order_id = ?");
+    $stmt = $db->prepare("UPDATE om_market_orders SET $updates WHERE order_id = ? AND status = 'aceito'");
     $stmt->execute($params);
+    if ($stmt->rowCount() === 0) {
+        $db->rollBack();
+        response(false, null, "Pedido ja esta em preparo ou status foi alterado", 409);
+    }
     $db->commit();
 
     // WebSocket broadcast (never breaks the flow)

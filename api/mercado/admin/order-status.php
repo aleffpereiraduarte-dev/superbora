@@ -22,20 +22,21 @@ try {
 
     if (!$order_id || !$new_status) response(false, null, "order_id e status obrigatorios", 400);
 
-    $valid = ['pending','confirmed','preparing','ready','collecting','in_transit','entregue','cancelled','refunded'];
+    $valid = ['pendente','aceito','confirmado','preparando','pronto','coletando','em_entrega','entregue','cancelado','reembolsado'];
     if (!in_array($new_status, $valid)) response(false, null, "Status invalido", 400);
 
     // Valid status transitions (admin can force most, but not backwards into processing states)
     $allowedTransitions = [
-        'pending'     => ['confirmed', 'cancelled', 'refunded'],
-        'confirmed'   => ['preparing', 'cancelled', 'refunded'],
-        'preparing'   => ['ready', 'cancelled', 'refunded'],
-        'ready'       => ['collecting', 'cancelled', 'refunded'],
-        'collecting'  => ['in_transit', 'cancelled', 'refunded'],
-        'in_transit'  => ['entregue', 'cancelled', 'refunded'],
-        'entregue'    => ['refunded'],
-        'cancelled'   => ['refunded'],
-        'refunded'    => [],
+        'pendente'    => ['aceito', 'confirmado', 'cancelado', 'reembolsado'],
+        'aceito'      => ['preparando', 'cancelado', 'reembolsado'],
+        'confirmado'  => ['preparando', 'cancelado', 'reembolsado'],
+        'preparando'  => ['pronto', 'cancelado', 'reembolsado'],
+        'pronto'      => ['coletando', 'em_entrega', 'cancelado', 'reembolsado'],
+        'coletando'   => ['em_entrega', 'cancelado', 'reembolsado'],
+        'em_entrega'  => ['entregue', 'cancelado', 'reembolsado'],
+        'entregue'    => ['reembolsado'],
+        'cancelado'   => ['reembolsado'],
+        'reembolsado' => [],
     ];
 
     $db->beginTransaction();

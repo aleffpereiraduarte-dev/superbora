@@ -39,7 +39,7 @@ try {
                COUNT(*) as total_orders
         FROM om_market_orders
         WHERE created_at >= CURRENT_DATE - CAST(? AS INTERVAL)
-          AND status NOT IN ('cancelled','refunded')
+          AND status NOT IN ('cancelado','reembolsado')
     ");
     $stmt->execute([$interval_param]);
     $gmv_row = $stmt->fetch();
@@ -51,7 +51,7 @@ try {
         SELECT COALESCE(SUM(COALESCE(platform_fee, service_fee, 0)), 0) as commission
         FROM om_market_orders
         WHERE created_at >= CURRENT_DATE - CAST(? AS INTERVAL)
-          AND status NOT IN ('cancelled','refunded')
+          AND status NOT IN ('cancelado','reembolsado')
     ");
     $stmt->execute([$interval_param]);
     $commission = round((float)$stmt->fetch()['commission'], 2);
@@ -61,7 +61,7 @@ try {
         SELECT COALESCE(SUM(delivery_fee), 0) as delivery_fees
         FROM om_market_orders
         WHERE created_at >= CURRENT_DATE - CAST(? AS INTERVAL)
-          AND status NOT IN ('cancelled','refunded')
+          AND status NOT IN ('cancelado','reembolsado')
     ");
     $stmt->execute([$interval_param]);
     $delivery_fees = round((float)$stmt->fetch()['delivery_fees'], 2);
@@ -72,7 +72,7 @@ try {
                COUNT(*) as refund_count
         FROM om_market_orders
         WHERE created_at >= CURRENT_DATE - CAST(? AS INTERVAL)
-          AND status = 'refunded'
+          AND status = 'reembolsado'
     ");
     $stmt->execute([$interval_param]);
     $refund_row = $stmt->fetch();
@@ -101,7 +101,7 @@ try {
                COUNT(DISTINCT customer_id) as customers
         FROM om_market_orders
         WHERE created_at >= CURRENT_DATE - CAST(? AS INTERVAL)
-          AND status NOT IN ('cancelled','refunded')
+          AND status NOT IN ('cancelado','reembolsado')
         GROUP BY DATE(created_at)
         ORDER BY date ASC
     ");
@@ -125,7 +125,7 @@ try {
                COALESCE(SUM(total), 0) as total
         FROM om_market_orders
         WHERE created_at >= CURRENT_DATE - CAST(? AS INTERVAL)
-          AND status NOT IN ('cancelled','refunded')
+          AND status NOT IN ('cancelado','reembolsado')
         GROUP BY payment_method
         ORDER BY count DESC
     ");
@@ -147,7 +147,7 @@ try {
         FROM om_market_orders o
         JOIN om_market_partners p ON p.partner_id = o.partner_id
         WHERE o.created_at >= CURRENT_DATE - CAST(? AS INTERVAL)
-          AND o.status NOT IN ('cancelled','refunded')
+          AND o.status NOT IN ('cancelado','reembolsado')
         GROUP BY p.partner_id, p.name, p.logo
         ORDER BY revenue DESC
         LIMIT 10
@@ -189,7 +189,7 @@ try {
         FROM om_market_orders
         WHERE created_at >= CURRENT_DATE - CAST(? AS INTERVAL)
           AND created_at < CURRENT_DATE - CAST(? AS INTERVAL)
-          AND status NOT IN ('cancelled','refunded')
+          AND status NOT IN ('cancelado','reembolsado')
     ");
     $stmt->execute([$prev_start, $prev_end]);
     $prev = $stmt->fetch();
@@ -204,7 +204,7 @@ try {
     // ── Previous period refund rate for trend ──
     $stmt = $db->prepare("
         SELECT COUNT(*) as all_orders,
-               SUM(CASE WHEN status = 'refunded' THEN 1 ELSE 0 END) as refund_count
+               SUM(CASE WHEN status = 'reembolsado' THEN 1 ELSE 0 END) as refund_count
         FROM om_market_orders
         WHERE created_at >= CURRENT_DATE - CAST(? AS INTERVAL)
           AND created_at < CURRENT_DATE - CAST(? AS INTERVAL)

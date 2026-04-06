@@ -29,10 +29,10 @@ try {
         response(true, ["configs" => $configs], "Configuracoes carregadas");
 
     } elseif ($_SERVER["REQUEST_METHOD"] === "POST") {
-        // Only manager or rh roles can modify configurations
-        $adminRole = $payload['role'] ?? '';
+        // Only manager/admin role or RH type can modify configurations
+        $adminRole = $payload['data']['role'] ?? '';
         $adminType = $payload['type'] ?? '';
-        if ($adminType !== 'rh' && !in_array($adminRole, ['manager', 'rh'], true)) {
+        if ($adminType !== 'rh' && !in_array($adminRole, ['manager', 'admin'], true)) {
             response(false, null, "Apenas gerentes e RH podem alterar configuracoes", 403);
         }
 

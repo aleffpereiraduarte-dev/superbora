@@ -66,24 +66,61 @@ try {
                 response(false, null, "Codigo expirado ou nao encontrado. Solicite um novo.", 400);
             }
 
-            // Max 3 tentativas por codigo
-            if ((int)$otp['attempts'] >= 3) {
-                $db->prepare("UPDATE om_market_otp_codes SET used = 1 WHERE id = ?")->execute([$otp['id']]);
-                $db->commit();
-                response(false, null, "Muitas tentativas erradas. Solicite um novo codigo.", 400);
-            }
+            // ─── Twilio Verify check (if OTP was sent via Verify) ───
+            if ($otp['code'] === 'twilio_verify') {
+                $twilioSid = $_ENV['TWILIO_SID'] ?? getenv('TWILIO_SID') ?: '';
+                $twilioToken = $_ENV['TWILIO_TOKEN'] ?? getenv('TWILIO_TOKEN') ?: '';
+                $verifySid = $_ENV['TWILIO_VERIFY_SID'] ?? getenv('TWILIO_VERIFY_SID') ?: 'VA34083528deea28a6963d3bee14a72ceb';
+                $toNumber = '+' . ltrim($identifier, '+');
 
-            // Verificar codigo
-            if (!password_verify($code, $otp['code'])) {
-                $db->prepare("UPDATE om_market_otp_codes SET attempts = attempts + 1 WHERE id = ?")->execute([$otp['id']]);
-                $db->commit();
-                $remaining = 3 - (int)$otp['attempts'] - 1;
-                response(false, null, "Codigo incorreto. $remaining tentativa(s) restante(s).", 400);
-            }
+                $ch = curl_init("https://verify.twilio.com/v2/Services/$verifySid/VerificationCheck");
+                curl_setopt_array($ch, [
+                    CURLOPT_POST => true,
+                    CURLOPT_POSTFIELDS => http_build_query(['To' => $toNumber, 'Code' => $code]),
+                    CURLOPT_USERPWD => "$twilioSid:$twilioToken",
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_TIMEOUT => 15,
+                ]);
+                $resp = curl_exec($ch);
+                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                curl_close($ch);
 
-            // Marcar como usado atomicamente
-            $db->prepare("UPDATE om_market_otp_codes SET used = 1, verified_at = NOW() WHERE id = ?")->execute([$otp['id']]);
-            $db->commit();
+                $verifyData = json_decode($resp, true);
+                $verifyStatus = $verifyData['status'] ?? 'failed';
+
+                if ($verifyStatus !== 'approved') {
+                    $db->prepare("UPDATE om_market_otp_codes SET attempts = attempts + 1 WHERE id = ?")->execute([$otp['id']]);
+                    $db->commit();
+                    $remaining = max(0, 3 - (int)$otp['attempts'] - 1);
+                    response(false, null, "Codigo incorreto. $remaining tentativa(s) restante(s).", 400);
+                }
+
+                // Verified via Twilio Verify!
+                $db->prepare("UPDATE om_market_otp_codes SET used = 1, verified_at = NOW() WHERE id = ?")->execute([$otp['id']]);
+                $db->commit();
+                error_log("[verify-code] Twilio Verify approved for $toNumber");
+            } else {
+                // ─── Manual OTP check (legacy flow) ───
+
+                // Max 3 tentativas por codigo
+                if ((int)$otp['attempts'] >= 3) {
+                    $db->prepare("UPDATE om_market_otp_codes SET used = 1 WHERE id = ?")->execute([$otp['id']]);
+                    $db->commit();
+                    response(false, null, "Muitas tentativas erradas. Solicite um novo codigo.", 400);
+                }
+
+                // Verificar codigo
+                if (!password_verify($code, $otp['code'])) {
+                    $db->prepare("UPDATE om_market_otp_codes SET attempts = attempts + 1 WHERE id = ?")->execute([$otp['id']]);
+                    $db->commit();
+                    $remaining = 3 - (int)$otp['attempts'] - 1;
+                    response(false, null, "Codigo incorreto. $remaining tentativa(s) restante(s).", 400);
+                }
+
+                // Marcar como usado atomicamente
+                $db->prepare("UPDATE om_market_otp_codes SET used = 1, verified_at = NOW() WHERE id = ?")->execute([$otp['id']]);
+                $db->commit();
+            }
         } catch (Exception $txEx) {
             $db->rollBack();
             throw $txEx;

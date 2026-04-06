@@ -53,6 +53,7 @@ require_once __DIR__ . '/../helpers/ws-callcenter-broadcast.php';
 require_once __DIR__ . '/../helpers/voice-tts.php';
 require_once __DIR__ . '/../helpers/ai-safeguards.php';
 require_once __DIR__ . '/../helpers/eta-calculator.php';
+require_once dirname(__DIR__, 3) . '/includes/classes/OmPricing.php';
 if (file_exists(__DIR__ . '/../helpers/ai-memory.php')) {
     require_once __DIR__ . '/../helpers/ai-memory.php';
 }
@@ -87,28 +88,66 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 $authToken = $_ENV['TWILIO_TOKEN'] ?? getenv('TWILIO_TOKEN') ?: '';
 $twilioSignature = $_SERVER['HTTP_X_TWILIO_SIGNATURE'] ?? '';
 
-// Signature validation — log mismatches but allow Twilio requests (CallSid present)
-if (!empty($authToken) && !empty($twilioSignature)) {
-    $scheme = 'https';
-    $host = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? 'superbora.com.br';
-    $uri = $_SERVER['REQUEST_URI'] ?? '';
-    $fullUrl = $scheme . '://' . $host . strtok($uri, '?');
+// Signature validation — reject on mismatch (matching twilio-voice.php behavior)
+if (empty($authToken)) {
+    error_log("[twilio-voice-ai] CRITICAL: TWILIO_TOKEN not configured");
+    http_response_code(500);
+    echo '<?xml version="1.0" encoding="UTF-8"?><Response><Say>Server configuration error</Say></Response>';
+    exit;
+}
 
-    $params = $_POST;
-    ksort($params);
-    $dataString = $fullUrl;
-    foreach ($params as $key => $value) {
-        $dataString .= $key . $value;
-    }
-    $expectedSignature = base64_encode(hash_hmac('sha1', $dataString, $authToken, true));
-    if (!hash_equals($expectedSignature, $twilioSignature)) {
-        error_log("[twilio-voice-ai] Signature mismatch — allowing (proxy may alter URL)");
-    }
-} elseif (empty($twilioSignature) && !isset($_POST['CallSid'])) {
-    error_log("[twilio-voice-ai] Rejected: no signature and no CallSid");
+if (empty($twilioSignature)) {
+    $remoteIp = $_SERVER['HTTP_X_REAL_IP'] ?? $_SERVER['REMOTE_ADDR'] ?? '';
+    error_log("[twilio-voice-ai] REJECTED: Missing X-Twilio-Signature from IP: {$remoteIp}");
     http_response_code(403);
     echo '<?xml version="1.0" encoding="UTF-8"?><Response><Say>Unauthorized</Say></Response>';
     exit;
+}
+
+$scheme = 'https';
+$host = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? 'superbora.com.br';
+$uri = $_SERVER['REQUEST_URI'] ?? '';
+$fullUrl = $scheme . '://' . $host . strtok($uri, '?');
+
+$params = $_POST;
+ksort($params);
+$dataString = $fullUrl;
+foreach ($params as $key => $value) {
+    $dataString .= $key . $value;
+}
+$expectedSignature = base64_encode(hash_hmac('sha1', $dataString, $authToken, true));
+if (!hash_equals($expectedSignature, $twilioSignature)) {
+    // Try alternative URL constructions (proxy may alter URL)
+    $altUrl = 'https://superbora.com.br' . strtok($uri, '?');
+    $altDataString = $altUrl;
+    foreach ($params as $key => $value) {
+        $altDataString .= $key . $value;
+    }
+    $altSignature = base64_encode(hash_hmac('sha1', $altDataString, $authToken, true));
+    if (!hash_equals($altSignature, $twilioSignature)) {
+        // Last resort: verify CallSid exists in database as a known call
+        $callSidCheck = $_POST['CallSid'] ?? '';
+        $sigValid = false;
+        if (!empty($callSidCheck)) {
+            try {
+                $checkDb = getDB();
+                $checkStmt = $checkDb->prepare("SELECT id FROM om_callcenter_calls WHERE twilio_call_sid = ? LIMIT 1");
+                $checkStmt->execute([$callSidCheck]);
+                if ($checkStmt->fetch()) {
+                    $sigValid = true;
+                    error_log("[twilio-voice-ai] Signature mismatch but CallSid {$callSidCheck} verified in DB — allowing");
+                }
+            } catch (\Throwable $e) {
+                error_log("[twilio-voice-ai] DB check for CallSid failed: " . $e->getMessage());
+            }
+        }
+        if (!$sigValid) {
+            error_log("[twilio-voice-ai] REJECTED: Signature mismatch");
+            http_response_code(403);
+            echo '<?xml version="1.0" encoding="UTF-8"?><Response><Say>Unauthorized</Say></Response>';
+            exit;
+        }
+    }
 }
 
 // -- Parse Input --
@@ -121,8 +160,8 @@ $speechConfidenceRaw = isset($_POST['Confidence']) ? (float)$_POST['Confidence']
 
 error_log("[twilio-voice-ai] CallSid={$callSid} Speech=\"{$speechResult}\" Digits={$digits} Confidence={$speechConfidenceRaw}");
 
-// Build self URL for Gather action
-$scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+// Build self URL for Gather action (always https — nginx terminates SSL)
+$scheme = 'https';
 $host = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? 'localhost';
 $selfUrl = $scheme . '://' . $host . strtok($_SERVER['REQUEST_URI'] ?? '', '?');
 $routeUrl = str_replace('twilio-voice-ai.php', 'twilio-voice-route.php', $selfUrl);
@@ -170,7 +209,8 @@ if (!empty($speechResult) && empty($digits)) {
 
 try {
     $db = getDB();
-    $claude = new ClaudeClient('claude-sonnet-4-20250514', 12, 0);
+    $claudeModel = $_ENV['VOICE_CLAUDE_MODEL'] ?? $_ENV['CLAUDE_MODEL'] ?? 'claude-sonnet-4-20250514';
+    $claude = new ClaudeClient($claudeModel, 12, 0);
 
     // -- Get call record and AI context --
     $stmt = $db->prepare("
@@ -222,6 +262,17 @@ try {
     $step = $aiContext['step'] ?? 'identify_store';
     $conversationHistory = $aiContext['history'] ?? [];
 
+    // Early extraction of context vars needed by fast-tracks (also defined later in main flow)
+    $storeId = $aiContext['store_id'] ?? null;
+    $defaultAddress = null;
+    if ($customerId) {
+        try {
+            $eaStmt = $db->prepare("SELECT address_id, street, number, complement, neighborhood, city, state, zipcode, reference FROM om_customer_addresses WHERE customer_id = ? AND is_active = '1' ORDER BY is_default DESC LIMIT 1");
+            $eaStmt->execute([$customerId]);
+            $defaultAddress = $eaStmt->fetch(PDO::FETCH_ASSOC) ?: null;
+        } catch (\Throwable $e) {}
+    }
+
     // Handle DTMF shortcuts: 1=order, 2=status
     if ($digits === '1' && empty($speechResult)) {
         $speechResult = 'quero fazer um pedido';
@@ -229,9 +280,24 @@ try {
         $speechResult = 'quero ver meu pedido';
     }
 
-    // If digits look like a CEP (5-8 digits), treat as speech
+    // If digits look like a CEP (5+ digits), treat as speech
     if (strlen($digits) >= 5 && ctype_digit($digits) && empty($speechResult)) {
         $speechResult = $digits;
+    }
+    // Partial CEP (3-4 digits) — ask user to complete it instead of ignoring
+    if (strlen($digits) >= 3 && strlen($digits) < 5 && ctype_digit($digits) && empty($speechResult) && $digits !== '0') {
+        $aiContext['partial_cep'] = $digits;
+        $aiContext['asked_for_cep'] = true;
+        $aiContext['history'] = $conversationHistory;
+        saveAiContext($db, $callId, $aiContext);
+        echo '<?xml version="1.0" encoding="UTF-8"?>';
+        echo '<Response>';
+        echo '<Gather ' . $gatherStd . ' timeout="10" action="' . escXml($selfUrl) . '" method="POST">';
+        echo ttsSayOrPlay("Parece que você começou a digitar o CEP. Pode digitar os 8 números completos, aperta o jogo da velha no final.");
+        echo '</Gather>';
+        echo '<Redirect method="POST">' . escXml($selfUrl) . '</Redirect>';
+        echo '</Response>';
+        exit;
     }
 
     // Track user input + speech confidence
@@ -438,6 +504,16 @@ try {
         }
     }
 
+    // Add user message to history EARLY so fast-tracks have it when saving context
+    $isCepRedirectEarly = (!empty($_GET['cep_processing']) || !empty($_POST['cep_processing']));
+    if (!empty($userInput)) {
+        $userMsgForHistory = $isCepRedirectEarly ? "Meu CEP é {$userInput}" : $userInput;
+        if ($speechConfidence > 0 && $speechConfidence < 0.6 && !empty($speechResult) && !$isCepRedirectEarly) {
+            $userMsgForHistory = "[CONFIANÇA BAIXA: " . round($speechConfidence * 100) . "%] " . $userMsgForHistory;
+        }
+        $conversationHistory[] = ['role' => 'user', 'content' => $userMsgForHistory];
+    }
+
     // -- Smart intent detection --
     if (!empty($userInput)) {
         $lowerInput = mb_strtolower($userInput, 'UTF-8');
@@ -515,13 +591,15 @@ try {
         }
 
         // 4. Support intents — switch to support mode from any step
+        // Skip if user clearly wants to ORDER (e.g., "fazer meu pedido" contains "meu pedido" but is ordering intent)
+        $hasOrderIntent = preg_match('/\b(?:fazer|quero|vou|bora)\b.*\b(?:pedido|pedir)\b/iu', $lowerInput);
         $supportKeywords = ['status', 'cancelar', 'cancela', 'rastrear', 'rastreio', 'cadê meu pedido', 'cade meu pedido', 'onde ta', 'onde está', 'meu pedido', 'reclamação', 'reclamacao', 'problema', 'reembolso', 'devolver', 'pedido anterior', 'pedido atrasado', 'nao chegou', 'não chegou', 'veio errado', 'faltou', 'cobraram errado', 'estorno'];
         foreach ($supportKeywords as $sk) {
-            if (mb_strpos($lowerInput, $sk) !== false) {
+            if (mb_strpos($lowerInput, $sk) !== false && !$hasOrderIntent) {
+                // Save where they were so they can come back
+                $aiContext['previous_step'] = $aiContext['step'] ?? 'identify_store';
                 $aiContext['step'] = 'support';
                 $step = 'support';
-                // Save where they were so they can come back
-                $aiContext['previous_step'] = $step !== 'support' ? ($aiContext['step'] ?? 'identify_store') : null;
                 break;
             }
         }
@@ -554,7 +632,7 @@ try {
             $aiContext['history'][] = ['role' => 'assistant', 'content' => 'Pedido confirmado! Tô enviando pro restaurante...'];
             saveAiContext($db, $callId, $aiContext);
 
-            $orderResult = submitAiOrder($db, $aiContext, $callId);
+            $orderResult = submitAiOrder($db, $callId, $customerId, $customerName, $callerPhone, $aiContext);
             if ($orderResult && ($orderResult['success'] ?? false)) {
                 $orderNum = $orderResult['order_number'] ?? '';
                 $finalMsg = "Pronto! Pedido {$orderNum} enviado! Você vai receber um SMS com o resumo. Bom apetite!";
@@ -595,7 +673,7 @@ try {
             } catch (\Throwable $e) {}
             $expressLastPay = null;
             try {
-                $epStmt = $db->prepare("SELECT forma_pagamento FROM om_market_orders WHERE customer_id = ? AND status NOT IN ('cancelled','refunded') ORDER BY date_added DESC LIMIT 1");
+                $epStmt = $db->prepare("SELECT forma_pagamento FROM om_market_orders WHERE customer_id = ? AND status NOT IN ('cancelado','reembolsado') ORDER BY date_added DESC LIMIT 1");
                 $epStmt->execute([$customerId]);
                 $epRow = $epStmt->fetch();
                 if ($epRow) $expressLastPay = $epRow['forma_pagamento'];
@@ -627,7 +705,7 @@ try {
                 $subtotal = array_sum(array_map(fn($i) => ($i['price'] ?? 0) * ($i['quantity'] ?? 1), $expressItems));
                 $deliveryFee = 5.0;
                 try { $feeStmt = $db->prepare("SELECT delivery_fee FROM om_market_partners WHERE partner_id = ?"); $feeStmt->execute([$expressStoreId]); $feeRow = $feeStmt->fetch(); if ($feeRow) $deliveryFee = (float)$feeRow['delivery_fee']; } catch (\Throwable $e) {}
-                $serviceFee = round($subtotal * 0.08, 2);
+                $serviceFee = OmPricing::TAXA_SERVICO;
                 $total = $subtotal + $deliveryFee + $serviceFee;
                 $tp = explode(',', number_format($total, 2, ',', '.')); $totalSpoken = $tp[0]; if (isset($tp[1]) && $tp[1] !== '00') $totalSpoken .= ' e ' . $tp[1];
 
@@ -1275,7 +1353,7 @@ try {
                     SELECT oi.product_name, COUNT(*) as cnt, ROUND(AVG(oi.unit_price)::numeric, 2) as avg_price
                     FROM om_market_order_items oi
                     JOIN om_market_orders o ON o.order_id = oi.order_id
-                    WHERE o.partner_id = ? AND o.status NOT IN ('cancelled','refunded')
+                    WHERE o.partner_id = ? AND o.status NOT IN ('cancelado','reembolsado')
                     AND oi.product_name IS NOT NULL AND oi.product_name != ''
                     GROUP BY oi.product_name ORDER BY cnt DESC LIMIT 3
                 ");
@@ -1372,7 +1450,7 @@ try {
                 $aiContext['history'] = $conversationHistory;
                 $lastPay = null;
                 try {
-                    $lpStmt = $db->prepare("SELECT forma_pagamento FROM om_market_orders WHERE customer_id = ? AND status NOT IN ('cancelled','refunded') ORDER BY date_added DESC LIMIT 1");
+                    $lpStmt = $db->prepare("SELECT forma_pagamento FROM om_market_orders WHERE customer_id = ? AND status NOT IN ('cancelado','reembolsado') ORDER BY date_added DESC LIMIT 1");
                     $lpStmt->execute([$customerId]);
                     $lpRow = $lpStmt->fetch();
                     if ($lpRow) $lastPay = $lpRow['forma_pagamento'];
@@ -1459,7 +1537,7 @@ try {
                 if ($storeId) {
                     try { $feeStmt = $db->prepare("SELECT delivery_fee FROM om_market_partners WHERE partner_id = ?"); $feeStmt->execute([$storeId]); $feeRow = $feeStmt->fetch(); if ($feeRow) $deliveryFee = (float)$feeRow['delivery_fee']; } catch (\Throwable $e) {}
                 }
-                $serviceFee = round($subtotal * 0.08, 2);
+                $serviceFee = OmPricing::TAXA_SERVICO;
                 $total = $subtotal + $deliveryFee + $serviceFee;
                 $totalVoice = number_format($total, 2, ',', '.');
                 $tp = explode(',', $totalVoice); $totalSpoken = $tp[0]; if (isset($tp[1]) && $tp[1] !== '00') $totalSpoken .= ' e ' . $tp[1];
@@ -1534,14 +1612,14 @@ try {
                     $subtotal = array_sum(array_map(fn($i) => ($i['price'] ?? 0) * ($i['quantity'] ?? 1), $aiContext['items'] ?? []));
                     $deliveryFee = 5.0;
                     if ($storeId) { try { $f = $db->prepare("SELECT delivery_fee FROM om_market_partners WHERE partner_id = ?"); $f->execute([$storeId]); $fr = $f->fetch(); if ($fr) $deliveryFee = (float)$fr['delivery_fee']; } catch (\Throwable $e) {} }
-                    $total = $subtotal + $deliveryFee + round($subtotal * 0.08, 2);
+                    $total = $subtotal + $deliveryFee + OmPricing::TAXA_SERVICO;
                     $tp = explode(',', number_format($total, 2, ',', '.')); $tv = $tp[0]; if (isset($tp[1]) && $tp[1] !== '00') $tv .= ' e ' . $tp[1];
                     $msg = "Entrega pra {$addrParsed['street']}, {$addrParsed['number']}, no {$payLabel}. Total de {$tv} reais. Confirma?";
                 } else {
                     // Just address confirmed — ask payment
                     $lastPay = null;
                     if ($customerId) {
-                        try { $lpS = $db->prepare("SELECT forma_pagamento FROM om_market_orders WHERE customer_id = ? AND status NOT IN ('cancelled','refunded') ORDER BY date_added DESC LIMIT 1"); $lpS->execute([$customerId]); $lpR = $lpS->fetch(); if ($lpR) $lastPay = $lpR['forma_pagamento']; } catch (\Throwable $e) {}
+                        try { $lpS = $db->prepare("SELECT forma_pagamento FROM om_market_orders WHERE customer_id = ? AND status NOT IN ('cancelado','reembolsado') ORDER BY date_added DESC LIMIT 1"); $lpS->execute([$customerId]); $lpR = $lpS->fetch(); if ($lpR) $lastPay = $lpR['forma_pagamento']; } catch (\Throwable $e) {}
                     }
                     $payLabels = ['dinheiro' => 'dinheiro', 'pix' => 'PIX', 'credit_card' => 'cartão de crédito', 'debit_card' => 'cartão de débito'];
                     if ($lastPay && isset($payLabels[$lastPay])) {
@@ -1597,7 +1675,7 @@ try {
                 }
             }
             if (!$detectedPayment && $isYes && !empty($aiContext['auto_payment_suggested'])) {
-                $lpStmt2 = $db->prepare("SELECT forma_pagamento FROM om_market_orders WHERE customer_id = ? AND status NOT IN ('cancelled','refunded') ORDER BY date_added DESC LIMIT 1");
+                $lpStmt2 = $db->prepare("SELECT forma_pagamento FROM om_market_orders WHERE customer_id = ? AND status NOT IN ('cancelado','reembolsado') ORDER BY date_added DESC LIMIT 1");
                 $lpStmt2->execute([$customerId ?? 0]);
                 $lpRow2 = $lpStmt2->fetch();
                 if ($lpRow2) $detectedPayment = $lpRow2['forma_pagamento'];
@@ -1631,7 +1709,7 @@ try {
                         if ($feeRow) $deliveryFee = (float)$feeRow['delivery_fee'];
                     } catch (\Throwable $e) {}
                 }
-                $serviceFee = round($subtotal * 0.08, 2);
+                $serviceFee = OmPricing::TAXA_SERVICO;
                 $total = $subtotal + $deliveryFee + $serviceFee;
                 $totalSpoken = number_format($total, 2, ',', '.');
                 $totalParts = explode(',', $totalSpoken);
@@ -1752,7 +1830,7 @@ try {
     if ($step === 'identify_store' && !empty($userInput) && !$isYes && !$isNo) {
         $storeInputLower = mb_strtolower(trim($userInput), 'UTF-8');
         // Don't fast-track if it looks like a question or generic intent
-        $isGenericIntent = preg_match('/^(?:quero|vou|preciso|me|pode|oi|olá|bom dia|boa tarde|boa noite|fome|pedido|ajuda|duvida|dúvida|status|cancelar|atendente)/iu', $storeInputLower);
+        $isGenericIntent = preg_match('/^(?:quero|vou|preciso|me|pode|oi|olá|bom dia|boa tarde|boa noite|fome|pedido|fazer|ajuda|duvida|dúvida|status|cancelar|atendente)/iu', $storeInputLower);
         if (!$isGenericIntent && mb_strlen($storeInputLower) >= 3 && mb_strlen($storeInputLower) <= 60) {
             // Load all active stores
             $storeCandidates = $aiContext['nearby_stores'] ?? [];
@@ -1834,7 +1912,7 @@ try {
                 // Fetch popular items for greeting
                 $popNames = [];
                 try {
-                    $popS = $db->prepare("SELECT oi.product_name, COUNT(*) as cnt FROM om_market_order_items oi JOIN om_market_orders o ON o.order_id = oi.order_id WHERE o.partner_id = ? AND o.status NOT IN ('cancelled','refunded') AND oi.product_name IS NOT NULL GROUP BY oi.product_name ORDER BY cnt DESC LIMIT 3");
+                    $popS = $db->prepare("SELECT oi.product_name, COUNT(*) as cnt FROM om_market_order_items oi JOIN om_market_orders o ON o.order_id = oi.order_id WHERE o.partner_id = ? AND o.status NOT IN ('cancelado','reembolsado') AND oi.product_name IS NOT NULL GROUP BY oi.product_name ORDER BY cnt DESC LIMIT 3");
                     $popS->execute([$matchedStoreId]);
                     while ($pr = $popS->fetch()) { $popNames[] = $pr['product_name']; }
                 } catch (\Throwable $e) {}
@@ -1864,9 +1942,16 @@ try {
         }
     }
 
+    // Transfer to agent on DTMF 0 — but NOT if we asked for CEP and user is typing digits
     if ($digits === '0' && empty($speechResult)) {
-        transferToAgent($db, $callId, $callerPhone, $customerName, $customerId, $routeUrl);
-        exit;
+        $askedForCep = !empty($aiContext['asked_for_cep']) || ($step === 'identify_store' && empty($aiContext['store_id']));
+        if (!$askedForCep) {
+            transferToAgent($db, $callId, $callerPhone, $customerName, $customerId, $routeUrl);
+            exit;
+        }
+        // Treat as partial CEP digit — prompt for rest
+        $speechResult = '0';
+        $userInput = '0';
     }
 
     // Check if this is a CEP processing redirect (we already said "um minutinho")
@@ -2001,13 +2086,7 @@ try {
         $userInput = convertSpokenNumbersPtBr($userInput);
     }
 
-    // Add user message to history — annotate with confidence if low
-    $userMsg = $isCepRedirect ? "Meu CEP é {$userInput}" : $userInput;
-    if (!$isCepRedirect && $speechConfidence > 0 && $speechConfidence < 0.6 && !empty($speechResult)) {
-        // Tell Claude the transcription might be wrong so it can ask to confirm
-        $userMsg = "[CONFIANÇA BAIXA: " . round($speechConfidence * 100) . "%] " . $userMsg;
-    }
-    $conversationHistory[] = ['role' => 'user', 'content' => $userMsg];
+    // (user message already added to $conversationHistory early, before fast-tracks)
 
     // -- Build context for Claude --
     $storeId = $aiContext['store_id'] ?? null;
@@ -2289,7 +2368,7 @@ try {
                 SELECT DISTINCT o.partner_id, p.name, COUNT(*) as order_count, MAX(o.created_at) as last_order
                 FROM om_market_orders o
                 JOIN om_market_partners p ON p.partner_id = o.partner_id
-                WHERE o.customer_id = ? AND o.status NOT IN ('cancelled','refunded')
+                WHERE o.customer_id = ? AND o.status NOT IN ('cancelado','reembolsado')
                 GROUP BY o.partner_id, p.name
                 ORDER BY order_count DESC, last_order DESC
                 LIMIT 5
@@ -2316,7 +2395,7 @@ try {
             SELECT oi.product_name, oi.quantity, oi.unit_price
             FROM om_market_order_items oi
             JOIN om_market_orders o ON o.order_id = oi.order_id
-            WHERE o.customer_id = ? AND o.partner_id = ? AND o.status NOT IN ('cancelled','refunded')
+            WHERE o.customer_id = ? AND o.partner_id = ? AND o.status NOT IN ('cancelado','reembolsado')
             ORDER BY o.created_at DESC LIMIT 5
         ");
         $lastStmt->execute([$customerId, $storeId]);
@@ -2364,7 +2443,7 @@ try {
             SELECT oi.product_name, COUNT(*) as order_count
             FROM om_market_order_items oi
             JOIN om_market_orders o ON o.order_id = oi.order_id
-            WHERE o.partner_id = ? AND o.status NOT IN ('cancelled','refunded')
+            WHERE o.partner_id = ? AND o.status NOT IN ('cancelado','reembolsado')
             AND oi.product_name IS NOT NULL AND oi.product_name != ''
             GROUP BY oi.product_name
             ORDER BY order_count DESC LIMIT 5
@@ -2391,7 +2470,7 @@ try {
     if ($customerId && $step === 'get_payment') {
         $payStmt = $db->prepare("
             SELECT forma_pagamento FROM om_market_orders
-            WHERE customer_id = ? AND status NOT IN ('cancelled','refunded')
+            WHERE customer_id = ? AND status NOT IN ('cancelado','reembolsado')
             ORDER BY date_added DESC LIMIT 1
         ");
         $payStmt->execute([$customerId]);
@@ -2404,9 +2483,10 @@ try {
     if ($customerId) {
         $statsStmt = $db->prepare("
             SELECT COUNT(*) as total_orders,
-                   COALESCE(SUM(total), 0) as lifetime_value
+                   COALESCE(SUM(total), 0) as lifetime_value,
+                   EXTRACT(DAY FROM NOW() - MAX(created_at))::int as days_since_last_order
             FROM om_market_orders
-            WHERE customer_id = ? AND status NOT IN ('cancelled','refunded')
+            WHERE customer_id = ? AND status NOT IN ('cancelado','reembolsado')
         ");
         $statsStmt->execute([$customerId]);
         $customerStats = $statsStmt->fetch();
@@ -2486,6 +2566,37 @@ try {
         $aiContext['auto_payment_suggested'] = true;
     }
 
+    // -- Speed checkout: if items are set and customer has defaults, fast-track to confirm --
+    if (!empty($draftItems) && $step !== 'confirm_order' && $step !== 'submit_order'
+        && $step !== 'support' && $step !== 'question'
+        && $canAutoSkipAddress && $canAutoSkipPayment
+        && !$address && !$paymentMethod && empty($aiContext['express_mode']))
+    {
+        // Auto-fill address
+        $aiContext['address_index'] = 0;
+        $aiContext['address'] = [
+            'address_id' => (int)$defaultAddress['address_id'],
+            'street' => $defaultAddress['street'], 'number' => $defaultAddress['number'],
+            'complement' => $defaultAddress['complement'] ?? '', 'neighborhood' => $defaultAddress['neighborhood'],
+            'city' => $defaultAddress['city'], 'state' => $defaultAddress['state'],
+            'zipcode' => $defaultAddress['zipcode'] ?? '',
+            'lat' => $defaultAddress['lat'] ?? null, 'lng' => $defaultAddress['lng'] ?? null,
+            'full' => $defaultAddress['street'] . ', ' . $defaultAddress['number'] . ' - ' . $defaultAddress['neighborhood'],
+        ];
+        $address = $aiContext['address'];
+
+        // Auto-fill payment
+        $aiContext['payment_method'] = $lastPayment;
+        $paymentMethod = $lastPayment;
+
+        // Jump to confirm
+        $aiContext['step'] = 'confirm_order';
+        $step = 'confirm_order';
+        $aiContext['speed_checkout'] = true;
+
+        error_log("[twilio-voice-ai] Speed checkout: auto-filled address + payment for returning customer");
+    }
+
     // -- Load AI memory for returning customers --
     $memoryContext = '';
     $memoryGreetingHint = null;
@@ -2525,6 +2636,20 @@ try {
     $turnCount = ($aiContext['turn_count'] ?? 0) + 1;
     $aiContext['turn_count'] = $turnCount;
 
+    // Force end at turn 20 — conversation is too long
+    if ($turnCount >= 20) {
+        $forceEndMsg = "Pra facilitar, vou te enviar o link do cardápio por WhatsApp. Muito obrigada pela ligação!";
+        $aiContext['history'][] = ['role' => 'assistant', 'content' => $forceEndMsg];
+        saveAiContext($db, $callId, $aiContext);
+
+        echo '<?xml version="1.0" encoding="UTF-8"?>';
+        echo '<Response>';
+        echo ttsSayOrPlay($forceEndMsg);
+        echo '<Hangup/>';
+        echo '</Response>';
+        exit;
+    }
+
     // Track if AI already did upsell (don't repeat)
     $didUpsell = $aiContext['did_upsell'] ?? false;
 
@@ -2541,9 +2666,14 @@ try {
     if (!empty($userInput)) {
         try { $sentiment = detectVoiceSentiment($userInput); } catch (\Exception $e) {}
     }
-    $weatherContext = null;
-    if ($step === 'identify_store') {
-        try { $weatherContext = getVoiceWeatherContext(); } catch (\Exception $e) {}
+    $weatherContext = $aiContext['_cached_weather'] ?? null;
+    if (!$weatherContext && $step === 'identify_store') {
+        try {
+            $weatherContext = getVoiceWeatherContext();
+            if ($weatherContext) {
+                $aiContext['_cached_weather'] = $weatherContext;
+            }
+        } catch (\Exception $e) {}
     }
 
     // -- Loyalty tier + learned preferences --
@@ -2556,6 +2686,12 @@ try {
 
     // Referral code lookup for frequent customer hint
     $referralCode = getCustomerReferralCode($db, $customerId);
+
+    // Cashback balance for the customer
+    $cashbackBalance = 0.0;
+    if ($customerId) {
+        try { $cashbackBalance = getCashbackBalance($db, $customerId); } catch (\Exception $e) {}
+    }
 
     // Smart ETA calculation (done here where $db is available, passed via extraData)
     $smartEtaMin = null;
@@ -2607,6 +2743,7 @@ try {
         'cart_opt_tip' => $cartOptTip,
         'price_tips' => $priceTips,
         'force_recovery' => $aiContext['force_recovery'] ?? false,
+        'cashback_balance' => $cashbackBalance,
     ];
     $systemPrompt = buildSystemPrompt($step, $storeName, $menuText, $draftItems, $address, $paymentMethod, $customerName, $savedAddresses, $storeNames, $lastOrderItems ?? [], $aiContext, $extraData);
 
@@ -2701,7 +2838,7 @@ try {
     }
 
     // Voice-specific instruction: keep responses SHORT
-    $optimized['prompt'] .= "\n\n## LEMBRETE CRITICO PARA VOZ\nIsso é LIGACAO TELEFONICA. MAXIMO 2 frases curtas e diretas. Seja breve — fale só o essencial. Nada de listas longas.\n";
+    $optimized['prompt'] .= "\n\n## LEMBRETE CRITICO PARA VOZ\nIsso é LIGACAO TELEFONICA. MAXIMO 2 frases curtas. Cada frase no maximo 12 palavras. Menos é melhor. Silencio longo = cliente desliga. Vá direto ao ponto, sem enrolação.\n";
 
     // Inject what the AI said last turn for continuity (Claude doesn't know what fast-tracks responded)
     $lastAiResponse = $aiContext['last_ai_response'] ?? null;
@@ -2887,7 +3024,7 @@ try {
                     }
                 }
                 $score = ($matchedWords / $totalStoreWords) * 80; // max 80 for phonetic
-                if ($score > $bestScore && $score >= 40) { // at least 40% of words match
+                if ($score > $bestScore && $score >= 55) { // at least 55% of words match (avoid false positives)
                     $bestMatch = $cs;
                     $bestScore = $score;
                 }
@@ -3082,6 +3219,42 @@ try {
 
     // Check if order should be submitted
     if ($newContext['step'] === 'submit_order' && !empty($newContext['confirmed'])) {
+        // Pre-submit store closure check
+        $preSubmitStoreId = $newContext['store_id'] ?? null;
+        if ($preSubmitStoreId) {
+            try {
+                $storeCheckStmt = $db->prepare("SELECT name, status, opening_hours FROM om_market_partners WHERE partner_id = ?");
+                $storeCheckStmt->execute([$preSubmitStoreId]);
+                $storeCheck = $storeCheckStmt->fetch(PDO::FETCH_ASSOC);
+                if ($storeCheck && $storeCheck['status'] !== '1') {
+                    // Store is closed — inform customer and go back
+                    $closedStoreName = $storeCheck['name'] ?? ($newContext['store_name'] ?? 'a loja');
+                    $aiResponse = "Putz, a {$closedStoreName} acabou de fechar! Quer pedir de outro lugar?";
+                    $newContext['step'] = 'identify_store';
+                    $newContext['confirmed'] = false;
+                    $newContext['store_id'] = null;
+                    $newContext['store_name'] = null;
+                    $newContext['items'] = [];
+
+                    $newContext['history'] = $conversationHistory;
+                    $newContext['history'][] = ['role' => 'assistant', 'content' => $aiResponse];
+                    $newContext['last_ai_response'] = $aiResponse;
+                    $newContext['last_user_input'] = mb_substr($userInput ?? '', 0, 200, 'UTF-8');
+                    saveAiContext($db, $callId, $newContext);
+
+                    echo '<?xml version="1.0" encoding="UTF-8"?>';
+                    echo '<Response>';
+                    echo '<Gather input="speech" timeout="8" speechTimeout="auto" language="pt-BR" action="' . escXml($selfUrl) . '" method="POST">';
+                    echo ttsSayOrPlay($aiResponse);
+                    echo '</Gather>';
+                    echo '</Response>';
+                    exit;
+                }
+            } catch (Exception $e) {
+                error_log("[twilio-voice-ai] Store closure check error (non-fatal): " . $e->getMessage());
+            }
+        }
+
         $orderResult = submitAiOrder($db, $callId, $customerId, $customerName, $callerPhone, $newContext);
         if ($orderResult['success']) {
             $orderNumber = $orderResult['order_number'];
@@ -3538,7 +3711,9 @@ function transferToAgent(PDO $db, int $callId, string $phone, ?string $name, ?in
 
     $dialStatusUrl = 'https://superbora.com.br/api/mercado/webhooks/twilio-status.php';
     $dialStatusEsc = htmlspecialchars($dialStatusUrl, ENT_XML1 | ENT_QUOTES, 'UTF-8');
-    $callerIdNumber = $_ENV['TWILIO_PHONE'] ?? getenv('TWILIO_PHONE') ?: '+15705299780';
+    $phoneBR = $_ENV['TWILIO_PHONE_BR'] ?? getenv('TWILIO_PHONE_BR') ?: '';
+    $callerFrom = $_POST['From'] ?? $_GET['From'] ?? '';
+    $callerIdNumber = ($phoneBR && preg_match('/^\+55/', $callerFrom)) ? $phoneBR : ($_ENV['TWILIO_PHONE'] ?? getenv('TWILIO_PHONE') ?: '+15705299780');
 
     echo '<?xml version="1.0" encoding="UTF-8"?>';
     echo '<Response>';
@@ -3798,7 +3973,7 @@ function fixCommonSttErrors(string $text): string {
         // More food items
         '/\baca[ií]\b/iu' => 'açaí',
         '/\bassai\b/iu' => 'açaí',
-        '/\bpast[eé]l?\b/iu' => 'pastel',
+        '/\bpast[eé]l\b/iu' => 'pastel',
         '/\bcaip[iy]rin[hñ]a\b/iu' => 'caipirinha',
         '/\blasanho?a\b/iu' => 'lasanha',
         '/\bnh?oqu[iy]\b/iu' => 'nhoque',
@@ -3834,10 +4009,10 @@ function fixCommonSttErrors(string $text): string {
         // Intent words commonly mangled
         '/\b(?:at[eé]nd[eê]nt[eê]|at[eé]ndent)\b/iu' => 'atendente',
         '/\bcancela[rmn]\b/iu' => 'cancelar',
-        '/\bconfirm[ao]r?\b/iu' => 'confirmar',
+        '/\bconfirm[ao]r\b/iu' => 'confirmar',   // only fix "confirmar" misspellings, not "confirma"/"confirmo"
         '/\bobrg[ia]d[oa]\b/iu' => 'obrigado',
         '/\brestaurante?\b/iu' => 'restaurante',
-        '/\bentrega[rmn]?\b/iu' => 'entregar',
+        '/\bentrega[rmn]\b/iu' => 'entregar',   // only fix "entregam"/"entregan"/"entregarm", not "entrega"
         // Twilio noise artifacts — strip filler sounds when mixed with real words
         '/\b(?:hum+|hmm+|uh+m|ah+|eh+)\b/iu' => '',
     ];
@@ -4208,7 +4383,7 @@ function getVoiceReorderSuggestion(PDO $db, int $customerId): ?array
             SELECT o.order_id, o.partner_id, o.partner_name, o.date_added, o.created_at
             FROM om_market_orders o
             WHERE o.customer_id = ?
-              AND o.status IN ('entregue', 'delivered', 'retirado')
+              AND o.status IN ('entregue')
             ORDER BY o.date_added DESC
             LIMIT 20
         ");
@@ -4532,7 +4707,7 @@ function getVoiceFavoriteStores(PDO $db, int $customerId, int $limit = 5): array
             LEFT JOIN (
                 SELECT partner_id, COUNT(*) AS cnt
                 FROM om_market_orders
-                WHERE customer_id = ? AND status NOT IN ('cancelled','refunded')
+                WHERE customer_id = ? AND status NOT IN ('cancelado','reembolsado')
                 GROUP BY partner_id
             ) oc ON oc.partner_id = p.partner_id
             LEFT JOIN om_market_favorites f ON f.partner_id = p.partner_id AND f.customer_id = ?
@@ -4558,7 +4733,7 @@ function getVoiceLoyaltyTier(PDO $db, int $customerId): array {
         SELECT COUNT(*) as orders_90d,
                COALESCE(SUM(total), 0) as spent_90d
         FROM om_market_orders
-        WHERE customer_id = ? AND status NOT IN ('cancelled','refunded')
+        WHERE customer_id = ? AND status NOT IN ('cancelado','reembolsado')
           AND date_added >= NOW() - INTERVAL '90 days'
     ");
     $stmt->execute([$customerId]);
@@ -4593,7 +4768,7 @@ function getVoiceLearnedPreferences(PDO $db, int $customerId): array {
         SELECT forma_pagamento, COUNT(*) as cnt
         FROM (
             SELECT forma_pagamento FROM om_market_orders
-            WHERE customer_id = ? AND status NOT IN ('cancelled','refunded')
+            WHERE customer_id = ? AND status NOT IN ('cancelado','reembolsado')
               AND forma_pagamento IS NOT NULL AND forma_pagamento != ''
             ORDER BY date_added DESC LIMIT 20
         ) sub
@@ -4610,7 +4785,7 @@ function getVoiceLearnedPreferences(PDO $db, int $customerId): array {
         SELECT notes FROM om_market_order_items
         WHERE order_id IN (
             SELECT order_id FROM om_market_orders
-            WHERE customer_id = ? AND status NOT IN ('cancelled','refunded')
+            WHERE customer_id = ? AND status NOT IN ('cancelado','reembolsado')
             ORDER BY date_added DESC LIMIT 20
         ) AND notes IS NOT NULL AND notes != ''
     ");
@@ -4634,7 +4809,7 @@ function getVoiceLearnedPreferences(PDO $db, int $customerId): array {
         SELECT p.categoria, COUNT(*) as cnt
         FROM om_market_orders o
         JOIN om_market_partners p ON p.partner_id = o.partner_id
-        WHERE o.customer_id = ? AND o.status NOT IN ('cancelled','refunded')
+        WHERE o.customer_id = ? AND o.status NOT IN ('cancelado','reembolsado')
           AND p.categoria IS NOT NULL AND p.categoria != ''
         GROUP BY p.categoria ORDER BY cnt DESC LIMIT 3
     ");
@@ -4648,7 +4823,7 @@ function getVoiceLearnedPreferences(PDO $db, int $customerId): array {
         SELECT AVG(total) as avg_val
         FROM (
             SELECT total FROM om_market_orders
-            WHERE customer_id = ? AND status NOT IN ('cancelled','refunded')
+            WHERE customer_id = ? AND status NOT IN ('cancelado','reembolsado')
             ORDER BY date_added DESC LIMIT 20
         ) sub
     ");
@@ -4861,22 +5036,18 @@ function buildSystemPrompt(
     $customerStats = $extraData['customer_stats'] ?? null;
     $defaultAddress = $extraData['default_address'] ?? null;
 
-    $prompt = "Você é a Bora, atendente do SuperBora (delivery de comida). Você tá numa ligação telefônica com um cliente.\n\n";
+    $prompt = "Você é a Bora, atendente do SuperBora (delivery de comida). Você tá numa ligação telefônica com um cliente.\n";
+    $prompt .= "IMPORTANTE: A saudação inicial JÁ FOI FEITA pelo sistema automático. NUNCA se apresente de novo. NUNCA diga 'oi eu sou a Bora' ou 'aqui é a Bora'. Vá direto ao ponto.\n\n";
 
-    $prompt .= "## RACIOCÍNIO INTERNO (FUNDAMENTAL)\n";
-    $prompt .= "ANTES de responder, pense internamente em <think> tags (o cliente NÃO ouve isso):\n";
-    $prompt .= "<think>\n";
-    $prompt .= "1. TRANSCRIÇÃO: O que o cliente falou? STT erra muito — interprete foneticamente, corrija erros óbvios.\n";
-    $prompt .= "2. INTENÇÃO REAL: O que ele QUER de verdade? (ex: 'aquele negócio' = item que estava discutindo)\n";
-    $prompt .= "3. CONTEXTO: O que aconteceu antes? Ele tá respondendo minha pergunta ou mudando de assunto?\n";
-    $prompt .= "4. ETAPA: Estou no passo certo ou o cliente quer algo diferente? Preciso mudar?\n";
-    $prompt .= "5. SLOTS: Tenho todas as informações pra avançar? O que falta?\n";
-    $prompt .= "6. TOM: Como ele tá se sentindo? (pressa, calmo, frustrado, confuso)\n";
-    $prompt .= "7. RESPOSTA: Qual é a resposta mais CURTA, ÚTIL e NATURAL? (max 2 frases)\n";
-    $prompt .= "8. MARCADORES: Preciso incluir algum marcador? ([STORE:], [ITEM:], [NEXT_STEP], etc)\n";
-    $prompt .= "</think>\n";
-    $prompt .= "Depois do </think>, escreva APENAS o que o cliente vai ouvir.\n";
-    $prompt .= "NUNCA inclua tags <think> na parte falada. NUNCA.\n\n";
+    $prompt .= "## REGRA #0 — A MAIS IMPORTANTE DE TODAS\n";
+    $prompt .= "Sua resposta será lida em VOZ ALTA por um sintetizador de voz direto no ouvido do cliente.\n";
+    $prompt .= "Escreva APENAS E SOMENTE a fala pro cliente. NADA MAIS.\n";
+    $prompt .= "PROIBIDO escrever: análise, raciocínio, notas, observações, listas numeradas de pensamentos, metadados.\n";
+    $prompt .= "PROIBIDO escrever frases como: 'o cliente quer...', 'a intenção é...', 'transcrição:', 'etapa:', 'contexto:'.\n";
+    $prompt .= "PROIBIDO usar tags: <think>, [NOTA], (obs), ou qualquer coisa entre colchetes/parênteses que não seja marcador do sistema.\n";
+    $prompt .= "Se você escrever QUALQUER coisa que não seja fala direta, o cliente vai ouvir e vai ser bizarro.\n";
+    $prompt .= "EXEMPLO DO QUE NUNCA FAZER: '1. Transcrição: cliente quer fazer pedido. 2. Intenção: pedir comida.'\n";
+    $prompt .= "EXEMPLO CORRETO: 'Opa! De qual restaurante você quer pedir?'\n\n";
 
     $prompt .= "## QUEM VOCÊ É\n";
     $prompt .= "Você é a Bora — uma atendente humana, esperta, simpática, que manja de comida e conhece os restaurantes da região.\n";
@@ -5054,6 +5225,10 @@ function buildSystemPrompt(
     $prompt .= "- 'Me vê 2 coxinhas e uma coca grande' → anote os 3 itens de uma vez\n";
     $prompt .= "- 'Manda pro mesmo lugar, paga em PIX' → preencha endereço E pagamento juntos\n\n";
 
+    $prompt .= "### Speed checkout (clientes recorrentes)\n";
+    $prompt .= "Se o cliente tem endereço e pagamento salvos, ofereça: 'Mando pro mesmo endereço no PIX?' em vez de perguntar separadamente.\n";
+    $prompt .= "Pule etapas sempre que possível — o cliente que já pediu antes não quer repetir tudo.\n\n";
+
     $prompt .= "### Proatividade inteligente (upselling profissional)\n";
     $prompt .= "TIMING DO UPSELL — 3 momentos estratégicos (use NO MÁXIMO 1 por conversa):\n";
     $prompt .= "1. APÓS item principal (melhor momento): 'Vai querer uma bebida pra acompanhar? Tem Coca, Guaraná, suco...'\n";
@@ -5102,8 +5277,11 @@ function buildSystemPrompt(
     if ($turnCount > 0) {
         $prompt .= "- Turno da conversa: #{$turnCount}\n";
     }
-    if ($turnCount > 8) {
+    if ($turnCount > 8 && $turnCount < 15) {
         $prompt .= "- ⚠️ Conversa longa — seja mais direto, tente concluir logo\n";
+    }
+    if ($turnCount >= 15) {
+        $prompt .= "- ⚠️ ATENÇÃO: A conversa está muito longa. Tente resolver em no máximo 2 turnos.\n";
     }
 
     // Upsell tracking
@@ -5184,6 +5362,12 @@ function buildSystemPrompt(
         } elseif ($loyaltyTier && $loyaltyTier['tier'] === 'Prata') {
             $prompt .= "\nCliente Prata — bom cliente, seja caloroso!";
         }
+        // Cashback balance info
+        $cbBal = $extraData['cashback_balance'] ?? 0;
+        if ($cbBal > 0) {
+            $cbBalFmt = number_format($cbBal, 2, ',', '.');
+            $prompt .= "\nSALDO CASHBACK: R\${$cbBalFmt} — mencione naturalmente: 'Você tem {$cbBalFmt} de cashback! Quer usar no pedido?'";
+        }
         $prompt .= "\n\n";
 
         // Referral hint for frequent customers (light touch — just a prompt hint)
@@ -5192,6 +5376,13 @@ function buildSystemPrompt(
             if ($referralCode) {
                 $prompt .= "DICA: Esse cliente é frequente e tem código de indicação ({$referralCode}). Se parecer natural, mencione: 'Sabia que você pode indicar amigos e ganhar cashback? Me manda um zap que eu explico!'\n\n";
             }
+        }
+
+        // Lapsed customer — welcome-back coupon offer
+        $daysSinceLast = (int)($customerStats['days_since_last_order'] ?? 0);
+        if ($customerStats && (int)$customerStats['total_orders'] > 0 && $daysSinceLast >= 30) {
+            $prompt .= "CLIENTE SUMIDO (ultimo pedido ha {$daysSinceLast} dias). Ofereça um cupom de boas-vindas: VOLTEI10 (10% de desconto, pedido minimo R\$20). ";
+            $prompt .= "Diga naturalmente: 'Faz tempo que cê não pede! Tenho um cupom especial pra você: VOLTEI10, dá 10% de desconto. Bora pedir?'\n\n";
         }
     }
 
@@ -5330,6 +5521,7 @@ function buildSystemPrompt(
             $prompt .= "- Restaurante identificado: [STORE:id:nome] (ex: [STORE:42:Pizzaria Bella])\n";
             $prompt .= "- CEP detectado: [CEP:12345678]\n";
             $prompt .= "- [NEXT_STORE] — sinaliza que o cliente quer pedir de outra loja (pedido multi-loja)\n";
+            $prompt .= "- Repetir pedido anterior: [REORDER:numero_pedido] — quando cliente quer repetir um pedido anterior (ex: [REORDER:SB00123])\n";
             $prompt .= "- Quer suporte: mude o tom pra suporte (os pedidos serão carregados automaticamente)\n";
             break;
 
@@ -5553,6 +5745,7 @@ function buildSystemPrompt(
             $prompt .= "- Para alterar qtd: [UPDATE_QTY:indice_do_item:nova_qtd]\n";
             $prompt .= "- Para agendar: [SCHEDULE:YYYY-MM-DD HH:MM]\n";
             $prompt .= "- Trocar membro grupo: [GROUP_MEMBER:nome]\n";
+            $prompt .= "- Aplicar cupom: [COUPON:codigo] — quando cliente quer aplicar cupom\n";
             $prompt .= "- Quando finalizar itens: [NEXT_STEP]\n";
 
             // Learned customization preferences
@@ -5650,6 +5843,7 @@ function buildSystemPrompt(
             $prompt .= "- CEP: [CEP:12345678]\n";
             $prompt .= "- Endereço salvo: [ADDRESS:1]\n";
             $prompt .= "- Endereço digitado: [ADDRESS_TEXT:rua, número, complemento - bairro, cidade]\n";
+            $prompt .= "- Salvar endereço novo: [SAVE_ADDRESS] — quando cliente deu endereço novo e quer salvar\n";
             $prompt .= "- Quando tiver endereço → [NEXT_STEP]\n";
             $prompt .= "- Instrucoes de entrega: [DELIVERY_INSTRUCTIONS:texto]\n\n";
 
@@ -5662,6 +5856,14 @@ function buildSystemPrompt(
 
         case 'get_payment':
             $prompt .= "## ETAPA: Como vai pagar?\n";
+            // Cashback balance
+            $cbBalPay = $extraData['cashback_balance'] ?? 0;
+            if ($cbBalPay > 0) {
+                $cbBalPayFmt = number_format($cbBalPay, 2, ',', '.');
+                $prompt .= "SALDO DE CASHBACK DO CLIENTE: R\${$cbBalPayFmt}\n";
+                $prompt .= "Mencione naturalmente: 'Você tem {$cbBalPayFmt} de cashback! Quer usar no pedido?'\n";
+                $prompt .= "Se quiser usar, inclua [USE_CASHBACK:valor] (ex: [USE_CASHBACK:{$cbBalPayFmt}] ou [USE_CASHBACK:all])\n\n";
+            }
             if ($lastPayment) {
                 $paymentLabels = [
                     'dinheiro' => 'dinheiro', 'pix' => 'PIX',
@@ -5688,6 +5890,8 @@ function buildSystemPrompt(
             $prompt .= "- Com troco: [PAYMENT:dinheiro:100]\n";
             $prompt .= "- Dividido: [SPLIT_PAYMENT:metodo1:valor1:metodo2:valor2]\n";
             $prompt .= "- Gorjeta: [TIP:valor] (ex: [TIP:5.00])\n";
+            $prompt .= "- Aplicar cupom: [COUPON:codigo]\n";
+            $prompt .= "- Usar cashback: [USE_CASHBACK:valor] — valor ou 'all' pra usar tudo\n";
             $prompt .= "- Depois → [NEXT_STEP]\n\n";
 
             // Learned payment preference
@@ -5714,7 +5918,7 @@ function buildSystemPrompt(
                 $prompt .= "- {$item['quantity']}x {$item['name']} R$" . number_format($lineTotal, 2, ',', '.') . "\n";
             }
             $deliveryFee = $storeInfo ? (float)$storeInfo['delivery_fee'] : 5.0;
-            $serviceFee = round($subtotal * 0.08, 2);
+            $serviceFee = OmPricing::TAXA_SERVICO;
             $total = $subtotal + $deliveryFee + $serviceFee;
             $prompt .= "\nSubtotal: R$" . number_format($subtotal, 2, ',', '.');
             $prompt .= "\nEntrega: R$" . number_format($deliveryFee, 2, ',', '.');
@@ -5842,6 +6046,8 @@ function buildSystemPrompt(
             $prompt .= "Ex: 'Então fica: uma pizza margherita grande e duas cocas. Total de cinquenta e oito reais com entrega. Posso mandar?'\n\n";
             $prompt .= "Se confirmar (sim, pode, manda, isso, bora, confirma) → [CONFIRMED]\n";
             $prompt .= "Se quiser mudar algo → volte pra etapa certa\n";
+            $prompt .= "Aplicar cupom: [COUPON:codigo]\n";
+            $prompt .= "Usar cashback: [USE_CASHBACK:valor] (ex: [USE_CASHBACK:5.50] ou [USE_CASHBACK:all])\n";
             break;
 
         case 'question':
@@ -5951,7 +6157,14 @@ function buildSystemPrompt(
             $prompt .= "- Remover item: [MODIFY_REMOVE_ITEM:indice]\n";
             $prompt .= "- Trocar endereço: [MODIFY_ADDRESS:endereço]\n";
             $prompt .= "- Voltar a pedir: [SWITCH_TO_ORDER]\n";
-            $prompt .= "- Transferir: diga 'vou te transferir' (sistema detecta 'atendente' na fala dele)\n";
+            $prompt .= "- Transferir: diga 'vou te transferir' (sistema detecta 'atendente' na fala dele)\n\n";
+
+            // Cross-sell: suggest add-ons when order is still being prepared
+            $prompt .= "CROSS-SELL (use 1x max, só se natural):\n";
+            $prompt .= "Se o pedido tá 'Pendente', 'Confirmado' ou 'Preparando' e o cliente perguntou status:\n";
+            $prompt .= "Depois de dar o status, sugira: 'Aproveita que ainda dá tempo — quer adicionar uma bebida ou sobremesa?'\n";
+            $prompt .= "Se ele aceitar → [SWITCH_TO_ORDER]\n";
+            $prompt .= "Se recusar ou ignorar → NÃO insista.\n";
             break;
     }
 
@@ -5964,6 +6177,29 @@ function parseAiResponse(string $response, array $context, PDO $db): array {
     // Strip <think>...</think> blocks FIRST so they don't interfere with marker parsing
     $response = preg_replace('/<think>.*?<\/think>/s', '', $response);
     $response = preg_replace('/<\/?think>/i', '', $response);
+
+    // Strip leaked internal reasoning lines (Claude sometimes outputs prompt headers as spoken text)
+    // Strip ENTIRE lines that contain internal reasoning keywords (Claude leaks prompt headers)
+    $reasoningKeywords = 'TRANSCRI[CÇ][AÃ]O|INTEN[CÇ][AÃ]O|CONTEXTO|ETAPA|SLOTS?|TOM DO|RESPOSTA|MARCADOR\w*|RACIOC[IÍ]NIO|AN[AÁ]LISE|PENSAMENTO';
+    // Lines starting with number + keyword (e.g. "1. Transcrição: cliente quer...")
+    $response = preg_replace('/^[\s]*\d+[\.\)\-]\s*(' . $reasoningKeywords . ')\s*[:\.].*/uim', '', $response);
+    // Lines starting directly with keyword (e.g. "Transcrição: cliente quer...")
+    $response = preg_replace('/^[\s]*(' . $reasoningKeywords . ')\s*(REAL|DO CLIENTE|ATUAL|FALTANDO)?\s*[:\.].*/uim', '', $response);
+    // Keyword anywhere in a line followed by colon — strip entire line
+    $response = preg_replace('/^.*\b(' . $reasoningKeywords . ')\s*(REAL|DO CLIENTE|ATUAL)?\s*[:].*/uim', '', $response);
+    // Strip note/observation wrappers
+    $response = preg_replace('/\[NOTA[:\]].*?\]/si', '', $response);
+    $response = preg_replace('/\(observa[cç][aã]o[:\s].*?\)/si', '', $response);
+    // Strip lines that look like bullet-point reasoning (e.g. "- O cliente quer fazer pedido")
+    $response = preg_replace('/^[\s]*[\-\*]\s*(O cliente|Cliente|Ele|Ela)\s+(quer|está|tá|pediu|falou|disse|precisa|mencionou)\b.*/uim', '', $response);
+    // Clean up multiple blank lines left after stripping
+    $response = preg_replace('/\n{2,}/', "\n", $response);
+    $response = trim($response);
+    // If after all stripping the response is empty, something went very wrong — use fallback
+    if (empty($response)) {
+        $response = 'Oi, pode falar! Como posso te ajudar?';
+    }
+
     $cleaned = $response;
 
     // Parse [STORE:ID:name] — also handle [STORE:ID:142:name] if Claude includes literal "ID:"
@@ -6319,6 +6555,293 @@ function parseAiResponse(string $response, array $context, PDO $db): array {
         $cleaned = preg_replace('/\[DIETARY:[^\]]+\]/', '', $cleaned);
     }
 
+    // ── COUPON ────────────────────────────────────────────────────────────
+    // Parse [COUPON:code]
+    if (preg_match('/\[COUPON:([^\]]+)\]/', $response, $m)) {
+        $couponCode = strtoupper(trim($m[1]));
+        $cleaned = str_replace($m[0], '', $cleaned);
+
+        if (!empty($couponCode)) {
+            try {
+                $couponStmt = $db->prepare("SELECT * FROM om_market_coupons WHERE code = ? AND status = 'active'");
+                $couponStmt->execute([$couponCode]);
+                $coupon = $couponStmt->fetch(PDO::FETCH_ASSOC);
+
+                $couponValid = false;
+                $couponError = '';
+
+                if (!$coupon) {
+                    $couponError = 'Esse cupom não é válido.';
+                } else {
+                    $now = date('Y-m-d H:i:s');
+
+                    // Date validation
+                    if (!empty($coupon['valid_from']) && $now < $coupon['valid_from']) {
+                        $couponError = 'Esse cupom ainda não tá ativo.';
+                    } elseif (!empty($coupon['valid_until']) && $now > $coupon['valid_until']) {
+                        $couponError = 'Esse cupom já expirou.';
+                    } else {
+                        // Global max uses
+                        if (!empty($coupon['max_uses']) && (int)$coupon['max_uses'] > 0) {
+                            $usageStmt = $db->prepare("SELECT COUNT(*) FROM om_market_coupon_usage WHERE coupon_id = ?");
+                            $usageStmt->execute([$coupon['id']]);
+                            if ((int)$usageStmt->fetchColumn() >= (int)$coupon['max_uses']) {
+                                $couponError = 'Esse cupom já esgotou.';
+                            }
+                        }
+                        // Per-user max uses
+                        $custIdForCoupon = $newContext['customer_id'] ?? ($context['customer_id'] ?? null);
+                        if (empty($couponError) && $custIdForCoupon && !empty($coupon['max_uses_per_user']) && (int)$coupon['max_uses_per_user'] > 0) {
+                            $userUsageStmt = $db->prepare("SELECT COUNT(*) FROM om_market_coupon_usage WHERE coupon_id = ? AND customer_id = ?");
+                            $userUsageStmt->execute([$coupon['id'], $custIdForCoupon]);
+                            if ((int)$userUsageStmt->fetchColumn() >= (int)$coupon['max_uses_per_user']) {
+                                $couponError = 'Você já usou esse cupom o máximo de vezes.';
+                            }
+                        }
+                        // Min order value
+                        if (empty($couponError) && !empty($coupon['min_order_value'])) {
+                            $couponSubtotal = 0;
+                            foreach ($newContext['items'] ?? [] as $ci) {
+                                $couponSubtotal += ($ci['price'] ?? 0) * ($ci['quantity'] ?? 1);
+                            }
+                            if ($couponSubtotal < (float)$coupon['min_order_value']) {
+                                $minFmt = number_format((float)$coupon['min_order_value'], 2, ',', '.');
+                                $couponError = "Pedido mínimo pra esse cupom é R\${$minFmt}.";
+                            }
+                        }
+
+                        if (empty($couponError)) {
+                            $couponValid = true;
+                        }
+                    }
+                }
+
+                if ($couponValid) {
+                    // Calculate discount
+                    $discType = $coupon['discount_type'] ?? 'percentage';
+                    $discValue = (float)($coupon['discount_value'] ?? 0);
+                    $maxDisc = !empty($coupon['max_discount']) ? (float)$coupon['max_discount'] : null;
+                    $couponSubtotal = 0;
+                    foreach ($newContext['items'] ?? [] as $ci) {
+                        $couponSubtotal += ($ci['price'] ?? 0) * ($ci['quantity'] ?? 1);
+                    }
+
+                    if ($discType === 'percentage') {
+                        $discount = round($couponSubtotal * ($discValue / 100), 2);
+                        if ($maxDisc && $discount > $maxDisc) $discount = $maxDisc;
+                    } elseif ($discType === 'free_delivery') {
+                        $discount = 0; // delivery fee zeroed out at submit
+                        $newContext['coupon_free_delivery'] = true;
+                    } else {
+                        $discount = min($discValue, $couponSubtotal);
+                    }
+
+                    $newContext['coupon_code'] = $couponCode;
+                    $newContext['coupon_id'] = (int)$coupon['id'];
+                    $newContext['coupon_discount'] = $discount;
+                    error_log("[twilio-voice-ai] Coupon {$couponCode} applied: discount={$discount}");
+                } else {
+                    // Add error to response so AI speaks it
+                    $cleaned .= ' ' . $couponError;
+                    error_log("[twilio-voice-ai] Coupon {$couponCode} rejected: {$couponError}");
+                }
+            } catch (Exception $e) {
+                $cleaned .= ' Não consegui validar o cupom, tente novamente.';
+                error_log("[twilio-voice-ai] Coupon error: " . $e->getMessage());
+            }
+        }
+    }
+
+    // ── CASHBACK ──────────────────────────────────────────────────────────
+    // Parse [USE_CASHBACK:value]
+    if (preg_match('/\[USE_CASHBACK:([^\]]+)\]/', $response, $m)) {
+        $cashbackInput = trim($m[1]);
+        $cleaned = str_replace($m[0], '', $cleaned);
+        $custIdForCb = $newContext['customer_id'] ?? ($context['customer_id'] ?? null);
+
+        if ($custIdForCb) {
+            try {
+                $cbBalance = getCashbackBalance($db, (int)$custIdForCb);
+
+                if ($cbBalance <= 0) {
+                    $cleaned .= ' Você não tem saldo de cashback disponível.';
+                } else {
+                    // Parse amount: "all"/"tudo" means full balance
+                    $cbLower = strtolower($cashbackInput);
+                    if ($cbLower === 'all' || $cbLower === 'tudo' || $cbLower === 'todo') {
+                        $cashbackAmount = $cbBalance;
+                    } else {
+                        $cashbackAmount = (float)str_replace(',', '.', $cashbackInput);
+                    }
+
+                    // Cap at balance and at subtotal
+                    $cbSubtotal = 0;
+                    foreach ($newContext['items'] ?? [] as $ci) {
+                        $cbSubtotal += ($ci['price'] ?? 0) * ($ci['quantity'] ?? 1);
+                    }
+                    $cbCouponDisc = (float)($newContext['coupon_discount'] ?? 0);
+                    $maxCashback = max(0, $cbSubtotal - $cbCouponDisc);
+                    $cashbackAmount = min($cashbackAmount, $cbBalance, $maxCashback);
+
+                    if ($cashbackAmount > 0) {
+                        $newContext['cashback_used'] = round($cashbackAmount, 2);
+                        error_log("[twilio-voice-ai] Cashback {$cashbackAmount} applied (balance: {$cbBalance})");
+                    } else {
+                        $cleaned .= ' Não foi possível aplicar cashback nesse pedido.';
+                    }
+                }
+            } catch (Exception $e) {
+                $cleaned .= ' Erro ao verificar cashback.';
+                error_log("[twilio-voice-ai] Cashback error: " . $e->getMessage());
+            }
+        } else {
+            $cleaned .= ' Preciso identificar sua conta pra usar cashback.';
+        }
+    }
+
+    // ── SAVE ADDRESS ──────────────────────────────────────────────────────
+    // Parse [SAVE_ADDRESS]
+    if (strpos($response, '[SAVE_ADDRESS]') !== false) {
+        $cleaned = str_replace('[SAVE_ADDRESS]', '', $cleaned);
+        $custIdForAddr = $newContext['customer_id'] ?? ($context['customer_id'] ?? null);
+        $addrToSave = $newContext['address'] ?? null;
+
+        if ($custIdForAddr && $addrToSave && !empty($addrToSave['full'] ?? ($addrToSave['street'] ?? ''))) {
+            try {
+                $insertAddr = $db->prepare("
+                    INSERT INTO om_customer_addresses (customer_id, label, street, number, complement, neighborhood, city, state, zipcode, is_default, is_active, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, false, '1', NOW())
+                ");
+                $insertAddr->execute([
+                    $custIdForAddr,
+                    $addrToSave['label'] ?? 'Telefone',
+                    $addrToSave['street'] ?? ($addrToSave['full'] ?? ''),
+                    $addrToSave['number'] ?? '',
+                    $addrToSave['complement'] ?? '',
+                    $addrToSave['neighborhood'] ?? '',
+                    $addrToSave['city'] ?? '',
+                    $addrToSave['state'] ?? '',
+                    $addrToSave['zipcode'] ?? ($addrToSave['cep'] ?? ''),
+                ]);
+                $newContext['address_saved'] = true;
+                error_log("[twilio-voice-ai] Address saved for customer {$custIdForAddr}");
+            } catch (Exception $e) {
+                error_log("[twilio-voice-ai] SAVE_ADDRESS error: " . $e->getMessage());
+            }
+        }
+    }
+
+    // ── REORDER ───────────────────────────────────────────────────────────
+    // Parse [REORDER:order_number]
+    if (preg_match('/\[REORDER:([^\]]+)\]/', $response, $m)) {
+        $reorderNumber = trim($m[1]);
+        $cleaned = str_replace($m[0], '', $cleaned);
+        $custIdForReorder = $newContext['customer_id'] ?? ($context['customer_id'] ?? null);
+
+        if ($custIdForReorder) {
+            try {
+                // Find the order
+                $reorderStmt = $db->prepare("
+                    SELECT o.order_id, o.order_number, o.partner_id, o.partner_name
+                    FROM om_market_orders o
+                    WHERE o.customer_id = ? AND o.order_number = ?
+                    LIMIT 1
+                ");
+                $reorderStmt->execute([$custIdForReorder, $reorderNumber]);
+                $reorderOrder = $reorderStmt->fetch(PDO::FETCH_ASSOC);
+
+                if ($reorderOrder) {
+                    // Fetch order items with current availability
+                    $roItemsStmt = $db->prepare("
+                        SELECT oi.product_id, oi.name, oi.price, oi.quantity,
+                               p.name AS current_name, p.price AS current_price,
+                               p.special_price AS current_special_price,
+                               p.status AS product_status, p.quantity AS product_stock
+                        FROM om_market_order_items oi
+                        LEFT JOIN om_market_products p ON p.product_id = oi.product_id
+                        WHERE oi.order_id = ?
+                        ORDER BY oi.id
+                    ");
+                    $roItemsStmt->execute([(int)$reorderOrder['order_id']]);
+                    $roItems = $roItemsStmt->fetchAll(PDO::FETCH_ASSOC);
+
+                    if (!empty($roItems)) {
+                        $cartItems = [];
+                        $skippedItems = [];
+
+                        foreach ($roItems as $ri) {
+                            $productId = (int)($ri['product_id'] ?? 0);
+                            if ($productId <= 0) continue;
+
+                            $productStatus = $ri['product_status'] ?? null;
+                            $productStock = (int)($ri['product_stock'] ?? 0);
+
+                            if ($productStatus === null || (int)$productStatus !== 1 || $productStock <= 0) {
+                                $skippedItems[] = $ri['name'];
+                                continue;
+                            }
+
+                            // Use current price
+                            $currentPrice = (float)($ri['current_price'] ?? 0);
+                            $currentSpecial = (float)($ri['current_special_price'] ?? 0);
+                            $realPrice = ($currentSpecial > 0 && $currentSpecial < $currentPrice)
+                                ? $currentSpecial
+                                : $currentPrice;
+
+                            if ($realPrice <= 0) {
+                                $skippedItems[] = $ri['name'];
+                                continue;
+                            }
+
+                            $qty = min((int)($ri['quantity'] ?? 1), $productStock);
+                            $cartItems[] = [
+                                'product_id' => $productId,
+                                'name'       => $ri['current_name'] ?? $ri['name'],
+                                'price'      => $realPrice,
+                                'quantity'   => $qty,
+                                'options'    => [],
+                                'notes'      => '',
+                            ];
+                        }
+
+                        if (!empty($cartItems)) {
+                            $newContext['items'] = $cartItems;
+                            $newContext['store_id'] = (int)$reorderOrder['partner_id'];
+                            $newContext['store_name'] = $reorderOrder['partner_name'];
+                            $newContext['repeat_order'] = true;
+
+                            // Determine next step based on whether address is known
+                            $hasAddr = !empty($newContext['address']) || !empty($newContext['address_index']);
+                            if ($hasAddr) {
+                                $newContext['step'] = 'confirm_order';
+                            } else {
+                                $newContext['step'] = 'get_address';
+                            }
+
+                            if (!empty($skippedItems)) {
+                                $skippedList = implode(', ', $skippedItems);
+                                $cleaned .= " Alguns itens não estão mais disponíveis: {$skippedList}.";
+                            }
+
+                            error_log("[twilio-voice-ai] REORDER: {$reorderNumber} -> " . count($cartItems) . " items loaded");
+                        } else {
+                            $cleaned .= ' Nenhum dos itens desse pedido tá disponível no momento. Vamos montar um novo?';
+                        }
+                    } else {
+                        $cleaned .= ' Não encontrei os itens desse pedido.';
+                    }
+                } else {
+                    $cleaned .= " Não encontrei o pedido {$reorderNumber}. Pode verificar o número?";
+                }
+            } catch (Exception $e) {
+                $cleaned .= ' Erro ao buscar o pedido anterior.';
+                error_log("[twilio-voice-ai] REORDER error: " . $e->getMessage());
+            }
+        } else {
+            $cleaned .= ' Preciso identificar sua conta pra repetir o pedido.';
+        }
+    }
+
     // ── ORDER MODIFICATION (POST-SUBMIT) ────────────────────────────────
     // Parse [MODIFY_ADD_ITEM:product_id:name:price:qty]
     if (preg_match_all('/\[MODIFY_ADD_ITEM:(\d+):([^:]+):([\d.]+):(\d+)\]/', $response, $matches, PREG_SET_ORDER)) {
@@ -6592,7 +7115,7 @@ function cleanConversationHistory(array $history): array {
 
         // Strip internal markers from assistant messages so Claude doesn't see its own past markers
         if ($msg['role'] === 'assistant') {
-            $content = preg_replace('/\[(STORE|ITEM|PAYMENT|ADDRESS|CEP|NEXT_STEP|CONFIRMED|REMOVE_ITEM|UPDATE_QTY|TIP|DELIVERY_INSTRUCTIONS|SCHEDULE|BACK_TO_ORDER|NEXT_STORE|SWITCH_TO_ORDER|CANCEL_ORDER|ORDER_STATUS|CUSTOMER_NAME|DIETARY|GROUP_MEMBER|SPLIT_PAYMENT|MODIFY_\w+|ITEM_NOTE)[^\]]*\]/', '', $content);
+            $content = preg_replace('/\[(STORE|ITEM|PAYMENT|ADDRESS|CEP|NEXT_STEP|CONFIRMED|REMOVE_ITEM|UPDATE_QTY|TIP|DELIVERY_INSTRUCTIONS|SCHEDULE|BACK_TO_ORDER|NEXT_STORE|SWITCH_TO_ORDER|CANCEL_ORDER|ORDER_STATUS|CUSTOMER_NAME|DIETARY|GROUP_MEMBER|SPLIT_PAYMENT|MODIFY_\w+|ITEM_NOTE|COUPON|USE_CASHBACK|SAVE_ADDRESS|REORDER|ADDRESS_TEXT)[^\]]*\]/', '', $content);
             $content = preg_replace('/\[OPT:[^\]]*\]/', '', $content);
             $content = trim(preg_replace('/\s+/', ' ', $content));
             if (empty($content)) continue;
@@ -6611,13 +7134,14 @@ function cleanConversationHistory(array $history): array {
             $lastRole = $msg['role'];
         }
     }
-    // Ensure starts with user
+    // Ensure starts with user (Claude API requires alternating user/assistant, starting with user)
     if (!empty($clean) && $clean[0]['role'] !== 'user') {
-        array_unshift($clean, ['role' => 'user', 'content' => 'Olá']);
+        // Use a context-setting message, NOT a greeting (to avoid Claude re-introducing itself)
+        array_unshift($clean, ['role' => 'user', 'content' => '[cliente ligou - saudação já feita pelo IVR, continue a conversa]']);
     }
     // Ensure non-empty
     if (empty($clean)) {
-        $clean[] = ['role' => 'user', 'content' => 'Olá, quero fazer um pedido'];
+        $clean[] = ['role' => 'user', 'content' => '[cliente ligou - saudação já feita pelo IVR, continue a conversa]'];
     }
     return $clean;
 }
@@ -6652,17 +7176,19 @@ function submitAiOrder(PDO $db, int $callId, ?int $customerId, ?string $customer
             return ['success' => false, 'error' => "O pedido mínimo dessa loja é R$" . number_format($minOrder, 2, ',', '.') . ". Falta R${$falta}"];
         }
 
-        // Validate product availability (check stock for each item)
-        foreach ($items as $item) {
+        // Verify real prices from DB and validate product availability
+        foreach ($items as &$item) {
             if (empty($item['product_id'])) continue;
             try {
-                $stockStmt = $db->prepare("SELECT name, quantity, status FROM om_market_products WHERE product_id = ?");
+                $stockStmt = $db->prepare("SELECT name, price, quantity, status FROM om_market_products WHERE product_id = ?");
                 $stockStmt->execute([$item['product_id']]);
                 $prod = $stockStmt->fetch();
                 if ($prod) {
                     if ($prod['status'] !== '1') {
                         return ['success' => false, 'error' => "O produto \"{$prod['name']}\" não tá mais disponível. Quer trocar por outro?"];
                     }
+                    // Use real price from DB instead of AI-provided price
+                    $item['price'] = (float)$prod['price'];
                     $stockQty = (int)($prod['quantity'] ?? 999);
                     if ($stockQty >= 0 && $stockQty < ($item['quantity'] ?? 1) && $stockQty < 999) {
                         if ($stockQty === 0) {
@@ -6676,6 +7202,7 @@ function submitAiOrder(PDO $db, int $callId, ?int $customerId, ?string $customer
                 error_log("[twilio-voice-ai] Stock check error (non-fatal): " . $e->getMessage());
             }
         }
+        unset($item); // break reference
 
         // Resolve saved address if needed
         if (isset($context['address_index']) && $customerId && !$address) {
@@ -6710,7 +7237,7 @@ function submitAiOrder(PDO $db, int $callId, ?int $customerId, ?string $customer
             $subtotal += ($item['price'] ?? 0) * ($item['quantity'] ?? 1);
         }
         $deliveryFee = (float)($store['delivery_fee'] ?? 5.00);
-        $serviceFee = round($subtotal * 0.08, 2);
+        $serviceFee = OmPricing::TAXA_SERVICO;
         $tipAmount = (float)($context['tip'] ?? 0);
         if ($tipAmount < 0 || $tipAmount > 50) $tipAmount = 0;
         $total = round($subtotal + $deliveryFee + $serviceFee + $tipAmount, 2);
@@ -6742,7 +7269,7 @@ function submitAiOrder(PDO $db, int $callId, ?int $customerId, ?string $customer
                 notes, source, date_added
             ) VALUES (
                 ?, ?, ?, ?,
-                'confirmado', ?, ?, ?, ?,
+                'pending', ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
                 ?, ?,
                 ?, 'pendente', ?,
@@ -6788,7 +7315,7 @@ function submitAiOrder(PDO $db, int $callId, ?int $customerId, ?string $customer
                ->execute([$context['scheduled_date'], $context['scheduled_time'] ?? '12:00', $orderId]);
         }
 
-        // Insert items
+        // Insert items (with FOR UPDATE stock lock to prevent double-selling)
         $stmtItem = $db->prepare("
             INSERT INTO om_market_order_items (order_id, product_id, name, quantity, price, total, notes)
             VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -6801,6 +7328,29 @@ function submitAiOrder(PDO $db, int $callId, ?int $customerId, ?string $customer
             $qty = (int)($item['quantity'] ?? 1);
             $price = (float)($item['price'] ?? 0);
             $itemTotal = round($price * $qty, 2);
+
+            // Lock product row and verify stock within transaction
+            if (!empty($item['product_id'])) {
+                $lockStmt = $db->prepare("SELECT product_id, quantity, status FROM om_market_products WHERE product_id = ? FOR UPDATE");
+                $lockStmt->execute([$item['product_id']]);
+                $lockedProd = $lockStmt->fetch();
+                if ($lockedProd) {
+                    if ($lockedProd['status'] !== '1') {
+                        $db->rollBack();
+                        return ['success' => false, 'error' => "O produto \"{$item['name']}\" ficou indisponível. Tente novamente."];
+                    }
+                    $stockQty = (int)($lockedProd['quantity'] ?? 999);
+                    if ($stockQty >= 0 && $stockQty < $qty && $stockQty < 999) {
+                        $db->rollBack();
+                        return ['success' => false, 'error' => "Estoque insuficiente do \"{$item['name']}\". Só tem {$stockQty} unidade(s)."];
+                    }
+                    // Decrement stock
+                    if ($stockQty < 999) {
+                        $db->prepare("UPDATE om_market_products SET quantity = quantity - ? WHERE product_id = ?")
+                           ->execute([$qty, $item['product_id']]);
+                    }
+                }
+            }
             $stmtItem->execute([
                 $orderId, $item['product_id'] ?? null, $item['name'],
                 $qty, $price, $itemTotal, $item['notes'] ?? null,
@@ -6842,7 +7392,7 @@ function submitAiOrder(PDO $db, int $callId, ?int $customerId, ?string $customer
         // Timeline
         $db->prepare("
             INSERT INTO om_order_timeline (order_id, status, description, actor_type, created_at)
-            VALUES (?, 'confirmado', 'Pedido criado via IA por telefone', 'system', NOW())
+            VALUES (?, 'pending', 'Pedido criado via IA por telefone — aguardando aceitação da loja', 'system', NOW())
         ")->execute([$orderId]);
 
         $db->commit();
@@ -6932,7 +7482,7 @@ function fetchLastOrderItems(PDO $db, int $customerId, int $storeId): array {
         SELECT oi.product_id, oi.name AS product_name, oi.quantity, oi.price AS unit_price
         FROM om_market_order_items oi
         JOIN om_market_orders o ON o.order_id = oi.order_id
-        WHERE o.customer_id = ? AND o.partner_id = ? AND o.status NOT IN ('cancelled','refunded')
+        WHERE o.customer_id = ? AND o.partner_id = ? AND o.status NOT IN ('cancelado','reembolsado')
         ORDER BY o.created_at DESC
         LIMIT 10
     ");
@@ -6965,6 +7515,11 @@ function sendTwilioSms(string $to, string $orderNumber, string $storeName, array
     $twilioSid = $_ENV['TWILIO_SID'] ?? getenv('TWILIO_SID') ?: '';
     $twilioToken = $_ENV['TWILIO_TOKEN'] ?? getenv('TWILIO_TOKEN') ?: '';
     $twilioFrom = $_ENV['TWILIO_PHONE'] ?? getenv('TWILIO_PHONE') ?: '';
+    $twilioFromBR = $_ENV['TWILIO_PHONE_BR'] ?? getenv('TWILIO_PHONE_BR') ?: '';
+    // Use BR number for Brazilian destinations
+    if ($twilioFromBR && preg_match('/^\+55/', $to)) {
+        $twilioFrom = $twilioFromBR;
+    }
 
     if (empty($twilioSid) || empty($twilioToken) || empty($twilioFrom)) {
         error_log("[twilio-voice-ai] SMS skipped: Twilio credentials not configured");
@@ -7038,7 +7593,7 @@ function cancelOrderByNumber(PDO $db, string $orderNumber): array {
         }
 
         $db->beginTransaction();
-        $db->prepare("UPDATE om_market_orders SET status = 'cancelled' WHERE order_id = ?")->execute([$order['order_id']]);
+        $db->prepare("UPDATE om_market_orders SET status = 'cancelado' WHERE order_id = ?")->execute([$order['order_id']]);
         $db->prepare("
             INSERT INTO om_order_timeline (order_id, status, description, actor_type, created_at)
             VALUES (?, 'cancelled', 'Cancelado pelo cliente via IA por telefone', 'system', NOW())

@@ -424,7 +424,7 @@ function handleBotConversation(PDO $db, int $conversationId, string $userMessage
                     SELECT DISTINCT o.partner_id, p.name, COUNT(*) as order_count, MAX(o.created_at) as last_order
                     FROM om_market_orders o
                     JOIN om_market_partners p ON p.partner_id = o.partner_id
-                    WHERE o.customer_id = ? AND o.status NOT IN ('cancelled','refunded')
+                    WHERE o.customer_id = ? AND o.status NOT IN ('cancelado','reembolsado')
                     GROUP BY o.partner_id, p.name
                     ORDER BY order_count DESC, last_order DESC LIMIT 5
                 ");
@@ -450,7 +450,7 @@ function handleBotConversation(PDO $db, int $conversationId, string $userMessage
                 SELECT oi.product_name, oi.quantity, oi.unit_price
                 FROM om_market_order_items oi
                 JOIN om_market_orders o ON o.order_id = oi.order_id
-                WHERE o.customer_id = ? AND o.partner_id = ? AND o.status NOT IN ('cancelled','refunded')
+                WHERE o.customer_id = ? AND o.partner_id = ? AND o.status NOT IN ('cancelado','reembolsado')
                 ORDER BY o.created_at DESC LIMIT 5
             ");
             $lastStmt->execute([$customerId, $storeId]);
@@ -496,7 +496,7 @@ function handleBotConversation(PDO $db, int $conversationId, string $userMessage
                 SELECT oi.product_name, COUNT(*) as order_count
                 FROM om_market_order_items oi
                 JOIN om_market_orders o ON o.order_id = oi.order_id
-                WHERE o.partner_id = ? AND o.status NOT IN ('cancelled','refunded')
+                WHERE o.partner_id = ? AND o.status NOT IN ('cancelado','reembolsado')
                 AND oi.product_name IS NOT NULL AND oi.product_name != ''
                 GROUP BY oi.product_name
                 ORDER BY order_count DESC LIMIT 5
@@ -523,7 +523,7 @@ function handleBotConversation(PDO $db, int $conversationId, string $userMessage
         if ($customerId && $step === 'get_payment') {
             $payStmt = $db->prepare("
                 SELECT forma_pagamento FROM om_market_orders
-                WHERE customer_id = ? AND status NOT IN ('cancelled','refunded')
+                WHERE customer_id = ? AND status NOT IN ('cancelado','reembolsado')
                 ORDER BY date_added DESC LIMIT 1
             ");
             $payStmt->execute([$customerId]);
@@ -536,7 +536,7 @@ function handleBotConversation(PDO $db, int $conversationId, string $userMessage
         if ($customerId) {
             $statsStmt = $db->prepare("
                 SELECT COUNT(*) as total_orders, COALESCE(SUM(total), 0) as lifetime_value
-                FROM om_market_orders WHERE customer_id = ? AND status NOT IN ('cancelled','refunded')
+                FROM om_market_orders WHERE customer_id = ? AND status NOT IN ('cancelado','reembolsado')
             ");
             $statsStmt->execute([$customerId]);
             $customerStats = $statsStmt->fetch();
@@ -1267,7 +1267,7 @@ function fetchLastOrderItemsWA(PDO $db, int $customerId, int $storeId): array {
         SELECT oi.product_id, oi.name AS product_name, oi.quantity, oi.price AS unit_price
         FROM om_market_order_items oi
         JOIN om_market_orders o ON o.order_id = oi.order_id
-        WHERE o.customer_id = ? AND o.partner_id = ? AND o.status NOT IN ('cancelled','refunded')
+        WHERE o.customer_id = ? AND o.partner_id = ? AND o.status NOT IN ('cancelado','reembolsado')
         ORDER BY o.created_at DESC LIMIT 10
     ");
     $stmt->execute([$customerId, $storeId]);
@@ -1691,7 +1691,7 @@ function cancelOrderByNumberWA(PDO $db, string $orderNumber): array {
         }
 
         $db->beginTransaction();
-        $db->prepare("UPDATE om_market_orders SET status = 'cancelled' WHERE order_id = ?")->execute([$order['order_id']]);
+        $db->prepare("UPDATE om_market_orders SET status = 'cancelado' WHERE order_id = ?")->execute([$order['order_id']]);
         $db->prepare("
             INSERT INTO om_order_timeline (order_id, status, description, actor_type, created_at)
             VALUES (?, 'cancelled', 'Cancelado pelo cliente via WhatsApp IA', 'system', NOW())

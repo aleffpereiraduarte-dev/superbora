@@ -28,7 +28,7 @@ try {
 
     $customerId = $user['customer_id'];
     $passageiroId = $user['passageiro_id'];
-    $cancellableStatuses = ['pending', 'pendente', 'aceito', 'confirmed', 'confirmado'];
+    $cancellableStatuses = ['pendente', 'aceito', 'confirmado'];
 
     $db->beginTransaction();
 

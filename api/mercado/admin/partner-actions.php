@@ -90,7 +90,7 @@ try {
                        p.logo, p.category, p.created_at,
                        (SELECT COUNT(*) FROM om_market_orders o WHERE o.partner_id = p.partner_id) as orders_count,
                        (SELECT COALESCE(SUM(o2.total), 0) FROM om_market_orders o2
-                        WHERE o2.partner_id = p.partner_id AND o2.status NOT IN ('cancelled','refunded')) as total_revenue
+                        WHERE o2.partner_id = p.partner_id AND o2.status NOT IN ('cancelado','reembolsado')) as total_revenue
                 FROM om_market_partners p
                 WHERE {$where_sql}
                 ORDER BY p.created_at DESC
@@ -145,11 +145,11 @@ try {
             // Estatisticas de pedidos
             $stmt = $db->prepare("
                 SELECT COUNT(*) as total_orders,
-                       COALESCE(SUM(CASE WHEN status NOT IN ('cancelled','refunded') THEN total ELSE 0 END), 0) as total_revenue,
-                       COALESCE(AVG(CASE WHEN status NOT IN ('cancelled','refunded') THEN total END), 0) as avg_order,
+                       COALESCE(SUM(CASE WHEN status NOT IN ('cancelado','reembolsado') THEN total ELSE 0 END), 0) as total_revenue,
+                       COALESCE(AVG(CASE WHEN status NOT IN ('cancelado','reembolsado') THEN total END), 0) as avg_order,
                        MAX(created_at) as last_order_date,
-                       SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_count,
-                       SUM(CASE WHEN status = 'refunded' THEN 1 ELSE 0 END) as refunded_count
+                       SUM(CASE WHEN status = 'cancelado' THEN 1 ELSE 0 END) as cancelled_count,
+                       SUM(CASE WHEN status = 'reembolsado' THEN 1 ELSE 0 END) as refunded_count
                 FROM om_market_orders
                 WHERE partner_id = ?
             ");
@@ -197,7 +197,7 @@ try {
                         COALESCE(SUM(CASE WHEN created_at >= NOW() - INTERVAL '60 days'
                                           AND created_at < NOW() - INTERVAL '30 days' THEN total ELSE 0 END), 0) as previous_30_days
                     FROM om_market_orders
-                    WHERE partner_id = ? AND status NOT IN ('cancelled','refunded')
+                    WHERE partner_id = ? AND status NOT IN ('cancelado','reembolsado')
                 ");
                 $stmt->execute([$partner_id]);
                 $revenue = $stmt->fetch();
@@ -416,7 +416,7 @@ try {
             try {
                 $stmt = $db->prepare("
                     UPDATE om_market_orders
-                    SET status = 'cancelled',
+                    SET status = 'cancelado',
                         cancel_reason = 'Parceiro suspenso pela administracao',
                         updated_at = NOW()
                     WHERE partner_id = ? AND status IN ('pending', 'confirmed', 'preparing', 'ready')
@@ -428,7 +428,7 @@ try {
                 if ($cancelled_orders > 0) {
                     $stmtOrders = $db->prepare("
                         SELECT order_id FROM om_market_orders
-                        WHERE partner_id = ? AND status = 'cancelled'
+                        WHERE partner_id = ? AND status = 'cancelado'
                         AND cancel_reason = 'Parceiro suspenso pela administracao'
                         AND updated_at >= NOW() - INTERVAL '1 minute'
                     ");
@@ -517,7 +517,7 @@ try {
             try {
                 $stmt = $db->prepare("
                     UPDATE om_market_orders
-                    SET status = 'cancelled',
+                    SET status = 'cancelado',
                         cancel_reason = 'Parceiro banido pela administracao',
                         updated_at = NOW()
                     WHERE partner_id = ? AND status IN ('pending', 'confirmed', 'preparing', 'ready')

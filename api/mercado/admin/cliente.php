@@ -42,8 +42,8 @@ try {
     // Spending stats
     $stmt = $db->prepare("
         SELECT COUNT(*) as total_orders,
-               COALESCE(SUM(CASE WHEN status NOT IN ('cancelled','refunded') THEN total ELSE 0 END), 0) as total_spent,
-               COALESCE(AVG(CASE WHEN status NOT IN ('cancelled','refunded') THEN total END), 0) as avg_order,
+               COALESCE(SUM(CASE WHEN status NOT IN ('cancelado','reembolsado') THEN total ELSE 0 END), 0) as total_spent,
+               COALESCE(AVG(CASE WHEN status NOT IN ('cancelado','reembolsado') THEN total END), 0) as avg_order,
                MAX(created_at) as last_order_date
         FROM om_market_orders
         WHERE customer_id = ?

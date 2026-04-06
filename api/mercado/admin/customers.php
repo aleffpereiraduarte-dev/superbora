@@ -64,11 +64,11 @@ try {
             // Order stats
             $stmt = $db->prepare("
                 SELECT COUNT(*) as total_orders,
-                       COALESCE(SUM(CASE WHEN status NOT IN ('cancelled','refunded') THEN total ELSE 0 END), 0) as total_spent,
-                       COALESCE(AVG(CASE WHEN status NOT IN ('cancelled','refunded') THEN total END), 0) as avg_ticket,
+                       COALESCE(SUM(CASE WHEN status NOT IN ('cancelado','reembolsado') THEN total ELSE 0 END), 0) as total_spent,
+                       COALESCE(AVG(CASE WHEN status NOT IN ('cancelado','reembolsado') THEN total END), 0) as avg_ticket,
                        MAX(created_at) as last_order_date,
-                       SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_count,
-                       SUM(CASE WHEN status = 'refunded' THEN 1 ELSE 0 END) as refunded_count
+                       SUM(CASE WHEN status = 'cancelado' THEN 1 ELSE 0 END) as cancelled_count,
+                       SUM(CASE WHEN status = 'reembolsado' THEN 1 ELSE 0 END) as refunded_count
                 FROM om_market_orders
                 WHERE customer_id = ?
             ");
@@ -124,11 +124,11 @@ try {
             $addresses = [];
             try {
                 $stmt = $db->prepare("
-                    SELECT id, label, street, number, complement, neighborhood,
-                           city, state, cep, latitude, longitude, is_default
+                    SELECT address_id, label, street, number, complement, neighborhood,
+                           city, state, zipcode, lat, lng, is_default
                     FROM om_customer_addresses
                     WHERE customer_id = ?
-                    ORDER BY is_default DESC, id DESC
+                    ORDER BY is_default DESC, address_id DESC
                 ");
                 $stmt->execute([$customer_id]);
                 $addresses = $stmt->fetchAll();
@@ -235,17 +235,28 @@ try {
                    COALESCE(os.total_spent, 0) as total_spent,
                    COALESCE(os.avg_ticket, 0) as avg_ticket,
                    os.last_order_date,
-                   COALESCE(cb.balance, 0) as cashback_balance
+                   COALESCE(cb.balance, 0) as cashback_balance,
+                   mem.plan as membership_plan,
+                   mem.status as membership_status
             FROM om_customers c
             LEFT JOIN LATERAL (
                 SELECT COUNT(*) as total_orders,
-                       COALESCE(SUM(CASE WHEN o.status NOT IN ('cancelled','refunded') THEN o.total ELSE 0 END), 0) as total_spent,
-                       COALESCE(AVG(CASE WHEN o.status NOT IN ('cancelled','refunded') THEN o.total END), 0) as avg_ticket,
+                       COALESCE(SUM(CASE WHEN o.status NOT IN ('cancelado','reembolsado') THEN o.total ELSE 0 END), 0) as total_spent,
+                       COALESCE(AVG(CASE WHEN o.status NOT IN ('cancelado','reembolsado') THEN o.total END), 0) as avg_ticket,
                        MAX(o.created_at) as last_order_date
                 FROM om_market_orders o
                 WHERE o.customer_id = c.customer_id
             ) os ON TRUE
             LEFT JOIN om_cashback_wallet cb ON cb.customer_id = c.customer_id
+            LEFT JOIN LATERAL (
+                SELECT m.plan, m.status
+                FROM om_customer_memberships m
+                WHERE m.customer_id = c.customer_id
+                AND m.status IN ('active', 'trialing')
+                AND (m.current_period_end > NOW() OR m.expires_at > NOW())
+                ORDER BY m.created_at DESC
+                LIMIT 1
+            ) mem ON TRUE
             WHERE {$where_sql}
             ORDER BY {$order_by}
             LIMIT ? OFFSET ?

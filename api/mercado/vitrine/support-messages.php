@@ -37,7 +37,7 @@ try {
     $customerId = (int)$payload['uid'];
 
     // Get customer name
-    $stmt = $db->prepare("SELECT name FROM om_market_customers WHERE customer_id = ?");
+    $stmt = $db->prepare("SELECT COALESCE(mc.name, oc.name) as name FROM (SELECT ?::int as cid) q LEFT JOIN om_market_customers mc ON mc.customer_id = q.cid LEFT JOIN om_customers oc ON oc.customer_id = q.cid");
     $stmt->execute([$customerId]);
     $customer = $stmt->fetch();
     $customerName = $customer['name'] ?? 'Cliente';

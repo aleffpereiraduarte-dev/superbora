@@ -81,19 +81,61 @@ try {
             exit;
         }
 
-        // Verificar codigo
-        if (!password_verify($code, $otp['code'])) {
-            $db->prepare("UPDATE om_market_otp_codes SET attempts = attempts + 1 WHERE id = ?")->execute([$otp['id']]);
-            $db->commit();
-            $remaining = 3 - (int)$otp['attempts'] - 1;
-            echo json_encode(['success' => false, 'message' => "Codigo incorreto. $remaining tentativa(s) restante(s)."]);
-            http_response_code(400);
-            exit;
-        }
+        // Check if code was sent via Twilio Verify (marked as 'TWILIO_VERIFY')
+        if ($otp['code'] === 'TWILIO_VERIFY') {
+            // Verify via Twilio Verify API
+            $twilioSid = $_ENV['TWILIO_SID'] ?? getenv('TWILIO_SID') ?: '';
+            $twilioToken = $_ENV['TWILIO_TOKEN'] ?? $_ENV['TWILIO_AUTH_TOKEN'] ?? getenv('TWILIO_TOKEN') ?: '';
+            $verifySid = $_ENV['TWILIO_VERIFY_SID'] ?? 'VA34083528deea28a6963d3bee14a72ceb';
 
-        // Marcar como usado
-        $db->prepare("UPDATE om_market_otp_codes SET used = 1, verified_at = NOW() WHERE id = ?")->execute([$otp['id']]);
-        $db->commit();
+            $cleanPhone = preg_replace('/\D/', '', $phone);
+            if (strlen($cleanPhone) >= 10 && strlen($cleanPhone) <= 11 && !preg_match('/^(55|1|44|34|49|33|61|81)/', $cleanPhone)) {
+                $cleanPhone = '55' . $cleanPhone;
+            }
+            $formattedPhone = '+' . $cleanPhone;
+
+            $url = "https://verify.twilio.com/v2/Services/{$verifySid}/VerificationCheck";
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => http_build_query(['To' => $formattedPhone, 'Code' => $code]),
+                CURLOPT_USERPWD => "{$twilioSid}:{$twilioToken}",
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 15,
+                CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
+            ]);
+            $result = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+
+            $verifyData = json_decode($result, true) ?? [];
+            if ($httpCode >= 200 && $httpCode < 300 && ($verifyData['status'] ?? '') === 'approved') {
+                $db->prepare("UPDATE om_market_otp_codes SET used = 1, verified_at = NOW() WHERE id = ?")->execute([$otp['id']]);
+                $db->commit();
+                // Twilio Verify approved — continue to JWT generation below
+            } else {
+                $db->prepare("UPDATE om_market_otp_codes SET attempts = attempts + 1 WHERE id = ?")->execute([$otp['id']]);
+                $db->commit();
+                $remaining = 3 - (int)$otp['attempts'] - 1;
+                echo json_encode(['success' => false, 'message' => "Codigo incorreto. $remaining tentativa(s) restante(s)."]);
+                http_response_code(400);
+                exit;
+            }
+        } else {
+            // Verificar codigo via hash (WhatsApp OTP)
+            if (!password_verify($code, $otp['code'])) {
+                $db->prepare("UPDATE om_market_otp_codes SET attempts = attempts + 1 WHERE id = ?")->execute([$otp['id']]);
+                $db->commit();
+                $remaining = 3 - (int)$otp['attempts'] - 1;
+                echo json_encode(['success' => false, 'message' => "Codigo incorreto. $remaining tentativa(s) restante(s)."]);
+                http_response_code(400);
+                exit;
+            }
+
+            // Marcar como usado
+            $db->prepare("UPDATE om_market_otp_codes SET used = 1, verified_at = NOW() WHERE id = ?")->execute([$otp['id']]);
+            $db->commit();
+        }
 
     } catch (Exception $txEx) {
         $db->rollBack();

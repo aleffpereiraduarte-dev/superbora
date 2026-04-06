@@ -427,7 +427,7 @@ function guard_coupon_redeem(PDO $db, int $couponId, int $customerId, int $order
         if (!empty($coupon['first_order_only']) && (int)$coupon['first_order_only'] === 1) {
             $stmtOrders = $db->prepare("
                 SELECT COUNT(*) FROM om_market_orders
-                WHERE customer_id = ? AND status NOT IN ('cancelado', 'cancelled')
+                WHERE customer_id = ? AND status NOT IN ('cancelado')
             ");
             $stmtOrders->execute([$customerId]);
             $orderCount = (int)$stmtOrders->fetchColumn();

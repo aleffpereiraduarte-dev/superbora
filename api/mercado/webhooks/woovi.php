@@ -436,7 +436,7 @@ if (stripos($event, 'CHARGE') !== false || ($charge && strpos($correlationId, 'o
                 $orderTotal = (float)$orderInfo['total'];
 
                 // Buscar nome do cliente
-                $custStmt = $db->prepare("SELECT COALESCE(name, firstname || ' ' || lastname) as name FROM om_customers WHERE customer_id = ?");
+                $custStmt = $db->prepare("SELECT name FROM om_customers WHERE customer_id = ?");
                 $custStmt->execute([$orderInfo['customer_id']]);
                 $custName = $custStmt->fetchColumn() ?: 'Cliente';
 
@@ -467,15 +467,17 @@ if (stripos($event, 'CHARGE') !== false || ($charge && strpos($correlationId, 'o
             }
 
             // Notificar parceiro via Pusher (partner_id, not order_id)
-            try {
-                PusherService::orderUpdate($partnerId, [
-                    'status' => 'aceito',
-                    'payment_status' => 'pago',
-                    'order_id' => $orderId,
-                    'message' => 'PIX confirmado!'
-                ]);
-            } catch (\Exception $e) {
-                error_log("[woovi-webhook] Pusher erro: " . $e->getMessage());
+            if ($orderInfo) {
+                try {
+                    PusherService::orderUpdate($partnerId, [
+                        'status' => 'aceito',
+                        'payment_status' => 'pago',
+                        'order_id' => $orderId,
+                        'message' => 'PIX confirmado!'
+                    ]);
+                } catch (\Exception $e) {
+                    error_log("[woovi-webhook] Pusher erro: " . $e->getMessage());
+                }
             }
 
             // WebSocket broadcast — PIX confirmed for legacy charge flow
@@ -513,7 +515,7 @@ if (stripos($event, 'CHARGE') !== false || ($charge && strpos($correlationId, 'o
 
             if (!$expOrder || $expOrder['status'] !== 'pendente') {
                 $db->rollBack();
-                error_log("[woovi-webhook] Order #{$orderId} not pendente (status={$expOrder['status']}) — skipping expire");
+                error_log("[woovi-webhook] Order #{$orderId} not pendente (status=" . ($expOrder['status'] ?? 'NOT_FOUND') . ") — skipping expire");
             } else {
                 $db->prepare("UPDATE om_market_orders SET status = 'cancelado', cancel_reason = 'PIX expirado', cancelled_at = NOW(), date_modified = NOW() WHERE order_id = ?")->execute([$orderId]);
                 // Restore stock

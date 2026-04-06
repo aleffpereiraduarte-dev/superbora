@@ -170,6 +170,11 @@ try {
             $target_id = (int)($input['admin_id'] ?? 0);
             if (!$target_id) response(false, null, "admin_id obrigatorio", 400);
 
+            // Prevent self-escalation
+            if ($target_id === $admin_id) {
+                response(false, null, "Nao e permitido alterar o proprio role", 403);
+            }
+
             // Fetch existing admin
             $stmt = $db->prepare("SELECT id, name, email, role, status FROM om_admins WHERE id = ?");
             $stmt->execute([$target_id]);

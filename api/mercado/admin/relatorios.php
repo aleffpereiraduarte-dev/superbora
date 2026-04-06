@@ -22,8 +22,8 @@ try {
         $stmt = $db->prepare("
             SELECT DATE(created_at) as date,
                    COUNT(*) as pedidos,
-                   SUM(CASE WHEN status NOT IN ('cancelled','refunded') THEN total ELSE 0 END) as receita,
-                   SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelados
+                   SUM(CASE WHEN status NOT IN ('cancelado','reembolsado') THEN total ELSE 0 END) as receita,
+                   SUM(CASE WHEN status = 'cancelado' THEN 1 ELSE 0 END) as cancelados
             FROM om_market_orders
             WHERE DATE(created_at) BETWEEN ? AND ?
             GROUP BY DATE(created_at)
@@ -37,7 +37,7 @@ try {
             SELECT DATE(created_at) as date,
                    COUNT(*) as total,
                    SUM(CASE WHEN status = 'entregue' THEN 1 ELSE 0 END) as entregues,
-                   SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelados,
+                   SUM(CASE WHEN status = 'cancelado' THEN 1 ELSE 0 END) as cancelados,
                    AVG(delivery_fee) as avg_fee
             FROM om_market_orders
             WHERE DATE(created_at) BETWEEN ? AND ?

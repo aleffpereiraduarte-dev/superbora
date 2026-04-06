@@ -340,7 +340,7 @@ function handleCanceled($db, $chargeId, $orderId) {
 
     if ($orderId) {
         // Only cancel orders in early states — never revert delivered/completed orders
-        $db->prepare("UPDATE om_market_orders SET pagamento_status = 'cancelado', status = 'cancelled', date_modified = NOW() WHERE order_id = ? AND status IN ('pendente', 'confirmado')")
+        $db->prepare("UPDATE om_market_orders SET pagamento_status = 'cancelado', status = 'cancelado', date_modified = NOW() WHERE order_id = ? AND status IN ('pendente', 'confirmado')")
            ->execute([$orderId]);
     }
 

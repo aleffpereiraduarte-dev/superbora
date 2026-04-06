@@ -55,7 +55,7 @@ try {
     } else {
         $where[] = "o.customer_id = ?";
         $params[] = $customer_id;
-        $where[] = "o.status NOT IN ('cancelled','cancelado','entregue','retirado','completed')";
+        $where[] = "o.status NOT IN ('cancelado','entregue','reembolsado')";
     }
 
     $whereSQL = implode(" AND ", $where);
@@ -135,7 +135,7 @@ try {
         // PIN de entrega - mostrar apenas quando pedido esta em entrega ou proximo
         // Cliente usa este PIN para confirmar recebimento ao entregador
         // SECURITY: Only show PIN if this order belongs to the authenticated customer
-        $showPinStatuses = ['delivering', 'out_for_delivery', 'em_entrega', 'pronto', 'ready_for_delivery'];
+        $showPinStatuses = ['em_entrega', 'pronto'];
         if (!$o['is_pickup'] && in_array($st, $showPinStatuses) && !empty($o['delivery_pin'])) {
             // Double-check order ownership before exposing PIN
             if ((int)$o['order_id'] && $customer_id) {

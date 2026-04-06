@@ -65,7 +65,7 @@ try {
         WHERE customer_id = ?
     ");
     $stmt->execute([$customerId]);
-    $levelData = $stmt->fetch();
+    $levelData = $stmt->fetch() ?: ['level' => 1, 'total_points' => 0, 'total_orders' => 0, 'current_streak' => 0, 'best_streak' => 0, 'last_order_date' => null, 'total_spent' => 0, 'total_reviews' => 0, 'photo_reviews' => 0];
 
     // Get earned badges
     $stmt = $db->prepare("

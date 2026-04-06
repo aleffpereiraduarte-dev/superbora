@@ -7,6 +7,7 @@
  */
 
 session_start();
+    session_write_close();
 require_once dirname(__DIR__, 3) . '/database.php';
 require_once dirname(__DIR__, 3) . '/includes/classes/OmCache.php';
 

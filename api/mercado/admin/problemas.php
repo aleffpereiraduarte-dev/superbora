@@ -25,12 +25,13 @@ try {
                CONCAT('Pedido #', CAST(o.order_id AS TEXT), ' cancelado') as title,
                'cancelled' as status,
                o.created_at, o.updated_at,
-               c.firstname as customer_name,
+               COALESCE(c.firstname, om.name, 'Cliente') as customer_name,
                p.name as partner_name
         FROM om_market_orders o
         LEFT JOIN oc_customer c ON o.customer_id = c.customer_id
+        LEFT JOIN om_customers om ON o.customer_id = om.customer_id
         LEFT JOIN om_market_partners p ON o.partner_id = p.partner_id
-        WHERE o.status = 'cancelled'
+        WHERE o.status = 'cancelado'
         ORDER BY o.updated_at DESC
         LIMIT ? OFFSET ?
     ");

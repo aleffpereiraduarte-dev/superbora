@@ -163,7 +163,7 @@ try {
     }
 
     // Nao permitir chat em pedidos finalizados
-    $statusFinais = ['entregue', 'cancelado', 'cancelled'];
+    $statusFinais = ['entregue', 'cancelado'];
     if (in_array($order['status'], $statusFinais)) {
         response(false, null, "Pedido ja finalizado. Nao e possivel enviar mensagens.", 400);
     }

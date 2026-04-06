@@ -52,7 +52,7 @@ try {
                c.is_active, c.created_at,
                (SELECT COUNT(*) FROM om_market_orders o WHERE o.customer_id = c.customer_id) as orders_count,
                (SELECT COALESCE(SUM(o2.total), 0) FROM om_market_orders o2
-                WHERE o2.customer_id = c.customer_id AND o2.status NOT IN ('cancelled','refunded')) as total_spent
+                WHERE o2.customer_id = c.customer_id AND o2.status NOT IN ('cancelado','reembolsado')) as total_spent
         FROM om_customers c
         WHERE {$where_sql}
         ORDER BY {$order_by}
