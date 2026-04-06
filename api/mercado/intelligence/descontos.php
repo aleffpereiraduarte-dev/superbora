@@ -98,8 +98,8 @@ try {
             pa.name AS partner_name,
             pa.logo AS partner_logo,
             pa.delivery_fee,
-            pa.delivery_time AS estimated_time,
-            pa.category AS partner_category,
+            pa.delivery_time_min, pa.delivery_time_max,
+            pa.categoria AS partner_category,
             pa.rating AS partner_rating
         FROM disc
         INNER JOIN om_market_partners pa ON disc.partner_id = pa.partner_id

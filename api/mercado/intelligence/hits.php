@@ -55,8 +55,8 @@ try {
     $currentDow = (int)date('w'); // 0=Sunday, 6=Saturday
     $currentTime = date('H:i:s');
 
-    // Main query: products under price threshold from active, open partners
-    // Sorted by popularity (order count in last 90 days) DESC, then price ASC
+    // Main query: products under price threshold from active partners
+    // Simplified: no popularity subquery for speed
     $sql = "
         SELECT
             p.product_id,
@@ -70,27 +70,19 @@ try {
             pa.name as partner_name,
             pa.logo as partner_logo,
             pa.delivery_fee,
-            pa.delivery_time as estimated_time,
-            pa.category as partner_category,
-            COALESCE(oc.order_count, 0) as popularity
+            pa.delivery_time_min, pa.delivery_time_max,
+            pa.categoria as partner_category,
+            0 as popularity
         FROM om_market_products p
         INNER JOIN om_market_partners pa ON p.partner_id = pa.partner_id
-        LEFT JOIN (
-            SELECT oi.product_id, COUNT(DISTINCT oi.order_id) as order_count
-            FROM om_market_order_items oi
-            JOIN om_market_orders o ON o.order_id = oi.order_id
-            WHERE o.date_added > NOW() - INTERVAL '90 days'
-              AND o.status NOT IN ('cancelado', 'recusado')
-            GROUP BY oi.product_id
-        ) oc ON oc.product_id = p.product_id
-        WHERE p.status = 1
-          AND (pa.status::text = '1')
+        WHERE p.status::text = '1'
+          AND pa.status::text = '1'
           AND p.price > 0
           AND p.price <= :max_price
           AND p.name IS NOT NULL AND TRIM(p.name) != ''
           AND p.image IS NOT NULL AND TRIM(p.image) != ''
           {$categoryWhere}
-        ORDER BY oc.order_count DESC NULLS LAST, p.price ASC
+        ORDER BY p.price ASC
         LIMIT :limit OFFSET :offset
     ";
 
@@ -109,8 +101,8 @@ try {
         SELECT COUNT(*) as total
         FROM om_market_products p
         INNER JOIN om_market_partners pa ON p.partner_id = pa.partner_id
-        WHERE p.status = 1
-          AND (pa.status::text = '1')
+        WHERE p.status::text = '1'
+          AND pa.status::text = '1'
           AND p.price > 0
           AND p.price <= :max_price
           AND p.name IS NOT NULL AND TRIM(p.name) != ''
