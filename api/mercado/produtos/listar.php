@@ -82,6 +82,7 @@ try {
         }, $produtos);
 
         $optionGroups = [];
+        $smartTagsByProduct = [];
         if (!empty($productIds)) {
             $inPlaceholders = implode(',', array_fill(0, count($productIds), '?'));
             $stmtGroups = $db->prepare(
@@ -115,12 +116,33 @@ try {
                     ];
                 }
             }
+
+            // Fetch smart tags for all products in batch
+            try {
+                $stmtTags = $db->prepare(
+                    "SELECT product_id, tag_slug, tag_label, tag_category, confidence
+                     FROM om_product_smart_tags
+                     WHERE product_id IN (" . $inPlaceholders . ")
+                     ORDER BY product_id,
+                         CASE tag_category WHEN 'dietary' THEN 1 WHEN 'attribute' THEN 2 WHEN 'allergen' THEN 3 END,
+                         confidence DESC"
+                );
+                $stmtTags->execute(array_values($productIds));
+                $tagRows = $stmtTags->fetchAll();
+                foreach ($tagRows as $tr) {
+                    $pid = $tr['product_id'];
+                    unset($tr['product_id']);
+                    $smartTagsByProduct[$pid][] = $tr;
+                }
+            } catch (Exception $e) {
+                // Non-critical — table may not exist yet
+            }
         }
 
         return [
             "total" => (int)$total,
             "pagina" => $pagina,
-            "produtos" => array_map(function($p) use ($optionGroups) {
+            "produtos" => array_map(function($p) use ($optionGroups, $smartTagsByProduct) {
                 $pid = $p["product_id"] ?? $p["id"];
                 $groups = isset($optionGroups[$pid]) ? array_values($optionGroups[$pid]) : [];
 
@@ -135,7 +157,8 @@ try {
                     "unidade" => $p["unit"] ?? "un",
                     "estoque" => $p["quantity"] ?? 999,
                     "disponivel" => ($p["quantity"] ?? 999) > 0,
-                    "option_groups" => $groups
+                    "option_groups" => $groups,
+                    "smart_tags" => $smartTagsByProduct[$pid] ?? []
                 ];
             }, $produtos)
         ];

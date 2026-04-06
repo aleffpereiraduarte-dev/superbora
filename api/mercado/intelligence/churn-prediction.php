@@ -94,7 +94,6 @@ try {
         }
 
         // Get customer info
-        $customer = $db->prepare("SELECT * FROM om_customers WHERE customer_id = ?")->execute([$customerId]);
         $customer = $db->prepare("SELECT * FROM om_customers WHERE customer_id = ?");
         $customer->execute([$customerId]);
         $customer = $customer->fetch();
@@ -179,7 +178,7 @@ function getChurnScore(PDO $db, int $customerId): array {
             SUM(total) as total_spent,
             MIN(created_at) as first_order_at
         FROM om_market_orders
-        WHERE customer_id = ? AND status IN ('entregue', 'delivered', 'finalizado')
+        WHERE customer_id = ? AND status IN ('entregue')
     ");
     $stmt->execute([$customerId]);
     $orders = $stmt->fetch();
@@ -202,8 +201,6 @@ function getChurnScore(PDO $db, int $customerId): array {
     $frequency = round(($totalOrders / $daysSinceFirst) * 30, 2);
 
     // Complaints
-    $complaints = (int)$db->prepare("SELECT COUNT(*) FROM om_market_orders WHERE customer_id = ? AND status = 'cancelado'")
-        ->execute([$customerId]) ? 0 : 0;
     $stmtC = $db->prepare("SELECT COUNT(*) FROM om_market_orders WHERE customer_id = ? AND status = 'cancelado'");
     $stmtC->execute([$customerId]);
     $complaints = (int)$stmtC->fetchColumn();

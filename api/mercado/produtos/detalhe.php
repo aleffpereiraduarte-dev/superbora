@@ -134,6 +134,28 @@ try {
             : 0;
     }
 
+    // Append AI-generated smart tags (if available)
+    try {
+        $stmtTags = $db->prepare("
+            SELECT tag_slug, tag_label, tag_category, confidence
+            FROM om_product_smart_tags
+            WHERE product_id = ?
+            ORDER BY
+                CASE tag_category
+                    WHEN 'dietary' THEN 1
+                    WHEN 'attribute' THEN 2
+                    WHEN 'allergen' THEN 3
+                END,
+                confidence DESC
+        ");
+        $stmtTags->execute([$productId]);
+        $smartTags = $stmtTags->fetchAll(PDO::FETCH_ASSOC);
+        $result['smart_tags'] = $smartTags;
+    } catch (Exception $e) {
+        // Non-critical — if table doesn't exist yet, just skip
+        $result['smart_tags'] = [];
+    }
+
     response(true, ['product' => $result]);
 
 } catch (Exception $e) {
