@@ -17,6 +17,39 @@ function wsBroadcastToOrder(int $orderId, string $type, array $data): void {
     wsBroadcastToChannel("order_{$orderId}", $type, $data);
 }
 
+/**
+ * Grant a user access to subscribe to an order channel.
+ * Must be called before the user can subscribe to order_{orderId}.
+ */
+function wsGrantOrderAccess(int $userId, int $orderId): void {
+    try {
+        $payload = json_encode([
+            'user_id' => $userId,
+            'channel' => "order_{$orderId}",
+        ], JSON_UNESCAPED_UNICODE);
+
+        $wsApiKey = getenv('WS_API_KEY') ?: getenv('WS_API_SECRET') ?: 'superbora-ws-key-2024';
+
+        $ch = curl_init('http://127.0.0.1:8080/grant-order');
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $payload,
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/json',
+                'X-API-Key: ' . $wsApiKey,
+            ],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 2,
+            CURLOPT_CONNECTTIMEOUT => 1,
+            CURLOPT_NOSIGNAL => 1,
+        ]);
+        curl_exec($ch);
+        curl_close($ch);
+    } catch (\Throwable $e) {
+        error_log("[ws-broadcast] grant-order error: " . $e->getMessage());
+    }
+}
+
 function wsBroadcastToGroup(string $shareCode, string $type, array $data): void {
     wsBroadcastToChannel("group_{$shareCode}", $type, $data);
 }

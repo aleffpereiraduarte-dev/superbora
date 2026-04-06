@@ -176,7 +176,7 @@ function getCustomerFavoriteStore(PDO $db, int $customerId): ?array
         FROM om_market_orders o
         JOIN om_market_partners p ON p.partner_id = o.partner_id
         WHERE o.customer_id = ?
-          AND o.status NOT IN ('cancelado', 'recusado', 'refunded')
+          AND o.status NOT IN ('cancelado', 'recusado', 'reembolsado')
           AND o.date_added >= NOW() - INTERVAL '90 days'
         GROUP BY o.partner_id, p.trade_name, p.name, p.is_open
         ORDER BY COUNT(*) DESC
@@ -215,7 +215,7 @@ if ($timeDecimal >= 11.0 && $timeDecimal < 11.5) {
             JOIN om_market_orders o ON o.customer_id = c.customer_id
             WHERE c.phone IS NOT NULL
               AND c.phone != ''
-              AND o.status NOT IN ('cancelado', 'recusado', 'refunded')
+              AND o.status NOT IN ('cancelado', 'recusado', 'reembolsado')
               AND o.date_added >= NOW() - INTERVAL '30 days'
               AND c.customer_id NOT IN (
                   SELECT customer_id FROM om_market_orders
@@ -289,7 +289,7 @@ if ($timeDecimal >= 17.5 && $timeDecimal < 18.0) {
             JOIN om_market_orders o ON o.customer_id = c.customer_id
             WHERE c.phone IS NOT NULL
               AND c.phone != ''
-              AND o.status NOT IN ('cancelado', 'recusado', 'refunded')
+              AND o.status NOT IN ('cancelado', 'recusado', 'reembolsado')
               AND o.date_added >= NOW() - INTERVAL '30 days'
               AND c.customer_id NOT IN (
                   SELECT customer_id FROM om_market_orders
@@ -392,7 +392,7 @@ if ($hour >= 8 && $hour < 21) {
                 FROM om_market_customers c
                 JOIN om_market_orders o ON o.customer_id = c.customer_id
                 WHERE o.partner_id = ?
-                  AND o.status NOT IN ('cancelado', 'recusado', 'refunded')
+                  AND o.status NOT IN ('cancelado', 'recusado', 'reembolsado')
                   AND c.phone IS NOT NULL
                   AND c.phone != ''
                   AND c.customer_id NOT IN (
@@ -456,7 +456,7 @@ if ($hour >= 10 && $hour < 20) {
             JOIN om_market_orders o ON o.customer_id = c.customer_id
             WHERE c.phone IS NOT NULL
               AND c.phone != ''
-              AND o.status NOT IN ('cancelado', 'recusado', 'refunded')
+              AND o.status NOT IN ('cancelado', 'recusado', 'reembolsado')
               AND c.customer_id NOT IN (
                   SELECT customer_id FROM om_whatsapp_proactive_optout
               )

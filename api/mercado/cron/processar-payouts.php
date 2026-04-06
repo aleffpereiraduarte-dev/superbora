@@ -1,6 +1,6 @@
 <?php
 /**
- * CRON: Processar payouts automaticos via Woovi
+ * CRON: Processar payouts automaticos via EFI
  *
  * Roda diariamente (recomendado: 0 8 * * *)
  * Para cada parceiro com auto_payout=TRUE cujo dia/frequencia bateu:
@@ -8,7 +8,7 @@
  *   - Verifica saldo_devedor = 0
  *   - Verifica chave PIX validada
  *   - Verifica que nao tem payout pendente/processing
- *   - Debita saldo, cria om_woovi_payouts, chama Woovi API
+ *   - Debita saldo, cria om_woovi_payouts, chama EFI API
  *   - Se falhar: devolve saldo
  *
  * Executar: php /var/www/html/api/mercado/cron/processar-payouts.php
@@ -16,7 +16,7 @@
  */
 
 require_once __DIR__ . '/../config/database.php';
-require_once dirname(__DIR__, 3) . '/includes/classes/WooviClient.php';
+require_once dirname(__DIR__, 3) . '/includes/classes/EfiClient.php';
 require_once dirname(__DIR__, 3) . '/includes/classes/PusherService.php';
 
 // SECURITY: Verify cron key via HTTP header only (not GET param), constant-time comparison
@@ -46,7 +46,7 @@ $skipped = 0;
 
 try {
     $db = getDB();
-    $woovi = new WooviClient();
+    $efi = new EfiClient();
 
     $today = new DateTime();
     $dayOfWeek = (int)$today->format('N'); // 1=Mon 7=Sun
@@ -89,8 +89,10 @@ try {
                 $shouldPay = ($dayOfWeek === $payDay);
                 break;
             case 'biweekly':
-                $weekNum = (int)$today->format('W');
-                $shouldPay = ($dayOfWeek === $payDay && $weekNum % 2 === 0);
+                // Use days since epoch for stable biweekly calc (ISO week has Dec/Jan boundary issues)
+                $daysSinceEpoch = (int)floor($today->getTimestamp() / 86400);
+                $weeksSinceEpoch = (int)floor($daysSinceEpoch / 7);
+                $shouldPay = ($dayOfWeek === $payDay && $weeksSinceEpoch % 2 === 0);
                 break;
             case 'monthly':
                 $shouldPay = ($dayOfMonth === $payDay);
@@ -102,20 +104,6 @@ try {
             continue;
         }
 
-        // Verificar payout pendente
-        $stmtPending = $db->prepare("
-            SELECT COUNT(*) FROM om_woovi_payouts
-            WHERE partner_id = ? AND status IN ('pending', 'processing')
-        ");
-        $stmtPending->execute([$partnerId]);
-        if ((int)$stmtPending->fetchColumn() > 0) {
-            error_log("[cron-payouts] Parceiro $partnerId ja tem payout pendente, pulando");
-            $skipped++;
-            continue;
-        }
-
-        $amount = (float)$partner['saldo_disponivel'];
-        $amountCents = (int)round($amount * 100);
         $pixKey = $partner['pix_key'];
         $pixKeyType = $partner['pix_key_type'];
         $correlationId = 'sb_auto_' . $partnerId . '_' . date('Ymd') . '_' . bin2hex(random_bytes(4));
@@ -133,6 +121,20 @@ try {
 
             if ($currentSaldo < (float)$partner['min_payout']) {
                 $db->rollBack();
+                $skipped++;
+                continue;
+            }
+
+            // Verificar payout pendente DENTRO da transacao (previne race com wallet-withdraw)
+            $stmtPending = $db->prepare("
+                SELECT COUNT(*) FROM om_woovi_payouts
+                WHERE partner_id = ? AND status IN ('pending', 'processing')
+                FOR UPDATE
+            ");
+            $stmtPending->execute([$partnerId]);
+            if ((int)$stmtPending->fetchColumn() > 0) {
+                $db->rollBack();
+                error_log("[cron-payouts] Parceiro $partnerId ja tem payout pendente, pulando");
                 $skipped++;
                 continue;
             }
@@ -164,61 +166,68 @@ try {
                     (partner_id, tipo, valor, saldo_anterior, saldo_atual, descricao, status, created_at)
                 VALUES (?, 'saque_auto', ?, ?, 0, ?, 'processing', NOW())
             ");
-            $stmtLog->execute([$partnerId, $amount, $currentSaldo, "Repasse automatico $freq - Woovi"]);
+            $stmtLog->execute([$partnerId, $amount, $currentSaldo, "Repasse automatico $freq - EFI"]);
 
             $db->commit();
 
-            // Chamar Woovi API
+            // Chamar EFI PIX API
             try {
-                $result = $woovi->createPayout(
-                    $amountCents,
-                    $correlationId,
+                $result = $efi->sendPix(
+                    $amount,
                     $pixKey,
                     $pixKeyType,
-                    "Repasse auto SuperBora - Parceiro #$partnerId"
+                    "Repasse auto SuperBora - Parceiro #$partnerId",
+                    $correlationId
                 );
 
-                $wooviTxId = $result['data']['transaction']['transactionID']
-                    ?? $result['data']['correlationID']
-                    ?? '';
+                if ($result['success']) {
+                    $efiTxId = $result['e2e_id'] ?? $result['transfer_id'] ?? '';
 
-                $stmtUpd = $db->prepare("
-                    UPDATE om_woovi_payouts
-                    SET status = 'processing', woovi_transaction_id = ?, woovi_raw_response = ?
-                    WHERE id = ?
-                ");
-                $stmtUpd->execute([$wooviTxId, $result['raw'] ?? '', $payoutId]);
+                    $stmtUpd = $db->prepare("
+                        UPDATE om_woovi_payouts
+                        SET status = 'processing', woovi_transaction_id = ?
+                        WHERE id = ?
+                    ");
+                    $stmtUpd->execute([$efiTxId, $payoutId]);
 
-                $processed++;
-                error_log("[cron-payouts] Parceiro $partnerId: R$ " . number_format($amount, 2) . " enviado via Woovi ($correlationId)");
+                    $processed++;
+                    error_log("[cron-payouts] Parceiro $partnerId: R$ " . number_format($amount, 2) . " enviado via EFI ($correlationId)");
+                } else {
+                    throw new \RuntimeException($result['error'] ?? 'EFI PIX send failed');
+                }
 
             } catch (\Exception $apiErr) {
-                // Woovi falhou - devolver saldo
-                error_log("[cron-payouts] Woovi API erro parceiro $partnerId: " . $apiErr->getMessage());
+                // EFI falhou - devolver saldo
+                error_log("[cron-payouts] EFI API erro parceiro $partnerId: " . $apiErr->getMessage());
 
-                $db->beginTransaction();
-                $stmtRefund = $db->prepare("
-                    UPDATE om_mercado_saldo
-                    SET saldo_disponivel = saldo_disponivel + ?, updated_at = NOW()
-                    WHERE partner_id = ?
-                ");
-                $stmtRefund->execute([$amount, $partnerId]);
+                try {
+                    $db->beginTransaction();
+                    $stmtRefund = $db->prepare("
+                        UPDATE om_mercado_saldo
+                        SET saldo_disponivel = saldo_disponivel + ?, updated_at = NOW()
+                        WHERE partner_id = ?
+                    ");
+                    $stmtRefund->execute([$amount, $partnerId]);
 
-                $stmtFail = $db->prepare("
-                    UPDATE om_woovi_payouts
-                    SET status = 'failed', failure_reason = ?
-                    WHERE id = ?
-                ");
-                $stmtFail->execute([$apiErr->getMessage(), $payoutId]);
+                    $stmtFail = $db->prepare("
+                        UPDATE om_woovi_payouts
+                        SET status = 'failed', failure_reason = ?
+                        WHERE id = ?
+                    ");
+                    $stmtFail->execute([$apiErr->getMessage(), $payoutId]);
 
-                $stmtLogRefund = $db->prepare("
-                    INSERT INTO om_mercado_wallet
-                        (partner_id, tipo, valor, descricao, status, created_at)
-                    VALUES (?, 'saque_estornado', ?, ?, 'refunded', NOW())
-                ");
-                $stmtLogRefund->execute([$partnerId, $amount, "Auto payout falhou: " . $apiErr->getMessage()]);
+                    $stmtLogRefund = $db->prepare("
+                        INSERT INTO om_mercado_wallet
+                            (partner_id, tipo, valor, descricao, status, created_at)
+                        VALUES (?, 'saque_estornado', ?, ?, 'refunded', NOW())
+                    ");
+                    $stmtLogRefund->execute([$partnerId, $amount, "Auto payout falhou: " . $apiErr->getMessage()]);
 
-                $db->commit();
+                    $db->commit();
+                } catch (\Exception $refundErr) {
+                    if ($db->inTransaction()) $db->rollBack();
+                    error_log("[cron-payouts] CRITICAL: Refund also failed for parceiro $partnerId (R$ " . number_format($amount, 2) . "): " . $refundErr->getMessage());
+                }
                 $failed++;
             }
 

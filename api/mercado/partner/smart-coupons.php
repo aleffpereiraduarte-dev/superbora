@@ -71,12 +71,14 @@ try {
         if ($action === 'create' || $action === 'update') {
             $couponId = intval($input['id'] ?? 0);
             $code = strtoupper(trim($input['code'] ?? ''));
-            $name = trim($input['name'] ?? '');
+            $name = strip_tags(trim(substr($input['name'] ?? '', 0, 200)));
             $discountType = $input['discount_type'] ?? 'percent';
+            if (!in_array($discountType, ['percent', 'fixed', 'free_delivery'], true)) $discountType = 'percent';
             $discountValue = floatval($input['discount_value'] ?? 10);
-            $minOrderValue = floatval($input['min_order_value'] ?? 0);
-            $maxDiscount = !empty($input['max_discount']) ? floatval($input['max_discount']) : null;
+            $minOrderValue = max(0, floatval($input['min_order_value'] ?? 0));
+            $maxDiscount = !empty($input['max_discount']) ? max(0, floatval($input['max_discount'])) : null;
             $targetSegment = $input['target_segment'] ?? 'all';
+            if (!in_array($targetSegment, ['all', 'new', 'returning', 'inactive', 'vip'], true)) $targetSegment = 'all';
             $usageLimit = !empty($input['usage_limit']) ? intval($input['usage_limit']) : null;
             $perCustomerLimit = intval($input['per_customer_limit'] ?? 1);
             $validFrom = !empty($input['valid_from']) ? $input['valid_from'] : null;

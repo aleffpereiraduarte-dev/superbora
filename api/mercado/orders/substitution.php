@@ -262,7 +262,7 @@ try {
             $orderRow = $orderStmt->fetch();
             if (!$orderRow) response(false, null, "Acesso negado", 403);
 
-            $activeStatuses = ['aceito', 'coletando', 'confirmed', 'shopping', 'preparando', 'pending', 'novo'];
+            $activeStatuses = ['pendente', 'aceito', 'confirmado', 'coletando', 'preparando'];
             if (!in_array($orderRow['status'], $activeStatuses)) {
                 response(false, null, "Nao e possivel modificar substituicao de pedido com status '{$orderRow['status']}'", 400);
             }
@@ -368,7 +368,7 @@ try {
             $item = $stmt->fetch();
             if (!$item) response(false, null, "Item nao encontrado", 404);
 
-            $activeStatuses2 = ['aceito', 'coletando', 'confirmed', 'shopping', 'preparando', 'pending', 'novo'];
+            $activeStatuses2 = ['pendente', 'aceito', 'confirmado', 'coletando', 'preparando'];
             if (!in_array($item['order_status'], $activeStatuses2)) {
                 response(false, null, "Nao e possivel modificar substituicao de pedido com status '{$item['order_status']}'", 400);
             }

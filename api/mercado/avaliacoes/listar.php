@@ -50,9 +50,10 @@ try {
         // Listar avaliacoes
         $stmt = $db->prepare("
             SELECT r.rating, r.comment, r.created_at,
-                   COALESCE(c.firstname, 'Cliente') as customer_name
+                   COALESCE(c.firstname, om.name, 'Cliente') as customer_name
             FROM om_market_ratings r
             LEFT JOIN oc_customer c ON r.rater_id = c.customer_id AND r.rater_type = 'customer'
+            LEFT JOIN om_customers om ON r.rater_id = om.customer_id AND r.rater_type = 'customer'
             WHERE r.rated_type = 'partner' AND r.rated_id = ? AND r.is_public = 1
             ORDER BY r.created_at DESC
             LIMIT ? OFFSET ?

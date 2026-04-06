@@ -69,7 +69,7 @@ function handleRFMAnalysis($db, $partner_id, $startDate, $endDate, $days) {
         INNER JOIN om_customers c ON c.customer_id = o.customer_id
         WHERE o.partner_id = ?
           AND DATE(o.date_added) >= DATE(NOW() - INTERVAL '1 day' * ?)
-          AND o.status NOT IN ('cancelado', 'cancelled')
+          AND o.status NOT IN ('cancelado')
         GROUP BY o.customer_id, c.name, c.email, c.phone
         ORDER BY total_gasto DESC
     ");
@@ -224,7 +224,7 @@ function handleSegmentDetail($db, $partner_id, $startDate, $endDate, $days) {
         INNER JOIN om_customers c ON c.customer_id = o.customer_id
         WHERE o.partner_id = ?
           AND DATE(o.date_added) >= DATE(NOW() - INTERVAL '1 day' * ?)
-          AND o.status NOT IN ('cancelado', 'cancelled')
+          AND o.status NOT IN ('cancelado')
         GROUP BY o.customer_id, c.name, c.email, c.phone
     ");
     $stmtCustomers->execute([$partner_id, (int)$days]);
@@ -302,7 +302,7 @@ function handleOverview($db, $partner_id, $startDate, $endDate, $days) {
         SELECT COUNT(DISTINCT customer_id) as total
         FROM om_market_orders
         WHERE partner_id = ?
-          AND status NOT IN ('cancelado', 'cancelled')
+          AND status NOT IN ('cancelado')
     ");
     $stmtTotal->execute([$partner_id]);
     $totalCustomers = (int)$stmtTotal->fetchColumn();
@@ -314,7 +314,7 @@ function handleOverview($db, $partner_id, $startDate, $endDate, $days) {
             SELECT customer_id
             FROM om_market_orders
             WHERE partner_id = ?
-              AND status NOT IN ('cancelado', 'cancelled')
+              AND status NOT IN ('cancelado')
             GROUP BY customer_id
             HAVING MIN(DATE(date_added)) >= ?
         ) as new_customers
@@ -328,7 +328,7 @@ function handleOverview($db, $partner_id, $startDate, $endDate, $days) {
         FROM om_market_orders
         WHERE partner_id = ?
           AND DATE(date_added) BETWEEN ? AND ?
-          AND status NOT IN ('cancelado', 'cancelled')
+          AND status NOT IN ('cancelado')
     ");
     $stmtPeriod->execute([$partner_id, $startDate, $endDate]);
     $periodCustomers = (int)$stmtPeriod->fetchColumn();
@@ -339,7 +339,7 @@ function handleOverview($db, $partner_id, $startDate, $endDate, $days) {
             SELECT customer_id
             FROM om_market_orders
             WHERE partner_id = ?
-              AND status NOT IN ('cancelado', 'cancelled')
+              AND status NOT IN ('cancelado')
             GROUP BY customer_id
             HAVING COUNT(*) > 1
         ) as returning
@@ -355,7 +355,7 @@ function handleOverview($db, $partner_id, $startDate, $endDate, $days) {
             SELECT SUM(total) as customer_total
             FROM om_market_orders
             WHERE partner_id = ?
-              AND status NOT IN ('cancelado', 'cancelled')
+              AND status NOT IN ('cancelado')
             GROUP BY customer_id
         ) as clv
     ");
@@ -369,7 +369,7 @@ function handleOverview($db, $partner_id, $startDate, $endDate, $days) {
             SELECT customer_id
             FROM om_market_orders
             WHERE partner_id = ?
-              AND status NOT IN ('cancelado', 'cancelled')
+              AND status NOT IN ('cancelado')
             GROUP BY customer_id
             HAVING MAX(DATE(date_added)) < ?
                AND MIN(DATE(date_added)) < ?
@@ -401,7 +401,7 @@ function handleOverview($db, $partner_id, $startDate, $endDate, $days) {
                 SELECT customer_id
                 FROM om_market_orders
                 WHERE partner_id = ?
-                  AND status NOT IN ('cancelado', 'cancelled')
+                  AND status NOT IN ('cancelado')
                 GROUP BY customer_id
                 HAVING MIN(DATE(date_added)) BETWEEN ? AND ?
             ) as cohort
@@ -415,7 +415,7 @@ function handleOverview($db, $partner_id, $startDate, $endDate, $days) {
                 SELECT customer_id
                 FROM om_market_orders
                 WHERE partner_id = ?
-                  AND status NOT IN ('cancelado', 'cancelled')
+                  AND status NOT IN ('cancelado')
                 GROUP BY customer_id
                 HAVING MIN(DATE(date_added)) BETWEEN ? AND ?
                    AND MAX(DATE(date_added)) >= ?
@@ -448,7 +448,7 @@ function handleOverview($db, $partner_id, $startDate, $endDate, $days) {
             SELECT customer_id, COUNT(*) as cnt
             FROM om_market_orders
             WHERE partner_id = ?
-              AND status NOT IN ('cancelado', 'cancelled')
+              AND status NOT IN ('cancelado')
             GROUP BY customer_id
         ) as dist
         GROUP BY

@@ -73,7 +73,7 @@ try {
         FROM om_market_orders
         WHERE partner_id = ?
           AND DATE(date_added) BETWEEN ? AND ?
-          AND status IN ('cancelado', 'cancelled')
+          AND status IN ('cancelado')
     ");
     $stmtCancelled->execute([$partnerId, $startDate, $endDate]);
     $cancelledOrders = (int)$stmtCancelled->fetchColumn();
@@ -114,7 +114,7 @@ try {
         FROM om_market_orders
         WHERE partner_id = ?
           AND DATE(date_added) BETWEEN ? AND ?
-          AND status NOT IN ('cancelado', 'cancelled')
+          AND status NOT IN ('cancelado')
         GROUP BY EXTRACT(HOUR FROM date_added)::int
         ORDER BY EXTRACT(HOUR FROM date_added)::int
     ");
@@ -141,7 +141,7 @@ try {
         FROM om_market_orders
         WHERE partner_id = ?
           AND DATE(date_added) BETWEEN ? AND ?
-          AND status NOT IN ('cancelado', 'cancelled')
+          AND status NOT IN ('cancelado')
     ");
     $stmtUniqueCustomers->execute([$partnerId, $startDate, $endDate]);
     $uniqueCustomers = (int)$stmtUniqueCustomers->fetchColumn();
@@ -153,7 +153,7 @@ try {
             FROM om_market_orders
             WHERE partner_id = ?
               AND DATE(date_added) BETWEEN ? AND ?
-              AND status NOT IN ('cancelado', 'cancelled')
+              AND status NOT IN ('cancelado')
             GROUP BY customer_id
             HAVING COUNT(*) > 1
         ) as returning_customers

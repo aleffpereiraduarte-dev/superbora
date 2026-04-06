@@ -30,7 +30,7 @@ try {
 
     // Verify order belongs to this customer
     $stmt = $db->prepare("
-        SELECT order_id, mercado_id, customer_id, status
+        SELECT order_id, partner_id, customer_id, status
         FROM om_market_orders
         WHERE order_id = ? AND customer_id = ?
     ");
@@ -58,8 +58,8 @@ try {
     }
 
     // Check store is still active
-    $stmt = $db->prepare("SELECT mercado_id, nome, status FROM om_mercados WHERE mercado_id = ?");
-    $stmt->execute([$order['mercado_id']]);
+    $stmt = $db->prepare("SELECT partner_id, nome, status FROM om_market_partners WHERE partner_id = ?");
+    $stmt->execute([$order['partner_id']]);
     $store = $stmt->fetch();
 
     if (!$store || $store['status'] != 1) {
@@ -72,9 +72,9 @@ try {
     // Clear existing cart for this store (to avoid mixing)
     $stmt = $db->prepare("
         DELETE FROM om_market_cart
-        WHERE customer_id = ? AND mercado_id = ?
+        WHERE customer_id = ? AND partner_id = ?
     ");
-    $stmt->execute([$customerId, $order['mercado_id']]);
+    $stmt->execute([$customerId, $order['partner_id']]);
 
     $added = [];
     $unavailable = [];
@@ -113,13 +113,13 @@ try {
 
         // Add to cart
         $stmt = $db->prepare("
-            INSERT INTO om_market_cart (customer_id, session_id, mercado_id, product_id, quantity, options, created_at)
+            INSERT INTO om_market_cart (customer_id, session_id, partner_id, product_id, quantity, observation, created_at)
             VALUES (?, ?, ?, ?, ?, ?, NOW())
         ");
         $stmt->execute([
             $customerId,
             $sessionId,
-            $order['mercado_id'],
+            $order['partner_id'],
             $productId,
             (int)$item['quantity'],
             $item['options'],
@@ -151,7 +151,7 @@ try {
 
     response(true, [
         'store' => [
-            'mercado_id' => (int)$order['mercado_id'],
+            'partner_id' => (int)$order['partner_id'],
             'nome' => $store['nome'],
         ],
         'items_added' => $added,

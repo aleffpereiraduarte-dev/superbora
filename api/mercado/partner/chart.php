@@ -30,7 +30,7 @@ try {
         FROM om_market_orders
         WHERE partner_id = ?
           AND date_added >= CURRENT_DATE - (? || ' days')::INTERVAL
-          AND status NOT IN ('cancelado', 'cancelled')
+          AND status NOT IN ('cancelado')
         GROUP BY DATE(date_added)
         ORDER BY DATE(date_added) ASC
     ");

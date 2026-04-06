@@ -2,7 +2,7 @@
 /**
  * POST /api/mercado/partner/price-update.php
  * Update price for a specific product_price record
- * Body: {product_price_id, price, promotional_price, stock}
+ * Body: {product_price_id, price, price_promo, stock}
  */
 require_once __DIR__ . "/../config/database.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
@@ -26,8 +26,8 @@ try {
 
     $product_price_id = (int)($input['product_price_id'] ?? 0);
     $price = (float)($input['price'] ?? 0);
-    $promotional_price = isset($input['promotional_price']) && $input['promotional_price'] !== '' && $input['promotional_price'] !== null
-        ? (float)$input['promotional_price'] : null;
+    $price_promo = isset($input['price_promo']) && $input['price_promo'] !== '' && $input['price_promo'] !== null
+        ? (float)$input['price_promo'] : null;
     $stock = (int)($input['stock'] ?? 0);
 
     if (!$product_price_id) {
@@ -38,7 +38,7 @@ try {
         response(false, null, "Preco deve ser maior que zero", 400);
     }
 
-    if ($promotional_price !== null && $promotional_price >= $price) {
+    if ($price_promo !== null && $price_promo >= $price) {
         response(false, null, "Preco promocional deve ser menor que o preco normal", 400);
     }
 
@@ -48,7 +48,7 @@ try {
 
     // Verificar que o registro pertence ao parceiro
     $stmtCheck = $db->prepare("
-        SELECT id, price, promotional_price, stock
+        SELECT id, price, price_promo, stock
         FROM om_market_products_price
         WHERE id = ? AND partner_id = ?
     ");
@@ -62,18 +62,18 @@ try {
     // Update
     $stmt = $db->prepare("
         UPDATE om_market_products_price
-        SET price = ?, promotional_price = ?, stock = ?, updated_at = NOW()
+        SET price = ?, price_promo = ?, stock = ?, date_modified = NOW()
         WHERE id = ? AND partner_id = ?
     ");
-    $stmt->execute([$price, $promotional_price, $stock, $product_price_id, $partner_id]);
+    $stmt->execute([$price, $price_promo, $stock, $product_price_id, $partner_id]);
 
     // Audit log
     om_audit()->log(
         OmAudit::ACTION_UPDATE,
         'product_price',
         $product_price_id,
-        ['price' => (float)$existing['price'], 'promotional_price' => (float)$existing['promotional_price'], 'stock' => (int)$existing['stock']],
-        ['price' => $price, 'promotional_price' => $promotional_price, 'stock' => $stock],
+        ['price' => (float)$existing['price'], 'price_promo' => (float)$existing['price_promo'], 'stock' => (int)$existing['stock']],
+        ['price' => $price, 'price_promo' => $price_promo, 'stock' => $stock],
         "Preco atualizado pelo parceiro #{$partner_id}",
         'partner',
         $partner_id
@@ -82,7 +82,7 @@ try {
     response(true, [
         "product_price_id" => $product_price_id,
         "price" => $price,
-        "promotional_price" => $promotional_price,
+        "price_promo" => $price_promo,
         "stock" => $stock
     ], "Preco atualizado com sucesso");
 

@@ -7,6 +7,8 @@
 require_once __DIR__ . "/../config/database.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
 
+setCorsHeaders();
+
 try {
     $db = getDB();
     OmAuth::getInstance()->setDb($db);
@@ -41,7 +43,7 @@ try {
     $order = $stmtOrder->fetch();
 
     if (!$order) response(false, null, "Pedido nao encontrado", 404);
-    if ($order['status'] !== 'entregue') {
+    if (!in_array($order['status'], ['entregue', 'retirado'])) {
         response(false, null, "Apenas pedidos entregues podem ser avaliados", 400);
     }
 
@@ -89,10 +91,14 @@ try {
         }
     }
 
-    // Check if already rated
+    // Check if already rated (inside transaction with lock to prevent duplicate reviews)
+    $db->beginTransaction();
+    $db->prepare("SELECT order_id FROM om_market_orders WHERE order_id = ? FOR UPDATE")->execute([$orderId]);
+
     $stmtCheck = $db->prepare("SELECT id FROM om_market_order_reviews WHERE order_id = ? AND customer_id = ?");
     $stmtCheck->execute([$orderId, $customerId]);
     if ($stmtCheck->fetch()) {
+        $db->rollBack();
         response(false, null, "Voce ja avaliou este pedido", 400);
     }
 
@@ -103,6 +109,7 @@ try {
     ");
     $stmtInsert->execute([$orderId, $customerId, $partnerId, $rating, $comment ?: null, $photoUrl]);
     $reviewId = (int)$db->lastInsertId();
+    $db->commit();
 
     // Update partner average rating
     try {
@@ -144,6 +151,7 @@ try {
     ], "Avaliacao enviada com sucesso!");
 
 } catch (Exception $e) {
+    if (isset($db) && $db->inTransaction()) $db->rollBack();
     error_log("[API Order Rate] Erro: " . $e->getMessage());
     response(false, null, "Erro ao enviar avaliacao", 500);
 }

@@ -34,9 +34,9 @@ echo "[" . date('Y-m-d H:i:s') . "] SuperBora+ Renewal CRON\n";
 
 // 1. Buscar assinaturas expiradas que ainda estao ativas
 $stmt = $db->prepare("
-    SELECT sp.*, c.firstname, c.email
+    SELECT sp.*, c.name as firstname, c.email
     FROM om_superbora_plus sp
-    LEFT JOIN om_customer c ON c.customer_id = sp.customer_id
+    LEFT JOIN om_customers c ON c.customer_id = sp.customer_id
     WHERE sp.status = 'active'
     AND sp.expires_at <= NOW()
     LIMIT 500
@@ -56,18 +56,41 @@ foreach ($expiradas as $sub) {
     // TODO: Integrar com gateway de pagamento real para cobranca recorrente
     $novaExpiracao = date('Y-m-d H:i:s', strtotime('+1 month'));
 
-    // Checar se cliente tem cashback disponivel para pagar
-    $stmtCb = $db->prepare("
-        SELECT COALESCE(SUM(amount), 0) FROM om_cashback
-        WHERE customer_id = ? AND type IN ('earned','bonus') AND status = 'available'
-        AND (expires_at IS NULL OR expires_at > NOW())
-    ");
-    $stmtCb->execute([$customerId]);
-    $cbSaldo = (float)$stmtCb->fetchColumn();
-
-    if ($cbSaldo >= OmPricing::SUPERBORA_PLUS_PRECO) {
+    if (true) {
         try {
             $db->beginTransaction();
+
+            // Checar saldo cashback DENTRO da transacao com FOR UPDATE para evitar race condition
+            $stmtCb = $db->prepare("
+                SELECT COALESCE(SUM(amount), 0) FROM om_cashback
+                WHERE customer_id = ? AND type IN ('earned','bonus') AND status = 'available'
+                AND (expires_at IS NULL OR expires_at > NOW())
+                FOR UPDATE
+            ");
+            $stmtCb->execute([$customerId]);
+            $cbSaldo = (float)$stmtCb->fetchColumn();
+
+            if ($cbSaldo < OmPricing::SUPERBORA_PLUS_PRECO) {
+                $db->rollBack();
+
+                // Sem saldo: marcar como expirado
+                $db->prepare("UPDATE om_superbora_plus SET status = 'expired' WHERE customer_id = ?")
+                   ->execute([$customerId]);
+
+                echo "  [EXPIRADO] Cliente #$customerId | sem saldo cashback\n";
+                $expirou++;
+
+                // Notificar cliente
+                try {
+                    $db->prepare("
+                        INSERT INTO om_notifications (user_id, user_type, title, body, data, created_at)
+                        VALUES (?, 'customer', 'SuperBora+ expirou', 'Sua assinatura SuperBora+ expirou. Renove por R$4,90/mes e continue aproveitando os beneficios!', ?, NOW())
+                    ")->execute([$customerId, json_encode(['type' => 'superbora_plus_expired', 'url' => '/mercado/superbora-plus'])]);
+                } catch (Exception $e) {
+                    // ignore notification failure
+                }
+                continue;
+            }
 
             // Cobrar do cashback
             $remaining = OmPricing::SUPERBORA_PLUS_PRECO;
@@ -95,23 +118,6 @@ foreach ($expiradas as $sub) {
         } catch (Exception $e) {
             $db->rollBack();
             echo "  [ERRO] Cliente #$customerId: " . $e->getMessage() . "\n";
-        }
-    } else {
-        // Sem saldo: marcar como expirado (cliente precisa renovar manualmente)
-        $db->prepare("UPDATE om_superbora_plus SET status = 'expired' WHERE customer_id = ?")
-           ->execute([$customerId]);
-
-        echo "  [EXPIRADO] Cliente #$customerId | sem saldo cashback\n";
-        $expirou++;
-
-        // Notificar cliente
-        try {
-            $db->prepare("
-                INSERT INTO om_notifications (customer_id, title, message, url, created_at)
-                VALUES (?, 'SuperBora+ expirou', 'Sua assinatura SuperBora+ expirou. Renove por R$4,90/mes e continue aproveitando os beneficios!', '/mercado/superbora-plus', NOW())
-            ")->execute([$customerId]);
-        } catch (Exception $e) {
-            // ignore
         }
     }
 }

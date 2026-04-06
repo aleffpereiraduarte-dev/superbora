@@ -66,7 +66,6 @@ try {
     $etaMinutes = 0;
 
     switch ($status) {
-        case 'pending':
         case 'pendente':
             // Ainda nao aceito: preparo completo + entrega
             $etaMinutes = $prepTimeAvg + $deliveryTime + 5; // +5 min buffer aceitacao
@@ -74,7 +73,6 @@ try {
             break;
 
         case 'aceito':
-        case 'accepted':
         case 'confirmado':
             // Aceito mas nao comecou preparo: preparo completo + entrega
             $etaMinutes = $prepTimeAvg + $deliveryTime;
@@ -82,7 +80,6 @@ try {
             break;
 
         case 'preparando':
-        case 'preparing':
             // Em preparo: estimar quanto falta do preparo
             if ($order['accepted_at']) {
                 $elapsed = max(0, (time() - strtotime($order['accepted_at'])) / 60);
@@ -94,22 +91,18 @@ try {
             break;
 
         case 'pronto':
-        case 'ready':
             // Pronto para coleta: so tempo de entrega + margem shopper aceitar
             $prepRemaining = 0;
             $etaMinutes = $deliveryTime + 5;
             break;
 
         case 'coletando':
-        case 'collecting':
             // Shopper indo ate a loja
             $prepRemaining = 0;
             $etaMinutes = $deliveryTime + 3;
             break;
 
         case 'em_entrega':
-        case 'delivering':
-        case 'saiu_entrega':
             // Em transito: so tempo de viagem
             $prepRemaining = 0;
             // Tentar usar posicao real do shopper

@@ -68,6 +68,9 @@ try {
         response(false, null, "Nenhum pedido valido para esta acao", 400);
     }
 
+    // Wrap UPDATE + financial compensation in a single transaction for atomicity
+    $db->beginTransaction();
+
     // Bug 15 fix: Add status condition to UPDATE to prevent TOCTOU race
     $updatePlaceholders = implode(',', array_fill(0, count($validOrders), '?'));
     $updateStatusPlaceholders = implode(',', array_fill(0, count($fromStatuses), '?'));
@@ -84,10 +87,11 @@ try {
     $updatedCount = $stmt->rowCount();
 
     if ($updatedCount === 0) {
+        $db->rollBack();
         response(false, null, "Nenhum pedido atualizado. Os pedidos podem ter sido alterados por outra acao.", 409);
     }
 
-    // Financial compensation for batch cancel — wrapped in a single transaction for atomicity
+    // Financial compensation for batch cancel — inside same transaction for atomicity
     if ($action === 'cancelar') {
         require_once __DIR__ . '/../helpers/cashback.php';
         // Fetch order details for compensation
@@ -100,52 +104,47 @@ try {
         $stmtComp->execute($validOrders);
         $cancelledOrders = $stmtComp->fetchAll(PDO::FETCH_ASSOC);
 
-        $db->beginTransaction();
-        try {
-            foreach ($cancelledOrders as $co) {
-                $coId = (int)$co['order_id'];
-                $coCustId = (int)($co['customer_id'] ?? 0);
+        foreach ($cancelledOrders as $co) {
+            $coId = (int)$co['order_id'];
+            $coCustId = (int)($co['customer_id'] ?? 0);
 
-                // 1. Restore coupon usage
-                $coCoupon = (int)($co['coupon_id'] ?? 0);
-                if ($coCoupon && $coCustId) {
-                    $db->prepare("DELETE FROM om_market_coupon_usage WHERE coupon_id = ? AND customer_id = ? AND order_id = ?")
-                       ->execute([$coCoupon, $coCustId, $coId]);
-                    $db->prepare("UPDATE om_market_coupons SET current_uses = GREATEST(0, current_uses - 1) WHERE id = ?")->execute([$coCoupon]);
-                }
-
-                // 2. Credit back loyalty points
-                $coPoints = (int)($co['loyalty_points_used'] ?? 0);
-                if ($coPoints > 0 && $coCustId) {
-                    $db->prepare("UPDATE om_market_loyalty_points SET current_points = current_points + ?, updated_at = NOW() WHERE customer_id = ?")
-                       ->execute([$coPoints, $coCustId]);
-                    $db->prepare("INSERT INTO om_market_loyalty_transactions (customer_id, points, type, source, reference_id, description, created_at) VALUES (?, ?, 'refund', 'order_cancelled', ?, ?, NOW())")
-                       ->execute([$coCustId, $coPoints, $coId, "Estorno cancelamento lote pedido #{$coId}"]);
-                }
-
-                // 3. Reverse cashback
-                $coCashback = (float)($co['cashback_discount'] ?? 0);
-                if ($coCashback > 0) {
-                    refundCashback($db, $coId);
-                }
-
-                // 4. Restore stock
-                $stmtItems = $db->prepare("SELECT product_id, quantity FROM om_market_order_items WHERE order_id = ?");
-                $stmtItems->execute([$coId]);
-                $items = $stmtItems->fetchAll();
-                foreach ($items as $item) {
-                    $db->prepare("UPDATE om_market_products SET quantity = quantity + ? WHERE product_id = ?")
-                       ->execute([$item['quantity'], $item['product_id']]);
-                }
-
-                error_log("[order-batch-action] CANCEL COMPENSATION order #{$coId}: coupon={$coCoupon} points={$coPoints} cashback=R\${$coCashback} partner={$partner_id}");
+            // 1. Restore coupon usage
+            $coCoupon = (int)($co['coupon_id'] ?? 0);
+            if ($coCoupon && $coCustId) {
+                $db->prepare("DELETE FROM om_market_coupon_usage WHERE coupon_id = ? AND customer_id = ? AND order_id = ?")
+                   ->execute([$coCoupon, $coCustId, $coId]);
+                $db->prepare("UPDATE om_market_coupons SET current_uses = GREATEST(0, current_uses - 1) WHERE id = ?")->execute([$coCoupon]);
             }
-            $db->commit();
-        } catch (Exception $compErr) {
-            if ($db->inTransaction()) $db->rollBack();
-            error_log("[order-batch-action] BATCH CANCEL COMPENSATION FAILED: " . $compErr->getMessage());
+
+            // 2. Credit back loyalty points
+            $coPoints = (int)($co['loyalty_points_used'] ?? 0);
+            if ($coPoints > 0 && $coCustId) {
+                $db->prepare("UPDATE om_market_loyalty_points SET current_points = current_points + ?, updated_at = NOW() WHERE customer_id = ?")
+                   ->execute([$coPoints, $coCustId]);
+                $db->prepare("INSERT INTO om_market_loyalty_transactions (customer_id, points, type, source, reference_id, description, created_at) VALUES (?, ?, 'refund', 'order_cancelled', ?, ?, NOW())")
+                   ->execute([$coCustId, $coPoints, $coId, "Estorno cancelamento lote pedido #{$coId}"]);
+            }
+
+            // 3. Reverse cashback
+            $coCashback = (float)($co['cashback_discount'] ?? 0);
+            if ($coCashback > 0) {
+                refundCashback($db, $coId);
+            }
+
+            // 4. Restore stock
+            $stmtItems = $db->prepare("SELECT product_id, quantity FROM om_market_order_items WHERE order_id = ?");
+            $stmtItems->execute([$coId]);
+            $items = $stmtItems->fetchAll();
+            foreach ($items as $item) {
+                $db->prepare("UPDATE om_market_products SET quantity = quantity + ? WHERE product_id = ?")
+                   ->execute([$item['quantity'], $item['product_id']]);
+            }
+
+            error_log("[order-batch-action] CANCEL COMPENSATION order #{$coId}: coupon={$coCoupon} points={$coPoints} cashback=R\${$coCashback} partner={$partner_id}");
         }
     }
+
+    $db->commit();
 
     // Audit log
     foreach ($validOrders as $oid) {
@@ -207,6 +206,7 @@ try {
     ], "Acao realizada em {$updatedCount} pedido(s)");
 
 } catch (Exception $e) {
+    if (isset($db) && $db->inTransaction()) $db->rollBack();
     error_log("[order-batch-action] Erro: " . $e->getMessage());
     response(false, null, "Erro ao processar acao em lote", 500);
 }

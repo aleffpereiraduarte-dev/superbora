@@ -11,6 +11,7 @@ require_once __DIR__ . "/../helpers/csrf.php";
 
 try {
     session_start();
+    session_write_close();
     verifyCsrf();
     $db = getDB();
 

@@ -60,7 +60,7 @@ try {
                 COUNT(*) as total_orders,
                 SUM(total) as total_revenue,
                 AVG(total) as avg_order_value,
-                SUM(CASE WHEN status IN ('cancelado','cancelled') THEN 1 ELSE 0 END) as cancelled_orders
+                SUM(CASE WHEN status IN ('cancelado') THEN 1 ELSE 0 END) as cancelled_orders
             FROM om_market_orders
             WHERE partner_id = ? AND created_at >= NOW() - INTERVAL '30 days'
         ");

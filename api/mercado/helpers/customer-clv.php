@@ -32,7 +32,7 @@ function calculateCustomerCLV(PDO $db, int $customerId): array {
                 EXTRACT(EPOCH FROM (MAX(date_added) - MIN(date_added))) / 86400 as days_as_customer
             FROM om_market_orders
             WHERE customer_id = ?
-              AND status NOT IN ('cancelado', 'cancelled', 'recusado', 'pagamento_falhou')
+              AND status NOT IN ('cancelado', 'recusado')
         ");
         $stmt->execute([$customerId]);
         $stats = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -95,7 +95,7 @@ function calculateCustomerCLV(PDO $db, int $customerId): array {
             SELECT COUNT(*) as cnt FROM om_market_orders
             WHERE customer_id = ?
               AND date_added > NOW() - INTERVAL '90 days'
-              AND status NOT IN ('cancelado', 'cancelled', 'recusado', 'pagamento_falhou')
+              AND status NOT IN ('cancelado', 'recusado')
         ");
         $stmtFreq->execute([$customerId]);
         $orders90d = (int)$stmtFreq->fetchColumn();
@@ -158,7 +158,7 @@ function calculateCustomerCLV(PDO $db, int $customerId): array {
             $stmtPart = $db->prepare("
                 SELECT partner_id, COUNT(*) as cnt FROM om_market_orders
                 WHERE customer_id = ? AND partner_id IS NOT NULL
-                  AND status NOT IN ('cancelado', 'cancelled', 'recusado')
+                  AND status NOT IN ('cancelado', 'recusado')
                 GROUP BY partner_id ORDER BY cnt DESC LIMIT 1
             ");
             $stmtPart->execute([$customerId]);
@@ -176,7 +176,7 @@ function calculateCustomerCLV(PDO $db, int $customerId): array {
                 FROM om_market_orders o
                 JOIN om_market_partners p ON o.partner_id = p.partner_id
                 WHERE o.customer_id = ?
-                  AND o.status NOT IN ('cancelado', 'cancelled', 'recusado')
+                  AND o.status NOT IN ('cancelado', 'recusado')
                   AND p.categoria IS NOT NULL
                 GROUP BY p.categoria ORDER BY cnt DESC LIMIT 1
             ");
@@ -255,7 +255,7 @@ function determineCLVTier(int $score, int $daysSinceLastOrder, int $daysAsCustom
             SELECT COUNT(*) as cnt FROM om_market_orders
             WHERE customer_id = ?
               AND date_added > NOW() - INTERVAL '30 days'
-              AND status NOT IN ('cancelado', 'cancelled', 'recusado')
+              AND status NOT IN ('cancelado', 'recusado')
         ");
         $stmtRecent->execute([$customerId]);
         $recent30d = (int)$stmtRecent->fetchColumn();
@@ -264,7 +264,7 @@ function determineCLVTier(int $score, int $daysSinceLastOrder, int $daysAsCustom
             SELECT COUNT(*) as cnt FROM om_market_orders
             WHERE customer_id = ?
               AND date_added BETWEEN NOW() - INTERVAL '60 days' AND NOW() - INTERVAL '30 days'
-              AND status NOT IN ('cancelado', 'cancelled', 'recusado')
+              AND status NOT IN ('cancelado', 'recusado')
         ");
         $stmtPrev->execute([$customerId]);
         $prev30d = (int)$stmtPrev->fetchColumn();
@@ -398,7 +398,7 @@ function recalculateAllCLV(PDO $db, int $limit = 500): array {
             LEFT JOIN om_customer_clv c ON o.customer_id = c.customer_id
             WHERE o.date_added > NOW() - INTERVAL '90 days'
               AND o.customer_id IS NOT NULL
-              AND o.status NOT IN ('cancelado', 'cancelled', 'recusado', 'pagamento_falhou')
+              AND o.status NOT IN ('cancelado', 'recusado')
             ORDER BY COALESCE(c.last_calculated_at, '2000-01-01') ASC
             LIMIT ?
         ");

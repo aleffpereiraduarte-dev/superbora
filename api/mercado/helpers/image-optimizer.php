@@ -12,6 +12,133 @@
  */
 
 /**
+ * Process an uploaded image: resize to max 800px width, strip EXIF, save original + WebP.
+ * This is the main entry point for new uploads.
+ *
+ * @param string $sourcePath  Absolute path to the uploaded image
+ * @param string $uploadsDir  Absolute path to the uploads subdirectory
+ * @param int    $maxWidth    Maximum width in pixels (default 800)
+ * @param int    $quality     WebP/JPEG quality 0-100 (default 80)
+ * @return array  ['original' => url, 'webp' => url, 'width' => int, 'height' => int, 'size_saved' => int]
+ */
+function processUploadedImage(string $sourcePath, string $uploadsDir, int $maxWidth = 800, int $quality = 80): array
+{
+    $result = [
+        'original' => null,
+        'webp' => null,
+        'width' => 0,
+        'height' => 0,
+        'size_saved' => 0,
+    ];
+
+    if (!file_exists($sourcePath) || !is_file($sourcePath)) {
+        error_log("[image-optimizer] Source not found: $sourcePath");
+        return $result;
+    }
+
+    $webRoot = '/var/www/html';
+    $relativeDir = str_replace($webRoot, '', $uploadsDir);
+    $filename = pathinfo($sourcePath, PATHINFO_FILENAME);
+    $extension = strtolower(pathinfo($sourcePath, PATHINFO_EXTENSION));
+    $originalSize = filesize($sourcePath);
+
+    // Strip EXIF data by re-saving through GD (also handles orientation)
+    $srcImage = loadImage($sourcePath);
+    if (!$srcImage) {
+        error_log("[image-optimizer] Failed to load: $sourcePath");
+        $result['original'] = $relativeDir . '/' . basename($sourcePath);
+        return $result;
+    }
+
+    // Auto-rotate based on EXIF orientation before stripping
+    $srcImage = autoRotateImage($srcImage, $sourcePath);
+
+    $srcWidth = imagesx($srcImage);
+    $srcHeight = imagesy($srcImage);
+
+    // Resize if wider than max
+    if ($srcWidth > $maxWidth) {
+        $ratio = $maxWidth / $srcWidth;
+        $newWidth = $maxWidth;
+        $newHeight = max(1, (int)round($srcHeight * $ratio));
+
+        $resized = imagecreatetruecolor($newWidth, $newHeight);
+        imagealphablending($resized, false);
+        imagesavealpha($resized, true);
+        imagecopyresampled($resized, $srcImage, 0, 0, 0, 0, $newWidth, $newHeight, $srcWidth, $srcHeight);
+        imagedestroy($srcImage);
+        $srcImage = $resized;
+        $srcWidth = $newWidth;
+        $srcHeight = $newHeight;
+    }
+
+    // Re-save original (EXIF stripped, resized) as JPEG
+    $cleanPath = $uploadsDir . '/' . $filename . '.jpg';
+    imagejpeg($srcImage, $cleanPath, $quality);
+    @chmod($cleanPath, 0644);
+    $result['original'] = $relativeDir . '/' . $filename . '.jpg';
+    $result['width'] = $srcWidth;
+    $result['height'] = $srcHeight;
+
+    // Save WebP version alongside
+    $webpPath = $uploadsDir . '/' . $filename . '.webp';
+    if (saveWebP($srcImage, $webpPath, $quality)) {
+        $result['webp'] = $relativeDir . '/' . $filename . '.webp';
+    }
+
+    // Calculate space saved
+    $newSize = filesize($cleanPath) + (file_exists($webpPath) ? filesize($webpPath) : 0);
+    $result['size_saved'] = max(0, $originalSize - filesize($cleanPath));
+
+    // Remove original if it was a different format (png, etc.) and we created a .jpg
+    if ($extension !== 'jpg' && $extension !== 'jpeg' && $sourcePath !== $cleanPath) {
+        @unlink($sourcePath);
+    }
+
+    imagedestroy($srcImage);
+
+    return $result;
+}
+
+/**
+ * Auto-rotate image based on EXIF orientation tag.
+ *
+ * @param \GdImage $image
+ * @param string   $path  Original file path (to read EXIF from)
+ * @return \GdImage
+ */
+function autoRotateImage(\GdImage $image, string $path): \GdImage
+{
+    if (!function_exists('exif_read_data')) {
+        return $image;
+    }
+
+    $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+    if (!in_array($ext, ['jpg', 'jpeg', 'tiff', 'tif'])) {
+        return $image;
+    }
+
+    $exif = @exif_read_data($path);
+    if (!$exif || empty($exif['Orientation'])) {
+        return $image;
+    }
+
+    $rotated = match ((int)$exif['Orientation']) {
+        3 => imagerotate($image, 180, 0),
+        6 => imagerotate($image, -90, 0),
+        8 => imagerotate($image, 90, 0),
+        default => $image,
+    };
+
+    if ($rotated && $rotated !== $image) {
+        imagedestroy($image);
+        return $rotated;
+    }
+
+    return $image;
+}
+
+/**
  * Generate optimized image variants from a source image.
  *
  * @param string $sourcePath  Absolute path to the source image file
@@ -48,6 +175,9 @@ function optimizeImage(string $sourcePath, string $uploadsDir): array
         error_log("[image-optimizer] Failed to load image: $sourcePath");
         return $result;
     }
+
+    // Auto-rotate based on EXIF orientation, stripping EXIF in the process
+    $srcImage = autoRotateImage($srcImage, $sourcePath);
 
     $srcWidth  = imagesx($srcImage);
     $srcHeight = imagesy($srcImage);

@@ -42,10 +42,9 @@ try {
         return "https://superbora.com.br/loja/{$slug}";
     }
 
-    // Helper: generate QR URL for a table
+    // Helper: generate QR URL for a table (points to public mesa ordering page)
     function generateQrUrl(PDO $db, int $partnerId, int $tableNumero): string {
-        $storeUrl = getStoreUrl($db, $partnerId);
-        return "{$storeUrl}?mesa={$tableNumero}";
+        return "https://superbora.com.br/mesa/index.php?t={$partnerId}-{$tableNumero}";
     }
 
     // ===== GET =====

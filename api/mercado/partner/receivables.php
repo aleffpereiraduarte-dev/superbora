@@ -63,7 +63,7 @@ try {
             FROM om_market_orders o
             LEFT JOIN om_partner_receivable_items pri ON pri.order_id = o.order_id
             WHERE o.partner_id = ?
-              AND o.status IN ('entregue', 'completed', 'concluido')
+              AND o.status IN ('entregue')
               AND pri.id IS NULL
               AND o.delivered_at >= CURRENT_DATE - INTERVAL '60 days'
             ORDER BY expected_payment_date ASC
@@ -277,7 +277,7 @@ try {
                 LEFT JOIN om_partner_receivable_items pri ON pri.order_id = o.order_id
                 WHERE o.order_id IN ($placeholders)
                   AND o.partner_id = ?
-                  AND o.status IN ('entregue', 'completed', 'concluido')
+                  AND o.status IN ('entregue')
                   AND pri.id IS NULL
             ");
             $stmtOrders->execute($params);
@@ -389,7 +389,7 @@ try {
                 LEFT JOIN om_partner_receivable_items pri ON pri.order_id = o.order_id
                 WHERE o.order_id IN ($placeholders)
                   AND o.partner_id = ?
-                  AND o.status IN ('entregue', 'completed', 'concluido')
+                  AND o.status IN ('entregue')
                   AND pri.id IS NULL
             ");
             $stmtOrders->execute($params);

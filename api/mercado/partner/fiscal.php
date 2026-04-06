@@ -81,7 +81,7 @@ try {
             FROM om_market_orders o
             WHERE o.partner_id = ?
               AND DATE(o.date_added) BETWEEN ? AND ?
-              AND o.status NOT IN ('cancelado', 'cancelled')
+              AND o.status NOT IN ('cancelado')
             ORDER BY o.date_added ASC
         ");
         $stmtExport->execute([$partnerId, $startDate, $endDate]);
@@ -141,7 +141,7 @@ try {
             FROM om_market_orders o
             WHERE o.partner_id = ?
               AND DATE(o.date_added) BETWEEN ? AND ?
-              AND o.status NOT IN ('cancelado', 'cancelled')
+              AND o.status NOT IN ('cancelado')
             ORDER BY o.date_added ASC
         ");
         $stmtNotas->execute([$partnerId, $startDate, $endDate]);
@@ -210,7 +210,7 @@ try {
         FROM om_market_orders
         WHERE partner_id = ?
           AND DATE(date_added) BETWEEN ? AND ?
-          AND status NOT IN ('cancelado', 'cancelled')
+          AND status NOT IN ('cancelado')
     ");
     $stmtSummary->execute([$partnerId, $startDate, $endDate]);
     $summary = $stmtSummary->fetch();
@@ -228,7 +228,7 @@ try {
         FROM om_market_orders
         WHERE partner_id = ?
           AND DATE(date_added) BETWEEN ? AND ?
-          AND status NOT IN ('cancelado', 'cancelled')
+          AND status NOT IN ('cancelado')
     ");
     $stmtTaxa->execute([$partnerId, $startDate, $endDate]);
     $taxasServico = round((float)($stmtTaxa->fetch()['total_taxa'] ?? 0), 2);
@@ -244,7 +244,7 @@ try {
         FROM om_market_orders
         WHERE partner_id = ?
           AND DATE(date_added) BETWEEN ? AND ?
-          AND status NOT IN ('cancelado', 'cancelled')
+          AND status NOT IN ('cancelado')
         GROUP BY forma_pagamento
         ORDER BY valor DESC
     ");
@@ -282,7 +282,7 @@ try {
         FROM om_market_orders
         WHERE partner_id = ?
           AND DATE(date_added) BETWEEN ? AND ?
-          AND status NOT IN ('cancelado', 'cancelled')
+          AND status NOT IN ('cancelado')
         GROUP BY EXTRACT(WEEK FROM date_added)
         ORDER BY semana ASC
     ");
@@ -310,7 +310,7 @@ try {
         FROM om_market_orders
         WHERE partner_id = ?
           AND EXTRACT(YEAR FROM date_added) = ?
-          AND status NOT IN ('cancelado', 'cancelled')
+          AND status NOT IN ('cancelado')
     ");
     $stmtYtd->execute([$partnerId, $anoAtual]);
     $acumuladoAno = round((float)($stmtYtd->fetch()['acumulado'] ?? 0), 2);
@@ -323,7 +323,7 @@ try {
         FROM om_market_orders
         WHERE partner_id = ?
           AND EXTRACT(YEAR FROM date_added) = ?
-          AND status NOT IN ('cancelado', 'cancelled')
+          AND status NOT IN ('cancelado')
         GROUP BY EXTRACT(MONTH FROM date_added)
         ORDER BY mes_num ASC
     ");

@@ -1149,6 +1149,7 @@ function _safeguardSanitizeContext(array $ctx): array
     $validSteps = [
         'greeting', 'identify_store', 'take_order', 'get_address',
         'get_payment', 'confirm_order', 'submit_order', 'support', 'question',
+        'complete', 'farewell', 'reorder',
     ];
     if (!in_array($ctx['step'], $validSteps, true)) {
         $ctx['step'] = 'identify_store';

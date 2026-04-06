@@ -674,7 +674,7 @@ try {
     }
 
     // Unknown action
-    response(false, null, "Acao desconhecida: {$action}", 400);
+    response(false, null, "Acao desconhecida", 400);
 
 } catch (Exception $e) {
     error_log("[partner/disponibilidade] Erro: " . $e->getMessage());

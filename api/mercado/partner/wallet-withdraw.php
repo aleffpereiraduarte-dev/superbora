@@ -10,7 +10,7 @@ require_once __DIR__ . "/../config/database.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAudit.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/PusherService.php";
-require_once dirname(__DIR__, 3) . "/includes/classes/WooviClient.php";
+require_once dirname(__DIR__, 3) . "/includes/classes/EfiClient.php";
 
 setCorsHeaders();
 
@@ -118,14 +118,15 @@ try {
     $amountCents = (int)round($amount * 100);
 
     // Debitar saldo ANTES de chamar API (anti double-spend)
+    // NOTE: total_sacado is NOT incremented here — it's incremented by the webhook
+    // (woovi.php) when the payout is confirmed, to avoid double-counting.
     $stmtDebit = $db->prepare("
         UPDATE om_mercado_saldo
         SET saldo_disponivel = saldo_disponivel - ?,
-            total_sacado = COALESCE(total_sacado, 0) + ?,
             updated_at = NOW()
         WHERE partner_id = ?
     ");
-    $stmtDebit->execute([$amount, $amount, $partner_id]);
+    $stmtDebit->execute([$amount, $partner_id]);
 
     // Registrar payout como pending
     $stmtInsert = $db->prepare("
@@ -154,54 +155,50 @@ try {
 
     $db->commit();
 
-    // Chamar Woovi API fora da transacao
-    $wooviStatus = 'processing';
-    $wooviError = null;
+    // Chamar EFI PIX API fora da transacao
+    $payoutStatus = 'processing';
+    $payoutError = null;
     try {
-        $woovi = new WooviClient();
-        $result = $woovi->createPayout(
-            $amountCents,
-            $correlationId,
+        $efi = new EfiClient();
+        $result = $efi->sendPix(
+            $amount,
             $pixKey,
             $pixKeyType,
-            "Repasse SuperBora - Parceiro #$partner_id"
+            "Repasse SuperBora - Parceiro #$partner_id",
+            $correlationId
         );
 
-        $wooviTxId = $result['data']['transaction']['transactionID']
-            ?? $result['data']['correlationID']
-            ?? '';
+        $efiTxId = $result['e2e_id'] ?? $result['transfer_id'] ?? '';
 
-        // Atualizar com dados da Woovi
+        // Atualizar com dados da EFI
         $stmtUpd = $db->prepare("
             UPDATE om_woovi_payouts
             SET status = 'processing',
-                woovi_transaction_id = ?,
-                woovi_raw_response = ?
+                woovi_transaction_id = ?
             WHERE id = ?
         ");
-        $stmtUpd->execute([$wooviTxId, $result['raw'] ?? '', $payoutId]);
+        $stmtUpd->execute([$efiTxId, $payoutId]);
 
-    } catch (\Exception $wooviErr) {
-        $wooviError = $wooviErr->getMessage();
-        error_log("[wallet-withdraw] Woovi API erro: $wooviError");
+    } catch (\Exception $efiErr) {
+        $payoutError = $efiErr->getMessage();
+        error_log("[wallet-withdraw] EFI API erro: $payoutError");
 
-        // Devolver saldo
+        // Devolver saldo (total_sacado not touched since we didn't increment it)
         $db->beginTransaction();
         $stmtRefund = $db->prepare("
             UPDATE om_mercado_saldo
             SET saldo_disponivel = saldo_disponivel + ?,
-                total_sacado = GREATEST(0, COALESCE(total_sacado, 0) - ?),
                 updated_at = NOW()
             WHERE partner_id = ?
         ");
-        $stmtRefund->execute([$amount, $amount, $partner_id]);
+        $stmtRefund->execute([$amount, $partner_id]);
 
         $stmtFail = $db->prepare("
             UPDATE om_woovi_payouts
             SET status = 'failed', failure_reason = ?
             WHERE id = ?
         ");
-        $stmtFail->execute([$wooviError, $payoutId]);
+        $stmtFail->execute([$payoutError, $payoutId]);
 
         // Log estorno
         $stmtLogRefund = $db->prepare("
@@ -209,11 +206,11 @@ try {
                 (partner_id, tipo, valor, descricao, status, created_at)
             VALUES (?, 'saque_estornado', ?, ?, 'refunded', NOW())
         ");
-        $stmtLogRefund->execute([$partner_id, $amount, "Saque falhou: $wooviError"]);
+        $stmtLogRefund->execute([$partner_id, $amount, "Saque falhou: $payoutError"]);
 
         $db->commit();
 
-        $wooviStatus = 'failed';
+        $payoutStatus = 'failed';
     }
 
     // Audit log
@@ -222,8 +219,8 @@ try {
         'woovi_payout',
         $payoutId,
         ['saldo_disponivel' => $saldoDisponivel],
-        ['amount' => $amount, 'status' => $wooviStatus, 'correlation_id' => $correlationId],
-        "Saque PIX R$ " . number_format($amount, 2, ',', '.') . " - $wooviStatus",
+        ['amount' => $amount, 'status' => $payoutStatus, 'correlation_id' => $correlationId],
+        "Saque PIX R$ " . number_format($amount, 2, ',', '.') . " - $payoutStatus",
         'partner',
         $partner_id
     );
@@ -231,20 +228,20 @@ try {
     // Pusher
     try {
         PusherService::walletUpdate($partner_id, [
-            'balance' => round($wooviStatus === 'failed' ? $saldoDisponivel : ($saldoDisponivel - $amount), 2),
+            'balance' => round($payoutStatus === 'failed' ? $saldoDisponivel : ($saldoDisponivel - $amount), 2),
             'transaction' => [
                 'id' => $payoutId,
                 'type' => 'withdraw',
                 'amount' => $amount,
-                'status' => $wooviStatus
+                'status' => $payoutStatus
             ]
         ]);
     } catch (\Exception $e) {
         error_log("[wallet-withdraw] Pusher erro: " . $e->getMessage());
     }
 
-    if ($wooviStatus === 'failed') {
-        response(false, null, "Erro ao processar saque: $wooviError. Saldo devolvido.", 502);
+    if ($payoutStatus === 'failed') {
+        response(false, null, "Erro ao processar saque. Saldo devolvido. Tente novamente em alguns minutos.", 502);
     }
 
     response(true, [
@@ -252,7 +249,7 @@ try {
         "correlation_id" => $correlationId,
         "amount" => round($amount, 2),
         "new_balance" => round($saldoDisponivel - $amount, 2),
-        "status" => $wooviStatus
+        "status" => $payoutStatus
     ], "Saque PIX enviado! Voce recebera em instantes.");
 
 } catch (\Exception $e) {

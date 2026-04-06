@@ -11,8 +11,12 @@ setCorsHeaders();
 
 try {
     $db = getDB();
-    $customerId = getCustomerIdFromToken();
-    if (!$customerId) response(false, null, 'Nao autorizado', 401);
+    OmAuth::getInstance()->setDb($db);
+    $token = om_auth()->getTokenFromRequest();
+    if (!$token) response(false, null, 'Nao autorizado', 401);
+    $authPayload = om_auth()->validateToken($token);
+    if (!$authPayload || $authPayload['type'] !== 'customer') response(false, null, 'Nao autorizado', 401);
+    $customerId = (int)$authPayload['uid'];
 
     // GET: listar recorrentes
     if ($_SERVER['REQUEST_METHOD'] === 'GET') {
@@ -51,7 +55,7 @@ try {
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $input = json_decode(file_get_contents('php://input'), true);
         $partnerId = (int)($input['partner_id'] ?? 0);
-        $name = trim($input['name'] ?? 'Pedido Recorrente');
+        $name = strip_tags(trim(substr($input['name'] ?? 'Pedido Recorrente', 0, 200)));
         $frequency = $input['frequency'] ?? 'weekly';
         $dayOfWeek = (int)($input['day_of_week'] ?? 1); // 0-6
         $preferredTime = $input['preferred_time'] ?? '10:00';

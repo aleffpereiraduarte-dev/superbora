@@ -68,8 +68,18 @@ try {
         'biggest_order'    => $biggestOrder,
     ];
 
-    // If no orders at all, return empty profile
-    if ($totalOrders === 0) {
+    // If few orders, return profile with generic fun facts
+    if ($totalOrders < 3) {
+        $genericFacts = [
+            ['emoji' => '🍕', 'text' => 'Pizza é o prato mais pedido no Brasil por delivery!'],
+            ['emoji' => '🚀', 'text' => 'Pedidos pelo SuperBora chegam em média 35 minutos'],
+            ['emoji' => '🎉', 'text' => 'Faça mais pedidos pra descobrir seu perfil alimentar!'],
+            ['emoji' => '💰', 'text' => 'Use cashback e economize em cada pedido'],
+            ['emoji' => '⭐', 'text' => 'Avalie seus pedidos e ajude outros clientes'],
+        ];
+        if ($totalOrders === 0) {
+            $genericFacts[2] = ['emoji' => '👋', 'text' => 'Bem-vindo! Faça seu primeiro pedido e descubra seu paladar'];
+        }
         response(true, [
             'stats'           => $stats,
             'top_categories'  => [],
@@ -77,7 +87,9 @@ try {
             'favorite_stores' => [],
             'time_patterns'   => ['morning' => 0, 'lunch' => 0, 'afternoon' => 0, 'dinner' => 0, 'night' => 0],
             'dietary'         => [],
-            'fun_facts'       => [],
+            'fun_facts'       => $genericFacts,
+            'needs_more_orders' => true,
+            'min_orders_for_profile' => 3,
         ]);
     }
 

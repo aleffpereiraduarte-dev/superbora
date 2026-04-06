@@ -333,7 +333,7 @@ function calculatePartnerMetrics(PDO $db, int $partnerId, string $startDate, str
         FROM om_market_orders
         WHERE partner_id = ?
           AND DATE(date_added) BETWEEN ? AND ?
-          AND status IN ('cancelado', 'cancelled')
+          AND status IN ('cancelado')
     ");
     $stmtCancelled->execute([$partnerId, $startDate, $endDate]);
     $cancelledOrders = (int)$stmtCancelled->fetchColumn();

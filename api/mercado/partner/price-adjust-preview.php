@@ -15,7 +15,7 @@ try {
     $db = getDB();
     OmAuth::getInstance()->setDb($db);
 
-    $payload = requirePartnerAuth();
+    $payload = om_auth()->requirePartner();
     $partner_id = (int)$payload['uid'];
 
     $category_id = (int)($_GET['category_id'] ?? 0);

@@ -78,7 +78,7 @@ try {
                 FROM om_market_orders
                 WHERE partner_id = ?
                   AND date_added >= NOW() - INTERVAL '28 days'
-                  AND status NOT IN ('cancelado', 'cancelled')
+                  AND status NOT IN ('cancelado')
                 GROUP BY order_hour
                 ORDER BY order_count DESC
             ");
@@ -120,7 +120,7 @@ try {
                SUM(total) as revenue
         FROM om_market_orders
         WHERE partner_id = ? AND date_added >= NOW() - INTERVAL '56 days'
-          AND status NOT IN ('cancelado', 'cancelled')
+          AND status NOT IN ('cancelado')
         GROUP BY dow, week_start
         ORDER BY dow, week_start
     ");
@@ -220,7 +220,7 @@ try {
         FROM om_market_orders
         WHERE partner_id = ?
           AND date_added >= NOW() - INTERVAL '28 days'
-          AND status NOT IN ('cancelado', 'cancelled')
+          AND status NOT IN ('cancelado')
         GROUP BY order_hour
         ORDER BY order_count DESC
     ");
@@ -252,7 +252,7 @@ try {
         FROM om_market_orders
         WHERE partner_id = ?
           AND date_added >= NOW() - INTERVAL '56 days'
-          AND status NOT IN ('cancelado', 'cancelled')
+          AND status NOT IN ('cancelado')
     ");
     $stmt->execute([$partnerId]);
     $summary = $stmt->fetch();

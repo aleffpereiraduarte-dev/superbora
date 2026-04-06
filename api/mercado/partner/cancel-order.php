@@ -30,7 +30,7 @@ try {
         $stmt = $db->prepare("
             SELECT cancel_reason as reason, COUNT(*) as count
             FROM om_market_orders
-            WHERE partner_id = ? AND status IN ('cancelado','cancelled')
+            WHERE partner_id = ? AND status = 'cancelado'
             AND created_at >= NOW() - INTERVAL '30 days'
             AND cancel_reason IS NOT NULL AND cancel_reason != ''
             GROUP BY cancel_reason
@@ -83,7 +83,7 @@ try {
                 response(false, null, "Pedido nao encontrado", 404);
             }
 
-            $cancellableStatuses = ['pendente', 'pending', 'confirmado', 'confirmed', 'preparando', 'preparing'];
+            $cancellableStatuses = ['pendente', 'aceito', 'confirmado', 'preparando'];
             $oldStatus = $order['status'];
             if (!in_array(strtolower($oldStatus), $cancellableStatuses)) {
                 $db->rollBack();
@@ -100,7 +100,7 @@ try {
                     cancelled_at = NOW(),
                     updated_at = NOW()
                 WHERE order_id = ? AND partner_id = ?
-                AND status IN ('pendente','pending','confirmado','confirmed','preparando','preparing','aceito')
+                AND status IN ('pendente','aceito','confirmado','preparando')
             ");
             $stmt->execute([$reason . ($reasonDetails ? ': ' . $reasonDetails : ''), $orderId, $partnerId]);
 

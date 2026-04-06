@@ -52,38 +52,66 @@ try {
         $commissionRate = (float)($partner['commission_rate'] ?? 15);
         $isSigned = !empty($partner['contract_signed_at']);
 
-        response(true, [
+        $termsData = [
+            'commission_rate' => $commissionRate,
+            'commission_label' => number_format($commissionRate, 1) . '%',
+            'delivery_own' => (bool)($partner['entrega_propria'] ?? false),
+            'payment_cycle' => 'semanal',
+            'hold_hours' => 2,
+            'min_payout' => 10.00,
+            'clauses' => [
+                'O Parceiro concorda em manter os precos e informacoes dos produtos atualizados na plataforma.',
+                'A SuperBora cobrara uma comissao de ' . number_format($commissionRate, 1) . '% sobre cada venda realizada pela plataforma.',
+                'Os repasses serao liberados apos periodo de hold de 2 horas apos confirmacao de entrega.',
+                'Saques podem ser realizados quando o saldo disponivel atingir o minimo de R$ 10,00.',
+                'O Parceiro e responsavel pela qualidade dos produtos e cumprimento dos prazos de entrega.',
+                'A SuperBora reserva-se o direito de suspender a conta em caso de violacao dos termos.',
+                'Ambas as partes podem encerrar este contrato com aviso previo de 30 dias.',
+                'Disputas serao resolvidas preferencialmente por mediacao antes de recurso judicial.',
+            ],
+        ];
+
+        $partnerData = [
+            'name' => $partner['name'],
+            'owner_name' => $partner['owner_name'],
+            'cnpj' => $partner['cnpj'],
+            'cpf' => $partner['cpf'],
+            'email' => $partner['email'],
+            'phone' => $partner['phone'],
+            'address' => trim(($partner['address'] ?? '') . ', ' . ($partner['city'] ?? '') . ' - ' . ($partner['state'] ?? ''), ', - '),
+            'categoria' => $partner['categoria'],
+        ];
+
+        $result = [
             'signed' => $isSigned,
             'signed_at' => $partner['contract_signed_at'],
-            'partner' => [
-                'name' => $partner['name'],
-                'owner_name' => $partner['owner_name'],
-                'cnpj' => $partner['cnpj'],
-                'cpf' => $partner['cpf'],
-                'email' => $partner['email'],
-                'phone' => $partner['phone'],
-                'address' => trim(($partner['address'] ?? '') . ', ' . ($partner['city'] ?? '') . ' - ' . ($partner['state'] ?? ''), ', - '),
-                'categoria' => $partner['categoria'],
-            ],
-            'terms' => [
-                'commission_rate' => $commissionRate,
-                'commission_label' => number_format($commissionRate, 1) . '%',
-                'delivery_own' => (bool)($partner['entrega_propria'] ?? false),
-                'payment_cycle' => 'semanal',
-                'hold_hours' => 2,
-                'min_payout' => 10.00,
-                'clauses' => [
-                    'O Parceiro concorda em manter os precos e informacoes dos produtos atualizados na plataforma.',
-                    'A SuperBora cobrara uma comissao de ' . number_format($commissionRate, 1) . '% sobre cada venda realizada pela plataforma.',
-                    'Os repasses serao liberados apos periodo de hold de 2 horas apos confirmacao de entrega.',
-                    'Saques podem ser realizados quando o saldo disponivel atingir o minimo de R$ 10,00.',
-                    'O Parceiro e responsavel pela qualidade dos produtos e cumprimento dos prazos de entrega.',
-                    'A SuperBora reserva-se o direito de suspender a conta em caso de violacao dos termos.',
-                    'Ambas as partes podem encerrar este contrato com aviso previo de 30 dias.',
-                    'Disputas serao resolvidas preferencialmente por mediacao antes de recurso judicial.',
-                ],
-            ],
-        ]);
+            'partner' => $partnerData,
+            'terms' => $termsData,
+        ];
+
+        // Include audit details for signed contracts
+        if ($isSigned) {
+            // Fetch audit columns if they exist
+            try {
+                $stmt2 = $db->prepare("
+                    SELECT contract_signed_ip, contract_user_agent, contract_version, contract_terms_hash
+                    FROM om_market_partners WHERE partner_id = ?
+                ");
+                $stmt2->execute([$partnerId]);
+                $audit = $stmt2->fetch();
+                $result['audit'] = [
+                    'ip' => $audit['contract_signed_ip'] ?? null,
+                    'user_agent' => $audit['contract_user_agent'] ?? null,
+                    'version' => $audit['contract_version'] ?? 'v1.0',
+                    'terms_hash' => $audit['contract_terms_hash'] ?? null,
+                ];
+            } catch (Exception $e) {
+                // audit columns may not exist yet
+                $result['audit'] = null;
+            }
+        }
+
+        response(true, $result);
     }
 
     // POST — Sign contract

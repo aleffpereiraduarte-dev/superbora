@@ -274,7 +274,7 @@ function handleMoveOrder($db, $partnerId) {
             'pendente' => ['aceito', 'cancelado'],
             'aceito' => ['preparando', 'cancelado'],
             'preparando' => ['pronto'],
-            'pronto' => ['em_entrega', 'entregue'],
+            'pronto' => ['em_entrega'],
             'em_entrega' => ['entregue'],
         ];
 

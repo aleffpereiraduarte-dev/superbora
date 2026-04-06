@@ -176,7 +176,7 @@ function handleGetReviews($db, $partnerId) {
 function handleRespondToReview($db, $partnerId) {
     $input = getInput();
     $reviewId = (int)($input['review_id'] ?? 0);
-    $responseText = trim($input['response'] ?? '');
+    $responseText = strip_tags(trim($input['response'] ?? ''));
 
     if (!$reviewId) {
         response(false, null, "review_id obrigatorio", 400);

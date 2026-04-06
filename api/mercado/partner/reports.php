@@ -71,7 +71,7 @@ try {
         FROM om_market_orders
         WHERE partner_id = ?
           AND DATE(date_added) BETWEEN ? AND ?
-          AND status NOT IN ('cancelado', 'cancelled')
+          AND status NOT IN ('cancelado')
     ");
     $stmtMonth->execute([$partner_id, $startDate, $endDate]);
     $monthStats = $stmtMonth->fetch();
@@ -85,7 +85,7 @@ try {
         FROM om_market_orders
         WHERE partner_id = ?
           AND DATE(date_added) BETWEEN ? AND ?
-          AND status NOT IN ('cancelado', 'cancelled')
+          AND status NOT IN ('cancelado')
     ");
     $stmtPrev->execute([$partner_id, $prevStartDate, $prevEndDate]);
     $prevStats = $stmtPrev->fetch();
@@ -115,7 +115,7 @@ try {
         INNER JOIN om_market_orders o ON o.order_id = oi.order_id
         WHERE o.partner_id = ?
           AND DATE(o.date_added) BETWEEN ? AND ?
-          AND o.status NOT IN ('cancelado', 'cancelled')
+          AND o.status NOT IN ('cancelado')
         GROUP BY oi.product_id, oi.name
         ORDER BY total_quantity DESC
         LIMIT 10
@@ -143,7 +143,7 @@ try {
         FROM om_market_orders
         WHERE partner_id = ?
           AND DATE(date_added) BETWEEN ? AND ?
-          AND status NOT IN ('cancelado', 'cancelled')
+          AND status NOT IN ('cancelado')
         GROUP BY DATE(date_added)
         ORDER BY DATE(date_added) ASC
     ");

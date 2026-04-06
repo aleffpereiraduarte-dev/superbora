@@ -139,6 +139,12 @@ function initiateOutboundCall(PDO $db, string $phone, string $type, array $data 
 
     // Format phone
     $phone = formatPhoneForTwilio($phone);
+
+    // Use BR number for Brazilian destinations
+    $phoneBR = $_ENV['TWILIO_PHONE_BR'] ?? getenv('TWILIO_PHONE_BR') ?: '';
+    if ($phoneBR && preg_match('/^\+55/', $phone)) {
+        $fromPhone = $phoneBR;
+    }
     if (empty($phone)) {
         return ['success' => false, 'error' => 'Número de telefone inválido'];
     }
@@ -548,7 +554,7 @@ function findReengagementTargets(PDO $db, int $limit = 50): array
             ROUND(AVG(o.total)::numeric, 2) AS avg_ticket
         FROM om_market_customers c
         JOIN om_market_orders o ON o.customer_id = c.customer_id
-            AND o.status IN ('entregue', 'delivered', 'finalizado')
+            AND o.status IN ('entregue')
         WHERE c.phone IS NOT NULL
           AND c.phone != ''
         GROUP BY c.customer_id, c.name, c.phone
@@ -655,7 +661,7 @@ function findReengagementTargets(PDO $db, int $limit = 50): array
             MAX(o.created_at) AS last_matching_order
         FROM om_market_customers c
         JOIN om_market_orders o ON o.customer_id = c.customer_id
-            AND o.status IN ('entregue', 'delivered', 'finalizado')
+            AND o.status IN ('entregue')
         WHERE c.phone IS NOT NULL
           AND c.phone != ''
           AND EXTRACT(DOW FROM o.created_at) = ?

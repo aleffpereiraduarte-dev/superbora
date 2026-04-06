@@ -10,6 +10,7 @@
  */
 
 require_once __DIR__ . "/../config/database.php";
+require_once __DIR__ . "/../helpers/cache.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
 
 setCorsHeaders();
@@ -29,6 +30,9 @@ try {
     // ── POST: mark as read ──────────────────────────────────────────
     if ($method === "POST") {
         $input = getInput();
+
+        // Invalidate notification cache on any write
+        cacheClear("notifications:{$customerId}:*");
 
         if (!empty($input['mark_all_read'])) {
             // Mark all unread notifications as read
@@ -71,10 +75,12 @@ try {
 
         // Lightweight count-only mode (used by header badge)
         if (isset($_GET['count_only'])) {
-            $stmt = $db->prepare("SELECT COUNT(*) AS cnt FROM om_market_notifications WHERE recipient_id = ? AND recipient_type = 'customer' AND is_read = 0");
-            $stmt->execute([$customerId]);
-            $count = (int)$stmt->fetch()['cnt'];
-            response(true, ['unread_count' => $count]);
+            $result = cachedQuery("notifications:{$customerId}:count", 15, function() use ($db, $customerId) {
+                $stmt = $db->prepare("SELECT COUNT(*) AS cnt FROM om_market_notifications WHERE recipient_id = ? AND recipient_type = 'customer' AND is_read = 0");
+                $stmt->execute([$customerId]);
+                return ['unread_count' => (int)$stmt->fetch()['cnt']];
+            });
+            response(true, $result);
         }
 
         // Full notification list
@@ -82,32 +88,35 @@ try {
         $limit = min(50, max(10, (int)($_GET['limit'] ?? 20)));
         $offset = ($page - 1) * $limit;
 
-        $stmt = $db->prepare("
-            SELECT notification_id AS id, title, message AS body, type, data,
-                   action_url, is_read, read_at, sent_at AS created_at
-            FROM om_market_notifications
-            WHERE recipient_id = ? AND recipient_type = 'customer'
-            ORDER BY sent_at DESC
-            LIMIT ? OFFSET ?
-        ");
-        $stmt->execute([$customerId, $limit, $offset]);
-        $notifications = $stmt->fetchAll();
+        $result = cachedQuery("notifications:{$customerId}:list:p{$page}:l{$limit}", 15, function() use ($db, $customerId, $limit, $offset, $page) {
+            $stmt = $db->prepare("
+                SELECT notification_id AS id, title, message AS body, type, data,
+                       action_url, is_read, read_at, sent_at AS created_at
+                FROM om_market_notifications
+                WHERE recipient_id = ? AND recipient_type = 'customer'
+                ORDER BY sent_at DESC
+                LIMIT ? OFFSET ?
+            ");
+            $stmt->execute([$customerId, $limit, $offset]);
+            $notifications = $stmt->fetchAll();
 
-        foreach ($notifications as &$n) {
-            $n['data'] = $n['data'] ? json_decode($n['data'], true) : null;
-            $n['is_read'] = (bool)$n['is_read'];
-        }
+            foreach ($notifications as &$n) {
+                $n['data'] = $n['data'] ? json_decode($n['data'], true) : null;
+                $n['is_read'] = (bool)$n['is_read'];
+            }
 
-        // Unread count
-        $stmtCount = $db->prepare("SELECT COUNT(*) AS cnt FROM om_market_notifications WHERE recipient_id = ? AND recipient_type = 'customer' AND is_read = 0");
-        $stmtCount->execute([$customerId]);
-        $unreadCount = (int)$stmtCount->fetch()['cnt'];
+            $stmtCount = $db->prepare("SELECT COUNT(*) AS cnt FROM om_market_notifications WHERE recipient_id = ? AND recipient_type = 'customer' AND is_read = 0");
+            $stmtCount->execute([$customerId]);
+            $unreadCount = (int)$stmtCount->fetch()['cnt'];
 
-        response(true, [
-            'notifications' => $notifications,
-            'unread_count' => $unreadCount,
-            'page' => $page
-        ]);
+            return [
+                'notifications' => $notifications,
+                'unread_count' => $unreadCount,
+                'page' => $page
+            ];
+        });
+
+        response(true, $result);
     }
 
     response(false, null, "Metodo nao permitido", 405);

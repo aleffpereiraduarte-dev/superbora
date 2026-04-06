@@ -21,7 +21,7 @@ try {
     $stmt = $db->prepare("
         SELECT
             COUNT(*) as total_today,
-            COALESCE(SUM(CASE WHEN status NOT IN ('cancelado','cancelled') THEN total ELSE 0 END), 0) as revenue_today,
+            COALESCE(SUM(CASE WHEN status NOT IN ('cancelado') THEN total ELSE 0 END), 0) as revenue_today,
             SUM(CASE WHEN status IN ('pendente','pending') THEN 1 ELSE 0 END) as pending_count,
             SUM(CASE WHEN status IN ('aceito','confirmed','confirmado','preparando') THEN 1 ELSE 0 END) as preparing_count,
             SUM(CASE WHEN status = 'entregue' THEN 1 ELSE 0 END) as delivered_count,

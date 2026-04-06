@@ -53,7 +53,7 @@ try {
     $order = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$order) response(false, null, 'Pedido nao encontrado', 404);
 
-    $delivered = ['entregue'];
+    $delivered = ['entregue', 'delivered', 'finalizado', 'retirado'];
     if (!in_array($order['status'], $delivered)) {
         response(false, null, 'Avaliacao so e permitida apos a entrega', 400);
     }
@@ -100,8 +100,11 @@ try {
 
     $db->commit();
 
+    $photoCount = (int)($input['photo_count'] ?? 0);
+
     response(true, [
         'rating_id' => $ratingId,
+        'has_photos' => $photoCount > 0,
         'message' => 'Avaliacao salva com sucesso! Obrigado pelo feedback.',
     ]);
 

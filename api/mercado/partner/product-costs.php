@@ -173,7 +173,7 @@ try {
                 INNER JOIN om_market_orders o ON o.order_id = oi.order_id
                 WHERE o.partner_id = ?
                   AND DATE(o.date_added) BETWEEN ? AND ?
-                  AND o.status NOT IN ('cancelado', 'cancelled')
+                  AND o.status NOT IN ('cancelado')
                 GROUP BY oi.product_id
             ) vendas ON vendas.product_id = p.product_id
             WHERE p.partner_id = ?
@@ -204,7 +204,7 @@ try {
                 INNER JOIN om_market_orders o ON o.order_id = oi.order_id
                 WHERE o.partner_id = ?
                   AND DATE(o.date_added) BETWEEN ? AND ?
-                  AND o.status NOT IN ('cancelado', 'cancelled')
+                  AND o.status NOT IN ('cancelado')
                 GROUP BY oi.product_id
             ) vendas ON vendas.product_id = pb.product_id
             WHERE pp.partner_id = ?

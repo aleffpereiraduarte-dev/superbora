@@ -92,7 +92,7 @@ try {
     // Upsert: INSERT ON CONFLICT (PostgreSQL)
     $stmt = $db->prepare("
         INSERT INTO om_market_products_price
-            (product_id, partner_id, price, price_promo, stock, status, availability_schedule, created_at, updated_at)
+            (product_id, partner_id, price, price_promo, stock, status, availability_schedule, date_added, date_modified)
         VALUES
             (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
         ON CONFLICT (product_id, partner_id) DO UPDATE SET
@@ -101,9 +101,32 @@ try {
             stock = EXCLUDED.stock,
             status = EXCLUDED.status,
             availability_schedule = EXCLUDED.availability_schedule,
-            updated_at = NOW()
+            date_modified = NOW()
     ");
     $stmt->execute([$product_id, $partner_id, $price, $promotional_price, $stock, $status, $availability_schedule_json]);
+
+    // Update description on the product tables if provided
+    if (array_key_exists('description', $input)) {
+        $descVal = strip_tags(trim($input['description'] ?? ''));
+        // Update on om_market_products (simple model)
+        $stmtDesc = $db->prepare("UPDATE om_market_products SET description = ?, date_modified = NOW() WHERE product_id = ? AND partner_id = ?");
+        $stmtDesc->execute([$descVal, $product_id, $partner_id]);
+        // Also update on om_market_products_base (catalog model)
+        $stmtDescBase = $db->prepare("UPDATE om_market_products_base SET description = ? WHERE product_id = ?");
+        $stmtDescBase->execute([$descVal, $product_id]);
+    }
+
+    // Update allergens on the main product table if provided
+    if (array_key_exists('allergens', $input)) {
+        $allergensVal = null;
+        if (is_array($input['allergens'])) {
+            $allergensVal = json_encode(array_values(array_filter(array_map('trim', $input['allergens']))));
+        } elseif (is_string($input['allergens'])) {
+            $allergensVal = $input['allergens'];
+        }
+        $stmtAllergens = $db->prepare("UPDATE om_market_products SET allergens = ? WHERE product_id = ? AND partner_id = ?");
+        $stmtAllergens->execute([$allergensVal, $product_id, $partner_id]);
+    }
 
     // Update dietary_tags on the main product table if provided
     if (array_key_exists('dietary_tags', $input)) {

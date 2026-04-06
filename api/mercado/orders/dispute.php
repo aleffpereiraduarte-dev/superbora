@@ -436,7 +436,7 @@ try {
         $autoResolvedCount30d = (int)$stmtAutoCount->fetch()['cnt'];
 
         // Check account age
-        $stmtAccount = $db->prepare("SELECT created_at FROM om_market_customers WHERE customer_id = ? LIMIT 1");
+        $stmtAccount = $db->prepare("SELECT COALESCE(mc.created_at, oc.created_at) as created_at FROM (SELECT ?::int as cid) q LEFT JOIN om_market_customers mc ON mc.customer_id = q.cid LEFT JOIN om_customers oc ON oc.customer_id = q.cid LIMIT 1");
         $stmtAccount->execute([$customerId]);
         $accountRow = $stmtAccount->fetch();
         $accountAgeDays = $accountRow ? (time() - strtotime($accountRow['created_at'])) / 86400 : 999;

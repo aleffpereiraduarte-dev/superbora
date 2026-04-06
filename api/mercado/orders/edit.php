@@ -311,7 +311,9 @@ try {
 
             $serviceFee = (float)($order['service_fee'] ?? 2.49);
             $tip = (float)($order['tip_amount'] ?? 0);
-            $total = $subtotal - $couponDiscount + $deliveryFee + $serviceFee + $tip;
+            $loyaltyDiscount = (float)($order['loyalty_discount'] ?? 0);
+            $cashbackDiscount = (float)($order['cashback_discount'] ?? 0);
+            $total = $subtotal - $couponDiscount - $loyaltyDiscount - $cashbackDiscount + $deliveryFee + $serviceFee + $tip;
             if ($total < 0) $total = 0;
 
             // Delete old order items

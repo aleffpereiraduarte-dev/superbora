@@ -75,9 +75,9 @@ try {
         $input = getInput();
 
         $comboId = (int)($input['id'] ?? 0);
-        $name = trim(substr($input['name'] ?? '', 0, 200));
-        $description = trim($input['description'] ?? '');
-        $image = trim($input['image'] ?? '');
+        $name = strip_tags(trim(substr($input['name'] ?? '', 0, 200)));
+        $description = strip_tags(trim(substr($input['description'] ?? '', 0, 1000)));
+        $image = trim(substr($input['image'] ?? '', 0, 500));
         $price = (float)($input['price'] ?? 0);
         $status = isset($input['status']) ? (int)$input['status'] : 1;
         $items = $input['items'] ?? [];

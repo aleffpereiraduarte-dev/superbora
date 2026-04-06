@@ -115,7 +115,7 @@ function getAvgPrepTime(PDO $db, int $partnerId): float {
               AND accepted_at IS NOT NULL
               AND prep_finished_at IS NOT NULL
               AND prep_finished_at > accepted_at
-              AND status NOT IN ('cancelado', 'cancelled')
+              AND status NOT IN ('cancelado')
               AND date_added >= NOW() - INTERVAL '30 days'
         ");
         $stmt->execute([$partnerId]);

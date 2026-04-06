@@ -26,11 +26,18 @@ require_once dirname(__DIR__) . '/helpers/ws-customer-broadcast.php';
 
 // ─── Concurrent execution guard ─────────────────────────────
 $lockFile = '/tmp/superbora_cron_auto_refund.lock';
+// Safety: if lock file is older than 30 min, previous process likely crashed — remove stale lock
+if (file_exists($lockFile) && filemtime($lockFile) < time() - 1800) {
+    @unlink($lockFile);
+    error_log("[auto-refund] Removed stale lock file (>30 min old)");
+}
 $lockFp = fopen($lockFile, 'w');
 if (!flock($lockFp, LOCK_EX | LOCK_NB)) {
     echo "[" . date('H:i:s') . "] Another auto-refund instance is running. Exiting.\n";
     exit(0);
 }
+// Touch the lock file so we can detect stale locks
+fwrite($lockFp, (string)getmypid());
 
 $db = getDB();
 $log = function(string $msg) { echo "[" . date('H:i:s') . "] $msg\n"; };
@@ -77,7 +84,7 @@ try {
 try {
     $stmt = $db->prepare("
         SELECT order_id FROM om_market_orders
-        WHERE status IN ('em_entrega', 'em_transito', 'delivering')
+        WHERE status IN ('em_entrega')
           AND date_modified < NOW() - INTERVAL '3 hours'
           AND status != 'cancelado'
         ORDER BY date_modified ASC
@@ -149,10 +156,20 @@ foreach ($refundQueue as $info) {
         }
     }
 
-    // PIX refund (Woovi)
-    if (!empty($info['pix_correlation'])) {
+    // EFI card refund
+    if (!empty($info['efi_charge_id'])) {
         try {
-            refundPixAutoRefund($info['pix_correlation'], $orderId);
+            refundEfiCardAutoRefund($info['efi_charge_id'], $orderId);
+            $log("  EFI card refund processado pedido #$orderId");
+        } catch (Exception $e) {
+            $log("  ERRO EFI card refund pedido #$orderId: " . $e->getMessage());
+        }
+    }
+
+    // PIX refund (EFI)
+    if (!empty($info['pix_order_id'])) {
+        try {
+            refundPixAutoRefund($info['pix_order_id'], $orderId);
             $log("  PIX refund processado pedido #$orderId");
         } catch (Exception $e) {
             $log("  ERRO PIX refund pedido #$orderId: " . $e->getMessage());
@@ -183,7 +200,7 @@ function processAutoRefund(PDO $db, int $orderId, string $cancelReason, callable
         $stmt = $db->prepare("
             SELECT * FROM om_market_orders
             WHERE order_id = ?
-              AND status NOT IN ('cancelado', 'entregue', 'retirado', 'finalizado', 'refunded')
+              AND status NOT IN ('cancelado', 'entregue', 'reembolsado')
             FOR UPDATE
         ");
         $stmt->execute([$orderId]);
@@ -288,28 +305,25 @@ function processAutoRefund(PDO $db, int $orderId, string $cancelReason, callable
         $paymentMethod = $pedido['forma_pagamento'] ?? $pedido['payment_method'] ?? '';
         $stripePi = $pedido['stripe_payment_intent_id'] ?? $pedido['payment_id'] ?? '';
 
-        // Stripe refund
-        if (in_array($paymentMethod, ['stripe_card', 'stripe_wallet', 'credito']) && $stripePi) {
+        // Stripe refund (only for Apple Pay / Google Pay)
+        if (in_array($paymentMethod, ['stripe_card', 'stripe_wallet']) && $stripePi) {
             $refundInfo['stripe_pi'] = $stripePi;
         }
 
-        // PIX refund
+        // EFI card refund
+        $efiChargeId = (int)($pedido['efi_charge_id'] ?? 0);
+        if (in_array($paymentMethod, ['efi_card', 'credito', 'debito']) && $efiChargeId) {
+            $refundInfo['efi_charge_id'] = $efiChargeId;
+        }
+
+        // PIX refund (via EFI)
         $needsPixRefund = ($paymentMethod === 'pix') && (
             ($pedido['pagamento_status'] ?? '') === 'pago' ||
             ($pedido['payment_status'] ?? '') === 'paid' ||
             ($pedido['pix_paid'] ?? false)
         );
         if ($needsPixRefund) {
-            try {
-                $txStmt = $db->prepare("SELECT pagarme_order_id FROM om_pagarme_transacoes WHERE pedido_id = ? AND tipo = 'pix' ORDER BY created_at DESC LIMIT 1");
-                $txStmt->execute([$orderId]);
-                $txRow = $txStmt->fetch();
-                if (!empty($txRow['pagarme_order_id'])) {
-                    $refundInfo['pix_correlation'] = $txRow['pagarme_order_id'];
-                }
-            } catch (Exception $e) {
-                error_log("[auto-refund] Erro buscar PIX correlation pedido #$orderId: " . $e->getMessage());
-            }
+            $refundInfo['pix_order_id'] = $orderId;
         }
 
         // WebSocket broadcast (non-blocking)
@@ -440,34 +454,79 @@ function refundStripeAutoRefund(string $paymentIntentId, int $orderId): void {
 }
 
 /**
- * Estornar pagamento PIX via Woovi
+ * Estornar pagamento PIX via EFI (devolucao)
  */
-function refundPixAutoRefund(string $correlationId, int $orderId): void {
+function refundPixAutoRefund(int $pixOrderId, int $orderId): void {
     global $db;
 
     try {
-        require_once dirname(__DIR__, 3) . '/includes/classes/WooviClient.php';
-        $woovi = new WooviClient();
-        $pixRefundResult = $woovi->refundCharge($correlationId, "Auto-refund pedido #$orderId");
+        require_once dirname(__DIR__, 3) . '/includes/classes/EfiClient.php';
+        $efi = new EfiClient();
 
-        error_log("[auto-refund] PIX refund pedido #$orderId correlation=$correlationId result=" . json_encode($pixRefundResult['data'] ?? []));
+        // Find e2eId from payment_id on the order
+        $stmt = $db->prepare("SELECT payment_id, total FROM om_market_orders WHERE order_id = ?");
+        $stmt->execute([$orderId]);
+        $order = $stmt->fetch();
+        $e2eId = $order['payment_id'] ?? '';
+        $amount = (float)($order['total'] ?? 0);
 
-        $pixRefundOk = !empty($pixRefundResult['data']['refund']['status'])
-            || !empty($pixRefundResult['data']['status'])
-            || (isset($pixRefundResult['success']) && $pixRefundResult['success']);
+        // If no e2eId, try to find txid and look up via EFI API
+        if (empty($e2eId)) {
+            $stmt = $db->prepare("SELECT correlation_id FROM om_pix_intents WHERE order_id = ? ORDER BY created_at DESC LIMIT 1");
+            $stmt->execute([$orderId]);
+            $intentRow = $stmt->fetch();
+            $txid = $intentRow['correlation_id'] ?? '';
 
-        if ($pixRefundOk) {
-            $db->prepare("UPDATE om_pagarme_transacoes SET status = 'refunded' WHERE pedido_id = ? AND tipo = 'pix'")->execute([$orderId]);
-            $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes, '') || ' [AUTO-REFUND PIX OK]' WHERE order_id = ?")->execute([$orderId]);
-        } else {
-            error_log("[auto-refund] PIX refund FAILED pedido #$orderId correlation=$correlationId — needs manual processing");
-            $db->prepare("UPDATE om_pagarme_transacoes SET status = 'refund_failed' WHERE pedido_id = ? AND tipo = 'pix'")->execute([$orderId]);
-            $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes, '') || ' [AUTO-REFUND PIX FAILED - MANUAL]' WHERE order_id = ?")->execute([$orderId]);
+            if (empty($txid)) {
+                $stmt = $db->prepare("SELECT pagarme_order_id FROM om_pagarme_transacoes WHERE pedido_id = ? AND tipo = 'pix' ORDER BY created_at DESC LIMIT 1");
+                $stmt->execute([$orderId]);
+                $txRow = $stmt->fetch();
+                $txid = $txRow['pagarme_order_id'] ?? '';
+            }
+
+            if (!empty($txid)) {
+                $chargeStatus = $efi->checkChargeStatus($txid);
+                $e2eId = $chargeStatus['e2e_id'] ?? '';
+            }
         }
+
+        if (empty($e2eId)) {
+            error_log("[auto-refund] PIX refund FAILED pedido #$orderId — no e2eId found");
+            $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes, '') || ' [AUTO-REFUND PIX FAILED - NO E2EID]' WHERE order_id = ?")->execute([$orderId]);
+            return;
+        }
+
+        $efi->refundPix($e2eId, $amount);
+
+        $db->prepare("UPDATE om_pagarme_transacoes SET status = 'refunded' WHERE pedido_id = ? AND tipo = 'pix'")->execute([$orderId]);
+        $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes, '') || ' [AUTO-REFUND PIX OK via EFI]' WHERE order_id = ?")->execute([$orderId]);
+        error_log("[auto-refund] PIX refund OK pedido #$orderId e2eId=$e2eId");
+
     } catch (Exception $e) {
         error_log("[auto-refund] Erro PIX refund pedido #$orderId: " . $e->getMessage());
         try {
             $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes, '') || ' [AUTO-REFUND PIX ERROR]' WHERE order_id = ?")->execute([$orderId]);
+        } catch (Exception $e2) {}
+    }
+}
+
+/**
+ * Estornar pagamento cartao via EFI
+ */
+function refundEfiCardAutoRefund(int $efiChargeId, int $orderId): void {
+    global $db;
+
+    try {
+        require_once dirname(__DIR__, 3) . '/includes/classes/EfiClient.php';
+        $efi = new EfiClient();
+        $efi->refundCard($efiChargeId);
+
+        $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes, '') || ' [AUTO-REFUND EFI CARD OK]' WHERE order_id = ?")->execute([$orderId]);
+        error_log("[auto-refund] EFI card refund OK pedido #$orderId chargeId=$efiChargeId");
+    } catch (Exception $e) {
+        error_log("[auto-refund] Erro EFI card refund pedido #$orderId: " . $e->getMessage());
+        try {
+            $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes, '') || ' [AUTO-REFUND EFI CARD ERROR]' WHERE order_id = ?")->execute([$orderId]);
         } catch (Exception $e2) {}
     }
 }

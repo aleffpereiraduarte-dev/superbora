@@ -31,7 +31,7 @@ try {
                 COUNT(*) as orders,
                 SUM(total) as revenue
             FROM om_market_orders
-            WHERE partner_id = ? AND status NOT IN ('cancelado','cancelled')
+            WHERE partner_id = ? AND status NOT IN ('cancelado')
             AND created_at >= NOW() - INTERVAL '90 days'
             GROUP BY DATE(created_at), EXTRACT(DOW FROM DATE(created_at))::int + 1
             ORDER BY date DESC

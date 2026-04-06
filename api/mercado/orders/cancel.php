@@ -33,7 +33,7 @@ try {
     if (!$orderId) response(false, null, "order_id obrigatorio", 400);
 
     // Allowed statuses for cancellation
-    $cancellableStatuses = ['pending', 'pendente', 'aceito', 'confirmed', 'confirmado'];
+    $cancellableStatuses = ['pendente', 'aceito', 'confirmado'];
 
     $db->beginTransaction();
 
@@ -64,7 +64,7 @@ try {
         $wasPaid = in_array($paymentStatus, ['paid', 'pago', 'captured']);
         $paymentMethod = $order['payment_method'] ?? '';
 
-        // 4. Update order to cancelled
+        // 4. Update order to cancelled (with status guard to prevent race condition)
         $cancelReason = $reason ?: 'Cancelado pelo cliente';
         $stmt = $db->prepare("
             UPDATE om_market_orders
@@ -74,9 +74,13 @@ try {
                 cancellation_reason = ?,
                 cancelled_by = 'customer',
                 date_modified = NOW()
-            WHERE order_id = ?
+            WHERE order_id = ? AND status IN ('pendente', 'aceito', 'confirmado')
         ");
         $stmt->execute([$cancelReason, $cancelReason, $orderId]);
+        if ($stmt->rowCount() === 0) {
+            $db->rollBack();
+            response(false, null, "Pedido ja foi processado ou cancelado", 409);
+        }
 
         // 5. Record event in om_market_order_events
         $stmt = $db->prepare("
@@ -136,32 +140,129 @@ try {
         // 8. Auto-refund if order was paid (after commit, external API calls)
         $refundInfo = null;
         if ($wasPaid) {
-            // PIX refund via Woovi
+            // PIX refund via EFI
             if ($paymentMethod === 'pix') {
                 try {
-                    require_once dirname(__DIR__, 3) . '/includes/classes/WooviClient.php';
-                    $txStmt = $db->prepare("SELECT pagarme_order_id FROM om_pagarme_transacoes WHERE pedido_id = ? AND tipo = 'pix' ORDER BY created_at DESC LIMIT 1");
-                    $txStmt->execute([$orderId]);
-                    $txRow = $txStmt->fetch();
-                    $wooviCorrelation = $txRow['pagarme_order_id'] ?? '';
-                    if (!empty($wooviCorrelation)) {
-                        $woovi = new WooviClient();
-                        $woovi->refundCharge($wooviCorrelation, "Cancelamento pedido #$orderId");
-                        $db->prepare("UPDATE om_pagarme_transacoes SET status = 'refunded' WHERE pedido_id = ? AND tipo = 'pix'")->execute([$orderId]);
-                        $refundInfo = 'PIX refund processado';
-                        error_log("[orders/cancel] PIX refund pedido #$orderId OK");
+                    require_once dirname(__DIR__, 3) . '/includes/classes/EfiClient.php';
+                    $efi = new EfiClient();
+
+                    // Find e2eId
+                    $orderStmt = $db->prepare("SELECT payment_id, total FROM om_market_orders WHERE order_id = ?");
+                    $orderStmt->execute([$orderId]);
+                    $orderData = $orderStmt->fetch();
+                    $e2eId = $orderData['payment_id'] ?? '';
+                    $refundAmount = (float)($orderData['total'] ?? 0);
+
+                    if (empty($e2eId)) {
+                        $intentStmt = $db->prepare("SELECT correlation_id FROM om_pix_intents WHERE order_id = ? ORDER BY created_at DESC LIMIT 1");
+                        $intentStmt->execute([$orderId]);
+                        $intentRow = $intentStmt->fetch();
+                        $txid = $intentRow['correlation_id'] ?? '';
+
+                        if (empty($txid)) {
+                            $txStmt = $db->prepare("SELECT pagarme_order_id FROM om_pagarme_transacoes WHERE pedido_id = ? AND tipo = 'pix' ORDER BY created_at DESC LIMIT 1");
+                            $txStmt->execute([$orderId]);
+                            $txRow = $txStmt->fetch();
+                            $txid = $txRow['pagarme_order_id'] ?? '';
+                        }
+
+                        if (!empty($txid)) {
+                            $chargeStatus = $efi->checkChargeStatus($txid);
+                            $e2eId = $chargeStatus['e2e_id'] ?? '';
+                        }
+                    }
+
+                    if (!empty($e2eId)) {
+                        $refResult = $efi->refundPix($e2eId, $refundAmount);
+                        if ($refResult['success'] ?? false) {
+                            $db->prepare("UPDATE om_pagarme_transacoes SET status = 'refunded' WHERE pedido_id = ? AND tipo = 'pix'")->execute([$orderId]);
+                            $refundInfo = 'PIX refund processado via EFI';
+                            error_log("[orders/cancel] PIX refund pedido #$orderId OK e2eId=$e2eId");
+                        } else {
+                            $refundInfo = 'PIX refund FAILED: ' . ($refResult['error'] ?? 'unknown');
+                            error_log("[orders/cancel] PIX refund FAILED pedido #$orderId: " . ($refResult['error'] ?? 'unknown'));
+                        }
                     }
                 } catch (Exception $e) {
                     error_log("[orders/cancel] PIX refund error: " . $e->getMessage());
                 }
             }
-            // Stripe refund
-            if (in_array($paymentMethod, ['stripe_card', 'stripe_wallet', 'credito'])) {
+            // EFI card refund
+            if (in_array($paymentMethod, ['efi_card', 'credito', 'debito'])) {
                 try {
-                    require_once __DIR__ . '/../pedido/cancelar.php'; // uses refundStripePayment
+                    require_once dirname(__DIR__, 3) . '/includes/classes/EfiClient.php';
+                    $orderStmt = $db->prepare("SELECT efi_charge_id FROM om_market_orders WHERE order_id = ?");
+                    $orderStmt->execute([$orderId]);
+                    $efiData = $orderStmt->fetch();
+                    $efiChargeId = (int)($efiData['efi_charge_id'] ?? 0);
+                    if ($efiChargeId) {
+                        $efi = new EfiClient();
+                        $cardRefResult = $efi->refundCard($efiChargeId);
+                        if ($cardRefResult['success'] ?? false) {
+                            $refundInfo = 'EFI card refund processado';
+                            error_log("[orders/cancel] EFI card refund pedido #$orderId OK");
+                        } else {
+                            $refundInfo = 'EFI card refund FAILED: ' . ($cardRefResult['error'] ?? 'unknown');
+                            error_log("[orders/cancel] EFI card refund FAILED pedido #$orderId: " . ($cardRefResult['error'] ?? 'unknown'));
+                        }
+                    }
                 } catch (Exception $e) {
-                    // refundStripePayment may not be available from this context
-                    error_log("[orders/cancel] Stripe refund not available from this endpoint");
+                    error_log("[orders/cancel] EFI card refund error: " . $e->getMessage());
+                }
+            }
+            // Stripe refund (Apple Pay / Google Pay only)
+            if (in_array($paymentMethod, ['stripe_card', 'stripe_wallet'])) {
+                try {
+                    $orderStmt = $db->prepare("SELECT stripe_payment_intent_id, payment_id, total FROM om_market_orders WHERE order_id = ?");
+                    $orderStmt->execute([$orderId]);
+                    $stripeData = $orderStmt->fetch();
+                    $stripePi = $stripeData['stripe_payment_intent_id'] ?? $stripeData['payment_id'] ?? '';
+                    if ($stripePi) {
+                        $stripeEnv = dirname(__DIR__, 3) . '/.env.stripe';
+                        $STRIPE_SK = '';
+                        if (file_exists($stripeEnv)) {
+                            foreach (file($stripeEnv, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+                                if (strpos(trim($line), '#') === 0) continue;
+                                if (strpos($line, '=') !== false) {
+                                    [$key, $value] = explode('=', $line, 2);
+                                    if (trim($key) === 'STRIPE_SECRET_KEY') $STRIPE_SK = trim($value);
+                                }
+                            }
+                        }
+                        if ($STRIPE_SK) {
+                            $idempotencyKey = "refund_orders_cancel_{$orderId}_{$stripePi}";
+                            $ch = curl_init("https://api.stripe.com/v1/refunds");
+                            curl_setopt_array($ch, [
+                                CURLOPT_POST => true,
+                                CURLOPT_POSTFIELDS => http_build_query([
+                                    'payment_intent' => $stripePi,
+                                    'reason' => 'requested_by_customer',
+                                    'metadata[order_id]' => $orderId,
+                                    'metadata[source]' => 'superbora_orders_cancel',
+                                ]),
+                                CURLOPT_HTTPHEADER => [
+                                    'Authorization: Bearer ' . $STRIPE_SK,
+                                    'Content-Type: application/x-www-form-urlencoded',
+                                    'Idempotency-Key: ' . $idempotencyKey,
+                                ],
+                                CURLOPT_RETURNTRANSFER => true,
+                                CURLOPT_TIMEOUT => 15,
+                            ]);
+                            $stripeResult = curl_exec($ch);
+                            $stripeCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                            curl_close($ch);
+                            $stripeRefundData = json_decode($stripeResult, true);
+                            if ($stripeCode >= 200 && $stripeCode < 300 && !empty($stripeRefundData['id'])) {
+                                $refundInfo = 'Stripe refund processado';
+                                error_log("[orders/cancel] Stripe refund pedido #$orderId OK refund_id={$stripeRefundData['id']}");
+                            } else {
+                                $refundInfo = 'Stripe refund FAILED';
+                                error_log("[orders/cancel] Stripe refund FAILED pedido #$orderId HTTP=$stripeCode");
+                            }
+                        }
+                    }
+                } catch (Exception $e) {
+                    error_log("[orders/cancel] Stripe refund error: " . $e->getMessage());
                 }
             }
         }

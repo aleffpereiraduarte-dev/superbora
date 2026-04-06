@@ -20,9 +20,9 @@ try {
         SELECT o.order_id, o.status, o.total, o.created_at, o.updated_at,
                m.nome as store_name, m.logo as store_logo
         FROM om_market_orders o
-        JOIN om_mercados m ON m.mercado_id = o.mercado_id
+        JOIN om_market_partners m ON m.partner_id = o.partner_id
         WHERE o.customer_id = ?
-          AND o.status NOT IN ('entregue', 'cancelled', 'refunded')
+          AND o.status NOT IN ('entregue', 'cancelado', 'reembolsado')
         ORDER BY o.created_at DESC
         LIMIT 5
     ");
@@ -32,10 +32,10 @@ try {
     // 2. Recent completed orders (for reorder suggestions)
     $stmt = $db->prepare("
         SELECT o.order_id, o.total, o.created_at,
-               m.mercado_id, m.nome as store_name, m.logo as store_logo,
+               m.partner_id, m.nome as store_name, m.logo as store_logo,
                (SELECT COUNT(*) FROM om_market_order_items WHERE order_id = o.order_id) as item_count
         FROM om_market_orders o
-        JOIN om_mercados m ON m.mercado_id = o.mercado_id
+        JOIN om_market_partners m ON m.partner_id = o.partner_id
         WHERE o.customer_id = ? AND o.status = 'entregue'
         ORDER BY o.created_at DESC
         LIMIT 5
@@ -46,10 +46,10 @@ try {
     // 3. Cashback balance
     $cashbackBalance = 0;
     try {
-        $stmt = $db->prepare("SELECT saldo FROM om_cashback_balance WHERE customer_id = ?");
+        $stmt = $db->prepare("SELECT balance FROM om_cashback_wallet WHERE customer_id = ?");
         $stmt->execute([$customerId]);
         $row = $stmt->fetch();
-        $cashbackBalance = $row ? round((float)$row['saldo'], 2) : 0;
+        $cashbackBalance = $row ? round((float)$row['balance'], 2) : 0;
     } catch (Exception $e) {
         // Table may not exist
     }
@@ -60,12 +60,12 @@ try {
                c.min_order, c.partner_id,
                CASE WHEN c.partner_id IS NOT NULL THEN m.nome ELSE NULL END as store_name
         FROM om_market_coupons c
-        LEFT JOIN om_mercados m ON m.mercado_id = c.partner_id
+        LEFT JOIN om_market_partners m ON m.partner_id = c.partner_id
         WHERE c.status = 1
           AND (c.expires_at IS NULL OR c.expires_at > NOW())
           AND (c.max_uses IS NULL OR c.times_used < c.max_uses)
           AND (c.partner_id IS NULL OR c.partner_id IN (
-              SELECT DISTINCT mercado_id FROM om_market_orders
+              SELECT DISTINCT partner_id FROM om_market_orders
               WHERE customer_id = ? AND status = 'entregue'
           ))
         ORDER BY c.valor DESC
@@ -79,7 +79,7 @@ try {
         SELECT
             COUNT(*) as total_orders,
             COALESCE(SUM(CASE WHEN status = 'entregue' THEN total ELSE 0 END), 0) as total_spent,
-            COUNT(DISTINCT mercado_id) as stores_visited,
+            COUNT(DISTINCT partner_id) as stores_visited,
             MAX(created_at) as last_order_at
         FROM om_market_orders
         WHERE customer_id = ?
@@ -92,7 +92,7 @@ try {
     try {
         $stmt = $db->prepare("
             SELECT COUNT(*) as cnt FROM om_market_notifications
-            WHERE customer_id = ? AND is_read = false
+            WHERE recipient_id = ? AND recipient_type = 'customer' AND is_read = false
         ");
         $stmt->execute([$customerId]);
         $unreadNotifs = (int)$stmt->fetch()['cnt'];
@@ -113,7 +113,7 @@ try {
     try {
         $stmt = $db->prepare("
             SELECT COUNT(*) as cnt FROM om_support_tickets
-            WHERE customer_id = ? AND status IN ('aberto', 'em_andamento')
+            WHERE entidade_id = ? AND entidade_tipo = 'customer' AND status IN ('aberto', 'em_andamento')
         ");
         $stmt->execute([$customerId]);
         $pendingIssues += (int)$stmt->fetch()['cnt'];
@@ -121,13 +121,13 @@ try {
 
     // 8. Favorite stores (most ordered from)
     $stmt = $db->prepare("
-        SELECT m.mercado_id, m.nome, m.logo, m.banner,
+        SELECT m.partner_id, m.nome, m.logo, m.banner,
                COUNT(o.order_id) as order_count,
                MAX(o.created_at) as last_order
         FROM om_market_orders o
-        JOIN om_mercados m ON m.mercado_id = o.mercado_id
+        JOIN om_market_partners m ON m.partner_id = o.partner_id
         WHERE o.customer_id = ? AND o.status = 'entregue'
-        GROUP BY m.mercado_id, m.nome, m.logo, m.banner
+        GROUP BY m.partner_id, m.nome, m.logo, m.banner
         ORDER BY order_count DESC
         LIMIT 5
     ");
@@ -166,7 +166,7 @@ try {
         'reorder_suggestions' => array_map(function($o) {
             return [
                 'order_id' => (int)$o['order_id'],
-                'store_id' => (int)$o['mercado_id'],
+                'store_id' => (int)$o['partner_id'],
                 'store_name' => $o['store_name'],
                 'store_logo' => $o['store_logo'],
                 'total' => round((float)$o['total'], 2),
@@ -195,7 +195,7 @@ try {
         'pending_issues' => $pendingIssues,
         'favorite_stores' => array_map(function($s) {
             return [
-                'mercado_id' => (int)$s['mercado_id'],
+                'partner_id' => (int)$s['partner_id'],
                 'nome' => $s['nome'],
                 'logo' => $s['logo'],
                 'order_count' => (int)$s['order_count'],

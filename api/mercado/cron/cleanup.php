@@ -61,7 +61,7 @@ try {
 
                 // Lock the row and verify it's still pendente
                 $stmtLock = $db->prepare("
-                    SELECT order_id, customer_id, loyalty_points_used, coupon_id
+                    SELECT order_id, customer_id, partner_id, loyalty_points_used, coupon_id
                     FROM om_market_orders
                     WHERE order_id = ?
                       AND status = 'pendente'
@@ -93,8 +93,8 @@ try {
                 $stmtItens = $db->prepare("SELECT product_id, quantity FROM om_market_order_items WHERE order_id = ?");
                 $stmtItens->execute([$orderId]);
                 foreach ($stmtItens->fetchAll() as $item) {
-                    $db->prepare("UPDATE om_market_products SET quantity = quantity + ? WHERE product_id = ?")
-                       ->execute([$item['quantity'], $item['product_id']]);
+                    $db->prepare("UPDATE om_market_products SET quantity = quantity + ? WHERE product_id = ? AND partner_id = ?")
+                       ->execute([$item['quantity'], $item['product_id'], $orderData['partner_id']]);
                 }
 
                 // Restaurar cashback usado
@@ -143,6 +143,7 @@ try {
         WHERE status IN ('pendente', 'confirmado')
           AND forma_pagamento != 'pix'
           AND date_added < NOW() - INTERVAL '15 minutes'
+        LIMIT 500
     ");
     $stmt->execute();
     $candidates = $stmt->fetchAll(PDO::FETCH_COLUMN);
@@ -157,7 +158,7 @@ try {
 
                 // Lock the row and verify it's still pendente/confirmado
                 $stmtLock = $db->prepare("
-                    SELECT order_id, customer_id, loyalty_points_used, coupon_id,
+                    SELECT order_id, customer_id, partner_id, loyalty_points_used, coupon_id,
                            forma_pagamento, stripe_payment_intent_id, payment_id
                     FROM om_market_orders
                     WHERE order_id = ?
@@ -188,8 +189,8 @@ try {
                 $stmtItens = $db->prepare("SELECT product_id, quantity FROM om_market_order_items WHERE order_id = ?");
                 $stmtItens->execute([$orderId]);
                 foreach ($stmtItens->fetchAll() as $item) {
-                    $db->prepare("UPDATE om_market_products SET quantity = quantity + ? WHERE product_id = ?")
-                       ->execute([$item['quantity'], $item['product_id']]);
+                    $db->prepare("UPDATE om_market_products SET quantity = quantity + ? WHERE product_id = ? AND partner_id = ?")
+                       ->execute([$item['quantity'], $item['product_id'], $orderData['partner_id']]);
                 }
 
                 // Restaurar cashback usado
@@ -274,8 +275,8 @@ try {
                 $db->beginTransaction();
 
                 $stmtLock = $db->prepare("
-                    SELECT order_id, customer_id, loyalty_points_used, coupon_id,
-                           stripe_payment_intent_id, payment_id
+                    SELECT order_id, customer_id, partner_id, loyalty_points_used, coupon_id,
+                           stripe_payment_intent_id, payment_id, total
                     FROM om_market_orders
                     WHERE order_id = ?
                       AND status = 'confirmado'
@@ -304,8 +305,8 @@ try {
                 $stmtItens = $db->prepare("SELECT product_id, quantity FROM om_market_order_items WHERE order_id = ?");
                 $stmtItens->execute([$orderId]);
                 foreach ($stmtItens->fetchAll() as $item) {
-                    $db->prepare("UPDATE om_market_products SET quantity = quantity + ? WHERE product_id = ?")
-                       ->execute([$item['quantity'], $item['product_id']]);
+                    $db->prepare("UPDATE om_market_products SET quantity = quantity + ? WHERE product_id = ? AND partner_id = ?")
+                       ->execute([$item['quantity'], $item['product_id'], $orderData['partner_id']]);
                 }
 
                 // Restaurar cashback usado
@@ -328,38 +329,43 @@ try {
                 $db->commit();
                 $cancelledIds[] = $orderId;
 
-                // PIX refund: attempt automatic refund via Woovi
+                // PIX refund: attempt automatic refund via EFI
                 try {
-                    // Find correlation_id from om_pix_intents or om_pagarme_transacoes
-                    $pixCorrId = '';
-                    $intentQ = $db->prepare("SELECT correlation_id FROM om_pix_intents WHERE order_id = ? AND status = 'paid' LIMIT 1");
-                    $intentQ->execute([$orderId]);
-                    $pixCorrId = $intentQ->fetchColumn() ?: '';
-                    if (empty($pixCorrId)) {
-                        $txQ = $db->prepare("SELECT correlation_id FROM om_pagarme_transacoes WHERE pedido_id = ? AND tipo = 'pix' LIMIT 1");
-                        $txQ->execute([$orderId]);
-                        $pixCorrId = $txQ->fetchColumn() ?: '';
+                    require_once dirname(__DIR__, 3) . '/includes/classes/EfiClient.php';
+                    $efi = new EfiClient();
+
+                    // Find e2eId from payment_id or txid from om_pix_intents
+                    $refundE2eId = $orderData['payment_id'] ?? '';
+                    $efiTxid = '';
+                    if (empty($refundE2eId)) {
+                        $intentQ = $db->prepare("SELECT correlation_id FROM om_pix_intents WHERE order_id = ? AND status = 'paid' LIMIT 1");
+                        $intentQ->execute([$orderId]);
+                        $efiTxid = $intentQ->fetchColumn() ?: '';
                     }
-                    if (!empty($pixCorrId)) {
-                        require_once dirname(__DIR__, 3) . '/includes/classes/WooviClient.php';
-                        $woovi = new WooviClient();
-                        $refResult = $woovi->refundCharge($pixCorrId);
-                        $refOk = !empty($refResult['data']) || !empty($refResult['refund']) || (isset($refResult['status']) && $refResult['status'] === 'OK');
-                        if ($refOk) {
+
+                    // Get e2eId from charge status if needed
+                    if (empty($refundE2eId) && !empty($efiTxid)) {
+                        $chargeStatus = $efi->checkChargeStatus($efiTxid);
+                        $refundE2eId = $chargeStatus['e2e_id'] ?? '';
+                    }
+
+                    if (!empty($refundE2eId)) {
+                        $refResult = $efi->refundPix($refundE2eId, (float)$orderData['total']);
+                        if ($refResult['success']) {
                             $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ? WHERE order_id = ?")
-                               ->execute([' [CRON: PIX REFUND OK]', $orderId]);
-                            $log("  PIX refund OK for order #{$orderId}");
+                               ->execute([" [CRON: PIX REFUND OK: {$refResult['devolucao_id']}]", $orderId]);
+                            $log("  EFI PIX refund OK for order #{$orderId}");
                         } else {
                             $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ? WHERE order_id = ?")
                                ->execute([' [CRON: PIX REFUND FAILED - MANUAL]', $orderId]);
-                            $log("  PIX refund FAILED for order #{$orderId}: " . json_encode($refResult));
+                            $log("  EFI PIX refund FAILED for order #{$orderId}: " . ($refResult['error'] ?? ''));
                         }
                     } else {
                         $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ? WHERE order_id = ?")
-                           ->execute([' [CRON: PIX pago mas sem correlationId — reembolso manual necessario]', $orderId]);
+                           ->execute([' [CRON: PIX pago mas sem e2eId — reembolso manual necessario]', $orderId]);
                     }
                 } catch (Exception $e) {
-                    $log("  PIX refund error for order #{$orderId}: " . $e->getMessage());
+                    $log("  EFI PIX refund error for order #{$orderId}: " . $e->getMessage());
                     try {
                         $db->prepare("UPDATE om_market_orders SET notes = COALESCE(notes,'') || ? WHERE order_id = ?")
                            ->execute([' [CRON: PIX REFUND ERROR - MANUAL]', $orderId]);
@@ -590,8 +596,8 @@ try {
                 // Insert notification for customer
                 try {
                     $db->prepare("
-                        INSERT INTO om_market_notifications (customer_id, titulo, mensagem, tipo, referencia_tipo, referencia_id, created_at)
-                        VALUES (?, ?, ?, 'dispute', 'dispute', ?, NOW())
+                        INSERT INTO om_market_notifications (recipient_id, recipient_type, title, message, type, related_type, related_id)
+                        VALUES (?, 'customer', ?, ?, 'dispute', 'dispute', ?)
                     ")->execute([
                         $lockedDispute['customer_id'],
                         "Disputa #{$lockedDispute['dispute_id']} resolvida",

@@ -425,7 +425,7 @@ try {
                o.status, o.date_added
         FROM om_market_orders o
         LEFT JOIN om_market_partners p ON p.partner_id = o.partner_id
-        WHERE o.status NOT IN ('entregue', 'retirado', 'finalizado', 'cancelado', 'cancelled', 'recusado')
+        WHERE o.status NOT IN ('entregue', 'retirado', 'cancelado', 'recusado')
           AND o.date_added < NOW() - INTERVAL '60 minutes'
         LIMIT 100
     ");

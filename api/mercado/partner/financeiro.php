@@ -212,7 +212,7 @@ try {
         FROM om_market_orders
         WHERE partner_id = ?
           AND DATE(date_added) BETWEEN ? AND ?
-          AND status IN ('refunded', 'reembolsado')
+          AND status IN ('reembolsado')
     ");
     $stmtRefunds->execute([$partnerId, $startDate, $endDate]);
     $refundRow = $stmtRefunds->fetch();

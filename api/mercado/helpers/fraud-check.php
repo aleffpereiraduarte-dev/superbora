@@ -188,7 +188,7 @@ function checkUnusualValue(PDO $db, int $customerId, float $orderTotal): array {
         SELECT AVG(total) as avg_total, COUNT(*) as cnt
         FROM om_market_orders
         WHERE customer_id = ?
-          AND status NOT IN ('cancelado', 'cancelled')
+          AND status NOT IN ('cancelado')
           AND date_added > NOW() - INTERVAL '90 days'
     ");
     $stmt->execute([$customerId]);
@@ -242,7 +242,7 @@ function checkFrequentCancellations(PDO $db, int $customerId): int {
         SELECT COUNT(*) as cnt
         FROM om_market_orders
         WHERE customer_id = ?
-          AND status IN ('cancelado', 'cancelled')
+          AND status IN ('cancelado')
           AND date_added > NOW() - INTERVAL '7 days'
     ");
     $stmt->execute([$customerId]);

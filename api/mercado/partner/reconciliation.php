@@ -433,7 +433,7 @@ function generateDailyReconciliation($db, $partnerId, $date) {
         FROM om_market_orders
         WHERE partner_id = ?
           AND DATE(date_added) = ?
-          AND status NOT IN ('cancelado', 'cancelled')
+          AND status NOT IN ('cancelado')
     ");
     $stmtTotals->execute([$partnerId, $date]);
     $totals = $stmtTotals->fetch();
@@ -451,7 +451,7 @@ function generateDailyReconciliation($db, $partnerId, $date) {
         FROM om_market_orders
         WHERE partner_id = ?
           AND DATE(date_added) = ?
-          AND status IN ('cancelado', 'cancelled')
+          AND status IN ('cancelado')
     ");
     $stmtRefunds->execute([$partnerId, $date]);
     $totalRefunds = (float)$stmtRefunds->fetch()['total_refunds'];

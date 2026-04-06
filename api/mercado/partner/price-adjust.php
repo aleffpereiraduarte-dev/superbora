@@ -21,7 +21,7 @@ try {
     OmAuth::getInstance()->setDb($db);
     OmAudit::getInstance()->setDb($db);
 
-    $payload = requirePartnerAuth();
+    $payload = om_auth()->requirePartner();
     $partner_id = (int)$payload['uid'];
 
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') response(false, null, "Metodo nao permitido", 405);
@@ -78,7 +78,7 @@ try {
             if ($newSpecial >= $newPrice) $newSpecial = null;
         }
 
-        $stmt = $db->prepare("UPDATE om_market_products SET price = ?, special_price = ?, updated_at = NOW() WHERE product_id = ?");
+        $stmt = $db->prepare("UPDATE om_market_products SET price = ?, special_price = ?, date_modified = NOW() WHERE product_id = ?");
         $stmt->execute([$newPrice, $newSpecial, $p['product_id']]);
         $updated++;
 

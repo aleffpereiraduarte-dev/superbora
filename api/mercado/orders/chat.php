@@ -357,7 +357,7 @@ function verifyOrderAccess(PDO $db, int $orderId, string $senderType, int $userI
 function getSenderName(PDO $db, string $senderType, int $userId): string {
     try {
         if ($senderType === 'customer') {
-            $stmt = $db->prepare("SELECT name FROM om_market_customers WHERE customer_id = ? LIMIT 1");
+            $stmt = $db->prepare("SELECT COALESCE(mc.name, oc.name) as name FROM (SELECT ?::int as cid) q LEFT JOIN om_market_customers mc ON mc.customer_id = q.cid LEFT JOIN om_customers oc ON oc.customer_id = q.cid LIMIT 1");
             $stmt->execute([$userId]);
             $row = $stmt->fetch();
             return $row ? ($row['name'] ?: 'Cliente') : 'Cliente';

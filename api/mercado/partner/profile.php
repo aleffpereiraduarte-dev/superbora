@@ -135,6 +135,14 @@ try {
                 if ($inputKey === 'tempo_preparo') {
                     $value = max(5, min(180, (int)$value));
                 }
+                // Validate financial fields: prevent negative values
+                if (in_array($inputKey, ['delivery_fee', 'min_order_value', 'free_delivery_above'])) {
+                    $value = max(0, (float)$value);
+                }
+                // Sanitize phone/whatsapp fields
+                if (in_array($inputKey, ['phone', 'whatsapp']) && is_string($value)) {
+                    $value = preg_replace('/[^0-9+() -]/', '', $value);
+                }
                 // weekly_hours: encode array to JSON string
                 if ($inputKey === 'weekly_hours' && is_array($value)) {
                     $value = json_encode($value);

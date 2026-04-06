@@ -42,6 +42,30 @@ try {
     $partnerId = (int)$payload['uid'];
     $method = $_SERVER['REQUEST_METHOD'];
 
+    // Allow GET for config queries
+    if ($method === 'GET') {
+        $action = $_GET['action'] ?? '';
+        if ($action === 'get_auto_review_response') {
+            $db = getDB();
+            try {
+                $db->exec("CREATE TABLE IF NOT EXISTS om_partner_settings (id SERIAL PRIMARY KEY, partner_id INT NOT NULL, key VARCHAR(100) NOT NULL, value TEXT, UNIQUE(partner_id, key))");
+            } catch (\Throwable $e) {}
+            $stmt = $db->prepare("SELECT value FROM om_partner_settings WHERE partner_id = ? AND key = 'auto_review_response'");
+            $stmt->execute([$partnerId]);
+            $val = $stmt->fetchColumn();
+            response(true, ['enabled' => $val === 'true']);
+        } elseif ($action === 'set_auto_review_response') {
+            $enabled = ($_GET['enabled'] ?? 'false') === 'true' ? 'true' : 'false';
+            $db = getDB();
+            try {
+                $db->exec("CREATE TABLE IF NOT EXISTS om_partner_settings (id SERIAL PRIMARY KEY, partner_id INT NOT NULL, key VARCHAR(100) NOT NULL, value TEXT, UNIQUE(partner_id, key))");
+            } catch (\Throwable $e) {}
+            $db->prepare("INSERT INTO om_partner_settings (partner_id, key, value) VALUES (?, 'auto_review_response', ?) ON CONFLICT (partner_id, key) DO UPDATE SET value = EXCLUDED.value")
+               ->execute([$partnerId, $enabled]);
+            response(true, ['enabled' => $enabled === 'true']);
+        }
+        response(false, null, "Use POST", 405);
+    }
     if ($method !== 'POST') {
         response(false, null, "Use POST", 405);
     }

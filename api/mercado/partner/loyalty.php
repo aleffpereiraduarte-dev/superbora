@@ -50,7 +50,7 @@ try {
                 COUNT(o.order_id) as total_loyalty_orders,
                 SUM(o.total) as total_loyalty_revenue
             FROM om_market_orders o
-            WHERE o.partner_id = ? AND o.status NOT IN ('cancelado','cancelled')
+            WHERE o.partner_id = ? AND o.status NOT IN ('cancelado')
         ");
         $stmt->execute([$partnerId]);
         $stats = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -68,7 +68,7 @@ try {
                 SUM(o.total) as total_spent
             FROM om_market_orders o
             LEFT JOIN om_customers u ON u.customer_id = o.customer_id
-            WHERE o.partner_id = ? AND o.status NOT IN ('cancelado','cancelled')
+            WHERE o.partner_id = ? AND o.status NOT IN ('cancelado')
             GROUP BY o.customer_id
             ORDER BY total_spent DESC
             LIMIT 10

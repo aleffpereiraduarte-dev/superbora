@@ -61,7 +61,7 @@ try {
         INNER JOIN om_market_orders o ON o.order_id = oi.order_id
         WHERE o.partner_id = ?
           AND DATE(o.date_added) BETWEEN ? AND ?
-          AND o.status NOT IN ('cancelado', 'cancelled')
+          AND o.status NOT IN ('cancelado')
         GROUP BY oi.product_id, oi.name
         ORDER BY vendas_qtd DESC
     ");
@@ -259,7 +259,7 @@ try {
         INNER JOIN om_market_orders o ON o.order_id = oi.order_id
         WHERE o.partner_id = ?
           AND DATE(o.date_added) BETWEEN ? AND ?
-          AND o.status NOT IN ('cancelado', 'cancelled')
+          AND o.status NOT IN ('cancelado')
         GROUP BY oi.product_id, oi.name
     ");
     $stmtPrev->execute([$partner_id, $prevStartDate, $prevEndDate]);
@@ -348,7 +348,7 @@ function handlePriceSuggestions($db, $partner_id, $startDate, $endDate, $days) {
         INNER JOIN om_market_orders o ON o.order_id = oi.order_id
         WHERE o.partner_id = ?
           AND DATE(o.date_added) BETWEEN ? AND ?
-          AND o.status NOT IN ('cancelado', 'cancelled')
+          AND o.status NOT IN ('cancelado')
         GROUP BY oi.product_id, oi.name, oi.price
         ORDER BY oi.product_id, oi.price
     ");

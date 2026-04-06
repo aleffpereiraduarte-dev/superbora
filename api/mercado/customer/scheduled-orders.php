@@ -25,9 +25,9 @@ if ($method === 'GET') {
             SELECT so.id, so.scheduled_date, so.scheduled_time, so.items,
                    so.subtotal, so.delivery_fee, so.total, so.status, so.notes,
                    so.recurring_id, so.created_at,
-                   s.id as store_id, s.name as store_name, s.logo_url
+                   s.partner_id as store_id, s.name as store_name, s.logo as logo_url
             FROM om_market_scheduled_orders so
-            JOIN om_market_stores s ON s.id = so.store_id
+            JOIN om_market_partners s ON s.partner_id = so.store_id
             WHERE so.customer_id = ?
               AND so.status IN ('agendado', 'processando')
               AND so.scheduled_date >= CURRENT_DATE
@@ -50,9 +50,9 @@ if ($method === 'GET') {
             SELECT ro.id, ro.frequency, ro.day_of_week, ro.day_of_month,
                    ro.preferred_time, ro.items, ro.is_active,
                    ro.last_generated_at, ro.next_scheduled_at, ro.created_at,
-                   s.id as store_id, s.name as store_name, s.logo_url
+                   s.partner_id as store_id, s.name as store_name, s.logo as logo_url
             FROM om_market_recurring_orders ro
-            JOIN om_market_stores s ON s.id = ro.store_id
+            JOIN om_market_partners s ON s.partner_id = ro.store_id
             WHERE ro.customer_id = ? AND ro.is_active = true
             ORDER BY ro.next_scheduled_at ASC
         ");
@@ -112,8 +112,17 @@ if ($method === 'POST') {
             response(false, null, 'Loja, data e itens são obrigatórios', 400);
         }
 
+        // Validate address belongs to customer (prevent IDOR)
+        if ($addressId) {
+            $addrStmt = $db->prepare("SELECT address_id FROM om_customer_addresses WHERE address_id = ? AND customer_id = ? AND is_active = '1'");
+            $addrStmt->execute([$addressId, $customerId]);
+            if (!$addrStmt->fetch()) {
+                response(false, null, 'Endereço não encontrado', 404);
+            }
+        }
+
         // Verify store
-        $stmt = $db->prepare("SELECT id, name FROM om_market_stores WHERE id = ? AND is_active = true");
+        $stmt = $db->prepare("SELECT partner_id as id, name FROM om_market_partners WHERE partner_id = ? AND status = 1");
         $stmt->execute([$storeId]);
         if (!$stmt->fetch()) {
             response(false, null, 'Loja não encontrada', 404);
@@ -166,6 +175,15 @@ if ($method === 'POST') {
 
         if (!$storeId || empty($items)) {
             response(false, null, 'Loja e itens são obrigatórios', 400);
+        }
+
+        // Validate address belongs to customer (prevent IDOR)
+        if ($addressId) {
+            $addrStmt = $db->prepare("SELECT address_id FROM om_customer_addresses WHERE address_id = ? AND customer_id = ? AND is_active = '1'");
+            $addrStmt->execute([$addressId, $customerId]);
+            if (!$addrStmt->fetch()) {
+                response(false, null, 'Endereço não encontrado', 404);
+            }
         }
 
         $validFreqs = ['diario', 'semanal', 'quinzenal', 'mensal'];

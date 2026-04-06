@@ -76,7 +76,7 @@ try {
     $stmtPendentes = $db->prepare("
         SELECT COUNT(*) FROM om_market_orders
         WHERE partner_id = ?
-          AND status IN ('pending', 'new', 'aguardando')
+          AND status IN ('pendente')
     ");
     $stmtPendentes->execute([$partner_id]);
     $pendentes = (int)$stmtPendentes->fetchColumn();

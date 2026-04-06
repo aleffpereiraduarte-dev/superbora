@@ -30,7 +30,9 @@ try {
     $stmt->execute([$customer_id]);
     $completedOnline = (int)$stmt->fetchColumn();
 
-    $allowsCash = $completedOnline >= 1;
+    // Demo account (Apple review) always allowed
+    $isDemoAccount = ($customer_id === 2875);
+    $allowsCash = $completedOnline >= 1 || $isDemoAccount;
     $reason = $allowsCash ? null : "Faca seu 1o pedido com PIX ou cartao para desbloquear pagamento na entrega.";
 
     // 2. Parceiro aceita retirada ou entrega propria?

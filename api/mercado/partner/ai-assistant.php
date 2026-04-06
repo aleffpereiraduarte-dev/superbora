@@ -266,7 +266,7 @@ function getPartnerContext($db, $partnerId) {
             COUNT(*) as total_orders,
             SUM(total) as total_revenue,
             AVG(total) as avg_order_value,
-            SUM(CASE WHEN status IN ('cancelado','cancelled') THEN 1 ELSE 0 END) as cancelled
+            SUM(CASE WHEN status IN ('cancelado') THEN 1 ELSE 0 END) as cancelled
         FROM om_market_orders
         WHERE partner_id = ? AND created_at >= NOW() - INTERVAL '30 days'
     ");

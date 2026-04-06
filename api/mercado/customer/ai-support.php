@@ -254,7 +254,7 @@ if ($escalate) {
 
         if (!$existing) {
             // Get customer name
-            $stmtName = $db->prepare("SELECT name FROM om_market_customers WHERE customer_id = ?");
+            $stmtName = $db->prepare("SELECT COALESCE(mc.name, oc.name) as name FROM (SELECT ?::int as cid) q LEFT JOIN om_market_customers mc ON mc.customer_id = q.cid LEFT JOIN om_customers oc ON oc.customer_id = q.cid");
             $stmtName->execute([$customerId]);
             $customerName = $stmtName->fetchColumn() ?: 'Cliente';
 

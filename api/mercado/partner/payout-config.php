@@ -9,7 +9,7 @@
 require_once __DIR__ . "/../config/database.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAudit.php";
-require_once dirname(__DIR__, 3) . "/includes/classes/WooviClient.php";
+require_once dirname(__DIR__, 3) . "/includes/classes/EfiClient.php";
 
 setCorsHeaders();
 
@@ -160,7 +160,7 @@ try {
                 $pixKeyValidated = true;
                 $pixKeyValidatedAt = date('Y-m-d H:i:s');
             } else {
-                // New or changed PIX key — NOT validated until confirmed by Woovi API payout
+                // New or changed PIX key — NOT validated until confirmed by EFI API payout
                 $pixKeyValidated = false;
                 $pixKeyValidatedAt = null;
             }
@@ -226,7 +226,7 @@ try {
                 'bank_agency' => $bankAgency,
                 'bank_account' => $bankAccount,
                 'bank_account_type' => $bankAccountType,
-                'pix_key' => $pixKey,
+                'pix_key' => maskPixKey($pixKey, $pixKeyType),
                 'pix_key_type' => $pixKeyType,
                 'pix_key_validated' => $pixKeyValidated,
                 'auto_payout' => $autoPayout,

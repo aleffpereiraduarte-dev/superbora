@@ -293,7 +293,7 @@ function aiMemoryLearn(PDO $db, string $phone, ?int $customerId, array $orderDat
             // Count orders from this store to determine ranking
             $countStmt = $db->prepare("
                 SELECT COUNT(*) FROM om_market_orders
-                WHERE customer_id = ? AND partner_id = ? AND status NOT IN ('cancelled', 'refunded')
+                WHERE customer_id = ? AND partner_id = ? AND status NOT IN ('cancelado', 'reembolsado')
             ");
             $countStmt->execute([$customerId ?? 0, $storeId]);
             $storeOrderCount = (int)$countStmt->fetchColumn();
@@ -375,7 +375,7 @@ function aiMemoryLearn(PDO $db, string $phone, ?int $customerId, array $orderDat
             $statsStmt = $db->prepare("
                 SELECT COUNT(*) as total_orders, AVG(total) as avg_ticket
                 FROM om_market_orders
-                WHERE customer_id = ? AND status NOT IN ('cancelled', 'refunded')
+                WHERE customer_id = ? AND status NOT IN ('cancelado', 'reembolsado')
             ");
             $statsStmt->execute([$customerId]);
             $stats = $statsStmt->fetch(PDO::FETCH_ASSOC);
@@ -416,7 +416,7 @@ function aiMemoryLearn(PDO $db, string $phone, ?int $customerId, array $orderDat
 
         // 8. Customer name (from DB if available)
         if ($customerId) {
-            $nameStmt = $db->prepare("SELECT name FROM om_market_customers WHERE customer_id = ? LIMIT 1");
+            $nameStmt = $db->prepare("SELECT COALESCE(mc.name, oc.name) as name FROM (SELECT ?::int as cid) q LEFT JOIN om_market_customers mc ON mc.customer_id = q.cid LEFT JOIN om_customers oc ON oc.customer_id = q.cid LIMIT 1");
             $nameStmt->execute([$customerId]);
             $name = $nameStmt->fetchColumn();
             if ($name) {

@@ -34,7 +34,7 @@ $db = getDB();
 $customers = $db->query("
     SELECT DISTINCT customer_id
     FROM om_market_orders
-    WHERE status IN ('entregue', 'delivered', 'finalizado')
+    WHERE status IN ('entregue')
     AND created_at > NOW() - INTERVAL '180 days'
     ORDER BY customer_id
     LIMIT 10000
@@ -55,7 +55,7 @@ foreach ($customers as $c) {
             AVG(total) as avg_ticket,
             MIN(created_at) as first_order_at
         FROM om_market_orders
-        WHERE customer_id = ? AND status IN ('entregue', 'delivered', 'finalizado')
+        WHERE customer_id = ? AND status IN ('entregue')
     ");
     $stmt->execute([$cid]);
     $orders = $stmt->fetch();

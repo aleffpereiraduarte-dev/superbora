@@ -20,11 +20,11 @@ try {
 
     // Get order with store info
     $stmt = $db->prepare("
-        SELECT o.order_id, o.mercado_id, o.customer_id, o.status,
+        SELECT o.order_id, o.partner_id, o.customer_id, o.status,
                o.created_at, o.updated_at,
-               m.nome as store_name, m.prep_time_min, m.prep_time_max
+               m.nome as store_name, m.delivery_time_min as prep_time_min, m.delivery_time_max as prep_time_max
         FROM om_market_orders o
-        JOIN om_mercados m ON m.mercado_id = o.mercado_id
+        JOIN om_market_partners m ON m.partner_id = o.partner_id
         WHERE o.order_id = ? AND o.customer_id = ?
     ");
     $stmt->execute([$orderId, $customerId]);
@@ -56,10 +56,10 @@ try {
             AVG(EXTRACT(EPOCH FROM (updated_at - created_at)) / 60) as avg_total_minutes,
             PERCENTILE_CONT(0.8) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (updated_at - created_at)) / 60) as p80_minutes
         FROM om_market_orders
-        WHERE mercado_id = ? AND status = 'entregue'
+        WHERE partner_id = ? AND status = 'entregue'
           AND created_at >= NOW() - INTERVAL '30 days'
     ");
-    $stmt->execute([$order['mercado_id']]);
+    $stmt->execute([$order['partner_id']]);
     $hist = $stmt->fetch();
 
     $avgTotalMinutes = (float)($hist['avg_total_minutes'] ?? 45);
@@ -86,9 +86,9 @@ try {
     $stmt = $db->prepare("
         SELECT COUNT(*) as pending_count
         FROM om_market_orders
-        WHERE mercado_id = ? AND status IN ('pendente', 'aceito', 'preparando')
+        WHERE partner_id = ? AND status IN ('pendente', 'aceito', 'preparando')
     ");
-    $stmt->execute([$order['mercado_id']]);
+    $stmt->execute([$order['partner_id']]);
     $queueCount = (int)$stmt->fetch()['pending_count'];
 
     // Queue delay: each order ahead adds ~3 minutes
