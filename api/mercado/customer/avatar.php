@@ -8,6 +8,7 @@
  * Retorna { avatar_url: "https://..." }
  */
 require_once __DIR__ . "/../config/database.php";
+require_once __DIR__ . "/../helpers/r2-storage.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
 
 setCorsHeaders();
@@ -104,10 +105,19 @@ try {
     imagedestroy($sourceImage);
     imagedestroy($destImage);
 
-    // Construir URL publica
+    // Construir URL publica (local fallback)
     $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
     $host = $_SERVER['HTTP_HOST'] ?? 'superbora.com.br';
     $avatarUrl = "{$protocol}://{$host}/uploads/avatars/{$filename}?v=" . time();
+
+    // ============ R2 mirror upload (zero-latency global CDN) ============
+    if (r2IsEnabled()) {
+        $key = r2KeyForUpload('avatars', $filename);
+        $r2Url = r2Upload($filepath, $key, 'image/jpeg');
+        if ($r2Url) {
+            $avatarUrl = $r2Url . '?v=' . time();
+        }
+    }
 
     // Atualizar no banco
     $stmt = $db->prepare("UPDATE om_customers SET foto = ?, updated_at = NOW() WHERE customer_id = ?");

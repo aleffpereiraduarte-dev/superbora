@@ -232,9 +232,20 @@ try {
         }
         imagedestroy($thumb);
 
-        // Generate URLs
+        // Generate URLs (local fallback)
         $photoUrl = '/uploads/reviews/' . $filename;
         $thumbnailUrl = '/uploads/reviews/thumbs/' . $thumbFilename;
+
+        // ============ R2 mirror upload (zero-latency global CDN) ============
+        if (function_exists('r2IsEnabled') === false && file_exists(__DIR__ . '/../helpers/r2-storage.php')) {
+            require_once __DIR__ . '/../helpers/r2-storage.php';
+        }
+        if (function_exists('r2IsEnabled') && r2IsEnabled()) {
+            $r2Url = r2Upload($filepath, r2KeyForUpload('reviews', $filename), 'image/' . $ext);
+            if ($r2Url) $photoUrl = $r2Url;
+            $r2ThumbUrl = r2Upload($thumbPath, r2KeyForUpload('reviews/thumbs', $thumbFilename), 'image/' . $ext);
+            if ($r2ThumbUrl) $thumbnailUrl = $r2ThumbUrl;
+        }
 
         // Insert photo record
         $sortOrder = $existingCount + $processedCount;

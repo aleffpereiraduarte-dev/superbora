@@ -8,6 +8,7 @@
 
 require_once __DIR__ . "/../config/database.php";
 require_once __DIR__ . "/../helpers/image-optimizer.php";
+require_once __DIR__ . "/../helpers/r2-storage.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
 
 setCorsHeaders();
@@ -85,13 +86,34 @@ try {
         response(false, null, "Erro ao salvar arquivo", 500);
     }
 
-    // URL relativa
+    // URL relativa (local fallback)
     $urlPath = $type === 'logo'
         ? "/uploads/logos/$filename"
         : "/uploads/banners/$filename";
 
     // Generate optimized variants (thumb, medium, webp)
     $variants = optimizeImage($filepath, $dir);
+
+    // ============ R2 mirror upload (zero-latency global CDN) ============
+    // Upload original + variants to R2 in parallel with the local copy.
+    // Local copy stays as fallback for now. When STORAGE_DRIVER=r2, the
+    // returned URL is the R2 public URL (set in the DB).
+    if (r2IsEnabled()) {
+        $folder = $type === 'logo' ? 'logos' : 'banners';
+        $key = r2KeyForUpload($folder, $filename);
+        $r2Url = r2Upload($filepath, $key, $mime);
+        if ($r2Url) {
+            $urlPath = $r2Url;
+        }
+        // Also mirror the optimized variants
+        if (is_array($variants)) {
+            foreach ($variants as $vName => $vPath) {
+                if (is_string($vPath) && file_exists($vPath)) {
+                    r2Upload($vPath, r2KeyForUpload($folder, basename($vPath)), $mime);
+                }
+            }
+        }
+    }
 
     // Atualizar campo no banco
     $col = $type === 'logo' ? 'logo' : 'banner';
