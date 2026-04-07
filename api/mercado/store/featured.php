@@ -8,7 +8,7 @@ require_once __DIR__ . "/../config/database.php";
 require_once __DIR__ . "/../helpers/r2-cache.php";
 
 setCorsHeaders();
-header('Cache-Control: public, max-age=120, s-maxage=600, stale-while-revalidate=1200');
+header('Cache-Control: public, max-age=120, s-maxage=1800, stale-while-revalidate=3600');
 
 try {
     $db = getDB();
@@ -67,7 +67,7 @@ try {
     }
 
     if (function_exists('r2IsEnabled') && r2IsEnabled() && isset($r2Key)) {
-        r2CachePut($r2Key, json_encode(['success' => true, 'data' => ['products' => $products], 'timestamp' => date('c')]), 600);
+        r2CachePut($r2Key, json_encode(['success' => true, 'data' => ['products' => $products], 'timestamp' => date('c')]), 1800);
     }
     header('X-Cache: MISS');
     response(true, ['products' => $products]);

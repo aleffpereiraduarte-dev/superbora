@@ -22,7 +22,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
     response(false, null, "Metodo nao permitido", 405);
 }
 
-header('Cache-Control: public, max-age=60, s-maxage=300, stale-while-revalidate=600');
+header('Cache-Control: public, max-age=120, s-maxage=1800, stale-while-revalidate=3600');
 
 try {
     $db = getDB();
@@ -210,7 +210,7 @@ try {
     ];
 
     if (function_exists('r2IsEnabled') && r2IsEnabled() && isset($r2Key)) {
-        r2CachePut($r2Key, json_encode(['success' => true, 'data' => $payload, 'timestamp' => date('c')]), 300);
+        r2CachePut($r2Key, json_encode(['success' => true, 'data' => $payload, 'timestamp' => date('c')]), 1800);
     }
     header('X-Cache: MISS');
     response(true, $payload);

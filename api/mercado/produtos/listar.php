@@ -10,7 +10,7 @@ require_once __DIR__ . "/../helpers/r2-cache.php";
 
 // Aggressive edge cache - Cloudflare will cache for 5 min on edge,
 // browsers cache for 60s, then revalidate.
-header('Cache-Control: public, max-age=60, s-maxage=300, stale-while-revalidate=600');
+header('Cache-Control: public, max-age=120, s-maxage=1800, stale-while-revalidate=3600');
 
 try {
     $partner_id = (int)($_GET["partner_id"] ?? 0);
@@ -182,7 +182,7 @@ try {
 
     // Write to R2 global cache (fire-and-forget for hot path)
     if (function_exists('r2IsEnabled') && r2IsEnabled() && !$busca && $pagina === 1 && isset($r2Key)) {
-        r2CachePut($r2Key, json_encode(['success' => true, 'data' => $data, 'timestamp' => date('c')]), 300);
+        r2CachePut($r2Key, json_encode(['success' => true, 'data' => $data, 'timestamp' => date('c')]), 1800);
     }
 
     header('X-Cache: MISS');

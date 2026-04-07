@@ -21,7 +21,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
 }
 
 // Edge cache 5 min, browser 60s, stale-while-revalidate 10 min
-header('Cache-Control: public, max-age=60, s-maxage=300, stale-while-revalidate=600');
+header('Cache-Control: public, max-age=120, s-maxage=1800, stale-while-revalidate=3600');
 
 try {
     $db = getDB();
@@ -188,7 +188,7 @@ try {
 
     // Write to R2 (TTL 5 min)
     if (function_exists('r2IsEnabled') && r2IsEnabled() && isset($r2Key)) {
-        r2CachePut($r2Key, json_encode(['success' => true, 'data' => $payload, 'timestamp' => date('c')]), 300);
+        r2CachePut($r2Key, json_encode(['success' => true, 'data' => $payload, 'timestamp' => date('c')]), 1800);
     }
 
     header('X-Cache: MISS');
