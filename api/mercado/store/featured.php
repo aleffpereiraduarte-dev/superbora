@@ -7,7 +7,7 @@
 require_once __DIR__ . "/../config/database.php";
 require_once __DIR__ . "/../helpers/r2-cache.php";
 
-setCorsHeaders();
+setPublicCacheCorsHeaders();
 header('Cache-Control: public, max-age=120, s-maxage=1800, stale-while-revalidate=3600');
 
 try {

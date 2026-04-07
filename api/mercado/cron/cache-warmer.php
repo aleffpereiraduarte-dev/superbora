@@ -44,9 +44,10 @@ if (empty($partners)) {
     exit(0);
 }
 
-// We hit our own internal HTTP so the full pipeline runs (cache write, headers, etc).
-// Use 127.0.0.1 with the public Host header so the routing/middleware behave correctly.
-$baseUrl = 'http://127.0.0.1';
+// We hit the PUBLIC Cloudflare URL so both the R2 cache (PHP layer) AND the
+// Cloudflare edge cache get populated in one shot. This way users in any region
+// get a HIT on the very first request after the warmer runs.
+$baseUrl = 'https://superbora.com.br';
 $hostHeader = 'Host: superbora.com.br';
 
 $mh = curl_multi_init();
@@ -57,14 +58,14 @@ function addHit(&$mh, &$handles, string $baseUrl, string $hostHeader, string $pa
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_NOBODY => false,        // we want the full body so the cache writes
-        CURLOPT_TIMEOUT => 15,
-        CURLOPT_CONNECTTIMEOUT => 3,
+        CURLOPT_TIMEOUT => 30,
+        CURLOPT_CONNECTTIMEOUT => 5,
         CURLOPT_HTTPHEADER => [
-            $hostHeader,
             'X-Cache-Warmer: 1',
             'User-Agent: SuperBora-Cache-Warmer/1.0',
         ],
         CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_SSL_VERIFYPEER => true,
     ]);
     curl_multi_add_handle($mh, $ch);
     $handles[$path] = $ch;

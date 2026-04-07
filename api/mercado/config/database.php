@@ -111,6 +111,51 @@ function dbQuery(PDO $db, string $sql, array $params = []): PDOStatement {
 }
 
 /**
+ * Set CORS headers for PUBLIC CACHEABLE endpoints (no credentials).
+ *
+ * Use this in endpoints that:
+ *   - Don't require authentication
+ *   - Should be cached at the edge (Cloudflare, R2)
+ *   - Don't set cookies
+ *
+ * Cloudflare (and most CDNs) BYPASS the cache when the response has either:
+ *   - Set-Cookie header
+ *   - Access-Control-Allow-Credentials: true
+ * So we deliberately omit credentials for these endpoints to allow caching.
+ */
+function setPublicCacheCorsHeaders(): void {
+    // Same origin allowlist as setCorsHeaders, but without credentials
+    $allowedOrigins = array_map('trim', explode(',', $_ENV['CORS_ALLOWED_ORIGINS'] ?? 'https://superbora.com.br,https://www.superbora.com.br,https://app.superbora.com.br,https://onemundo.com.br,https://www.onemundo.com.br'));
+    if (!in_array('https://app.superbora.com.br', $allowedOrigins, true)) {
+        $allowedOrigins[] = 'https://app.superbora.com.br';
+    }
+
+    $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+
+    // For public cacheable endpoints we use a wildcard so the cache works for ANY origin
+    // (mobile app, web app, etc). NO credentials = safe to use *.
+    if (in_array($origin, $allowedOrigins, true) || empty($origin)) {
+        header("Access-Control-Allow-Origin: *");
+    } elseif (str_contains($origin, 'localhost') || str_contains($origin, '127.0.0.1')) {
+        header("Access-Control-Allow-Origin: " . $origin);
+    } else {
+        header("Access-Control-Allow-Origin: *");
+    }
+
+    // No "Vary: Origin" because the response is the same for everyone (no credentials)
+    header("Access-Control-Allow-Methods: GET, OPTIONS");
+    header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Api-Key");
+    // CRITICAL: do NOT set Access-Control-Allow-Credentials — Cloudflare bypasses cache when present
+    header("X-Content-Type-Options: nosniff");
+    header("Strict-Transport-Security: max-age=63072000; includeSubDomains; preload");
+
+    if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
+        http_response_code(204);
+        exit;
+    }
+}
+
+/**
  * Set proper CORS headers (replaces wildcard Access-Control-Allow-Origin: *)
  * Call this at the top of any endpoint that needs CORS.
  * Also handles OPTIONS preflight.

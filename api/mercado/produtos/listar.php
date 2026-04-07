@@ -8,8 +8,10 @@ require_once __DIR__ . "/../config/database.php";
 require_once dirname(__DIR__, 2) . "/cache/CacheHelper.php";
 require_once __DIR__ . "/../helpers/r2-cache.php";
 
-// Aggressive edge cache - Cloudflare will cache for 5 min on edge,
-// browsers cache for 60s, then revalidate.
+// Public cacheable endpoint — no credentials so Cloudflare can cache.
+setPublicCacheCorsHeaders();
+
+// Aggressive edge cache: 30min edge, 2min browser, 1h stale-while-revalidate.
 header('Cache-Control: public, max-age=120, s-maxage=1800, stale-while-revalidate=3600');
 
 try {
