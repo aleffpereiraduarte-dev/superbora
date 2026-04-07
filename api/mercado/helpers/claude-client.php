@@ -127,10 +127,40 @@ class ClaudeClient {
     }
 
     /**
-     * Send with vision (images)
+     * Send with vision (images).
+     *
+     * VISION ROUTING (cost-optimized cascade):
+     *   VISION_PROVIDER=openai   -> OpenAI GPT-4o-mini only (cheapest, ~20x less than Claude Sonnet)
+     *   VISION_PROVIDER=claude   -> Claude only (best quality, most expensive)
+     *   VISION_PROVIDER=cascade  -> GPT-4o-mini first; if it fails or returns garbage, fall back to Claude (DEFAULT)
+     *
      * @param array $images Array of ['data' => base64, 'mime' => 'image/jpeg']
      */
     public function sendWithVision(string $systemPrompt, array $images, string $textPrompt, int $maxTokens = 8192): array {
+        $vp = $_ENV['VISION_PROVIDER'] ?? getenv('VISION_PROVIDER') ?: 'cascade';
+
+        // Try OpenAI GPT-4o-mini first when allowed
+        if ($vp === 'openai' || $vp === 'cascade') {
+            $openaiPath = __DIR__ . '/openai-vision-client.php';
+            if (file_exists($openaiPath)) {
+                require_once $openaiPath;
+                if (class_exists('OpenAIVisionClient')) {
+                    static $oai = null;
+                    if ($oai === null) $oai = new OpenAIVisionClient();
+                    $r = $oai->sendWithVision($systemPrompt, $images, $textPrompt, $maxTokens);
+                    if ($r['success']) {
+                        return $r;
+                    }
+                    // openai-only mode: don't fall back
+                    if ($vp === 'openai') {
+                        return $r;
+                    }
+                    error_log('[claude-client] OpenAI vision failed, falling back to Claude: ' . ($r['error'] ?? 'unknown'));
+                }
+            }
+        }
+
+        // Claude vision (original path)
         $content = [];
         foreach ($images as $idx => $img) {
             $content[] = [
@@ -148,7 +178,72 @@ class ClaudeClient {
         $content[] = ['type' => 'text', 'text' => $textPrompt];
 
         $messages = [['role' => 'user', 'content' => $content]];
-        return $this->send($systemPrompt, $messages, $maxTokens);
+        // Force the call to go directly to Anthropic (bypass the Groq router which has no vision)
+        return $this->sendDirectClaude($systemPrompt, $messages, $maxTokens);
+    }
+
+    /**
+     * Force a direct Claude API call, bypassing the Groq router.
+     * Used internally by sendWithVision() since Groq has no vision.
+     */
+    private function sendDirectClaude(string $systemPrompt, array $messages, int $maxTokens = 4096): array {
+        if (empty($this->apiKey)) {
+            return ['success' => false, 'error' => 'CLAUDE_API_KEY not configured'];
+        }
+
+        $data = [
+            'model' => $this->model,
+            'max_tokens' => $maxTokens,
+            'system' => $systemPrompt,
+            'messages' => $messages,
+        ];
+
+        $lastError = '';
+        for ($attempt = 0; $attempt <= $this->maxRetries; $attempt++) {
+            if ($attempt > 0) {
+                sleep(pow(2, $attempt));
+            }
+
+            $ch = curl_init('https://api.anthropic.com/v1/messages');
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => json_encode($data),
+                CURLOPT_HTTPHEADER => [
+                    'Content-Type: application/json',
+                    'x-api-key: ' . $this->apiKey,
+                    'anthropic-version: 2023-06-01',
+                ],
+                CURLOPT_TIMEOUT => $this->timeout,
+                CURLOPT_CONNECTTIMEOUT => 5,
+                CURLOPT_SSL_VERIFYPEER => true,
+            ]);
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $curlError = curl_error($ch);
+            curl_close($ch);
+
+            if ($curlError) { $lastError = 'cURL: ' . $curlError; continue; }
+            if ($httpCode === 529 || $httpCode === 503) { $lastError = "API overloaded ({$httpCode})"; continue; }
+            if ($httpCode !== 200) {
+                $err = json_decode($response, true);
+                return ['success' => false, 'error' => 'Claude vision: ' . ($err['error']['message'] ?? "HTTP {$httpCode}")];
+            }
+            $result = json_decode($response, true);
+            if (!isset($result['content'][0]['text'])) {
+                return ['success' => false, 'error' => 'Invalid Claude response'];
+            }
+            return [
+                'success' => true,
+                'text' => $result['content'][0]['text'],
+                'input_tokens' => $result['usage']['input_tokens'] ?? 0,
+                'output_tokens' => $result['usage']['output_tokens'] ?? 0,
+                'total_tokens' => ($result['usage']['input_tokens'] ?? 0) + ($result['usage']['output_tokens'] ?? 0),
+                'model' => $result['model'] ?? $this->model,
+                'provider' => 'claude',
+            ];
+        }
+        return ['success' => false, 'error' => $lastError ?: 'Max retries exceeded'];
     }
 
     /**
