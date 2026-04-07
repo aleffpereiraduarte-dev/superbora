@@ -9,6 +9,7 @@ require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAudit.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/PusherService.php";
 require_once __DIR__ . "/../helpers/availability.php";
+require_once __DIR__ . "/../helpers/r2-cache.php";
 
 setCorsHeaders();
 
@@ -180,6 +181,12 @@ try {
         ]);
     } catch (Exception $pusherErr) {
         error_log("[product-save] Pusher erro: " . $pusherErr->getMessage());
+    }
+
+    // Invalidate R2 cache for this partner + global feeds — best-effort
+    if (function_exists('r2CacheInvalidatePartner')) {
+        r2CacheInvalidatePartner($partner_id);
+        r2CacheInvalidateGlobal();
     }
 
     response(true, [

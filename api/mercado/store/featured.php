@@ -5,14 +5,27 @@
  */
 
 require_once __DIR__ . "/../config/database.php";
+require_once __DIR__ . "/../helpers/r2-cache.php";
 
 setCorsHeaders();
+header('Cache-Control: public, max-age=120, s-maxage=600, stale-while-revalidate=1200');
 
 try {
     $db = getDB();
 
     $partnerId = (int)($_GET['partner_id'] ?? 0);
     if (!$partnerId) response(false, null, "partner_id obrigatorio", 400);
+
+    $r2Key = "featured/p{$partnerId}";
+    if (function_exists('r2IsEnabled') && r2IsEnabled()) {
+        $cached = r2CacheGet($r2Key);
+        if ($cached !== null) {
+            header('X-Cache: HIT-R2');
+            header('Content-Type: application/json; charset=utf-8');
+            echo $cached;
+            exit;
+        }
+    }
 
     // Get products ordered by total_vendas (sales count) or by a popularity score
     $stmt = $db->prepare("
@@ -53,6 +66,10 @@ try {
         $p['desconto'] = (int)$p['desconto'];
     }
 
+    if (function_exists('r2IsEnabled') && r2IsEnabled() && isset($r2Key)) {
+        r2CachePut($r2Key, json_encode(['success' => true, 'data' => ['products' => $products], 'timestamp' => date('c')]), 600);
+    }
+    header('X-Cache: MISS');
     response(true, ['products' => $products]);
 
 } catch (Exception $e) {

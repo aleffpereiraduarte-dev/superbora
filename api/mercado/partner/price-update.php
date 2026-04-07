@@ -7,6 +7,7 @@
 require_once __DIR__ . "/../config/database.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAudit.php";
+require_once __DIR__ . "/../helpers/r2-cache.php";
 
 setCorsHeaders();
 
@@ -78,6 +79,11 @@ try {
         'partner',
         $partner_id
     );
+
+    if (function_exists('r2CacheInvalidatePartner')) {
+        r2CacheInvalidatePartner($partner_id);
+        r2CacheInvalidateGlobal();
+    }
 
     response(true, [
         "product_price_id" => $product_price_id,

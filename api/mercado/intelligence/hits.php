@@ -13,11 +13,15 @@
  * Only active products from active, currently-open partners.
  */
 require_once __DIR__ . "/../config/database.php";
+require_once __DIR__ . "/../helpers/r2-cache.php";
 setCorsHeaders();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
     response(false, null, "Metodo nao permitido", 405);
 }
+
+// Edge cache 5 min, browser 60s, stale-while-revalidate 10 min
+header('Cache-Control: public, max-age=60, s-maxage=300, stale-while-revalidate=600');
 
 try {
     $db = getDB();
@@ -27,6 +31,18 @@ try {
     $limit = min(50, max(1, intval($_GET['limit'] ?? 20)));
     $offset = max(0, intval($_GET['offset'] ?? 0));
     $category = strtolower(trim($_GET['category'] ?? 'all'));
+
+    // R2 global edge cache
+    $r2Key = "hits/mp{$maxPrice}_l{$limit}_o{$offset}_c{$category}";
+    if (function_exists('r2IsEnabled') && r2IsEnabled()) {
+        $cached = r2CacheGet($r2Key);
+        if ($cached !== null) {
+            header('X-Cache: HIT-R2');
+            header('Content-Type: application/json; charset=utf-8');
+            echo $cached;
+            exit;
+        }
+    }
 
     // Category keyword mapping for product name/category matching
     $categoryKeywords = [
@@ -160,7 +176,7 @@ try {
         ];
     }, $products);
 
-    response(true, [
+    $payload = [
         'products'   => $formatted,
         'total'      => $total,
         'limit'      => $limit,
@@ -168,7 +184,15 @@ try {
         'max_price'  => $maxPrice,
         'category'   => $category,
         'has_more'   => ($offset + $limit) < $total,
-    ]);
+    ];
+
+    // Write to R2 (TTL 5 min)
+    if (function_exists('r2IsEnabled') && r2IsEnabled() && isset($r2Key)) {
+        r2CachePut($r2Key, json_encode(['success' => true, 'data' => $payload, 'timestamp' => date('c')]), 300);
+    }
+
+    header('X-Cache: MISS');
+    response(true, $payload);
 
 } catch (Exception $e) {
     error_log("[Hits] Error: " . $e->getMessage());

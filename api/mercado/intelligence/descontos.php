@@ -15,11 +15,14 @@
  * Sorted by discount percentage DESC by default.
  */
 require_once __DIR__ . "/../config/database.php";
+require_once __DIR__ . "/../helpers/r2-cache.php";
 setCorsHeaders();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
     response(false, null, "Metodo nao permitido", 405);
 }
+
+header('Cache-Control: public, max-age=60, s-maxage=300, stale-while-revalidate=600');
 
 try {
     $db = getDB();
@@ -30,6 +33,17 @@ try {
     $offset = max(0, intval($_GET['offset'] ?? 0));
     $sort = strtolower(trim($_GET['sort'] ?? 'discount'));
     $range = strtolower(trim($_GET['range'] ?? 'all'));
+
+    $r2Key = "descontos/m{$minDiscount}_l{$limit}_o{$offset}_s{$sort}_r{$range}";
+    if (function_exists('r2IsEnabled') && r2IsEnabled()) {
+        $cached = r2CacheGet($r2Key);
+        if ($cached !== null) {
+            header('X-Cache: HIT-R2');
+            header('Content-Type: application/json; charset=utf-8');
+            echo $cached;
+            exit;
+        }
+    }
 
     // Validate sort option
     $allowedSorts = ['discount', 'price', 'rating'];
@@ -184,7 +198,7 @@ try {
         ];
     }, $products);
 
-    response(true, [
+    $payload = [
         'products'     => $formatted,
         'total'        => $total,
         'max_discount' => $maxDiscount,
@@ -193,7 +207,13 @@ try {
         'min_discount' => $minDiscount,
         'sort'         => $sort,
         'range'        => $range,
-    ]);
+    ];
+
+    if (function_exists('r2IsEnabled') && r2IsEnabled() && isset($r2Key)) {
+        r2CachePut($r2Key, json_encode(['success' => true, 'data' => $payload, 'timestamp' => date('c')]), 300);
+    }
+    header('X-Cache: MISS');
+    response(true, $payload);
 
 } catch (Exception $e) {
     error_log("[Descontos] Error: " . $e->getMessage());

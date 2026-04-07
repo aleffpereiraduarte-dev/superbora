@@ -6,8 +6,11 @@
  */
 require_once __DIR__ . "/../config/database.php";
 require_once dirname(__DIR__, 2) . "/cache/CacheHelper.php";
+require_once __DIR__ . "/../helpers/r2-cache.php";
 
-header('Cache-Control: public, max-age=300');
+// Aggressive edge cache - Cloudflare will cache for 5 min on edge,
+// browsers cache for 60s, then revalidate.
+header('Cache-Control: public, max-age=60, s-maxage=300, stale-while-revalidate=600');
 
 try {
     $partner_id = (int)($_GET["partner_id"] ?? 0);
@@ -17,6 +20,19 @@ try {
     $limite = min(100, max(1, (int)($_GET["limit"] ?? ($_GET["limite"] ?? 50))));
     $offset = ($pagina - 1) * $limite;
     $ordenar = $_GET["ordenar"] ?? $_GET["sort"] ?? null;
+
+    // ============ R2 GLOBAL CACHE (only for non-search, non-paginated queries) ============
+    // Search and pagination create too many cache variants. Hot path is partner page-1 listing.
+    if (function_exists('r2IsEnabled') && r2IsEnabled() && !$busca && $pagina === 1) {
+        $r2Key = "listar/p{$partner_id}_c" . ($category_id ?: '0') . "_l{$limite}_o" . ($ordenar ?: 'def');
+        $cached = r2CacheGet($r2Key);
+        if ($cached !== null) {
+            header('X-Cache: HIT-R2');
+            header('Content-Type: application/json; charset=utf-8');
+            echo $cached;
+            exit;
+        }
+    }
 
     // Validar ordenacao
     $allowedSorts = [
@@ -164,6 +180,12 @@ try {
         ];
     });
 
+    // Write to R2 global cache (fire-and-forget for hot path)
+    if (function_exists('r2IsEnabled') && r2IsEnabled() && !$busca && $pagina === 1 && isset($r2Key)) {
+        r2CachePut($r2Key, json_encode(['success' => true, 'data' => $data, 'timestamp' => date('c')]), 300);
+    }
+
+    header('X-Cache: MISS');
     response(true, $data);
 
 } catch (Exception $e) {

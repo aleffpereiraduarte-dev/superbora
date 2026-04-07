@@ -5,10 +5,11 @@
  */
 
 require_once __DIR__ . "/../config/database.php";
+require_once __DIR__ . "/../helpers/r2-cache.php";
 
 setCorsHeaders();
 
-header('Cache-Control: public, max-age=120');
+header('Cache-Control: public, max-age=120, s-maxage=600, stale-while-revalidate=1200');
 
 try {
     $db = getDB();
@@ -17,6 +18,17 @@ try {
     $limit = min(20, max(1, (int)($_GET['limit'] ?? 10)));
 
     if (!$partnerId) response(false, null, "partner_id obrigatorio", 400);
+
+    $r2Key = "popular/p{$partnerId}_l{$limit}";
+    if (function_exists('r2IsEnabled') && r2IsEnabled()) {
+        $cached = r2CacheGet($r2Key);
+        if ($cached !== null) {
+            header('X-Cache: HIT-R2');
+            header('Content-Type: application/json; charset=utf-8');
+            echo $cached;
+            exit;
+        }
+    }
 
     // Get products ordered by sales count (from order items), falling back to sort_order
     $stmt = $db->prepare("
@@ -59,6 +71,10 @@ try {
         $product['popular'] = true;
     }
 
+    if (function_exists('r2IsEnabled') && r2IsEnabled() && isset($r2Key)) {
+        r2CachePut($r2Key, json_encode(['success' => true, 'data' => ['products' => $products], 'timestamp' => date('c')]), 600);
+    }
+    header('X-Cache: MISS');
     response(true, ['products' => $products]);
 
 } catch (Exception $e) {
