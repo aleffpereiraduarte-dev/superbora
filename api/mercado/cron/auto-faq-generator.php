@@ -1,0 +1,89 @@
+<?php
+/**
+ * Cron: Auto-FAQ generator
+ *
+ * Reads support tickets from the last 30 days, clusters similar questions,
+ * and generates a FAQ in pt-BR. Stored in om_faq_auto for the help center to consume.
+ *
+ * Schedule: 0 4 * * 1  (every Monday at 4 AM)
+ */
+require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . '/../helpers/claude-client.php';
+
+$db = getDB();
+
+// Pull tickets — table name varies, try a few
+$tickets = [];
+foreach (['om_support_tickets', 'om_market_support_tickets', 'om_tickets'] as $tbl) {
+    try {
+        $stmt = $db->prepare(
+            "SELECT subject, body FROM {$tbl}
+             WHERE created_at > NOW() - INTERVAL '30 days' AND COALESCE(body,'') <> ''
+             ORDER BY created_at DESC LIMIT 200"
+        );
+        $stmt->execute();
+        $tickets = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        if (!empty($tickets)) break;
+    } catch (Exception $e) { /* try next */ }
+}
+
+if (empty($tickets)) {
+    if (PHP_SAPI === 'cli') fwrite(STDOUT, "[auto-faq] no tickets found\n");
+    exit(0);
+}
+
+// Truncate each to 200 chars to keep prompt small
+$texts = array_map(function($t) {
+    $line = trim(($t['subject'] ?? '') . ': ' . ($t['body'] ?? ''));
+    return mb_substr($line, 0, 200);
+}, $tickets);
+
+$prompt = "Aqui esta uma lista dos tickets de suporte do SuperBora dos ultimos 30 dias:\n\n" .
+          implode("\n", $texts) . "\n\n" .
+          "Identifique as 10 perguntas mais comuns. Para cada uma, escreva a pergunta " .
+          "(como o cliente provavelmente faria) e uma resposta clara em pt-BR. " .
+          "Responda APENAS JSON: " .
+          '{"faqs":[{"question":"...","answer":"...","frequency":<int>,"category":"pedido|pagamento|entrega|conta|outros"}]}';
+
+$reply = ClaudeClient::text(
+    $prompt,
+    'Voce eh especialista em customer success. Crie FAQ uteis e claros.',
+    2500
+);
+
+$parsed = ClaudeClient::parseJson($reply ?: '');
+if (!$parsed || empty($parsed['faqs'])) {
+    fwrite(STDERR, "[auto-faq] AI did not return valid JSON\n");
+    exit(1);
+}
+
+// Persist
+try {
+    $db->exec("CREATE TABLE IF NOT EXISTS om_faq_auto (
+        id BIGSERIAL PRIMARY KEY,
+        question TEXT NOT NULL,
+        answer TEXT NOT NULL,
+        category VARCHAR(30),
+        frequency INTEGER,
+        generated_at TIMESTAMPTZ DEFAULT NOW(),
+        published BOOLEAN DEFAULT false
+    )");
+    // Replace previous batch
+    $db->exec("UPDATE om_faq_auto SET published = false WHERE published = true");
+    $stmt = $db->prepare("INSERT INTO om_faq_auto (question, answer, category, frequency, published) VALUES (:q, :a, :c, :f, true)");
+    $count = 0;
+    foreach (array_slice($parsed['faqs'], 0, 10) as $faq) {
+        if (empty($faq['question']) || empty($faq['answer'])) continue;
+        $stmt->execute([
+            ':q' => $faq['question'],
+            ':a' => $faq['answer'],
+            ':c' => $faq['category'] ?? 'outros',
+            ':f' => (int)($faq['frequency'] ?? 1),
+        ]);
+        $count++;
+    }
+    if (PHP_SAPI === 'cli') fwrite(STDOUT, "[auto-faq] generated {$count} FAQs\n");
+} catch (Exception $e) {
+    fwrite(STDERR, "[auto-faq] DB error: " . $e->getMessage() . "\n");
+    exit(1);
+}
