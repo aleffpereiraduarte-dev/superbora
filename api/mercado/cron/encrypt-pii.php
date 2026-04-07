@@ -6,7 +6,7 @@
  * but the plaintext column is not. Once a row is encrypted, the plaintext column
  * is overwritten with NULL (or kept for backward compat — see KEEP_PLAINTEXT below).
  *
- * Schedule: */15 * * * * php /var/www/html/api/mercado/cron/encrypt-pii.php
+ * Schedule: every 15 min via crontab -- run: php /var/www/html/api/mercado/cron/encrypt-pii.php
  *
  * Run manually: php cron/encrypt-pii.php [batch_size]
  */
@@ -42,20 +42,21 @@ function logAudit(PDO $db, string $table, string $col, int $rowId, string $actio
     }
 }
 
-// ========== Customers: cpf, rg, birth_date ==========
+// ========== Customers: cpf, birth_date (rg column doesn't exist) ==========
+// birth_date is DATE type so we can't use <> '' on it
 $customerCols = [
-    'cpf'        => ['enc' => 'cpf_enc', 'hash' => 'cpf_hash'],
-    'rg'         => ['enc' => 'rg_enc', 'hash' => null],
-    'birth_date' => ['enc' => 'birth_date_enc', 'hash' => null],
+    'cpf'        => ['enc' => 'cpf_enc', 'hash' => 'cpf_hash', 'is_text' => true],
+    'birth_date' => ['enc' => 'birth_date_enc', 'hash' => null, 'is_text' => false],
 ];
 
 foreach ($customerCols as $col => $cfg) {
     $encCol = $cfg['enc'];
     $hashCol = $cfg['hash'];
+    $emptyCheck = $cfg['is_text'] ? "AND $col <> ''" : '';
     try {
         $stmt = $db->prepare(
             "SELECT customer_id, $col FROM om_customers
-             WHERE $col IS NOT NULL AND $col <> '' AND $encCol IS NULL
+             WHERE $col IS NOT NULL $emptyCheck AND $encCol IS NULL
              LIMIT :lim"
         );
         $stmt->bindValue(':lim', $batchSize, PDO::PARAM_INT);
