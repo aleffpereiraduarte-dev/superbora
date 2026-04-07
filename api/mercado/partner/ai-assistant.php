@@ -145,55 +145,20 @@ function callClaudeAPI($userMessage, $context, $partnerData, $recentMessages) {
         'content' => $userMessage
     ];
 
-    $data = [
-        'model' => 'claude-sonnet-4-20250514',
-        'max_tokens' => 1024,
-        'system' => $systemPrompt,
-        'messages' => $messages
-    ];
+    // Routed via ClaudeClient -> Groq Llama 3.3 70B (auto when AI_PROVIDER=groq)
+    require_once __DIR__ . '/../helpers/claude-client.php';
+    $client = new ClaudeClient();
+    $r = $client->send($systemPrompt, $messages, 1024);
 
-    $ch = curl_init('https://api.anthropic.com/v1/messages');
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => json_encode($data),
-        CURLOPT_HTTPHEADER => [
-            'Content-Type: application/json',
-            'x-api-key: ' . $apiKey,
-            'anthropic-version: 2023-06-01'
-        ],
-        CURLOPT_TIMEOUT => 60,
-        CURLOPT_CONNECTTIMEOUT => 10
-    ]);
-
-    $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $curlError = curl_error($ch);
-    curl_close($ch);
-
-    if ($curlError) {
-        return ['success' => false, 'error' => 'cURL error: ' . $curlError];
+    if (!$r['success']) {
+        return ['success' => false, 'error' => $r['error'] ?? 'AI request failed'];
     }
-
-    if ($httpCode !== 200) {
-        $errorBody = json_decode($response, true);
-        $errorMsg = $errorBody['error']['message'] ?? "HTTP {$httpCode}";
-        return ['success' => false, 'error' => "API error: {$errorMsg}"];
-    }
-
-    $result = json_decode($response, true);
-
-    if (!isset($result['content'][0]['text'])) {
-        return ['success' => false, 'error' => 'Invalid API response structure'];
-    }
-
-    $tokensUsed = ($result['usage']['input_tokens'] ?? 0) + ($result['usage']['output_tokens'] ?? 0);
 
     return [
         'success' => true,
-        'response' => $result['content'][0]['text'],
-        'tokens_used' => $tokensUsed,
-        'model' => $result['model'] ?? 'claude-sonnet-4-20250514'
+        'response' => $r['text'] ?? '',
+        'tokens_used' => $r['total_tokens'] ?? 0,
+        'model' => $r['model'] ?? 'unknown',
     ];
 }
 

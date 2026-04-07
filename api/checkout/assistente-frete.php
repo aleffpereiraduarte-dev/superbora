@@ -85,34 +85,13 @@ if ($pergunta) {
     $contexto .= "\n\nDê uma recomendação personalizada da melhor opção de frete.";
 }
 
-// Chamar API Claude
-$ch = curl_init('https://api.anthropic.com/v1/messages');
-curl_setopt_array($ch, [
-    CURLOPT_RETURNTRANSFER => true,
-    CURLOPT_POST => true,
-    CURLOPT_POSTFIELDS => json_encode([
-        'model' => 'claude-3-haiku-20240307',
-        'max_tokens' => 300,
-        'messages' => [
-            ['role' => 'user', 'content' => $contexto]
-        ]
-    ]),
-    CURLOPT_HTTPHEADER => [
-        'Content-Type: application/json',
-        'x-api-key: ' . $claudeApiKey,
-        'anthropic-version: 2023-06-01'
-    ],
-    CURLOPT_TIMEOUT => 10
-]);
-
-$response = curl_exec($ch);
-$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-curl_close($ch);
+// Routed via ClaudeClient -> Groq Llama 3.3 70B (auto when AI_PROVIDER=groq)
+require_once dirname(__DIR__) . '/mercado/helpers/claude-client.php';
+$texto = ClaudeClient::text($contexto, '', 300);
+$httpCode = $texto !== null ? 200 : 500;
+$response = $texto;
 
 if ($httpCode === 200) {
-    $result = json_decode($response, true);
-    $texto = $result['content'][0]['text'] ?? '';
-
     echo json_encode([
         'success' => true,
         'recomendacao' => $texto,

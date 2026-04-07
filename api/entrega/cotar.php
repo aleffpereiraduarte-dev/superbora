@@ -135,21 +135,11 @@ function consultarIA($dados) {
 REGRAS: 1) PRIORIZE VELOCIDADE se preço < 30% maior 2) Express > Correios se preço similar 3) Max 3 opções 4) Mais rápido = recomendado:true
 JSON: {\"opcoes\": [{\"id\": \"x\", \"nome\": \"x\", \"preco\": 0, \"prazo\": \"x\", \"recomendado\": true/false}], \"justificativa\": \"x\"}";
 
-    $ch = curl_init('https://api.anthropic.com/v1/messages');
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true, CURLOPT_POST => true, CURLOPT_TIMEOUT => 20,
-        CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'x-api-key: ' . CLAUDE_API_KEY, 'anthropic-version: 2023-06-01'],
-        CURLOPT_POSTFIELDS => json_encode(['model' => 'claude-sonnet-4-20250514', 'max_tokens' => 500, 'messages' => [['role' => 'user', 'content' => $prompt]]])
-    ]);
-    $response = curl_exec($ch);
-    curl_close($ch);
-    
-    $data = json_decode($response, true);
-    if (isset($data['content'][0]['text'])) {
-        preg_match('/\{[\s\S]*\}/', $data['content'][0]['text'], $m);
-        return $m ? json_decode($m[0], true) : null;
-    }
-    return null;
+    // Routed via ClaudeClient -> Groq Llama 3.3 70B (auto when AI_PROVIDER=groq)
+    require_once dirname(__DIR__) . '/mercado/helpers/claude-client.php';
+    $text = ClaudeClient::text($prompt, '', 500);
+    if ($text === null) return null;
+    return ClaudeClient::parseJson($text);
 }
 
 // ═══════════════════════════════════════════════════════════════

@@ -45,23 +45,32 @@ try {
     $lat = isset($_POST['latitude']) ? (float)$_POST['latitude'] : null;
     $lng = isset($_POST['longitude']) ? (float)$_POST['longitude'] : null;
 
-    // ============= 1) Transcribe with Whisper =============
+    // ============= 1) Transcribe with Groq Whisper Large V3 Turbo (5x faster than OpenAI) =============
+    $groqKey = $_ENV['GROQ_API_KEY'] ?? getenv('GROQ_API_KEY') ?: '';
     $openaiKey = $_ENV['OPENAI_API_KEY'] ?? getenv('OPENAI_API_KEY') ?: '';
-    if (!$openaiKey) {
+    if (!$groqKey && !$openaiKey) {
         response(false, null, 'Servico de voz nao configurado', 503);
     }
 
+    $useGroq = (bool)$groqKey;
+    $endpoint = $useGroq
+        ? 'https://api.groq.com/openai/v1/audio/transcriptions'
+        : 'https://api.openai.com/v1/audio/transcriptions';
+    $authKey = $useGroq ? $groqKey : $openaiKey;
+    $modelName = $useGroq ? 'whisper-large-v3-turbo' : 'whisper-1';
+
     $cfile = new CURLFile($audio['tmp_name'], $audio['type'] ?: 'audio/mpeg', $audio['name'] ?: 'audio.mp3');
-    $ch = curl_init('https://api.openai.com/v1/audio/transcriptions');
+    $ch = curl_init($endpoint);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_POST => true,
-        CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $openaiKey],
+        CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $authKey],
         CURLOPT_POSTFIELDS => [
             'file' => $cfile,
-            'model' => 'whisper-1',
+            'model' => $modelName,
             'language' => 'pt',
             'response_format' => 'json',
+            'temperature' => '0',
         ],
         CURLOPT_TIMEOUT => 30,
     ]);
@@ -70,8 +79,29 @@ try {
     curl_close($ch);
 
     if ($code !== 200 || !$resp) {
-        error_log('[voice-order] whisper failed: ' . $code . ' / ' . substr($resp ?: '', 0, 200));
-        response(false, null, 'Falha ao transcrever audio', 502);
+        error_log('[voice-order] transcribe failed: provider=' . ($useGroq ? 'groq' : 'openai') . ' code=' . $code . ' / ' . substr($resp ?: '', 0, 200));
+        // Fall back to OpenAI if Groq failed
+        if ($useGroq && $openaiKey) {
+            $ch = curl_init('https://api.openai.com/v1/audio/transcriptions');
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_POST => true,
+                CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $openaiKey],
+                CURLOPT_POSTFIELDS => [
+                    'file' => new CURLFile($audio['tmp_name'], $audio['type'] ?: 'audio/mpeg', $audio['name'] ?: 'audio.mp3'),
+                    'model' => 'whisper-1',
+                    'language' => 'pt',
+                    'response_format' => 'json',
+                ],
+                CURLOPT_TIMEOUT => 30,
+            ]);
+            $resp = curl_exec($ch);
+            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+        }
+        if ($code !== 200 || !$resp) {
+            response(false, null, 'Falha ao transcrever audio', 502);
+        }
     }
     $whisper = json_decode($resp, true);
     $transcript = trim($whisper['text'] ?? '');

@@ -49,14 +49,19 @@ try {
     $tmpFile = tempnam(sys_get_temp_dir(), 'audio_') . '.' . $ext;
     file_put_contents($tmpFile, $audioData);
 
-    // Try OpenAI Whisper API first
+    // Prefer Groq Whisper Large V3 Turbo (5x faster than OpenAI Whisper-1, ~10x cheaper)
+    $groqKey = $_ENV['GROQ_API_KEY'] ?? getenv('GROQ_API_KEY') ?: '';
     $openaiKey = $_ENV['OPENAI_API_KEY'] ?? '';
 
-    if ($openaiKey) {
+    $text = null;
+    if ($groqKey) {
+        $text = transcribeWithGroq($tmpFile, $ext, $groqKey);
+    }
+    // Fallback to OpenAI Whisper if Groq is unavailable or failed
+    if ($text === null && $openaiKey) {
         $text = transcribeWithWhisper($tmpFile, $ext, $openaiKey);
-    } else {
-        // Fallback: use Claude to transcribe by describing audio intent
-        // This won't work for actual audio, so return a helpful error
+    }
+    if ($text === null) {
         @unlink($tmpFile);
         response(false, null, 'Transcription service not configured', 503);
     }
@@ -77,7 +82,41 @@ try {
 }
 
 /**
- * Transcribe audio using OpenAI Whisper API
+ * Transcribe audio using Groq Whisper Large V3 Turbo (preferred — much faster).
+ */
+function transcribeWithGroq(string $filePath, string $ext, string $apiKey): ?string {
+    $ch = curl_init('https://api.groq.com/openai/v1/audio/transcriptions');
+    $cfile = new CURLFile($filePath, 'audio/' . $ext, 'audio.' . $ext);
+
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => [
+            'file' => $cfile,
+            'model' => 'whisper-large-v3-turbo',
+            'language' => 'pt',
+            'response_format' => 'text',
+            'temperature' => '0',
+        ],
+        CURLOPT_HTTPHEADER => [
+            'Authorization: Bearer ' . $apiKey,
+        ],
+        CURLOPT_TIMEOUT => 30,
+    ]);
+
+    $result = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($httpCode !== 200) {
+        error_log("[Transcribe] Groq Whisper error (HTTP {$httpCode}): " . substr((string)$result, 0, 200));
+        return null;
+    }
+    return $result;
+}
+
+/**
+ * Transcribe audio using OpenAI Whisper API (fallback)
  */
 function transcribeWithWhisper(string $filePath, string $ext, string $apiKey): ?string {
     $ch = curl_init('https://api.openai.com/v1/audio/transcriptions');

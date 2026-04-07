@@ -361,34 +361,12 @@ function getClaudeShoppingTips(array $sections, int $itemCount, int $estimatedTi
                 . "Foque em: ordem de coleta, conservacao de temperatura, organizacao nas sacolas. "
                 . "Responda APENAS as dicas em texto corrido, sem numeracao, sem quebras de linha.";
 
-        $ch = curl_init('https://api.anthropic.com/v1/messages');
-        curl_setopt_array($ch, [
-            CURLOPT_POST           => true,
-            CURLOPT_HTTPHEADER     => [
-                'Content-Type: application/json',
-                'x-api-key: ' . CLAUDE_API_KEY,
-                'anthropic-version: 2023-06-01'
-            ],
-            CURLOPT_POSTFIELDS     => json_encode([
-                'model'      => 'claude-3-haiku-20240307',
-                'max_tokens' => 200,
-                'messages'   => [['role' => 'user', 'content' => $prompt]]
-            ]),
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT        => 15,
-            CURLOPT_CONNECTTIMEOUT => 5
-        ]);
-
-        $result = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-
-        if ($httpCode !== 200 || !$result) {
+        // Routed via ClaudeClient -> Groq Llama 3.3 70B (auto when AI_PROVIDER=groq)
+        require_once __DIR__ . '/helpers/claude-client.php';
+        $text = ClaudeClient::text($prompt, '', 200);
+        if ($text === null) {
             return null;
         }
-
-        $data = json_decode($result, true);
-        $text = $data['content'][0]['text'] ?? null;
 
         // Sanitizar resposta
         if ($text) {

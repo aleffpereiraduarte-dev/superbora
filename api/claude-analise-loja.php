@@ -211,37 +211,17 @@ Responda APENAS com um JSON no formato:
 }";
 
     try {
-        $ch = curl_init('https://api.anthropic.com/v1/messages');
-
-        $data = [
-            'model' => 'claude-3-haiku-20240307',
-            'max_tokens' => 500,
-            'system' => 'Você é um analista de risco especializado em marketplaces. Responda APENAS com JSON válido, sem texto adicional.',
-            'messages' => [
-                ['role' => 'user', 'content' => $prompt]
-            ]
-        ];
-
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => json_encode($data),
-            CURLOPT_HTTPHEADER => [
-                'Content-Type: application/json',
-                'x-api-key: ' . $apiKey,
-                'anthropic-version: 2023-06-01'
-            ],
-            CURLOPT_TIMEOUT => 30
-        ]);
-
-        $result = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
+        // Routed via ClaudeClient -> Groq Llama 3.3 70B (auto when AI_PROVIDER=groq)
+        require_once __DIR__ . '/mercado/helpers/claude-client.php';
+        $text = ClaudeClient::text(
+            $prompt,
+            'Você é um analista de risco especializado em marketplaces. Responda APENAS com JSON válido, sem texto adicional.',
+            500
+        );
+        $httpCode = $text !== null ? 200 : 500;
 
         if ($httpCode === 200) {
-            $json = json_decode($result, true);
-            $text = $json['content'][0]['text'] ?? '';
-            $analise = json_decode($text, true);
+            $analise = ClaudeClient::parseJson($text);
 
             if ($analise) {
                 return [

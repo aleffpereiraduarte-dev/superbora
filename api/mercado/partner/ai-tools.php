@@ -868,48 +868,18 @@ function callClaudeAPI(string $systemPrompt, string $userMessage, int $maxTokens
         return ['success' => false, 'error' => 'CLAUDE_API_KEY not configured'];
     }
 
-    $data = [
-        'model' => CLAUDE_MODEL,
-        'max_tokens' => $maxTokens,
-        'system' => $systemPrompt,
-        'messages' => [['role' => 'user', 'content' => $userMessage]],
-    ];
-
-    $ch = curl_init('https://api.anthropic.com/v1/messages');
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => json_encode($data),
-        CURLOPT_HTTPHEADER => [
-            'Content-Type: application/json',
-            'x-api-key: ' . $apiKey,
-            'anthropic-version: 2023-06-01',
-        ],
-        CURLOPT_TIMEOUT => 120,
-        CURLOPT_CONNECTTIMEOUT => 10,
-    ]);
-
-    $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $curlError = curl_error($ch);
-    curl_close($ch);
-
-    if ($curlError) return ['success' => false, 'error' => 'cURL: ' . $curlError];
-    if ($httpCode !== 200) {
-        $err = json_decode($response, true);
-        return ['success' => false, 'error' => $err['error']['message'] ?? "HTTP {$httpCode}"];
+    // Routed via ClaudeClient -> Groq Llama 3.3 70B (auto when AI_PROVIDER=groq)
+    require_once __DIR__ . '/../helpers/claude-client.php';
+    $client = new ClaudeClient();
+    $r = $client->send($systemPrompt, [['role' => 'user', 'content' => $userMessage]], $maxTokens);
+    if (!$r['success']) {
+        return ['success' => false, 'error' => $r['error'] ?? 'AI request failed'];
     }
-
-    $result = json_decode($response, true);
-    if (!isset($result['content'][0]['text'])) {
-        return ['success' => false, 'error' => 'Invalid response'];
-    }
-
     return [
         'success' => true,
-        'response' => $result['content'][0]['text'],
-        'tokens_used' => ($result['usage']['input_tokens'] ?? 0) + ($result['usage']['output_tokens'] ?? 0),
-        'model' => $result['model'] ?? CLAUDE_MODEL,
+        'response' => $r['text'] ?? '',
+        'tokens_used' => $r['total_tokens'] ?? 0,
+        'model' => $r['model'] ?? 'unknown',
     ];
 }
 

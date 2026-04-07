@@ -8180,57 +8180,17 @@ function callClaudeDirectly(string $systemPrompt, array $messages): string
         return "Servico de IA temporariamente indisponivel.";
     }
 
-    $payload = json_encode([
-        'model'      => WABOT_CLAUDE_MODEL,
-        'max_tokens' => 1024,
-        'system'     => $systemPrompt,
-        'messages'   => $messages,
-    ], JSON_UNESCAPED_UNICODE);
+    // Routed via ClaudeClient -> Groq Llama 3.3 70B (auto when AI_PROVIDER=groq)
+    require_once dirname(__DIR__) . '/helpers/claude-client.php';
+    $client = new ClaudeClient();
+    $r = $client->send($systemPrompt, $messages, 1024);
 
-    $ch = curl_init('https://api.anthropic.com/v1/messages');
-    curl_setopt_array($ch, [
-        CURLOPT_POST           => true,
-        CURLOPT_POSTFIELDS     => $payload,
-        CURLOPT_HTTPHEADER     => [
-            'Content-Type: application/json',
-            'x-api-key: ' . $apiKey,
-            'anthropic-version: 2023-06-01',
-        ],
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => WABOT_CLAUDE_TIMEOUT,
-        CURLOPT_CONNECTTIMEOUT => 10,
-    ]);
-
-    $result = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $error = curl_error($ch);
-    curl_close($ch);
-
-    if ($error) {
-        error_log(WABOT_LOG_PREFIX . " Claude API cURL error: {$error}");
-        return "Erro de conexao com o assistente. Tente novamente.";
-    }
-
-    if ($httpCode !== 200) {
-        error_log(WABOT_LOG_PREFIX . " Claude API HTTP {$httpCode}: " . mb_substr($result, 0, 500));
+    if (!$r['success']) {
+        error_log(WABOT_LOG_PREFIX . " AI request failed: " . ($r['error'] ?? 'unknown'));
         return "Erro temporario no assistente. Tente novamente em instantes.";
     }
 
-    $data = json_decode($result, true);
-    if (!$data || empty($data['content'])) {
-        error_log(WABOT_LOG_PREFIX . " Claude API empty response");
-        return "Nao consegui gerar uma resposta. Tente novamente.";
-    }
-
-    // Extract text from content blocks
-    $textParts = [];
-    foreach ($data['content'] as $block) {
-        if (($block['type'] ?? '') === 'text') {
-            $textParts[] = $block['text'];
-        }
-    }
-
-    return implode("\n", $textParts);
+    return $r['text'] ?? "Nao consegui gerar uma resposta. Tente novamente.";
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

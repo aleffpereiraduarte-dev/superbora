@@ -352,40 +352,14 @@ function consultarClaudeMatching(array $pedido, array $top3, int $total_itens, f
         . "{\"shopper_id\": <ID_DO_SHOPPER_ESCOLHIDO>, \"motivo\": \"<Explicacao breve em portugues>\"}\n\n"
         . "Responda APENAS o JSON, sem texto adicional.";
 
-    $ch = curl_init('https://api.anthropic.com/v1/messages');
-    curl_setopt_array($ch, [
-        CURLOPT_POST => true,
-        CURLOPT_HTTPHEADER => [
-            'Content-Type: application/json',
-            'x-api-key: ' . CLAUDE_API_KEY,
-            'anthropic-version: 2023-06-01'
-        ],
-        CURLOPT_POSTFIELDS => json_encode([
-            'model' => 'claude-3-haiku-20240307',
-            'max_tokens' => 500,
-            'messages' => [['role' => 'user', 'content' => $prompt]]
-        ]),
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 10
-    ]);
-
-    $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $curlError = curl_error($ch);
-    curl_close($ch);
-
-    if ($curlError || $httpCode !== 200) {
-        error_log("[matching-ai] Claude API erro HTTP {$httpCode}: {$curlError}");
+    // Routed via ClaudeClient -> Groq Llama 3.3 70B (auto when AI_PROVIDER=groq)
+    require_once __DIR__ . '/helpers/claude-client.php';
+    $texto = ClaudeClient::text($prompt, '', 500);
+    if ($texto === null) {
+        error_log("[matching-ai] AI request failed");
         return null;
     }
-
-    $data = json_decode($response, true);
-    if (!$data || !isset($data['content'][0]['text'])) {
-        error_log("[matching-ai] Claude API resposta invalida: " . ($response ?: 'vazio'));
-        return null;
-    }
-
-    $texto = trim($data['content'][0]['text']);
+    $texto = trim($texto);
 
     // Extrair JSON da resposta — try json_decode first, then regex fallback
     $json_match = json_decode($texto, true);

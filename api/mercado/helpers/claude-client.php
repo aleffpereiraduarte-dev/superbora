@@ -30,6 +30,29 @@ class ClaudeClient {
      * @return array{success: bool, text?: string, input_tokens?: int, output_tokens?: int, model?: string, error?: string}
      */
     public function send(string $systemPrompt, array $messages, int $maxTokens = 4096): array {
+        // ============================================================
+        // PROVIDER ROUTING: when AI_PROVIDER=groq, route text-only calls
+        // to GroqClient (Llama 3.3 70B). Vision calls (sendWithVision)
+        // continue to use Claude. Drop-in: response shape is identical.
+        // ============================================================
+        $provider = $_ENV['AI_PROVIDER'] ?? getenv('AI_PROVIDER') ?: 'claude';
+        if ($provider === 'groq') {
+            $groqPath = __DIR__ . '/groq-client.php';
+            if (file_exists($groqPath)) {
+                require_once $groqPath;
+                if (class_exists('GroqClient')) {
+                    static $groq = null;
+                    if ($groq === null) $groq = new GroqClient();
+                    $r = $groq->send($systemPrompt, $messages, $maxTokens);
+                    if ($r['success']) {
+                        return $r;
+                    }
+                    // On Groq failure, fall through to Claude as backup
+                    error_log('[claude-client] Groq failed, falling back to Claude: ' . ($r['error'] ?? 'unknown'));
+                }
+            }
+        }
+
         if (empty($this->apiKey)) {
             return ['success' => false, 'error' => 'CLAUDE_API_KEY not configured'];
         }
@@ -126,6 +149,21 @@ class ClaudeClient {
 
         $messages = [['role' => 'user', 'content' => $content]];
         return $this->send($systemPrompt, $messages, $maxTokens);
+    }
+
+    /**
+     * Convenience static helper: get raw text from a single user prompt.
+     * Routes through provider router (Groq when AI_PROVIDER=groq).
+     * Returns null on failure. Use this for one-shot text generation.
+     *
+     * Usage:
+     *   $reply = ClaudeClient::text("Diga ola", "", 200);
+     */
+    public static function text(string $userPrompt, string $systemPrompt = '', int $maxTokens = 1024): ?string {
+        static $instance = null;
+        if ($instance === null) $instance = new self();
+        $r = $instance->send($systemPrompt, [['role' => 'user', 'content' => $userPrompt]], $maxTokens);
+        return $r['success'] ? ($r['text'] ?? null) : null;
     }
 
     /**
