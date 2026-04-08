@@ -238,6 +238,68 @@ class EfiClient
     }
 
     /**
+     * Look up a PIX key in the BCB DICT directory.
+     * Returns the holder name + bank info via EFI's `/v2/gn/dict/keys/{key}` endpoint.
+     *
+     * Requires EFI Pay merchant account with PIX certified.
+     *
+     * @param  string $pixKey CPF, CNPJ, email, phone, or EVP (UUID)
+     * @return array [success, holder_name, holder_document, bank_name, bank_ispb]
+     */
+    public function lookupPixKey(string $pixKey): array
+    {
+        if (!$this->isConfigured() || !$this->authenticate('pix')) {
+            return ['success' => false, 'error' => 'EFI nao configurado'];
+        }
+
+        $encoded = urlencode($pixKey);
+        $response = $this->pixRequest('GET', "/v2/gn/dict/keys/{$encoded}");
+
+        if (empty($response) || !is_array($response)) {
+            return ['success' => false, 'error' => 'Chave PIX nao encontrada'];
+        }
+
+        // EFI Pay quirk: when the key doesn't exist in DICT, the API returns
+        //   HTTP 200 with { "nome": "nao_encontrado", "mensagem": "Recurso nao encontrado" }
+        // (instead of a proper 404). We must filter that out before treating
+        // the response as a real DICT hit, otherwise the recipient card would
+        // proudly show "nao_encontrado" as the holder name.
+        if (isset($response['nome']) && $response['nome'] === 'nao_encontrado') {
+            return ['success' => false, 'error' => 'Chave PIX nao encontrada na DICT'];
+        }
+        if (!empty($response['mensagem']) && empty($response['nomeRecebedor']) && empty($response['nomeFantasia'])) {
+            // Generic EFI error envelope ({"mensagem":"..."}) — also not a hit.
+            return ['success' => false, 'error' => $response['mensagem']];
+        }
+
+        // EFI response shape (from BCB DICT):
+        // {
+        //   "chave": "...",
+        //   "tipoChave": "CPF",
+        //   "nomeRecebedor": "JOAO DA SILVA",
+        //   "nomeFantasia": "...",
+        //   "documentoRecebedor": "***456789**",
+        //   "ispb": "18236120",
+        //   "agencia": "0001",
+        //   "conta": { "tipo": "CACC", "numero": "..." }
+        // }
+        $name = $response['nomeRecebedor'] ?? $response['nome'] ?? null;
+        if (!$name || $name === 'nao_encontrado') {
+            return ['success' => false, 'error' => 'Resposta DICT invalida'];
+        }
+
+        return [
+            'success' => true,
+            'holder_name' => $name,
+            'holder_document' => $response['documentoRecebedor'] ?? null,
+            'bank_name' => $response['nomeFantasia'] ?? bankNameFromIspb($response['ispb'] ?? ''),
+            'bank_ispb' => $response['ispb'] ?? null,
+            'agencia' => $response['agencia'] ?? null,
+            'conta' => $response['conta'] ?? null,
+        ];
+    }
+
+    /**
      * Refund a PIX payment (devolucao)
      *
      * @param string $e2eId  The endToEndId from the paid PIX
@@ -859,4 +921,51 @@ class EfiClient
                 return $key;
         }
     }
+}
+
+/**
+ * Map a BCB ISPB code to the bank's commercial name.
+ * Top ~30 brazilian banks. Falls back to "ISPB <code>" for unknowns.
+ */
+function bankNameFromIspb(string $ispb): string
+{
+    if (!$ispb) return '';
+    static $map = [
+        '00000000' => 'Banco do Brasil',
+        '60746948' => 'Bradesco',
+        '60701190' => 'Itau',
+        '90400888' => 'Santander',
+        '00360305' => 'Caixa Economica Federal',
+        '18236120' => 'Nubank',
+        '13140088' => 'Inter',
+        '90400500' => 'Sicoob',
+        '00714671' => 'Sicredi',
+        '04902979' => 'Banco Original',
+        '17192451' => 'Will Bank',
+        '32402502' => 'C6 Bank',
+        '13884775' => 'PagBank',
+        '21018182' => 'Mercado Pago',
+        '12865507' => 'BS2',
+        '07237373' => 'Banco do Nordeste',
+        '04184779' => 'Banco da Amazonia',
+        '08561701' => 'Stone Pagamentos',
+        '23522214' => 'BTG Pactual',
+        '40434681' => 'Acesso Solucoes',
+        '36113876' => 'Iti (Itau)',
+        '00558456' => 'BDMG',
+        '00997185' => 'Banese',
+        '60498557' => 'Banco Safra',
+        '90400125' => 'Banco Votorantim',
+        '17184037' => 'Banco Topazio',
+        '13720915' => 'Genial',
+        '02038232' => 'Banco Daycoval',
+        '07207996' => 'Cresol',
+        '21332862' => 'Picpay',
+        '23114447' => 'Neon',
+        '08609934' => 'Cora',
+        '13486793' => 'Banco BRB',
+    ];
+    $clean = preg_replace('/\D/', '', $ispb);
+    $clean = str_pad($clean, 8, '0', STR_PAD_LEFT);
+    return $map[$clean] ?? ('Banco ISPB ' . $clean);
 }
