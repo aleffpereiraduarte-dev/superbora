@@ -830,9 +830,12 @@ REGRAS DO JSON:
     $stmt = $db->prepare("INSERT INTO om_ai_customer_messages (conversation_id, role, content) VALUES (?, 'user', ?)");
     $stmt->execute([$conversationId, $message]);
 
-    // ── Call Claude ──
+    // ── Call Claude (jsonMode=true forces Groq Kimi K2 to return valid JSON
+    // via OpenAI-compatible response_format — without this the model often
+    // ignores the prompt and replies with plain greetings like "Ola, sou a
+    // ONE..." which then break parseJson and surface to the user). ──
     $claude = new ClaudeClient();
-    $result = $claude->send($systemPrompt, $messages, 4096);
+    $result = $claude->send($systemPrompt, $messages, 4096, true);
 
     if (!$result['success']) {
         // Fallback: return search results directly

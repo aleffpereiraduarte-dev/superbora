@@ -27,13 +27,18 @@ class ClaudeClient {
 
     /**
      * Send a message to Claude API
+     *
+     * @param bool $jsonMode  When true, forces the model to return strict JSON.
+     *                        For Groq this enables OpenAI-compatible response_format.
+     *                        For Claude this is a no-op since Claude follows JSON-in-prompt
+     *                        instructions reliably already.
      * @return array{success: bool, text?: string, input_tokens?: int, output_tokens?: int, model?: string, error?: string}
      */
-    public function send(string $systemPrompt, array $messages, int $maxTokens = 4096): array {
+    public function send(string $systemPrompt, array $messages, int $maxTokens = 4096, bool $jsonMode = false): array {
         // ============================================================
         // PROVIDER ROUTING: when AI_PROVIDER=groq, route text-only calls
-        // to GroqClient (Llama 3.3 70B). Vision calls (sendWithVision)
-        // continue to use Claude. Drop-in: response shape is identical.
+        // to GroqClient (Kimi K2 / Llama 3.3 70B fallback). Vision calls
+        // (sendWithVision) continue to use Claude.
         // ============================================================
         $provider = $_ENV['AI_PROVIDER'] ?? getenv('AI_PROVIDER') ?: 'claude';
         if ($provider === 'groq') {
@@ -43,7 +48,7 @@ class ClaudeClient {
                 if (class_exists('GroqClient')) {
                     static $groq = null;
                     if ($groq === null) $groq = new GroqClient();
-                    $r = $groq->send($systemPrompt, $messages, $maxTokens);
+                    $r = $groq->send($systemPrompt, $messages, $maxTokens, $jsonMode);
                     if ($r['success']) {
                         return $r;
                     }
@@ -259,6 +264,59 @@ class ClaudeClient {
         if ($instance === null) $instance = new self();
         $r = $instance->send($systemPrompt, [['role' => 'user', 'content' => $userPrompt]], $maxTokens);
         return $r['success'] ? ($r['text'] ?? null) : null;
+    }
+
+    /**
+     * Fast tier: routes to Groq Llama 3.1 8B Instant when AI_PROVIDER=groq.
+     * Use for short-form, high-volume tasks: classification, spam detection,
+     * push copy, FAQ generation, search suggestions, birthday greetings.
+     * ~3x faster than 70B and far cheaper. Falls back to 70B then Claude on failure.
+     *
+     * Usage:
+     *   $reply = ClaudeClient::sendFast("classifique como spam: ...", "", 100);
+     */
+    public static function sendFast(string $userPrompt, string $systemPrompt = '', int $maxTokens = 512): ?string {
+        $provider = $_ENV['AI_PROVIDER'] ?? getenv('AI_PROVIDER') ?: 'claude';
+        if ($provider === 'groq') {
+            $groqPath = __DIR__ . '/groq-client.php';
+            if (file_exists($groqPath)) {
+                require_once $groqPath;
+                if (class_exists('GroqClient')) {
+                    static $fastGroq = null;
+                    if ($fastGroq === null) $fastGroq = new GroqClient(GroqClient::FAST_MODEL);
+                    $r = $fastGroq->send($systemPrompt, [['role' => 'user', 'content' => $userPrompt]], $maxTokens);
+                    if ($r['success']) {
+                        return $r['text'] ?? null;
+                    }
+                    error_log('[claude-client] Groq fast tier failed, falling back to 70B: ' . ($r['error'] ?? 'unknown'));
+                }
+            }
+        }
+        // Fall back to default tier (70B Groq or Claude)
+        return self::text($userPrompt, $systemPrompt, $maxTokens);
+    }
+
+    /**
+     * sendFast variant that GUARANTEES valid JSON output by retrying with the
+     * 70B model if the 8B response fails to parse. Use for any callsite that
+     * expects structured JSON (FAQ, spam, push variants, search suggestions).
+     *
+     * Returns the parsed array, or null if both tiers fail.
+     */
+    public static function sendFastJson(string $userPrompt, string $systemPrompt = '', int $maxTokens = 1024): ?array {
+        $reply = self::sendFast($userPrompt, $systemPrompt, $maxTokens);
+        if ($reply) {
+            $parsed = self::parseJson($reply);
+            if (is_array($parsed) && !empty($parsed)) {
+                return $parsed;
+            }
+            error_log('[claude-client] sendFastJson: 8B returned invalid/truncated JSON, retrying with 70B');
+        }
+        // Fallback to 70B tier (or Claude if Groq down)
+        $reply2 = self::text($userPrompt, $systemPrompt, $maxTokens);
+        if (!$reply2) return null;
+        $parsed2 = self::parseJson($reply2);
+        return is_array($parsed2) ? $parsed2 : null;
     }
 
     /**
