@@ -17,29 +17,12 @@ setCorsHeaders();
 try {
     $db = getDB();
 
-    // Ensure tables exist
-    $db->exec("
-        CREATE TABLE IF NOT EXISTS om_bill_splits (
-            id SERIAL PRIMARY KEY,
-            order_id INT NOT NULL,
-            creator_id INT NOT NULL,
-            share_code VARCHAR(6) UNIQUE,
-            total NUMERIC(10,2),
-            status VARCHAR(20) DEFAULT 'pending',
-            created_at TIMESTAMP DEFAULT NOW()
-        );
-        CREATE TABLE IF NOT EXISTS om_bill_split_participants (
-            id SERIAL PRIMARY KEY,
-            split_id INT NOT NULL,
-            name VARCHAR(255),
-            email VARCHAR(255),
-            phone VARCHAR(20),
-            amount NUMERIC(10,2),
-            status VARCHAR(20) DEFAULT 'pending',
-            paid_at TIMESTAMP,
-            payment_method VARCHAR(50)
-        );
-    ");
+    // Tables already exist with the schema:
+    //   om_bill_splits: id, order_id, created_by, share_code, total_amount, split_type, status, expires_at, created_at, updated_at
+    //   om_bill_split_participants: id, split_id, customer_id, name, email, phone, amount, status, paid_at, payment_reference, created_at
+    // We deliberately do NOT run CREATE TABLE IF NOT EXISTS here — the
+    // production schema diverged from this file's old definition (e.g.
+    // creator_id vs created_by), so this code now uses the real column names.
 
     $method = $_SERVER['REQUEST_METHOD'];
 
@@ -52,14 +35,14 @@ try {
 
         // Look up the split + creator name + order info
         $stmt = $db->prepare("
-            SELECT s.id, s.order_id, s.creator_id, s.share_code, s.total, s.status, s.created_at,
+            SELECT s.id, s.order_id, s.created_by AS creator_id, s.share_code, s.total_amount AS total, s.status, s.created_at,
                    o.order_number, o.total as order_total, o.created_at as order_date,
                    p.name as partner_name, p.logo as partner_logo,
                    c.name as creator_name
             FROM om_bill_splits s
             INNER JOIN om_market_orders o ON o.order_id = s.order_id
             LEFT JOIN om_market_partners p ON p.partner_id = o.partner_id
-            LEFT JOIN om_customers c ON c.customer_id = s.creator_id
+            LEFT JOIN om_customers c ON c.customer_id = s.created_by
             WHERE s.share_code = ? AND s.status != 'cancelled'
             LIMIT 1
         ");
@@ -71,7 +54,7 @@ try {
 
         // Get all participants
         $stmt = $db->prepare("
-            SELECT id, name, email, phone, amount, status, paid_at, payment_method
+            SELECT id, name, email, phone, amount, status, paid_at, payment_reference
             FROM om_bill_split_participants
             WHERE split_id = ?
             ORDER BY id ASC
@@ -116,7 +99,7 @@ try {
                 'name'            => $p['name'],
                 'amount'          => (float)$p['amount'],
                 'status'          => $p['status'],
-                'payment_method'  => $p['payment_method'],
+                'payment_method'  => $p['payment_reference'],
             ], $participants),
             'focus_participant' => $focusParticipant ? [
                 'id'     => (int)$focusParticipant['id'],
@@ -146,9 +129,9 @@ try {
             response(false, null, "Pedido nao encontrado", 404);
         }
 
-        // Get the split
+        // Get the split (use real schema column names: created_by, total_amount)
         $stmt = $db->prepare("
-            SELECT id, order_id, creator_id, share_code, total, status, created_at
+            SELECT id, order_id, created_by AS creator_id, share_code, total_amount AS total, status, created_at
             FROM om_bill_splits
             WHERE order_id = ? AND status != 'cancelled'
             ORDER BY created_at DESC LIMIT 1
@@ -160,9 +143,9 @@ try {
             response(false, null, "Nenhuma divisao encontrada para este pedido", 404);
         }
 
-        // Get participants
+        // Get participants (real column is payment_reference, not payment_method)
         $stmt = $db->prepare("
-            SELECT id, name, email, phone, amount, status, paid_at, payment_method
+            SELECT id, name, email, phone, amount, status, paid_at, payment_reference
             FROM om_bill_split_participants
             WHERE split_id = ?
             ORDER BY id ASC
@@ -198,7 +181,7 @@ try {
                     'amount_formatted' => 'R$ ' . number_format($p['amount'], 2, ',', '.'),
                     'status' => $p['status'],
                     'paid_at' => $p['paid_at'],
-                    'payment_method' => $p['payment_method'],
+                    'payment_method' => $p['payment_reference'],
                 ];
             }, $participants),
         ]);
@@ -265,9 +248,10 @@ try {
 
             $db->beginTransaction();
             try {
+                // Use real schema columns: created_by, total_amount, split_type
                 $stmt = $db->prepare("
-                    INSERT INTO om_bill_splits (order_id, creator_id, share_code, total, status)
-                    VALUES (?, ?, ?, ?, 'pending')
+                    INSERT INTO om_bill_splits (order_id, created_by, share_code, total_amount, split_type, status)
+                    VALUES (?, ?, ?, ?, 'custom', 'pending')
                     RETURNING id
                 ");
                 $stmt->execute([$orderId, $customerId, $shareCode, $orderTotal]);
@@ -333,7 +317,7 @@ try {
                 // SECURITY: Lock the participant row and verify the split belongs to the authenticated user's order
                 $stmt = $db->prepare("
                     SELECT p.id, p.split_id, p.amount, p.status,
-                           s.status as split_status, s.order_id, s.creator_id
+                           s.status as split_status, s.order_id, s.created_by AS creator_id
                     FROM om_bill_split_participants p
                     INNER JOIN om_bill_splits s ON p.split_id = s.id
                     WHERE p.id = ? AND p.split_id = ?
@@ -365,10 +349,10 @@ try {
                     response(false, null, "Esta divisao foi cancelada", 400);
                 }
 
-                // Mark as paid
+                // Mark as paid (real column is payment_reference, not payment_method)
                 $db->prepare("
                     UPDATE om_bill_split_participants
-                    SET status = 'paid', paid_at = NOW(), payment_method = ?
+                    SET status = 'paid', paid_at = NOW(), payment_reference = ?
                     WHERE id = ?
                 ")->execute([$paymentMethod, $participantId]);
 
@@ -423,7 +407,7 @@ try {
                 // Lock the participant + parent split
                 $stmt = $db->prepare("
                     SELECT p.id, p.amount, p.status, p.split_id,
-                           s.id AS split_id, s.creator_id, s.share_code, s.status as split_status, s.order_id
+                           s.id AS split_id, s.created_by AS creator_id, s.share_code, s.status as split_status, s.order_id
                     FROM om_bill_split_participants p
                     INNER JOIN om_bill_splits s ON p.split_id = s.id
                     WHERE p.id = ? AND s.share_code = ?
@@ -492,7 +476,7 @@ try {
                 // 3. Mark participant as paid
                 $db->prepare("
                     UPDATE om_bill_split_participants
-                    SET status = 'paid', paid_at = NOW(), payment_method = 'sb_wallet'
+                    SET status = 'paid', paid_at = NOW(), payment_reference = 'sb_wallet'
                     WHERE id = ?
                 ")->execute([$participantId]);
 
