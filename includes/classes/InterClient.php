@@ -202,8 +202,157 @@ class InterClient
     }
 
     // ═══════════════════════════════════════
+    // PAGAMENTO DE BOLETO via Banco Inter
+    // ═══════════════════════════════════════
+
+    /**
+     * Consult a boleto barcode and return its details (amount, due date,
+     * beneficiary). Inter exposes this through GET /banking/v2/pagamento/{codBarras}
+     * or as a "preview" of the payment endpoint.
+     *
+     * Required scope: pagamento-boleto.read
+     */
+    public function consultBarcode(string $barcode): array
+    {
+        if (!$this->isConfigured()) {
+            return ['success' => false, 'error' => 'Inter nao configurado'];
+        }
+        $clean = preg_replace('/\D/', '', $barcode);
+        if (!in_array(strlen($clean), [44, 47, 48], true)) {
+            return ['success' => false, 'error' => 'Codigo de barras invalido'];
+        }
+
+        $token = $this->authenticate('pagamento-boleto.read pagamento-boleto.write');
+        if (!$token) {
+            return ['success' => false, 'error' => 'Inter pagamento-boleto nao habilitado'];
+        }
+
+        // Inter docs offer two ways: query the boleto detail or do a preview.
+        // Try direct GET first, then fall back to a "valida" endpoint.
+        $tries = [
+            ['GET', '/banking/v2/pagamento/' . urlencode($clean)],
+            ['GET', '/banking/v2/pagamento/boleto/' . urlencode($clean)],
+            ['GET', '/banking/v2/boleto-pagamento/' . urlencode($clean)],
+        ];
+
+        $lastError = 'Endpoint nao encontrado';
+        foreach ($tries as [$method, $path]) {
+            $ch = curl_init($this->baseUrl . $path);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_CUSTOMREQUEST  => $method,
+                CURLOPT_HTTPHEADER     => [
+                    'Authorization: Bearer ' . $token,
+                    'Content-Type: application/json',
+                ],
+                CURLOPT_SSLCERT  => $this->certPath,
+                CURLOPT_SSLKEY   => $this->keyPath,
+                CURLOPT_TIMEOUT  => $this->timeout,
+            ]);
+            $body = curl_exec($ch);
+            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+
+            if ($code === 404) { $lastError = 'Endpoint inexistente (' . $path . ')'; continue; }
+            if ($code !== 200) {
+                $err = json_decode($body, true);
+                $lastError = $err['detail'] ?? $err['message'] ?? "HTTP {$code}";
+                continue;
+            }
+
+            $data = json_decode($body, true);
+            if (!is_array($data)) continue;
+
+            return [
+                'success'           => true,
+                'type'              => $data['tipoConta'] ?? $data['tipo'] ?? 'Boleto',
+                'amount'            => floatval($data['valorTotal'] ?? $data['valor'] ?? 0),
+                'due_date'          => $data['dataVencimento']  ?? $data['vencimento'] ?? null,
+                'limit_date'        => $data['dataLimitePagamento'] ?? null,
+                'beneficiary_name'  => $data['nomeBeneficiario'] ?? $data['beneficiario'] ?? '',
+                'beneficiary_doc'   => $data['cpfCnpjBeneficiario'] ?? null,
+                'allow_change'      => false,
+                'barcode'           => $clean,
+                'lookup_source'     => 'inter',
+            ];
+        }
+
+        return ['success' => false, 'error' => $lastError];
+    }
+
+    /**
+     * Pay a boleto using the Inter PJ account balance.
+     *
+     * POST /banking/v2/pagamento
+     * {
+     *   "codBarraLinhaDigitavel": "...",
+     *   "valorPagar": 100.50,
+     *   "dataPagamento": "2026-04-08",
+     *   "cpfCnpjBeneficiario": "..." (opcional)
+     * }
+     *
+     * Required scope: pagamento-boleto.write
+     */
+    public function payBarcode(string $barcode, float $amount, string $description = 'Pagamento SuperBora'): array
+    {
+        if (!$this->isConfigured()) {
+            return ['success' => false, 'error' => 'Inter nao configurado'];
+        }
+        $clean = preg_replace('/\D/', '', $barcode);
+        if (!in_array(strlen($clean), [44, 47, 48], true)) {
+            return ['success' => false, 'error' => 'Codigo de barras invalido'];
+        }
+
+        $token = $this->authenticate('pagamento-boleto.write');
+        if (!$token) {
+            return ['success' => false, 'error' => 'Inter pagamento-boleto.write nao habilitado'];
+        }
+
+        $payload = [
+            'codBarraLinhaDigitavel' => $clean,
+            'valorPagar'             => round($amount, 2),
+            'dataPagamento'          => date('Y-m-d'),
+        ];
+
+        $ch = curl_init($this->baseUrl . '/banking/v2/pagamento');
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST           => true,
+            CURLOPT_POSTFIELDS     => json_encode($payload),
+            CURLOPT_HTTPHEADER     => [
+                'Authorization: Bearer ' . $token,
+                'Content-Type: application/json',
+                // Inter requires this header for transactional operations
+                'x-conta-corrente: ' . ($_ENV['INTER_ACCOUNT_NUMBER'] ?? getenv('INTER_ACCOUNT_NUMBER') ?: ''),
+            ],
+            CURLOPT_SSLCERT  => $this->certPath,
+            CURLOPT_SSLKEY   => $this->keyPath,
+            CURLOPT_TIMEOUT  => $this->timeout,
+        ]);
+        $body = curl_exec($ch);
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if ($code !== 200 && $code !== 201 && $code !== 202) {
+            $err = json_decode($body, true);
+            $msg = $err['detail'] ?? $err['message'] ?? "HTTP {$code}: " . substr($body, 0, 200);
+            error_log('[InterClient] payBarcode failed: ' . $msg);
+            return ['success' => false, 'error' => $msg];
+        }
+
+        $data = json_decode($body, true) ?? [];
+        return [
+            'success'    => true,
+            'payment_id' => $data['codigoTransacao'] ?? $data['idTransacao'] ?? $data['id'] ?? bin2hex(random_bytes(8)),
+            'status'     => $data['situacao'] ?? $data['status'] ?? 'EM_PROCESSAMENTO',
+            'amount'     => floatval($data['valorPago'] ?? $amount),
+            'paid_at'    => $data['dataPagamento'] ?? date('Y-m-d H:i:s'),
+            'lookup_source' => 'inter',
+        ];
+    }
+
+    // ═══════════════════════════════════════
     // (Future) PIX charge / cob — stubs for symmetry
-    // Inter has these but we're not using them yet.
     // ═══════════════════════════════════════
     public function createPixCharge(float $amount, string $description, int $expiresSeconds = 600, array $customer = []): array
     {

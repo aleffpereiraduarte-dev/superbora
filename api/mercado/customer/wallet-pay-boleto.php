@@ -20,8 +20,30 @@
  */
 require_once __DIR__ . '/../config/database.php';
 require_once dirname(__DIR__, 3) . '/includes/classes/EfiClient.php';
+require_once dirname(__DIR__, 3) . '/includes/classes/InterClient.php';
+require_once dirname(__DIR__, 3) . '/includes/classes/AsaasClient.php';
 require_once __DIR__ . '/../helpers/notify.php';
 require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
+
+/**
+ * Boleto payment provider cascade.
+ * Inter is preferred (free for PJ correntistas), Asaas is the fallback
+ * (paid but reliable), EFI is the legacy fallback.
+ *
+ * @return array {client, name} or null if no provider is configured
+ */
+function pickBoletoProvider() {
+    $inter = new InterClient();
+    if ($inter->isConfigured()) return ['client' => $inter, 'name' => 'inter'];
+
+    $asaas = new AsaasClient();
+    if ($asaas->isConfigured() && method_exists($asaas, 'consultBarcode')) return ['client' => $asaas, 'name' => 'asaas'];
+
+    $efi = new EfiClient();
+    if ($efi->isConfigured()) return ['client' => $efi, 'name' => 'efi'];
+
+    return null;
+}
 
 setCorsHeaders();
 
@@ -38,10 +60,12 @@ try {
     $method = $_SERVER['REQUEST_METHOD'];
 
     if ($method === 'GET') {
-        // Return wallet balance + recent boleto payments
-        $balStmt = $db->prepare("SELECT balance FROM om_cashback_wallet WHERE customer_id = ?");
-        $balStmt->execute([$customerId]);
-        $balance = round((float)($balStmt->fetchColumn() ?: 0), 2);
+        // Return wallet balance + recent boleto payments.
+        // SOURCE OF TRUTH: om_cashback ledger (same as cashback.php).
+        // Available = sum(earned/bonus available) - sum(used). Never read
+        // om_cashback_wallet directly — that table is a denormalized aggregate
+        // that drifts in production.
+        $balance = readWalletBalance($db, $customerId);
 
         $histStmt = $db->prepare("
             SELECT id, barcode_masked, amount, beneficiary_name, status, created_at, paid_at
@@ -91,10 +115,33 @@ try {
             checkRateLimit("boleto_consult:{$customerId}", 20, 60);
         }
 
+        // Try providers in order: Inter → Asaas → EFI. First one that succeeds wins.
+        $providers = [];
+        $inter = new InterClient();
+        if ($inter->isConfigured()) $providers[] = ['client' => $inter, 'name' => 'inter'];
+        $asaas = new AsaasClient();
+        if ($asaas->isConfigured() && method_exists($asaas, 'consultBarcode')) $providers[] = ['client' => $asaas, 'name' => 'asaas'];
         $efi = new EfiClient();
-        $r = $efi->consultBarcode($barcode);
-        if (!$r['success']) {
-            response(false, null, $r['error'] ?? 'Falha ao consultar boleto', 503);
+        if ($efi->isConfigured()) $providers[] = ['client' => $efi, 'name' => 'efi'];
+
+        if (empty($providers)) {
+            response(false, null, 'Nenhum provider de boleto configurado', 503);
+        }
+
+        $r = null; $usedProvider = null; $errors = [];
+        foreach ($providers as $p) {
+            $result = $p['client']->consultBarcode($barcode);
+            if ($result['success']) {
+                $r = $result;
+                $usedProvider = $p['name'];
+                break;
+            }
+            $errors[] = $p['name'] . ': ' . ($result['error'] ?? 'unknown');
+        }
+
+        if (!$r) {
+            error_log('[wallet-pay-boleto] consult failed all providers: ' . implode(' | ', $errors));
+            response(false, null, 'Nao conseguimos consultar esse boleto agora. Confira o codigo e tente em alguns instantes.', 503);
         }
 
         // Mask the barcode for the response (show only first 4 + last 4 digits)
@@ -109,7 +156,8 @@ try {
             'beneficiary_doc'   => $r['beneficiary_doc'],
             'allow_change'      => $r['allow_change'],
             'barcode_masked'    => $masked,
-            'barcode'           => $barcode, // returned so the client passes it back unchanged
+            'barcode'           => $barcode,
+            'provider'          => $usedProvider,
         ]);
     }
 
@@ -141,36 +189,27 @@ try {
             response(false, null, 'Limite de ' . BOLETO_MAX_PER_DAY . ' pagamentos por dia atingido', 429);
         }
 
-        // 1. Debit wallet inside a transaction
+        // 1. Debit wallet inside a transaction.
+        // We use the om_cashback LEDGER as source of truth. Debiting means
+        // inserting a row with type='used', which lowers the available
+        // balance immediately on the next SELECT (same model as the rest of
+        // the codebase: confirmar-entrega.php, processar.php).
         $db->beginTransaction();
         try {
-            $stmtLock = $db->prepare("SELECT balance FROM om_cashback_wallet WHERE customer_id = ? FOR UPDATE");
-            $stmtLock->execute([$customerId]);
-            $balance = round((float)($stmtLock->fetchColumn() ?: 0), 2);
+            // Lock customer's cashback rows so a parallel transfer can't double-spend
+            $db->prepare("SELECT id FROM om_cashback WHERE customer_id = ? FOR UPDATE")
+                ->execute([$customerId]);
 
+            // Recompute current balance under the lock
+            $balance = readWalletBalance($db, $customerId);
             if ($amount > $balance) {
                 $db->rollBack();
                 response(false, null, 'Saldo insuficiente. Disponivel: R$ ' . number_format($balance, 2, ',', '.'), 400);
             }
 
-            $stmtDebit = $db->prepare("
-                UPDATE om_cashback_wallet
-                SET balance = balance - ?, total_used = total_used + ?, updated_at = NOW()
-                WHERE customer_id = ? AND balance >= ?
-            ");
-            $stmtDebit->execute([$amount, $amount, $customerId, $amount]);
-            if ($stmtDebit->rowCount() === 0) {
-                $db->rollBack();
-                response(false, null, 'Saldo insuficiente', 400);
-            }
-
-            // New balance for the response
-            $newBalStmt = $db->prepare("SELECT balance FROM om_cashback_wallet WHERE customer_id = ?");
-            $newBalStmt->execute([$customerId]);
-            $newBalance = round((float)$newBalStmt->fetchColumn(), 2);
-
-            // Insert pending payment record + cashback transaction
             $masked = substr($barcode, 0, 4) . str_repeat('*', strlen($barcode) - 8) . substr($barcode, -4);
+
+            // Insert the boleto payment record FIRST so we have an id for the ledger description
             $payStmt = $db->prepare("
                 INSERT INTO om_wallet_boleto_payments
                     (customer_id, barcode, barcode_masked, amount, status, created_at)
@@ -180,10 +219,18 @@ try {
             $payStmt->execute([$customerId, $barcode, $masked, $amount]);
             $paymentId = (int)$payStmt->fetchColumn();
 
+            // Debit by inserting a 'used' row in the cashback ledger
             $db->prepare("
-                INSERT INTO om_cashback_transactions (customer_id, type, amount, balance_after, description)
-                VALUES (?, 'debit', ?, ?, ?)
-            ")->execute([$customerId, $amount, $newBalance, "Pagamento de boleto - {$masked}"]);
+                INSERT INTO om_cashback (customer_id, type, amount, status, description, order_id, created_at)
+                VALUES (?, 'used', ?, 'used', ?, NULL, NOW())
+            ")->execute([
+                $customerId,
+                $amount,
+                "Pagamento de boleto #{$paymentId} - {$masked}",
+            ]);
+
+            // Recompute balance after the debit (for the response)
+            $newBalance = readWalletBalance($db, $customerId);
 
             $db->commit();
         } catch (\Exception $dbErr) {
@@ -192,26 +239,44 @@ try {
             response(false, null, 'Erro ao reservar saldo', 500);
         }
 
-        // 2. Try EFI barcode payment OUTSIDE transaction
+        // 2. Try providers in order: Inter → Asaas → EFI (OUTSIDE transaction)
         $payResult = null;
         $errorMsg  = null;
         $providerPaymentId = null;
+        $providerUsed = null;
         $finalStatus = 'failed';
 
-        try {
-            $efi = new EfiClient();
-            $r = $efi->payBarcode($barcode, $amount, "SuperBora #{$paymentId}");
-            if ($r['success']) {
-                $payResult = $r;
-                $providerPaymentId = $r['payment_id'];
-                $finalStatus = strtolower($r['status'] ?? 'em_processamento') === 'confirmado'
-                    ? 'paid'
-                    : 'processing';
-            } else {
-                $errorMsg = $r['error'] ?? 'Falha desconhecida';
+        $providers = [];
+        $inter = new InterClient();
+        if ($inter->isConfigured()) $providers[] = ['client' => $inter, 'name' => 'inter'];
+        $asaas = new AsaasClient();
+        if ($asaas->isConfigured() && method_exists($asaas, 'payBarcode')) $providers[] = ['client' => $asaas, 'name' => 'asaas'];
+        $efi = new EfiClient();
+        if ($efi->isConfigured()) $providers[] = ['client' => $efi, 'name' => 'efi'];
+
+        $errors = [];
+        foreach ($providers as $p) {
+            try {
+                $r = $p['client']->payBarcode($barcode, $amount, "SuperBora #{$paymentId}");
+                if (!empty($r['success'])) {
+                    $payResult = $r;
+                    $providerUsed = $p['name'];
+                    $providerPaymentId = $r['payment_id'] ?? null;
+                    $statusUpper = strtoupper($r['status'] ?? '');
+                    $finalStatus = in_array($statusUpper, ['CONFIRMADO', 'EFETUADO', 'CONCLUIDO', 'PAID', 'PAGO'], true)
+                        ? 'paid'
+                        : 'processing';
+                    break;
+                }
+                $errors[] = $p['name'] . ': ' . ($r['error'] ?? 'unknown');
+            } catch (\Exception $e) {
+                $errors[] = $p['name'] . ': ' . $e->getMessage();
             }
-        } catch (\Exception $efiErr) {
-            $errorMsg = $efiErr->getMessage();
+        }
+
+        if (!$payResult) {
+            $errorMsg = 'Nenhum provider conseguiu pagar: ' . implode(' | ', $errors);
+            error_log('[wallet-pay-boleto] ' . $errorMsg);
         }
 
         // 3. Update payment record with the EFI outcome
@@ -258,21 +323,18 @@ try {
             ]);
         }
 
-        // EFI failed → refund wallet
+        // Provider failed → refund the wallet by inserting a 'bonus' credit
+        // row in the cashback ledger that offsets the 'used' debit.
         try {
             $db->beginTransaction();
             $db->prepare("
-                UPDATE om_cashback_wallet
-                SET balance = balance + ?, total_used = GREATEST(total_used - ?, 0), updated_at = NOW()
-                WHERE customer_id = ?
-            ")->execute([$amount, $amount, $customerId]);
-            $refBal = $db->prepare("SELECT balance FROM om_cashback_wallet WHERE customer_id = ?");
-            $refBal->execute([$customerId]);
-            $refBalance = round((float)$refBal->fetchColumn(), 2);
-            $db->prepare("
-                INSERT INTO om_cashback_transactions (customer_id, type, amount, balance_after, description)
-                VALUES (?, 'credit', ?, ?, ?)
-            ")->execute([$customerId, $amount, $refBalance, "Estorno - boleto nao pago"]);
+                INSERT INTO om_cashback (customer_id, type, amount, status, description, order_id, created_at)
+                VALUES (?, 'bonus', ?, 'available', ?, NULL, NOW())
+            ")->execute([
+                $customerId,
+                $amount,
+                "Estorno - boleto #{$paymentId} nao foi pago",
+            ]);
             $db->prepare("
                 UPDATE om_wallet_boleto_payments
                 SET status = 'failed', error_message = ?, processed_at = NOW()
@@ -295,6 +357,24 @@ try {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Read the customer's available wallet balance from the cashback ledger.
+ * Mirrors what /customer/cashback.php does, so the carteira screen and the
+ * boleto payment screen always agree on the balance.
+ */
+function readWalletBalance(PDO $db, int $customerId): float
+{
+    $stmt = $db->prepare("
+        SELECT
+            COALESCE(SUM(CASE WHEN type IN ('earned','bonus') AND status = 'available' THEN amount ELSE 0 END), 0)
+              - COALESCE(SUM(CASE WHEN type = 'used' THEN amount ELSE 0 END), 0) AS available
+        FROM om_cashback
+        WHERE customer_id = ?
+    ");
+    $stmt->execute([$customerId]);
+    return round(max(0, (float)($stmt->fetchColumn() ?: 0)), 2);
+}
 
 function ensureBoletoTables(PDO $db): void
 {
