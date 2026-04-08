@@ -710,6 +710,143 @@ class EfiClient
     }
 
     // ═══════════════════════════════════════
+    // PAGAMENTO DE CONTAS — Pay boletos via barcode
+    // ═══════════════════════════════════════
+
+    /**
+     * Consult a boleto/conta barcode and return its details (amount, due date,
+     * beneficiary). Used to PREVIEW before the user confirms payment.
+     *
+     * Accepts both formats:
+     *   - Linha digitavel (47 digits, with or without separators)
+     *   - Codigo de barras (44 digits raw)
+     *
+     * Endpoint: GET /v3/gn/barcode/{codBarras}
+     * Required scope: gn.barcode.read
+     *
+     * @return array {success, amount, due_date, beneficiary, type, error?}
+     */
+    public function consultBarcode(string $barcode): array
+    {
+        if (!$this->isConfigured()) {
+            return ['success' => false, 'error' => 'EFI nao configurado'];
+        }
+
+        $clean = preg_replace('/\D/', '', $barcode);
+        if (strlen($clean) !== 44 && strlen($clean) !== 47 && strlen($clean) !== 48) {
+            return ['success' => false, 'error' => 'Codigo de barras invalido (precisa ter 44 ou 47 digitos)'];
+        }
+
+        try {
+            $resp = $this->pixRequest('GET', '/v3/gn/barcode/' . urlencode($clean));
+
+            // EFI's "nao_encontrado" sentinel + standard 404 error envelope
+            if (isset($resp['nome']) && $resp['nome'] === 'nao_encontrado') {
+                return ['success' => false, 'error' => 'Boleto nao encontrado ou EFI Pagamento de Contas nao habilitado'];
+            }
+            if (isset($resp['error']) || isset($resp['mensagem'])) {
+                return ['success' => false, 'error' => $resp['mensagem'] ?? $resp['error_description'] ?? $resp['error']];
+            }
+
+            // Successful response shape (from EFI docs):
+            // {
+            //   "tipo": "Boleto" | "Convenio" | "Tributo",
+            //   "valor": "100.50",
+            //   "vencimento": "2026-05-10",
+            //   "dataLimite": "2026-06-09",
+            //   "beneficiario": { "nome": "EMPRESA XYZ", "cnpj": "..." },
+            //   "pagador":      { "nome": "...", "cpf": "..." },
+            //   "permiteAlteracao": false  // true for tributo/convenio
+            // }
+            return [
+                'success'           => true,
+                'type'              => $resp['tipo']        ?? 'Boleto',
+                'amount'            => floatval($resp['valor'] ?? 0),
+                'due_date'          => $resp['vencimento']  ?? null,
+                'limit_date'        => $resp['dataLimite']  ?? null,
+                'beneficiary_name'  => $resp['beneficiario']['nome']  ?? '',
+                'beneficiary_doc'   => $resp['beneficiario']['cnpj'] ?? $resp['beneficiario']['cpf'] ?? null,
+                'allow_change'      => (bool)($resp['permiteAlteracao'] ?? false),
+                'barcode'           => $clean,
+            ];
+        } catch (\Exception $e) {
+            error_log('[EFI] consultBarcode exception: ' . $e->getMessage());
+            return ['success' => false, 'error' => 'Erro ao consultar boleto'];
+        }
+    }
+
+    /**
+     * Pay a boleto/conta. Caller must have already debited their wallet
+     * BEFORE calling this — if EFI returns an error, refund.
+     *
+     * Endpoint: POST /v3/gn/barcode/{codBarras}
+     * Required scope: gn.barcode.pay.write
+     *
+     * @param string $barcode  44 or 47-digit code (will be normalized)
+     * @param float  $amount   Amount to pay (only for tributo where allowChange=true)
+     * @param string $description Internal description
+     * @return array {success, payment_id, status, error?}
+     */
+    public function payBarcode(string $barcode, float $amount, string $description = 'Pagamento SuperBora'): array
+    {
+        if (!$this->isConfigured()) {
+            return ['success' => false, 'error' => 'EFI nao configurado'];
+        }
+
+        $clean = preg_replace('/\D/', '', $barcode);
+        if (strlen($clean) !== 44 && strlen($clean) !== 47 && strlen($clean) !== 48) {
+            return ['success' => false, 'error' => 'Codigo de barras invalido'];
+        }
+
+        try {
+            $payload = [
+                'valor'     => number_format(round($amount, 2), 2, '.', ''),
+                'descricao' => substr($description, 0, 100),
+            ];
+            $resp = $this->pixRequest('POST', '/v3/gn/barcode/' . urlencode($clean), $payload);
+
+            if (isset($resp['nome']) && $resp['nome'] === 'nao_encontrado') {
+                return ['success' => false, 'error' => 'EFI Pagamento de Contas nao esta habilitado nesta conta'];
+            }
+            if (isset($resp['error']) || (isset($resp['mensagem']) && empty($resp['idPagamento']))) {
+                return ['success' => false, 'error' => $resp['mensagem'] ?? $resp['error_description'] ?? $resp['error']];
+            }
+
+            // Response shape: { idPagamento, status: 'EM_PROCESSAMENTO'|'AGENDADO'|'CONFIRMADO', ... }
+            return [
+                'success'    => true,
+                'payment_id' => $resp['idPagamento'] ?? $resp['id_pagamento'] ?? null,
+                'status'     => $resp['status'] ?? 'EM_PROCESSAMENTO',
+                'amount'     => floatval($resp['valor'] ?? $amount),
+                'paid_at'    => $resp['horario']['solicitacao'] ?? null,
+            ];
+        } catch (\Exception $e) {
+            error_log('[EFI] payBarcode exception: ' . $e->getMessage());
+            return ['success' => false, 'error' => 'Erro ao pagar boleto'];
+        }
+    }
+
+    /**
+     * Check status of a previously requested barcode payment.
+     */
+    public function checkBarcodePayment(string $paymentId): array
+    {
+        if (!$this->isConfigured()) {
+            return ['success' => false, 'error' => 'EFI nao configurado'];
+        }
+        $resp = $this->pixRequest('GET', '/v3/gn/requests/' . urlencode($paymentId));
+        if (isset($resp['nome']) && $resp['nome'] === 'nao_encontrado') {
+            return ['success' => false, 'error' => 'Pagamento nao encontrado'];
+        }
+        return [
+            'success' => true,
+            'status'  => $resp['status'] ?? 'unknown',
+            'amount'  => floatval($resp['valor'] ?? 0),
+            'paid_at' => $resp['horario']['liquidacao'] ?? null,
+        ];
+    }
+
+    // ═══════════════════════════════════════
     // INTERNAL: Auth + HTTP
     // ═══════════════════════════════════════
 
