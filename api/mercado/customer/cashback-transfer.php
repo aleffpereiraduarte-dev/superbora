@@ -11,16 +11,55 @@
  */
 require_once __DIR__ . "/../config/database.php";
 require_once dirname(__DIR__, 3) . '/includes/classes/EfiClient.php';
+require_once __DIR__ . '/../helpers/notify.php';
+require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
 
 setCorsHeaders();
 
 // Transfer config constants
-define('MIN_TRANSFER', 10.00);
-define('MAX_TRANSFER', 5000.00);
+define('MIN_TRANSFER', 0.01);    // Open: any amount, even cents (R$ 0,01)
+define('MAX_TRANSFER', 5000.00); // Hard cap for fraud prevention
 define('TRANSFER_FEE_PERCENT', 0); // No fee for now — can enable later
 define('TRANSFER_FEE_FIXED', 0.00);
 define('MAX_PIX_KEYS', 3);
 define('MAX_TRANSFERS_PER_DAY', 3);
+
+/**
+ * Resolve a saved PIX key to a SuperBora customer.
+ * Returns ['customer_id', 'name'] when the key belongs to one of OUR users,
+ * or null when it's an external key (then we route via EFI/external PIX).
+ *
+ * Mirrors localCustomerLookup() in pix-key-validate.php but uses the stored
+ * key_type+key_value shape from om_customer_pix_keys.
+ */
+function findInternalRecipient(PDO $db, string $keyType, string $keyValue): ?array {
+    try {
+        if ($keyType === 'cpf') {
+            $digits = preg_replace('/\D/', '', $keyValue);
+            $stmt = $db->prepare("SELECT customer_id, name, email, phone FROM om_customers WHERE cpf = ? AND is_active = '1' LIMIT 1");
+            $stmt->execute([$digits]);
+        } elseif ($keyType === 'email') {
+            $stmt = $db->prepare("SELECT customer_id, name, email, phone FROM om_customers WHERE LOWER(email) = LOWER(?) AND is_active = '1' LIMIT 1");
+            $stmt->execute([trim($keyValue)]);
+        } elseif ($keyType === 'telefone' || $keyType === 'phone') {
+            $bare = preg_replace('/\D/', '', $keyValue);
+            if (substr($bare, 0, 2) === '55') $bare = substr($bare, 2);
+            $stmt = $db->prepare("
+                SELECT customer_id, name, email, phone FROM om_customers
+                WHERE REPLACE(REPLACE(REPLACE(REPLACE(phone, '+', ''), '-', ''), '(', ''), ')', '') LIKE ?
+                  AND is_active = '1' LIMIT 1
+            ");
+            $stmt->execute(['%' . $bare]);
+        } else {
+            return null;
+        }
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    } catch (Exception $e) {
+        error_log('[cashback-transfer] findInternalRecipient: ' . $e->getMessage());
+        return null;
+    }
+}
 
 try {
     $db = getDB();
@@ -276,8 +315,23 @@ try {
                 response(false, null, "Chave PIX nao encontrada", 404);
             }
 
-            // Calculate fee
-            $fee = round(($amount * TRANSFER_FEE_PERCENT / 100) + TRANSFER_FEE_FIXED, 2);
+            // ─────────────────────────────────────────────────────────────
+            // SUPERBORA-TO-SUPERBORA detection — when the destination key
+            // belongs to another customer in our database, we skip EFI/PIX
+            // entirely and do an internal wallet transfer. Instant + free.
+            // ─────────────────────────────────────────────────────────────
+            $internalRecipient = findInternalRecipient($db, $pixKeyData['key_type'], $pixKeyData['key_value']);
+            $isInternalTransfer = $internalRecipient && (int)$internalRecipient['customer_id'] !== $customerId;
+
+            // Block self-transfer (when the key resolves to the sender themselves)
+            if ($internalRecipient && (int)$internalRecipient['customer_id'] === $customerId) {
+                response(false, null, "Voce nao pode transferir pra voce mesmo", 400);
+            }
+
+            // Calculate fee — internal transfers are FREE, external uses configured fee
+            $fee = $isInternalTransfer
+                ? 0
+                : round(($amount * TRANSFER_FEE_PERCENT / 100) + TRANSFER_FEE_FIXED, 2);
             $netAmount = round($amount - $fee, 2);
 
             if ($netAmount <= 0) {
@@ -352,6 +406,213 @@ try {
                 if ($db->inTransaction()) $db->rollBack();
                 error_log("[cashback-transfer] DB error: " . $e->getMessage());
                 response(false, null, "Erro ao processar transferencia", 500);
+            }
+
+            // ═════════════════════════════════════════════════════════════
+            // INTERNAL TRANSFER FAST PATH — when recipient is a SuperBora
+            // customer, credit their wallet directly and skip EFI entirely.
+            // ═════════════════════════════════════════════════════════════
+            if ($isInternalTransfer) {
+                $recipientId = (int)$internalRecipient['customer_id'];
+                $recipientName = $internalRecipient['name'] ?: 'Cliente SuperBora';
+
+                // Get sender name for the recipient notification
+                $senderStmt = $db->prepare("SELECT name FROM om_customers WHERE customer_id = ?");
+                $senderStmt->execute([$customerId]);
+                $senderName = $senderStmt->fetchColumn() ?: 'Cliente SuperBora';
+
+                $internalTxId = 'sb_int_' . $customerId . '_' . $recipientId . '_' . $transferId . '_' . bin2hex(random_bytes(3));
+
+                try {
+                    $db->beginTransaction();
+
+                    // 1. Ensure recipient has a wallet row (insert if missing)
+                    $db->prepare("
+                        INSERT INTO om_cashback_wallet (customer_id, balance, total_earned, total_used, created_at, updated_at)
+                        VALUES (?, 0, 0, 0, NOW(), NOW())
+                        ON CONFLICT (customer_id) DO NOTHING
+                    ")->execute([$recipientId]);
+
+                    // 2. Lock + credit recipient wallet
+                    $stmtLockRec = $db->prepare("SELECT balance FROM om_cashback_wallet WHERE customer_id = ? FOR UPDATE");
+                    $stmtLockRec->execute([$recipientId]);
+                    $stmtLockRec->fetchColumn();
+
+                    $db->prepare("
+                        UPDATE om_cashback_wallet
+                        SET balance = balance + ?, total_earned = total_earned + ?, updated_at = NOW()
+                        WHERE customer_id = ?
+                    ")->execute([$amount, $amount, $recipientId]);
+
+                    // 3. Get recipient's new balance
+                    $stmtNewRec = $db->prepare("SELECT balance FROM om_cashback_wallet WHERE customer_id = ?");
+                    $stmtNewRec->execute([$recipientId]);
+                    $recipientNewBalance = round((float)$stmtNewRec->fetchColumn(), 2);
+
+                    // 4. Insert credit transaction for the recipient
+                    $db->prepare("
+                        INSERT INTO om_cashback_transactions (customer_id, type, amount, balance_after, description)
+                        VALUES (?, 'credit', ?, ?, ?)
+                    ")->execute([
+                        $recipientId, $amount, $recipientNewBalance,
+                        "Recebido via PIX SuperBora de " . $senderName,
+                    ]);
+
+                    // 5. Mark the transfer record as completed (not pending)
+                    $db->prepare("
+                        UPDATE om_cashback_transfers
+                        SET status = 'completed',
+                            transaction_id = ?,
+                            processed_at = NOW(),
+                            completed_at = NOW(),
+                            error_message = NULL
+                        WHERE id = ?
+                    ")->execute([$internalTxId, $transferId]);
+
+                    $db->commit();
+                } catch (Exception $internalErr) {
+                    if ($db->inTransaction()) $db->rollBack();
+                    error_log('[cashback-transfer] internal flow failed for transfer ' . $transferId . ': ' . $internalErr->getMessage());
+
+                    // Refund the sender (we already debited at the start of transfer block)
+                    try {
+                        $db->beginTransaction();
+                        $db->prepare("
+                            UPDATE om_cashback_wallet
+                            SET balance = balance + ?, total_used = GREATEST(total_used - ?, 0), updated_at = NOW()
+                            WHERE customer_id = ?
+                        ")->execute([$amount, $amount, $customerId]);
+                        $db->prepare("
+                            INSERT INTO om_cashback_transactions (customer_id, type, amount, balance_after, description)
+                            VALUES (?, 'credit', ?, ?, ?)
+                        ")->execute([$customerId, $amount, round((float)$balance, 2), "Estorno - transferencia SuperBora interna falhou"]);
+                        $db->prepare("
+                            UPDATE om_cashback_transfers
+                            SET status = 'failed', error_message = ?, processed_at = NOW()
+                            WHERE id = ?
+                        ")->execute([substr($internalErr->getMessage(), 0, 200), $transferId]);
+                        $db->commit();
+                    } catch (Exception $refundErr) {
+                        if ($db->inTransaction()) $db->rollBack();
+                        error_log('[cashback-transfer] CRITICAL: internal refund failed for ' . $transferId . ': ' . $refundErr->getMessage());
+                    }
+                    response(false, null, 'Erro ao processar transferencia interna. Saldo devolvido.', 500);
+                }
+
+                // ─── Best-effort notifications (do NOT fail the transfer) ───
+                $amountStr = 'R$ ' . number_format($amount, 2, ',', '.');
+
+                $recipientTitle = "PIX recebido: {$amountStr} 💚";
+                $recipientBody  = "Voce recebeu {$amountStr} de {$senderName} via PIX SuperBora";
+                $senderTitle    = "Transferencia enviada ✅";
+                $senderBody     = "{$amountStr} enviado pra {$recipientName} via PIX SuperBora";
+
+                // 1. In-app notification feed (so the bell list shows them)
+                try {
+                    $notifData = json_encode([
+                        'transfer_id'  => $transferId,
+                        'amount'       => $amount,
+                        'sender_id'    => $customerId,
+                        'sender_name'  => $senderName,
+                    ]);
+                    $db->prepare("
+                        INSERT INTO om_market_notifications
+                            (recipient_type, recipient_id, title, message, data, type, related_type, related_id, action_url, sent_at)
+                        VALUES ('customer', ?, ?, ?, ?::jsonb, 'pix_received', 'transfer', ?, '/carteira', NOW())
+                    ")->execute([$recipientId, $recipientTitle, $recipientBody, $notifData, $transferId]);
+
+                    $notifData2 = json_encode([
+                        'transfer_id'    => $transferId,
+                        'amount'         => $amount,
+                        'recipient_id'   => $recipientId,
+                        'recipient_name' => $recipientName,
+                    ]);
+                    $db->prepare("
+                        INSERT INTO om_market_notifications
+                            (recipient_type, recipient_id, title, message, data, type, related_type, related_id, action_url, sent_at)
+                        VALUES ('customer', ?, ?, ?, ?::jsonb, 'pix_sent', 'transfer', ?, '/carteira', NOW())
+                    ")->execute([$customerId, $senderTitle, $senderBody, $notifData2, $transferId]);
+                } catch (Exception $e) {
+                    error_log('[cashback-transfer] in-app notification insert failed: ' . $e->getMessage());
+                }
+
+                // 2. Push to recipient via Expo
+                try {
+                    notifyCustomer(
+                        $db,
+                        $recipientId,
+                        $recipientTitle,
+                        $recipientBody,
+                        '/carteira',
+                        [
+                            'type'           => 'pix_received',
+                            'amount'         => $amount,
+                            'sender_name'    => $senderName,
+                            'sender_id'      => $customerId,
+                            'transfer_id'    => $transferId,
+                            'route'          => '/carteira',
+                        ]
+                    );
+                } catch (Exception $e) {
+                    error_log('[cashback-transfer] recipient push failed: ' . $e->getMessage());
+                }
+
+                // 3. Push to sender via Expo (confirmation)
+                try {
+                    notifyCustomer(
+                        $db,
+                        $customerId,
+                        $senderTitle,
+                        $senderBody,
+                        '/carteira',
+                        [
+                            'type'           => 'pix_sent',
+                            'amount'         => $amount,
+                            'recipient_name' => $recipientName,
+                            'recipient_id'   => $recipientId,
+                            'transfer_id'    => $transferId,
+                            'route'          => '/carteira',
+                        ]
+                    );
+                } catch (Exception $e) {
+                    error_log('[cashback-transfer] sender push failed: ' . $e->getMessage());
+                }
+
+                // WebSocket real-time updates for both sides
+                try {
+                    if (function_exists('wsBroadcastToCustomer')) {
+                        wsBroadcastToCustomer($recipientId, 'pix_received', [
+                            'amount'      => $amount,
+                            'sender_name' => $senderName,
+                            'sender_id'   => $customerId,
+                            'new_balance' => $recipientNewBalance,
+                            'transfer_id' => $transferId,
+                        ]);
+                        wsBroadcastToCustomer($customerId, 'pix_sent', [
+                            'amount'         => $amount,
+                            'recipient_name' => $recipientName,
+                            'recipient_id'   => $recipientId,
+                            'new_balance'    => $newBalance,
+                            'transfer_id'    => $transferId,
+                            'status'         => 'completed',
+                        ]);
+                    }
+                } catch (Exception $e) {
+                    error_log('[cashback-transfer] ws broadcast failed: ' . $e->getMessage());
+                }
+
+                response(true, [
+                    'transfer_id'   => $transferId,
+                    'status'        => 'completed',
+                    'amount'        => $amount,
+                    'fee'           => 0,
+                    'net_amount'    => $amount,
+                    'transaction_id' => $internalTxId,
+                    'estimated_time' => 'Instantaneo',
+                    'new_balance'   => $newBalance,
+                    'route'         => 'internal',
+                    'recipient_name' => $recipientName,
+                ]);
             }
 
             // Try to execute PIX payment via EFI (outside transaction)
