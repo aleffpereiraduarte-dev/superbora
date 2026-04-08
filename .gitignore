@@ -21,11 +21,13 @@ mercado/enriquecedor*.py
 mercado/cron_central_ia.php
 mercado/mercado_detalhes.php
 
-# Storage & uploads
+# Storage & uploads (user-generated content — never commit)
 storage/uploads/
 storage/logs/
 logs/
 cache/
+uploads/
+!uploads/.htaccess
 
 # Dependencies
 vendor/

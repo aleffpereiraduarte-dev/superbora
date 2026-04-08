@@ -32,6 +32,7 @@ try {
         ");
         $stmt->execute([$campaignId, $now, $now]);
     } else if (!empty($city)) {
+        // City provided — include global campaigns (city IS NULL) PLUS exact city match.
         $stmt = $db->prepare("
             SELECT campaign_id, slug, name, description, reward_text,
                    banner_title, banner_subtitle, banner_gradient, banner_icon,
@@ -39,7 +40,7 @@ try {
                    start_date, end_date
             FROM om_campaigns
             WHERE status = 'active'
-              AND city ILIKE ?
+              AND (city IS NULL OR LOWER(city) = LOWER(?))
               AND start_date <= ?
               AND end_date >= ?
               AND current_redemptions < max_redemptions
@@ -48,7 +49,9 @@ try {
         ");
         $stmt->execute([$city, $now, $now]);
     } else {
-        // No city — return all active campaigns
+        // No city — only return GLOBAL campaigns (city IS NULL).
+        // City-scoped campaigns must NEVER leak when the user's city is unknown,
+        // otherwise a Governador Valadares promo would appear in Guarulhos at app boot.
         $stmt = $db->prepare("
             SELECT campaign_id, slug, name, description, reward_text,
                    banner_title, banner_subtitle, banner_gradient, banner_icon,
@@ -56,6 +59,7 @@ try {
                    start_date, end_date
             FROM om_campaigns
             WHERE status = 'active'
+              AND city IS NULL
               AND start_date <= ?
               AND end_date >= ?
               AND current_redemptions < max_redemptions
