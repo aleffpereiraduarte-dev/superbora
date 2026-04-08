@@ -25,6 +25,24 @@ define('MAX_PIX_KEYS', 3);
 define('MAX_TRANSFERS_PER_DAY', 3);
 
 /**
+ * Read the customer's available wallet balance from the cashback ledger.
+ * Mirrors what /customer/cashback.php returns, so the carteira screen and
+ * the transfer action always agree on the balance. This is the SOURCE OF
+ * TRUTH — never read om_cashback_wallet.balance directly.
+ */
+function readWalletBalanceFromLedger(PDO $db, int $customerId): float {
+    $stmt = $db->prepare("
+        SELECT
+            COALESCE(SUM(CASE WHEN type IN ('earned','bonus') AND status = 'available' THEN amount ELSE 0 END), 0)
+              - COALESCE(SUM(CASE WHEN type = 'used' THEN amount ELSE 0 END), 0) AS available
+        FROM om_cashback
+        WHERE customer_id = ?
+    ");
+    $stmt->execute([$customerId]);
+    return round(max(0, (float)($stmt->fetchColumn() ?: 0)), 2);
+}
+
+/**
  * Resolve a saved PIX key to a SuperBora customer.
  * Returns ['customer_id', 'name'] when the key belongs to one of OUR users,
  * or null when it's an external key (then we route via EFI/external PIX).
@@ -132,13 +150,11 @@ try {
             ];
         }
 
-        // Get cashback balance
-        $stmtBal = dbQuery($db, "
-            SELECT COALESCE(balance, 0) as balance
-            FROM om_cashback_wallet
-            WHERE customer_id = ?
-        ", [$customerId]);
-        $balance = round((float)($stmtBal->fetchColumn() ?: 0), 2);
+        // Get cashback balance from the LEDGER (same source as cashback.php).
+        // SECURITY: never read om_cashback_wallet.balance — it drifts and can
+        // show inflated balances that the user can't actually spend, leading
+        // to "Saldo insuficiente" errors after they hit the transfer button.
+        $balance = readWalletBalanceFromLedger($db, $customerId);
 
         // Recent transfers count (today)
         $stmtToday = dbQuery($db, "
@@ -343,40 +359,42 @@ try {
             if ($efiType === 'telefone') $efiType = 'phone';
             if ($efiType === 'aleatoria') $efiType = 'random';
 
-            // Begin transaction - debit cashback wallet
+            // Begin transaction - debit via cashback ledger (single source of truth)
             $db->beginTransaction();
 
             try {
-                // Lock wallet balance
-                $stmtBal = $db->prepare("
-                    SELECT balance FROM om_cashback_wallet
-                    WHERE customer_id = ? FOR UPDATE
-                ");
-                $stmtBal->execute([$customerId]);
-                $balance = (float)($stmtBal->fetchColumn() ?: 0);
+                // Lock the customer's ledger rows so a parallel transfer can't double-spend
+                $db->prepare("SELECT id FROM om_cashback WHERE customer_id = ? FOR UPDATE")
+                    ->execute([$customerId]);
+
+                // Compute current available balance from the ledger (NOT om_cashback_wallet)
+                $balance = readWalletBalanceFromLedger($db, $customerId);
 
                 if ($amount > $balance) {
                     $db->rollBack();
                     response(false, null, "Saldo insuficiente. Disponivel: R$ " . number_format($balance, 2, ',', '.'), 400);
                 }
 
-                // Debit from cashback wallet
-                $stmtDebit = $db->prepare("
-                    UPDATE om_cashback_wallet
-                    SET balance = balance - ?, total_used = total_used + ?, updated_at = NOW()
-                    WHERE customer_id = ? AND balance >= ?
-                ");
-                $stmtDebit->execute([$amount, $amount, $customerId, $amount]);
+                // Debit by inserting a 'used' row in the ledger (mirrors confirmar-entrega.php)
+                $debitDesc = "Transferencia PIX - " . maskPixKey($pixKeyData['key_value'], $pixKeyData['key_type']);
+                $db->prepare("
+                    INSERT INTO om_cashback (customer_id, type, amount, status, description, order_id, created_at)
+                    VALUES (?, 'used', ?, 'used', ?, NULL, NOW())
+                ")->execute([$customerId, $amount, $debitDesc]);
 
-                if ($stmtDebit->rowCount() === 0) {
-                    $db->rollBack();
-                    response(false, null, "Saldo insuficiente", 400);
-                }
+                // Recompute the new balance after the debit
+                $newBalance = readWalletBalanceFromLedger($db, $customerId);
 
-                // Get new balance
-                $stmtNewBal = $db->prepare("SELECT balance FROM om_cashback_wallet WHERE customer_id = ?");
-                $stmtNewBal->execute([$customerId]);
-                $newBalance = round((float)$stmtNewBal->fetchColumn(), 2);
+                // BACKWARDS COMPAT: also keep the legacy om_cashback_wallet aggregate
+                // in sync, since some old reports/screens might still consult it.
+                $db->prepare("
+                    INSERT INTO om_cashback_wallet (customer_id, balance, total_earned, total_used, created_at, updated_at)
+                    VALUES (?, ?, 0, ?, NOW(), NOW())
+                    ON CONFLICT (customer_id) DO UPDATE
+                       SET balance = EXCLUDED.balance,
+                           total_used = om_cashback_wallet.total_used + ?,
+                           updated_at = NOW()
+                ")->execute([$customerId, $newBalance, $amount, $amount]);
 
                 // Record cashback transaction (debit)
                 $transferDesc = "Transferencia PIX - " . maskPixKey($pixKeyData['key_value'], $pixKeyData['key_type']);
@@ -426,39 +444,36 @@ try {
                 try {
                     $db->beginTransaction();
 
-                    // 1. Ensure recipient has a wallet row (insert if missing)
+                    // Lock the recipient's ledger rows so a parallel credit is serialized
+                    $db->prepare("SELECT id FROM om_cashback WHERE customer_id = ? FOR UPDATE")
+                        ->execute([$recipientId]);
+
+                    // 1. Credit recipient via the cashback ledger (single source of truth).
+                    //    'bonus' rows count as available balance — same path used by referrals,
+                    //    promotions, and the boleto refund flow.
                     $db->prepare("
-                        INSERT INTO om_cashback_wallet (customer_id, balance, total_earned, total_used, created_at, updated_at)
-                        VALUES (?, 0, 0, 0, NOW(), NOW())
-                        ON CONFLICT (customer_id) DO NOTHING
-                    ")->execute([$recipientId]);
-
-                    // 2. Lock + credit recipient wallet
-                    $stmtLockRec = $db->prepare("SELECT balance FROM om_cashback_wallet WHERE customer_id = ? FOR UPDATE");
-                    $stmtLockRec->execute([$recipientId]);
-                    $stmtLockRec->fetchColumn();
-
-                    $db->prepare("
-                        UPDATE om_cashback_wallet
-                        SET balance = balance + ?, total_earned = total_earned + ?, updated_at = NOW()
-                        WHERE customer_id = ?
-                    ")->execute([$amount, $amount, $recipientId]);
-
-                    // 3. Get recipient's new balance
-                    $stmtNewRec = $db->prepare("SELECT balance FROM om_cashback_wallet WHERE customer_id = ?");
-                    $stmtNewRec->execute([$recipientId]);
-                    $recipientNewBalance = round((float)$stmtNewRec->fetchColumn(), 2);
-
-                    // 4. Insert credit transaction for the recipient
-                    $db->prepare("
-                        INSERT INTO om_cashback_transactions (customer_id, type, amount, balance_after, description)
-                        VALUES (?, 'credit', ?, ?, ?)
+                        INSERT INTO om_cashback (customer_id, type, amount, status, description, order_id, created_at)
+                        VALUES (?, 'bonus', ?, 'available', ?, NULL, NOW())
                     ")->execute([
-                        $recipientId, $amount, $recipientNewBalance,
+                        $recipientId,
+                        $amount,
                         "Recebido via PIX SuperBora de " . $senderName,
                     ]);
 
-                    // 5. Mark the transfer record as completed (not pending)
+                    // 2. Recompute recipient's balance for the response/notifications
+                    $recipientNewBalance = readWalletBalanceFromLedger($db, $recipientId);
+
+                    // 3. BACKWARDS COMPAT: keep om_cashback_wallet aggregate in sync
+                    $db->prepare("
+                        INSERT INTO om_cashback_wallet (customer_id, balance, total_earned, total_used, created_at, updated_at)
+                        VALUES (?, ?, ?, 0, NOW(), NOW())
+                        ON CONFLICT (customer_id) DO UPDATE
+                           SET balance = EXCLUDED.balance,
+                               total_earned = om_cashback_wallet.total_earned + ?,
+                               updated_at = NOW()
+                    ")->execute([$recipientId, $recipientNewBalance, $amount, $amount]);
+
+                    // 4. Mark the transfer record as completed (not pending)
                     $db->prepare("
                         UPDATE om_cashback_transfers
                         SET status = 'completed',
@@ -474,9 +489,19 @@ try {
                     if ($db->inTransaction()) $db->rollBack();
                     error_log('[cashback-transfer] internal flow failed for transfer ' . $transferId . ': ' . $internalErr->getMessage());
 
-                    // Refund the sender (we already debited at the start of transfer block)
+                    // Refund the sender — credit the ledger back (we debited at start of transfer)
                     try {
                         $db->beginTransaction();
+                        // Insert a 'bonus' row to offset the 'used' debit
+                        $db->prepare("
+                            INSERT INTO om_cashback (customer_id, type, amount, status, description, order_id, created_at)
+                            VALUES (?, 'bonus', ?, 'available', ?, NULL, NOW())
+                        ")->execute([
+                            $customerId,
+                            $amount,
+                            "Estorno - transferencia interna falhou",
+                        ]);
+                        // Keep wallet aggregate in sync
                         $db->prepare("
                             UPDATE om_cashback_wallet
                             SET balance = balance + ?, total_used = GREATEST(total_used - ?, 0), updated_at = NOW()
@@ -660,17 +685,24 @@ try {
                 try {
                     $db->beginTransaction();
 
-                    // Refund balance
+                    // Refund via cashback ledger (single source of truth)
+                    $db->prepare("
+                        INSERT INTO om_cashback (customer_id, type, amount, status, description, order_id, created_at)
+                        VALUES (?, 'bonus', ?, 'available', ?, NULL, NOW())
+                    ")->execute([
+                        $customerId,
+                        $amount,
+                        "Estorno - PIX externo falhou (transfer #{$transferId})",
+                    ]);
+
+                    $refundedBalance = readWalletBalanceFromLedger($db, $customerId);
+
+                    // Keep aggregate in sync
                     $db->prepare("
                         UPDATE om_cashback_wallet
                         SET balance = balance + ?, total_used = GREATEST(total_used - ?, 0), updated_at = NOW()
                         WHERE customer_id = ?
                     ")->execute([$amount, $amount, $customerId]);
-
-                    // Get refunded balance
-                    $stmtRefBal = $db->prepare("SELECT balance FROM om_cashback_wallet WHERE customer_id = ?");
-                    $stmtRefBal->execute([$customerId]);
-                    $refundedBalance = round((float)$stmtRefBal->fetchColumn(), 2);
 
                     // Record refund transaction
                     $db->prepare("
