@@ -13,6 +13,7 @@ setCorsHeaders();
 // Removed legacy session-based RateLimiter::check() — it calls session_start()
 // which hangs when PHP-FPM session handler points to unreachable external Redis.
 require_once dirname(__DIR__, 3) . "/includes/classes/EfiClient.php";
+require_once dirname(__DIR__, 3) . "/includes/classes/MercadoPagoClient.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmPricing.php";
 
 try {
@@ -336,20 +337,70 @@ try {
         'customer_email' => $customer_email,
     ];
 
-    // Generate PIX via EFI (Efi/Gerencianet)
+    // ═══════════════════════════════════════════════════════
+    // PIX PROVIDER SELECTION — env-driven, automatic fallback
+    // ═══════════════════════════════════════════════════════
+    // PIX_PROVIDER controls the primary provider:
+    //   efi (default) — uses Efi/Gerencianet (legacy, cert-based)
+    //   mp            — uses Mercado Pago (token-based, no cert)
+    //   auto          — try the env preferred, then fall back to the other
+    $providerPref = strtolower($_ENV['PIX_PROVIDER'] ?? getenv('PIX_PROVIDER') ?: 'efi');
     $comment = "SuperBora - " . $combinedPartnerName;
-
-    $efi = new EfiClient();
-
-    // Build customer data for EFI
     $cpf = $cpf_nota ?: preg_replace('/[^0-9]/', '', $custData['cpf'] ?? '');
-    $efiCustomer = ['nome' => $customer_name ?: 'Cliente SuperBora'];
+    $cleanCustomerName = $customer_name ?: 'Cliente SuperBora';
+
+    // Build provider-specific customer payloads
+    $efiCustomer = ['nome' => $cleanCustomerName];
     if (strlen($cpf) === 11) $efiCustomer['cpf'] = $cpf;
 
-    $chargeResult = $efi->createPixCharge($total, $comment, 600, $efiCustomer);
+    $mpCustomer = [
+        'name'  => $cleanCustomerName,
+        'email' => $customer_email ?: 'cliente@superbora.com.br',
+    ];
+    if (strlen($cpf) === 11) $mpCustomer['cpf'] = $cpf;
 
-    if (!$chargeResult['success']) {
-        error_log("[criar-pix] EFI PIX charge failed: " . ($chargeResult['error'] ?? 'unknown'));
+    $chargeResult = null;
+    $usedProvider = null;
+    $providerPaymentId = null;
+
+    // Helper closures for each provider attempt
+    $tryEfi = function () use (&$chargeResult, &$usedProvider, $total, $comment, $efiCustomer) {
+        $efi = new EfiClient();
+        if (!$efi->isConfigured()) return false;
+        $r = $efi->createPixCharge($total, $comment, 600, $efiCustomer);
+        if ($r['success']) {
+            $chargeResult = $r;
+            $usedProvider = 'efi';
+            return true;
+        }
+        error_log('[criar-pix] EFI failed: ' . ($r['error'] ?? '?'));
+        return false;
+    };
+    $tryMp = function () use (&$chargeResult, &$usedProvider, &$providerPaymentId, $total, $comment, $mpCustomer) {
+        $mp = new MercadoPagoClient();
+        if (!$mp->isConfigured()) return false;
+        $r = $mp->createPixCharge($total, $comment, 600, $mpCustomer);
+        if ($r['success']) {
+            $chargeResult = $r;
+            $usedProvider = 'mp';
+            $providerPaymentId = $r['mp_payment_id'] ?? null;
+            return true;
+        }
+        error_log('[criar-pix] MP failed: ' . ($r['error'] ?? '?'));
+        return false;
+    };
+
+    if ($providerPref === 'mp') {
+        $tryMp() || $tryEfi();
+    } elseif ($providerPref === 'auto') {
+        // Prefer MP (cheaper, no cert) but fall back to EFI for resilience.
+        $tryMp() || $tryEfi();
+    } else {
+        // 'efi' (default) and any unknown value
+        $tryEfi() || $tryMp();
+    }
+
+    if (!$chargeResult) {
         response(false, null, "PIX indisponivel no momento. Tente novamente.", 503);
     }
 
@@ -358,7 +409,7 @@ try {
     $correlationId = $chargeResult['txid'];
 
     if (empty($brCode)) {
-        error_log("[criar-pix] EFI returned no QR code text");
+        error_log("[criar-pix] {$usedProvider} returned no QR code text");
         response(false, null, "PIX indisponivel no momento. Tente novamente.", 503);
     }
 
@@ -376,8 +427,8 @@ try {
         $db->prepare("DELETE FROM om_pix_intents WHERE correlation_id = ? AND status IN ('expired', 'cancelled')")->execute([$correlationId]);
 
         $intentStmt = $db->prepare("
-            INSERT INTO om_pix_intents (customer_id, amount_cents, cart_snapshot, correlation_id, pix_code, pix_qr_url, status, expires_at)
-            VALUES (?, ?, ?::jsonb, ?, ?, ?, 'pending', NOW() + INTERVAL '10 minutes')
+            INSERT INTO om_pix_intents (customer_id, amount_cents, cart_snapshot, correlation_id, pix_code, pix_qr_url, status, expires_at, provider, provider_payment_id)
+            VALUES (?, ?, ?::jsonb, ?, ?, ?, 'pending', NOW() + INTERVAL '10 minutes', ?, ?)
             RETURNING intent_id, expires_at
         ");
         $intentStmt->execute([
@@ -387,6 +438,8 @@ try {
             $correlationId,
             $brCode,
             $qrCodeUrl,
+            $usedProvider,
+            $providerPaymentId,
         ]);
         $intent = $intentStmt->fetch(PDO::FETCH_ASSOC);
         $db->commit();

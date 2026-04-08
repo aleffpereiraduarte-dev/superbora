@@ -31,9 +31,12 @@ try {
     $limit = min(50, max(1, intval($_GET['limit'] ?? 20)));
     $offset = max(0, intval($_GET['offset'] ?? 0));
     $category = strtolower(trim($_GET['category'] ?? 'all'));
+    // Sort modes: popular (default — what real Hits feeds use), price, newest
+    $sort = strtolower(trim($_GET['sort'] ?? 'popular'));
+    if (!in_array($sort, ['popular', 'price', 'newest'], true)) $sort = 'popular';
 
     // R2 global edge cache
-    $r2Key = "hits/mp{$maxPrice}_l{$limit}_o{$offset}_c{$category}";
+    $r2Key = "hits/mp{$maxPrice}_l{$limit}_o{$offset}_c{$category}_s{$sort}";
     if (function_exists('r2IsEnabled') && r2IsEnabled()) {
         $cached = r2CacheGet($r2Key);
         if ($cached !== null) {
@@ -71,8 +74,18 @@ try {
     $currentDow = (int)date('w'); // 0=Sunday, 6=Saturday
     $currentTime = date('H:i:s');
 
-    // Main query: products under price threshold from active partners
-    // Simplified: no popularity subquery for speed
+    // Pick the ORDER BY clause based on sort mode. The popularity subquery
+    // counts how many times each product was ordered in the last 30 days.
+    // It's wrapped in COALESCE so missing rows still show up (sorted last).
+    $orderClause = match ($sort) {
+        'price'   => 'ORDER BY p.price ASC, popularity DESC',
+        'newest'  => 'ORDER BY p.product_id DESC',
+        default   => 'ORDER BY popularity DESC, p.price ASC', // popular
+    };
+
+    // Main query: products under price threshold from active partners.
+    // The popularity LATERAL is cheap because the inner query is heavily
+    // indexed (om_market_order_items.product_id) and capped to 30 days.
     $sql = "
         SELECT
             p.product_id,
@@ -88,9 +101,18 @@ try {
             pa.delivery_fee,
             pa.delivery_time_min, pa.delivery_time_max,
             pa.categoria as partner_category,
-            0 as popularity
+            pa.rating as partner_rating,
+            COALESCE(pop.cnt, 0) as popularity
         FROM om_market_products p
         INNER JOIN om_market_partners pa ON p.partner_id = pa.partner_id
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) AS cnt
+            FROM om_market_order_items oi
+            JOIN om_market_orders o ON o.order_id = oi.order_id
+            WHERE oi.product_id = p.product_id
+              AND o.date_added >= NOW() - INTERVAL '30 days'
+              AND o.status NOT IN ('cancelado', 'pendente')
+        ) pop ON TRUE
         WHERE p.status::text = '1'
           AND pa.status::text = '1'
           AND p.price > 0
@@ -98,7 +120,7 @@ try {
           AND p.name IS NOT NULL AND TRIM(p.name) != ''
           AND p.image IS NOT NULL AND TRIM(p.image) != ''
           {$categoryWhere}
-        ORDER BY p.price ASC
+        {$orderClause}
         LIMIT :limit OFFSET :offset
     ";
 
@@ -153,6 +175,10 @@ try {
             $originalPrice = $price;
         }
 
+        // Mark as best-seller when this product was ordered 5+ times in 30 days
+        $popularity = (int)$p['popularity'];
+        $isBestseller = $popularity >= 5;
+
         return [
             'product_id'     => (int)$p['product_id'],
             'name'           => $p['name'],
@@ -168,10 +194,12 @@ try {
             'partner_name'   => $p['partner_name'],
             'partner_logo'   => $p['partner_logo'],
             'partner_category' => $p['partner_category'] ?? '',
+            'partner_rating' => $p['partner_rating'] !== null ? round((float)$p['partner_rating'], 1) : null,
             'delivery_fee'   => 0, // Hits = free delivery
             'delivery_fee_label' => 'GRATIS',
             'estimated_time' => $p['estimated_time'] ?? '30-45',
-            'popularity'     => (int)$p['popularity'],
+            'popularity'     => $popularity,
+            'is_bestseller'  => $isBestseller,
             'is_hits'        => true,
         ];
     }, $products);
