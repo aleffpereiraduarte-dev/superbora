@@ -378,6 +378,16 @@ try {
             ");
             $stmt->execute([$partner_id]);
 
+            // Invalidate vitrine cache so app hides suspended partner
+            try {
+                $r = new Redis();
+                $r->connect('127.0.0.1', 6379, 0.5);
+                $pwd = $_ENV['REDIS_PASSWORD'] ?? getenv('REDIS_PASSWORD') ?: '';
+                if ($pwd) $r->auth($pwd);
+                $iter = null;
+                while ($keys = $r->scan($iter, 'sbcache:vitrine:*', 200)) foreach ($keys as $k) $r->del($k);
+            } catch (Exception $e) {}
+
             om_audit()->log(
                 OmAudit::ACTION_SUSPEND,
                 OmAudit::ENTITY_PARTNER,
@@ -412,6 +422,16 @@ try {
                 WHERE partner_id = ?
             ");
             $stmt->execute([$partner_id]);
+
+            // Invalidate vitrine cache so reactivated partner reappears
+            try {
+                $r = new Redis();
+                $r->connect('127.0.0.1', 6379, 0.5);
+                $pwd = $_ENV['REDIS_PASSWORD'] ?? getenv('REDIS_PASSWORD') ?: '';
+                if ($pwd) $r->auth($pwd);
+                $iter = null;
+                while ($keys = $r->scan($iter, 'sbcache:vitrine:*', 200)) foreach ($keys as $k) $r->del($k);
+            } catch (Exception $e) {}
 
             om_audit()->log(
                 'partner_reactivate',

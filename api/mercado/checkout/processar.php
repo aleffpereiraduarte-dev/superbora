@@ -319,8 +319,16 @@ try {
     $free_delivery_coupon = false;
     $coupon_discount = 0; // Reset - será calculado server-side
     if ($coupon_id) {
-        $stmtC = $db->prepare("SELECT * FROM om_market_coupons WHERE id = ? AND status = 'active' AND (partner_id IS NULL OR partner_id = 0 OR partner_id = ?)");
-        $stmtC->execute([$coupon_id, $partner_id]);
+        $stmtC = $db->prepare("
+            SELECT * FROM om_market_coupons
+            WHERE id = ? AND status = 'active'
+              AND (
+                specific_partners IS NULL OR specific_partners = ''
+                OR specific_partners = '[]'
+                OR specific_partners::jsonb @> ?::jsonb
+              )
+        ");
+        $stmtC->execute([$coupon_id, json_encode([$partner_id])]);
         $cupomData = $stmtC->fetch();
         if ($cupomData) {
             // Verificar validade
