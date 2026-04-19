@@ -13,6 +13,12 @@
  * Limit: 20 reviews per run to control API costs.
  */
 require_once __DIR__ . '/../config/database.php';
+
+// KILL-SWITCH: disabled to stop Claude cost leak. Remove this block + set CLAUDE_BUDGET_OK=1 in .env to re-enable.
+if (($_ENV["CLAUDE_BUDGET_OK"] ?? getenv("CLAUDE_BUDGET_OK")) !== "1") {
+    error_log("[auto-review-response] SKIPPED: CLAUDE_BUDGET_OK not set");
+    exit(0);
+}
 require_once __DIR__ . '/../helpers/claude-client.php';
 
 // Cron auth guard — skip for CLI (crontab runs as root)

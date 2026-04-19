@@ -4,6 +4,12 @@
  * Sends yesterday's metrics via WhatsApp and push notification
  */
 require_once __DIR__ . '/../config/database.php';
+
+// KILL-SWITCH: disabled to stop Claude cost leak. Set CLAUDE_BUDGET_OK=1 in .env to re-enable.
+if (($_ENV["CLAUDE_BUDGET_OK"] ?? getenv("CLAUDE_BUDGET_OK")) !== "1") {
+    error_log("[partner-daily-digest] SKIPPED: CLAUDE_BUDGET_OK not set");
+    exit(0);
+}
 require_once __DIR__ . '/../helpers/zapi-whatsapp.php';
 require_once __DIR__ . '/../helpers/NotificationSender.php';
 require_once __DIR__ . '/../helpers/claude-client.php';
