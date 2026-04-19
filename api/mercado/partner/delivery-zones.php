@@ -72,7 +72,8 @@ try {
         } else {
             // Use transaction + FOR UPDATE to prevent sort_order race condition
             $db->beginTransaction();
-            $stmtMax = $db->prepare("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM om_partner_delivery_zones WHERE partner_id = ? FOR UPDATE");
+            // PG doesn't allow FOR UPDATE with aggregate — wrap locked rows in subquery
+            $stmtMax = $db->prepare("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM (SELECT sort_order FROM om_partner_delivery_zones WHERE partner_id = ? FOR UPDATE) t");
             $stmtMax->execute([$partnerId]);
             $nextSort = (int)$stmtMax->fetchColumn();
 
