@@ -18,7 +18,75 @@ require_once dirname(__DIR__, 2) . "/cache/CacheHelper.php";
 
 setCorsHeaders();
 
+// ─── POST: story interactions (view, like, save) ───
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    try {
+        $db = getDB();
+        $input = json_decode(file_get_contents('php://input'), true) ?: [];
+        $action = $input['action'] ?? '';
+        $storyId = (int)($input['story_id'] ?? 0);
+
+        if (!$storyId || !in_array($action, ['view', 'like', 'save'], true)) {
+            response(true, ['ok' => true]); // graceful no-op
+        }
+
+        // Try to get customer ID (optional auth — fail silently)
+        $customerId = null;
+        try {
+            require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
+            OmAuth::getInstance()->setDb($db);
+            $token = om_auth()->getTokenFromRequest();
+            if ($token) {
+                $payload = om_auth()->validateToken($token);
+                if ($payload && ($payload['type'] ?? '') === 'customer') {
+                    $customerId = (int)$payload['uid'];
+                }
+            }
+        } catch (Exception $e) { /* auth optional */ }
+
+        if ($action === 'view') {
+            // Record view in om_story_views (table already exists)
+            try {
+                $db->prepare("
+                    INSERT INTO om_story_views (story_id, customer_id, viewed_at)
+                    VALUES (?, ?, NOW())
+                    ON CONFLICT DO NOTHING
+                ")->execute([$storyId, $customerId]);
+            } catch (Exception $e) {
+                // If om_story_views schema doesn't support ON CONFLICT, insert without
+                try {
+                    $db->prepare("INSERT INTO om_story_views (story_id, customer_id, viewed_at) VALUES (?, ?, NOW())")
+                       ->execute([$storyId, $customerId]);
+                } catch (Exception $e2) { /* non-critical */ }
+            }
+        }
+
+        // like and save are tracked client-side (AsyncStorage) — backend just acknowledges
+        response(true, ['ok' => true, 'action' => $action, 'story_id' => $storyId]);
+
+    } catch (Exception $e) {
+        error_log("[vitrine/stories POST] " . $e->getMessage());
+        response(true, ['ok' => true]); // never fail the app for story interactions
+    }
+}
+
 try {
+    $dbInit = getDB();
+    // Ensure stories table exists (idempotent - the endpoint also has fallbacks)
+    $dbInit->exec("CREATE TABLE IF NOT EXISTS om_market_stories (
+        id SERIAL PRIMARY KEY,
+        partner_id INTEGER NOT NULL,
+        media_url TEXT,
+        thumbnail_url TEXT,
+        caption VARCHAR(500),
+        link_type VARCHAR(50) DEFAULT 'ver_loja',
+        link_id INTEGER,
+        link_url TEXT,
+        is_active BOOLEAN DEFAULT true,
+        expires_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    )");
+
     $partnerId = (int)($_GET['partner_id'] ?? 0);
     $limit = min(50, max(10, (int)($_GET['limit'] ?? 20)));
 
@@ -78,9 +146,13 @@ function fetchFromStoriesTable(PDO $db, int $partnerId, int $limit): array
                p.trade_name, p.name, p.logo, p.banner, p.rating, p.is_open,
                CASE WHEN EXISTS (
                    SELECT 1 FROM om_market_coupons c
-                   WHERE c.partner_id = p.partner_id
-                     AND c.is_active = true
-                     AND (c.expires_at IS NULL OR c.expires_at > NOW())
+                   WHERE c.status = 'active'
+                     AND (c.valid_until IS NULL OR c.valid_until > NOW())
+                     AND (
+                       c.specific_partners IS NULL OR c.specific_partners = ''
+                       OR c.specific_partners = '[]'
+                       OR c.specific_partners::jsonb @> to_jsonb(ARRAY[p.partner_id])
+                     )
                ) THEN true ELSE false END AS has_promo
         FROM om_market_stories s
         INNER JOIN om_market_partners p ON s.partner_id = p.partner_id

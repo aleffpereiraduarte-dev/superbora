@@ -92,6 +92,7 @@ try {
         ");
         $stmt->execute([$customerId, $won['type'], $won['value']]);
 
+        // Dual-write: both wallet aggregate AND ledger (om_cashback is what /customer/cashback.php reads)
         $stmt = $db->prepare("
             INSERT INTO om_cashback_wallet (customer_id, balance, total_earned)
             VALUES (?, ?, ?)
@@ -100,6 +101,13 @@ try {
                 total_earned = om_cashback_wallet.total_earned + EXCLUDED.total_earned
         ");
         $stmt->execute([$customerId, $won['value'], $won['value']]);
+
+        // Ledger entry (customer-facing /cashback.php endpoint aggregates from this table)
+        $stmt = $db->prepare("
+            INSERT INTO om_cashback (customer_id, type, amount, description, status, expires_at, created_at)
+            VALUES (?, 'bonus', ?, ?, 'available', NOW() + INTERVAL '90 days', NOW())
+        ");
+        $stmt->execute([$customerId, $won['value'], "Raspadinha da sorte - {$won['label']}"]);
 
         $stmt = $db->prepare("SELECT balance FROM om_cashback_wallet WHERE customer_id = ?");
         $stmt->execute([$customerId]);
