@@ -16,10 +16,16 @@ if (file_exists(__DIR__ . '/../../../.env')) {
 // Sentry error monitoring (loads early to catch all errors)
 require_once __DIR__ . '/sentry.php';
 
+// Request metrics collector (zero-overhead shutdown hook)
+require_once __DIR__ . '/metrics.php';
+
 // Rate limiting (skip for auth endpoints — they handle their own limits)
 require_once __DIR__ . '/ratelimit.php';
 $_uri = $_SERVER['REQUEST_URI'] ?? '';
-if (!preg_match('#/auth/(send-code|verify-code|login|register|social-login)#', $_uri)) {
+// Skip rate limiting for auth endpoints AND ai-support (Claude is slow, user needs many calls)
+$skipRateLimit = preg_match('#/auth/(send-code|verify-code|login|register|social-login)#', $_uri)
+               || strpos($_uri, '/customer/ai-support.php') !== false;
+if (!$skipRateLimit) {
     applyRateLimit();
 }
 
@@ -52,6 +58,8 @@ function getDB() {
             ]);
             $db->exec("SET client_encoding TO 'UTF8'");
             $db->exec("SET timezone TO 'America/Sao_Paulo'");
+            // Ensure search_path is set (pgbouncer transaction mode may not preserve it)
+            $db->exec("SET search_path TO public");
         } catch (PDOException $e) {
             // SECURITY: Log error details but don't expose them to client
             error_log("[Database] Connection failed: " . $e->getMessage());
