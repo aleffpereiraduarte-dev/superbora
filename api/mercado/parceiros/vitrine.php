@@ -140,7 +140,7 @@ try {
                     LEFT JOIN om_market_partners p ON p.partner_id = o.partner_id
                     WHERE o.customer_id = ?
                       AND o.date_added > NOW() - INTERVAL '90 days'
-                      AND o.order_status_id NOT IN (7, 11)
+                      AND o.status NOT IN ('cancelado', 'recusado', 'failed', 'canceled')
                     LIMIT 500
                 ");
                 $stmt->execute([$customerId]);

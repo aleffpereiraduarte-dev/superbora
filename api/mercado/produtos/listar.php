@@ -135,6 +135,27 @@ try {
                 }
             }
 
+            // Top sellers: IDs of the top 3 most-ordered products for this partner in last 30 days.
+            // Cheap: uses order_items + orders joined. Cached with the outer response (5 min).
+            $topSellerIds = [];
+            if ($partner_id > 0) {
+                try {
+                    $stmtTop = $db->prepare("
+                        SELECT oi.product_id
+                        FROM om_market_order_items oi
+                        INNER JOIN om_market_orders o ON o.order_id = oi.order_id
+                        WHERE o.partner_id = ?
+                          AND o.date_added > NOW() - INTERVAL '30 days'
+                          AND o.status NOT IN ('cancelado', 'recusado', 'failed', 'canceled')
+                        GROUP BY oi.product_id
+                        ORDER BY SUM(oi.quantity) DESC
+                        LIMIT 3
+                    ");
+                    $stmtTop->execute([$partner_id]);
+                    $topSellerIds = array_map('intval', $stmtTop->fetchAll(PDO::FETCH_COLUMN));
+                } catch (Exception $e) { /* non-critical */ }
+            }
+
             // Fetch smart tags for all products in batch
             try {
                 $stmtTags = $db->prepare(
@@ -160,9 +181,10 @@ try {
         return [
             "total" => (int)$total,
             "pagina" => $pagina,
-            "produtos" => array_map(function($p) use ($optionGroups, $smartTagsByProduct) {
+            "produtos" => array_map(function($p) use ($optionGroups, $smartTagsByProduct, $topSellerIds) {
                 $pid = $p["product_id"] ?? $p["id"];
                 $groups = isset($optionGroups[$pid]) ? array_values($optionGroups[$pid]) : [];
+                $topRank = array_search((int)$pid, $topSellerIds, true);
 
                 return [
                     "id" => $pid,
@@ -176,7 +198,9 @@ try {
                     "estoque" => $p["quantity"] ?? 999,
                     "disponivel" => ($p["quantity"] ?? 999) > 0,
                     "option_groups" => $groups,
-                    "smart_tags" => $smartTagsByProduct[$pid] ?? []
+                    "smart_tags" => $smartTagsByProduct[$pid] ?? [],
+                    "is_top_seller" => $topRank !== false,
+                    "top_seller_rank" => $topRank !== false ? ($topRank + 1) : null,
                 ];
             }, $produtos)
         ];
