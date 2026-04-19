@@ -22,10 +22,21 @@ try {
 
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $body = json_decode(file_get_contents('php://input'), true);
-        $allowed = ['name','phone','address','city','state','cep','delivery_fee','min_order','delivery_time_min','delivery_time_max','horario_abertura','horario_fechamento'];
+        // Map Portuguese input field names to real DB columns
+        $fieldMap = [
+            'horario_abertura' => 'opens_at',
+            'horario_fechamento' => 'closes_at',
+            'delivery_time_max' => null, // column doesn't exist
+        ];
+        $allowed = ['name','phone','address','city','state','cep','delivery_fee','min_order','delivery_time_min','horario_abertura','horario_fechamento','is_open','opens_at','closes_at'];
         $sets = []; $vals = [];
         foreach ($allowed as $f) {
-            if (isset($body[$f])) { $sets[] = "$f = ?"; $vals[] = $body[$f]; }
+            if (isset($body[$f])) {
+                $col = $fieldMap[$f] ?? $f;
+                if ($col === null) continue;
+                $sets[] = "$col = ?";
+                $vals[] = $body[$f];
+            }
         }
         if ($sets) {
             $vals[] = $pid;
