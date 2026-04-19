@@ -153,12 +153,14 @@ try {
                     if ($cat) $userSignals['category_affinity'][$cat] = ($userSignals['category_affinity'][$cat] ?? 0) + 1;
                 }
 
-                // Favorites
-                $stmt = $db->prepare("SELECT partner_id FROM om_market_customer_favorites WHERE customer_id = ?");
-                $stmt->execute([$customerId]);
-                foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $favId) {
-                    $userSignals['favorites'][(int)$favId] = true;
-                }
+                // Favorites (uses om_customer_favorites with partner_id column)
+                try {
+                    $stmt = $db->prepare("SELECT partner_id FROM om_customer_favorites WHERE customer_id = ? AND partner_id IS NOT NULL");
+                    $stmt->execute([$customerId]);
+                    foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $favId) {
+                        $userSignals['favorites'][(int)$favId] = true;
+                    }
+                } catch (Exception $e) { /* table variant may differ across envs */ }
             } catch (Exception $e) {
                 error_log("[vitrine personalization signals] " . $e->getMessage());
             }
