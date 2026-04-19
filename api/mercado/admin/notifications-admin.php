@@ -66,7 +66,7 @@ try {
 
         // Fetch recent notifications
         $stmt = $db->prepare("
-            SELECT n.id, n.recipient_id, n.recipient_type, n.title, n.message,
+            SELECT n.notification_id AS id, n.recipient_id, n.recipient_type, n.title, n.message,
                    n.data, n.is_read, n.sent_at,
                    CASE
                        WHEN n.recipient_type = 'customer' THEN c.name
@@ -89,7 +89,7 @@ try {
         $campaigns = [];
         try {
             $stmt = $db->query("
-                SELECT id, title, body, segment_type, status,
+                SELECT notification_id AS id, title, body, segment_type, status,
                        total_sent, total_opened, total_clicked,
                        scheduled_at, sent_at, created_at
                 FROM om_push_campaigns

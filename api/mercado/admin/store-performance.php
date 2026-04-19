@@ -76,36 +76,36 @@ function buildPeriodCondition(string $period, string $which): array {
         case 'today':
             if ($which === 'current') {
                 return [
-                    'where' => "DATE(o.created_at) = CURRENT_DATE",
+                    'where' => "DATE(o.date_added) = CURRENT_DATE",
                     'params' => [],
                 ];
             }
             return [
-                'where' => "DATE(o.created_at) = CURRENT_DATE - INTERVAL '1 day'",
+                'where' => "DATE(o.date_added) = CURRENT_DATE - INTERVAL '1 day'",
                 'params' => [],
             ];
 
         case 'week':
             if ($which === 'current') {
                 return [
-                    'where' => "o.created_at >= (CURRENT_DATE - INTERVAL '7 days')",
+                    'where' => "o.date_added >= (CURRENT_DATE - INTERVAL '7 days')",
                     'params' => [],
                 ];
             }
             return [
-                'where' => "o.created_at >= (CURRENT_DATE - INTERVAL '14 days') AND o.created_at < (CURRENT_DATE - INTERVAL '7 days')",
+                'where' => "o.date_added >= (CURRENT_DATE - INTERVAL '14 days') AND o.date_added < (CURRENT_DATE - INTERVAL '7 days')",
                 'params' => [],
             ];
 
         case 'quarter':
             if ($which === 'current') {
                 return [
-                    'where' => "o.created_at >= (CURRENT_DATE - INTERVAL '90 days')",
+                    'where' => "o.date_added >= (CURRENT_DATE - INTERVAL '90 days')",
                     'params' => [],
                 ];
             }
             return [
-                'where' => "o.created_at >= (CURRENT_DATE - INTERVAL '180 days') AND o.created_at < (CURRENT_DATE - INTERVAL '90 days')",
+                'where' => "o.date_added >= (CURRENT_DATE - INTERVAL '180 days') AND o.date_added < (CURRENT_DATE - INTERVAL '90 days')",
                 'params' => [],
             ];
 
@@ -113,12 +113,12 @@ function buildPeriodCondition(string $period, string $which): array {
         default:
             if ($which === 'current') {
                 return [
-                    'where' => "o.created_at >= (CURRENT_DATE - INTERVAL '30 days')",
+                    'where' => "o.date_added >= (CURRENT_DATE - INTERVAL '30 days')",
                     'params' => [],
                 ];
             }
             return [
-                'where' => "o.created_at >= (CURRENT_DATE - INTERVAL '60 days') AND o.created_at < (CURRENT_DATE - INTERVAL '30 days')",
+                'where' => "o.date_added >= (CURRENT_DATE - INTERVAL '60 days') AND o.date_added < (CURRENT_DATE - INTERVAL '30 days')",
                 'params' => [],
             ];
     }
@@ -178,8 +178,8 @@ function getStoreRanking(
                     ELSE 0 END AS cancel_rate,
                 COALESCE(
                     ROUND(AVG(
-                        CASE WHEN o.status IN ('pronto', 'em_entrega', 'entregue') AND o.updated_at IS NOT NULL AND o.created_at IS NOT NULL
-                            THEN EXTRACT(EPOCH FROM (o.updated_at - o.created_at)) / 60.0
+                        CASE WHEN o.status IN ('pronto', 'em_entrega', 'entregue') AND o.updated_at IS NOT NULL AND o.date_added IS NOT NULL
+                            THEN EXTRACT(EPOCH FROM (o.updated_at - o.date_added)) / 60.0
                             ELSE NULL END
                     )::numeric, 0),
                 0) AS avg_prep_time_minutes,
@@ -224,9 +224,9 @@ function getStoreRanking(
             FROM om_market_orders o
             INNER JOIN (
                 SELECT customer_id, partner_id, COUNT(*) AS cnt
-                FROM om_market_orders
+                FROM om_market_orders o
                 WHERE {$current['where']}
-                AND status NOT IN ('cancelado', 'reembolsado')
+                AND o.status NOT IN ('cancelado', 'reembolsado')
                 GROUP BY customer_id, partner_id
             ) cust_orders ON cust_orders.customer_id = o.customer_id AND cust_orders.partner_id = o.partner_id
             WHERE {$current['where']}
@@ -405,7 +405,7 @@ function getOverallSummary(PDO $db, array $current): array {
         SELECT
             COALESCE(ROUND(AVG(
                 CASE WHEN o.status IN ('pronto', 'em_entrega', 'entregue') AND o.updated_at IS NOT NULL
-                    THEN EXTRACT(EPOCH FROM (o.updated_at - o.created_at)) / 60.0
+                    THEN EXTRACT(EPOCH FROM (o.updated_at - o.date_added)) / 60.0
                     ELSE NULL END
             )::numeric, 0), 0) AS avg_prep_time,
             CASE WHEN COUNT(*) > 0

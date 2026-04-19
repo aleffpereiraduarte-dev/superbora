@@ -215,10 +215,10 @@ function getDisputeList(PDO $db): void {
             SUM(CASE WHEN d.status = 'resolved' THEN 1 ELSE 0 END) AS resolved,
             SUM(CASE WHEN d.status = 'rejected' THEN 1 ELSE 0 END) AS rejected,
             SUM(CASE WHEN d.status = 'escalated' THEN 1 ELSE 0 END) AS escalated,
-            COALESCE(SUM(d.refund_requested), 0) AS total_refund_requested,
-            COALESCE(SUM(d.refund_approved), 0) AS total_refund_approved,
-            COALESCE(SUM(d.refund_paid), 0) AS total_refund_paid,
-            COALESCE(SUM(CASE WHEN d.status IN ('opened', 'investigating', 'escalated') THEN d.refund_requested ELSE 0 END), 0) AS pending_refund,
+            COALESCE(SUM(CASE WHEN d.refund_requested THEN 1 ELSE 0 END), 0) AS total_refund_requested,
+            COALESCE(SUM(CASE WHEN d.refund_approved THEN 1 ELSE 0 END), 0) AS total_refund_approved,
+            COALESCE(SUM(CASE WHEN d.refund_paid THEN 1 ELSE 0 END), 0) AS total_refund_paid,
+            COALESCE(SUM(CASE WHEN d.status IN ('opened', 'investigating', 'escalated') THEN CASE WHEN d.refund_requested THEN 1 ELSE 0 END ELSE 0 END), 0) AS pending_refund,
             SUM(CASE WHEN d.severity = 'critical' THEN 1 ELSE 0 END) AS critical_count,
             SUM(CASE WHEN d.severity = 'high' THEN 1 ELSE 0 END) AS high_count
         FROM om_boraum_disputes d
@@ -242,7 +242,7 @@ function getDisputeList(PDO $db): void {
 
     // Who pays breakdown
     $payerStmt = $db->prepare("
-        SELECT d.who_pays, COUNT(*) AS count, COALESCE(SUM(d.refund_approved), 0) AS total_amount
+        SELECT d.who_pays, COUNT(*) AS count, COALESCE(SUM(CASE WHEN d.refund_approved THEN 1 ELSE 0 END), 0) AS total_amount
         FROM om_boraum_disputes d
         LEFT JOIN om_market_orders o ON d.order_id = o.order_id
         $whereClause

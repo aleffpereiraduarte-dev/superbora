@@ -153,7 +153,7 @@ function listPenalties(PDO $db): void {
         SELECT
             COUNT(*) AS total_penalties,
             COALESCE(SUM(sp.penalty_amount), 0) AS total_amount,
-            COALESCE(SUM(sp.refund_to_customer), 0) AS total_refunded,
+            COALESCE(SUM(CASE WHEN sp.refund_to_customer THEN 1 ELSE 0 END), 0) AS total_refunded,
             COALESCE(SUM(CASE WHEN sp.deducted_from_repasse = false AND sp.status IN ('opened','confirmed') THEN sp.penalty_amount ELSE 0 END), 0) AS pending_deduction,
             COALESCE(SUM(CASE WHEN sp.status = 'opened' THEN 1 ELSE 0 END), 0) AS opened_count,
             COALESCE(SUM(CASE WHEN sp.status = 'confirmed' THEN 1 ELSE 0 END), 0) AS confirmed_count,
@@ -256,7 +256,7 @@ function getStoreSummary(PDO $db, int $partnerId): void {
         SELECT
             COUNT(*) AS total_penalties,
             COALESCE(SUM(penalty_amount), 0) AS total_amount,
-            COALESCE(SUM(refund_to_customer), 0) AS total_refunded,
+            COALESCE(SUM(CASE WHEN refund_to_customer THEN 1 ELSE 0 END), 0) AS total_refunded,
             COALESCE(SUM(CASE WHEN deducted_from_repasse = false AND status IN ('opened','confirmed') THEN penalty_amount ELSE 0 END), 0) AS pending_deduction
         FROM om_store_penalties
         WHERE partner_id = ?

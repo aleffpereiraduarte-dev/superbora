@@ -44,7 +44,7 @@ try {
 
     if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         // List pages
-        $stmt = $db->query("SELECT id, name, slug, status, created_at, updated_at FROM om_page_builder ORDER BY updated_at DESC");
+        $stmt = $db->query("SELECT id, title AS name, slug, status, created_at, updated_at FROM om_page_builder ORDER BY updated_at DESC");
         $pages = $stmt->fetchAll();
         response(true, ['pages' => $pages], "Paginas listadas");
     }
@@ -53,7 +53,7 @@ try {
 
     $input = getInput();
     $action = strip_tags(trim($input['action'] ?? ''));
-    $name = strip_tags(trim($input['name'] ?? ''));
+    $title = strip_tags(trim($input['name'] ?? ''));
     $blocks = $input['blocks'] ?? [];
     $page_id = (int)($input['page_id'] ?? 0);
 
@@ -62,7 +62,7 @@ try {
     }
 
     if ($action === 'list') {
-        $stmt = $db->query("SELECT id, name, slug, status, created_at, updated_at FROM om_page_builder ORDER BY updated_at DESC");
+        $stmt = $db->query("SELECT id, title AS name, slug, status, created_at, updated_at FROM om_page_builder ORDER BY updated_at DESC");
         response(true, ['pages' => $stmt->fetchAll()], "Paginas listadas");
     }
 
@@ -82,7 +82,7 @@ try {
     $blocksJson = json_encode($blocks, JSON_UNESCAPED_UNICODE);
 
     // Check if page with this name exists
-    $stmt = $db->prepare("SELECT id FROM om_page_builder WHERE LOWER(name) = LOWER(?)");
+    $stmt = $db->prepare("SELECT id FROM om_page_builder WHERE LOWER(title) = LOWER(?)");
     $stmt->execute([$name]);
     $existing = $stmt->fetch();
 
@@ -94,7 +94,7 @@ try {
         $msg = ($action === 'publish') ? "Pagina atualizada e publicada" : "Pagina salva como rascunho";
     } else {
         // Insert
-        $stmt = $db->prepare("INSERT INTO om_page_builder (name, slug, blocks, status, created_by, updated_by) VALUES (?, ?, ?::jsonb, ?, ?, ?) RETURNING id");
+        $stmt = $db->prepare("INSERT INTO om_page_builder (title, slug, layout_json, status, created_by, updated_by) VALUES (?, ?, ?::jsonb, ?, ?, ?) RETURNING id");
         $stmt->execute([$name, $slug, $blocksJson, $status, $admin_id, $admin_id]);
         $row = $stmt->fetch();
         $page_id = (int)$row['id'];
