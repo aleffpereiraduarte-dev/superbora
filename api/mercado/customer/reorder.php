@@ -18,14 +18,14 @@ try {
     $customerId = requireCustomerAuth();
 
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-        response(false, null, "Metodo nao permitido", 405);
+        response(false, null, "Método não permitido", 405);
     }
 
     $input = getInput();
     $orderId = (int)($input['order_id'] ?? 0);
 
     if (!$orderId) {
-        response(false, null, "order_id obrigatorio", 400);
+        response(false, null, "order_id obrigatório", 400);
     }
 
     // Verify order belongs to this customer
@@ -38,13 +38,13 @@ try {
     $order = $stmt->fetch();
 
     if (!$order) {
-        response(false, null, "Pedido nao encontrado", 404);
+        response(false, null, "Pedido não encontrado", 404);
     }
 
     // Get original order items
     $stmt = $db->prepare("
         SELECT oi.product_id, oi.quantity, oi.price, oi.options,
-               p.name, p.price as current_price, p.price_promo, p.status as product_status,
+               p.name, p.price as current_price, p.special_price AS price_promo, p.status as product_status,
                p.stock, p.image
         FROM om_market_order_items oi
         LEFT JOIN om_market_products p ON p.product_id = oi.product_id
@@ -63,7 +63,7 @@ try {
     $store = $stmt->fetch();
 
     if (!$store || $store['status'] != 1) {
-        response(false, null, "Loja nao esta mais disponivel", 400);
+        response(false, null, "Loja não esta mais disponível", 400);
     }
 
     // Get or create cart session
@@ -146,7 +146,7 @@ try {
     }
 
     if (empty($added)) {
-        response(false, null, "Nenhum item disponivel para reordenar", 400);
+        response(false, null, "Nenhum item disponível para reordenar", 400);
     }
 
     response(true, [
