@@ -150,7 +150,7 @@ try {
             $max_uses = (int)($input['max_uses'] ?? 0);
             $expires_at = trim($input['expires_at'] ?? '');
             $partner_id = isset($input['partner_id']) ? (int)$input['partner_id'] : null;
-            $max_discount_value = isset($input['max_discount_value']) ? (float)$input['max_discount_value'] : null;
+            $max_discount = isset($input['max_discount']) ? (float)$input['max_discount'] : null;
 
             // Auto-generate code if not provided
             if ($code === '') {
@@ -189,19 +189,19 @@ try {
 
             $stmt = $db->prepare("
                 INSERT INTO om_market_coupons
-                    (code, discount_type, discount_value, min_order_value, max_discount_value,
-                     max_uses, current_uses, valid_until, partner_id, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, 'active', NOW())
+                    (code, discount_type, discount_value, min_order_value, max_discount,
+                     max_uses, current_uses, valid_until, specific_partners, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?::jsonb, 'active', NOW())
             ");
             $stmt->execute([
                 $code,
                 $type,
                 $value,
                 $min_order,
-                $max_discount_value,
+                $max_discount,
                 $max_uses,
                 $expires_at !== '' ? $expires_at : null,
-                $partner_id && $partner_id > 0 ? $partner_id : null,
+                $partner_id && $partner_id > 0 ? json_encode([(int)$partner_id]) : '[]',
             ]);
             $new_id = (int)$db->lastInsertId();
 
@@ -298,9 +298,9 @@ try {
                 }
             }
 
-            if (isset($input['max_discount_value'])) {
-                $updates[] = "max_discount_value = ?";
-                $update_params[] = (float)$input['max_discount_value'];
+            if (isset($input['max_discount'])) {
+                $updates[] = "max_discount = ?";
+                $update_params[] = (float)$input['max_discount'];
             }
 
             if (empty($updates)) {
