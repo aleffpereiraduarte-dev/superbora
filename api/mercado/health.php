@@ -141,6 +141,28 @@ try {
     $degraded = true;
 }
 
+// ── Meilisearch ─────────────────────────────────────────────────────
+try {
+    $meiliHost = $_ENV['MEILI_HOST'] ?? 'http://127.0.0.1:7700';
+    $start = microtime(true);
+    $ch = curl_init($meiliHost . '/health');
+    curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 2]);
+    $body = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    $latency = round((microtime(true) - $start) * 1000, 2);
+
+    if ($code === 200 && str_contains((string)$body, 'available')) {
+        $result['components']['meilisearch'] = ['status' => 'ok', 'latency_ms' => $latency];
+    } else {
+        $result['components']['meilisearch'] = ['status' => 'down', 'http_code' => $code];
+        $degraded = true;
+    }
+} catch (Exception $e) {
+    $result['components']['meilisearch'] = ['status' => 'down'];
+    $degraded = true;
+}
+
 // ── PHP ─────────────────────────────────────────────────────────────
 $result['components']['php'] = [
     'version'    => PHP_VERSION,
