@@ -33,6 +33,44 @@ try {
     $session_id = substr($raw_session, 0, 64); // Limit length to prevent abuse
     $partner_id = (int)($input["partner_id"] ?? 0);
     $payment_method = preg_replace('/[^a-z_]/', '', $input["payment_method"] ?? "pix");
+
+    // ═══ SPLIT PAYMENT (2-method) ═══
+    // Front-end (checkout.jsx L1808-1815) may send:
+    //   split_payment: true, split_method_1, split_amount_1, split_method_2, split_amount_2
+    // Supported combinations for now:
+    //   cashback + {pix, credito, stripe_card, stripe_wallet, dinheiro, cartao_entrega}
+    // Strategy: translate the `cashback` slice into `use_cashback` and force
+    // payment_method to the non-cashback slice. Other combinations are rejected
+    // with 400 so the charge is never silently collapsed to the first method.
+    $split_payment = !empty($input['split_payment']);
+    if ($split_payment) {
+        $sm1 = preg_replace('/[^a-z_]/', '', $input['split_method_1'] ?? '');
+        $sm2 = preg_replace('/[^a-z_]/', '', $input['split_method_2'] ?? '');
+        $sa1 = round((float)($input['split_amount_1'] ?? 0), 2);
+        $sa2 = round((float)($input['split_amount_2'] ?? 0), 2);
+        if ($sa1 <= 0 || $sa2 <= 0) {
+            response(false, null, 'Valores do pagamento dividido invalidos', 400);
+        }
+        // Only cashback-combo supported in this pass (one slice MUST be cashback)
+        $cb_amount = 0.0;
+        $other_method = null;
+        if ($sm1 === 'cashback' && $sm2 !== 'cashback') {
+            $cb_amount = $sa1; $other_method = $sm2;
+        } elseif ($sm2 === 'cashback' && $sm1 !== 'cashback') {
+            $cb_amount = $sa2; $other_method = $sm1;
+        } else {
+            response(false, null, 'Pagamento dividido suporta apenas cashback + outro metodo no momento.', 400);
+        }
+        if (!in_array($other_method, ['pix', 'credito', 'efi_card', 'stripe_card', 'stripe_wallet', 'dinheiro', 'cartao_entrega'], true)) {
+            response(false, null, 'Metodo secundario do pagamento dividido invalido', 400);
+        }
+        // Translate: honour cashback slice via use_cashback, charge remainder on other_method
+        $input['use_cashback'] = $cb_amount;
+        $payment_method = $other_method;
+        // Remember original split intent for later total validation
+        $split_total_expected = round($sa1 + $sa2, 2);
+    }
+
     $coupon_id = (int)($input["coupon_id"] ?? 0);
     $coupon_discount = 0; // Calculado server-side - nunca confiar no valor do client
     $tip = min(max(0, (float)($input["tip"] ?? 0)), OmPricing::GORJETA_MAX);
@@ -79,7 +117,7 @@ try {
     $custStmt->execute([$customer_id]);
     $custData = $custStmt->fetch(PDO::FETCH_ASSOC);
     if (!$custData) {
-        response(false, null, "Cliente nao encontrado", 404);
+        response(false, null, "Cliente não encontrado", 404);
     }
     $customer_name = trim($custData['name'] ?: 'Cliente');
     $customer_phone = preg_replace('/[^0-9]/', '', $custData['phone'] ?? '');
@@ -95,7 +133,7 @@ try {
         response(false, null, "Forma de pagamento invalida", 400);
     }
     if ($payment_method === 'vale_refeicao') {
-        response(false, null, "Pagamento com VR/VA estara disponivel em breve. Use PIX ou cartao.", 501);
+        response(false, null, "Pagamento com VR/VA estará disponível em breve. Use PIX ou cartão.", 501);
     }
 
     // ═══════════════════════════════════════════════════════
@@ -110,7 +148,7 @@ try {
         ");
         $stmtCompleted->execute([$customer_id]);
         if ((int)$stmtCompleted->fetchColumn() < 1) {
-            response(false, null, "Pagamento na entrega disponivel a partir do 2o pedido. Faca seu primeiro pedido com PIX ou cartao.", 403);
+            response(false, null, "Pagamento na entrega disponível a partir do 2o pedido. Faça seu primeiro pedido com PIX ou cartão.", 403);
         }
 
         // 2. Cash nao permitido com BoraUm (apenas retirada ou entrega propria)
@@ -119,24 +157,24 @@ try {
             $stmtPCash->execute([$partner_id]);
             $pCash = $stmtPCash->fetch();
             if (!$pCash || !$pCash['entrega_propria']) {
-                response(false, null, "Pagamento na entrega disponivel apenas para retirada ou entrega propria do restaurante.", 403);
+                response(false, null, "Pagamento na entrega disponível apenas para retirada ou entrega propria do restaurante.", 403);
             }
         }
 
         // 3. Wallet: checar limite de credito do parceiro
         $walletCheck = OmPricing::getWalletParceiro($db, $partner_id);
         if ($walletCheck['cash_bloqueado']) {
-            response(false, null, "Pagamento na entrega temporariamente indisponivel para este restaurante. Use PIX ou cartao.", 403);
+            response(false, null, "Pagamento na entrega temporariamente indisponivel para este restaurante. Use PIX ou cartão.", 403);
         }
     }
 
     if (!$is_pickup && empty($address)) {
-        response(false, null, "Endereco de entrega obrigatorio", 400);
+        response(false, null, "Endereço de entrega obrigatório", 400);
     }
 
     // Validar partner_id — obrigatorio (exceto quando rota secundaria herda do primario)
     if ($partner_id <= 0 && !$is_route_secondary) {
-        response(false, null, "partner_id obrigatorio", 400);
+        response(false, null, "partner_id obrigatório", 400);
     }
 
     // Buscar carrinho — SECURITY: authenticated users query by customer_id only
@@ -184,7 +222,7 @@ try {
     $parceiro = $stmt->fetch();
 
     if (!$parceiro) {
-        response(false, null, "Estabelecimento nao disponivel", 400);
+        response(false, null, "Estabelecimento não disponível", 400);
     }
 
     // Verificar se loja esta aberta (antes de travar estoque)
@@ -203,7 +241,7 @@ try {
         $preco = ($item['special_price'] && (float)$item['special_price'] > 0 && (float)$item['special_price'] < (float)$item['price'])
             ? (float)$item['special_price'] : (float)$item['price'];
         if ($preco <= 0) { // BUG 7: reject zero/negative prices
-            response(false, null, "Preco invalido para {$item['name']}", 400);
+            response(false, null, "Preco inválido para {$item['name']}", 400);
         }
         $subtotal += $preco * $qty;
         $validItens[] = $item;
@@ -243,17 +281,26 @@ try {
     // ═══════════════════════════════════════════════════════
     // RAIO DE ENTREGA — rejeitar pedidos fora da area (server-side enforcement)
     // ═══════════════════════════════════════════════════════
-    if ($usaBoraUm && $lat_parceiro && $lat_cliente) {
+    // BUG FIX: coords missing would silently bypass the radius check. Now we
+    // require customer coordinates for any BoraUm delivery so radius/distance
+    // enforcement can actually run.
+    if ($usaBoraUm && !$is_pickup) {
+        if ($lat_cliente === null || $lng_cliente === null) {
+            response(false, null, "Endereço sem coordenadas. Atualize seu endereço em 'Endereços' para continuar.", 400);
+        }
+        if ($lat_parceiro === null || $lng_parceiro === null) {
+            response(false, null, "Estabelecimento sem coordenadas cadastradas. Tente novamente mais tarde.", 400);
+        }
         $raio_km = (float)($parceiro['delivery_radius_km'] ?? 0);
         if ($raio_km > 0 && $distancia_km > $raio_km) {
-            response(false, null, "Voce esta fora da area de entrega deste estabelecimento (" . number_format($distancia_km, 1, ',', '') . " km, maximo " . number_format($raio_km, 1, ',', '') . " km)", 400);
+            response(false, null, "Você esta fora da area de entrega deste estabelecimento (" . number_format($distancia_km, 1, ',', '') . " km, maximo " . number_format($raio_km, 1, ',', '') . " km)", 400);
         }
     }
     // Validacao de pedido minimo por distancia (BoraUm)
     if ($usaBoraUm) {
         $minimoBoraUm = OmPricing::getMinimoBoraUm($distancia_km);
         if ($subtotal < $minimoBoraUm) {
-            response(false, null, "Pedido minimo R$ " . number_format($minimoBoraUm, 2, ',', '.') . " para entregas " . ($distancia_km <= 3 ? 'ate 3km' : ($distancia_km <= 6 ? 'de 3 a 6km' : 'acima de 6km')), 400);
+            response(false, null, "Pedido mínimo R$ " . number_format($minimoBoraUm, 2, ',', '.') . " para entregas " . ($distancia_km <= 3 ? 'ate 3km' : ($distancia_km <= 6 ? 'de 3 a 6km' : 'acima de 6km')), 400);
         }
     }
 
@@ -320,7 +367,7 @@ try {
     if ($schedule_date) {
         // Validate date format YYYY-MM-DD
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $schedule_date)) {
-            response(false, null, "Formato de data invalido. Use YYYY-MM-DD.", 400);
+            response(false, null, "Formato de data inválido. Use YYYY-MM-DD.", 400);
         }
         $dateParts = explode('-', $schedule_date);
         if (!checkdate((int)$dateParts[1], (int)$dateParts[2], (int)$dateParts[0])) {
@@ -328,7 +375,7 @@ try {
         }
         // Validate time format HH:MM
         if ($schedule_time && !preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $schedule_time)) {
-            response(false, null, "Formato de horario invalido. Use HH:MM.", 400);
+            response(false, null, "Formato de horario inválido. Use HH:MM.", 400);
         }
         // Validate schedule is in the future
         $scheduleTimeStr = $schedule_time ?: '00:00';
@@ -345,7 +392,7 @@ try {
     // Pedido minimo
     $pedidoMinimo = (float)($parceiro['min_order_value'] ?? $parceiro['min_order'] ?? 0);
     if ($subtotal < $pedidoMinimo) {
-        response(false, null, "Pedido minimo: R$ " . number_format($pedidoMinimo, 2, ',', '.'), 400);
+        response(false, null, "Pedido mínimo: R$ " . number_format($pedidoMinimo, 2, ',', '.'), 400);
     }
 
     // Service fee: sempre usar valor do servidor. Client nao pode alterar.
@@ -449,9 +496,19 @@ try {
     $total = $subtotal - $coupon_discount - $loyalty_discount - $cashback_discount + $delivery_fee + $tip + $service_fee;
     if ($total < 0) $total = 0;
 
+    // Split-payment sanity check: client-reported split total must match server total.
+    // Cashback slice is already subtracted inside $total via $cashback_discount, so
+    // $total (remainder on $other_method) + $cashback_discount should equal split_total_expected.
+    if ($split_payment && isset($split_total_expected)) {
+        $computed = round($total + $cashback_discount, 2);
+        if (abs($computed - $split_total_expected) > 0.02) {
+            response(false, null, 'Soma do pagamento dividido nao bate com o total do pedido. Atualize a tela e tente novamente.', 400);
+        }
+    }
+
     // Teto para dinheiro (apos calcular total)
     if ($payment_method === 'dinheiro' && $total > OmPricing::CASH_LIMITE) {
-        response(false, null, "Limite de R$" . number_format(OmPricing::CASH_LIMITE, 0) . " para pagamento em dinheiro. Use PIX ou cartao para valores maiores.", 403);
+        response(false, null, "Limite de R$" . number_format(OmPricing::CASH_LIMITE, 0) . " para pagamento em dinheiro. Use PIX ou cartão para valores maiores.", 403);
     }
 
     // Validar troco: change_for deve ser >= total
@@ -513,7 +570,7 @@ try {
                 $lockAcquired = $rawConn->set($fullLockKey, '1', ['NX', 'EX' => 30]);
                 if (!$lockAcquired) {
                     error_log("[Checkout] Lock blocked: customer={$customer_id}, partner={$partner_id}");
-                    response(false, null, "Pedido ja esta sendo processado. Aguarde alguns segundos.", 409);
+                    response(false, null, "Pedido já esta sendo processado. Aguarde alguns segundos.", 409);
                 }
             } catch (\RedisException $e) {
                 // Redis failure: proceed without lock (don't block checkout)
@@ -581,7 +638,7 @@ try {
     if (in_array($payment_method, ['stripe_card', 'stripe_wallet']) && $stripe_pi_id) {
         $stripeCheckResult = verificarStripePayment($stripe_pi_id);
         if (!$stripeCheckResult['paid']) {
-            response(false, null, "Pagamento nao confirmado. Tente novamente.", 402);
+            response(false, null, "Pagamento não confirmado. Tente novamente.", 402);
         }
         $stripe_pi_status = $stripeCheckResult['status'] ?? '';
 
@@ -605,7 +662,7 @@ try {
     } elseif (in_array($payment_method, ['stripe_card', 'stripe_wallet']) && !$stripe_pi_id) {
         // Secondary route orders inherit payment from primary — skip PI requirement
         if (!$is_route_secondary) {
-            response(false, null, "Pagamento nao processado. Tente novamente.", 400);
+            response(false, null, "Pagamento não processado. Tente novamente.", 400);
         }
     }
 
@@ -616,7 +673,7 @@ try {
         $stmtRouteCheck->execute([$incoming_route_id, $customer_id]);
         $primaryOrder = $stmtRouteCheck->fetch();
         if (!$primaryOrder) {
-            response(false, null, "Rota nao encontrada ou nao pertence a este cliente.", 400);
+            response(false, null, "Rota não encontrada ou não pertence a este cliente.", 400);
         }
         // Inherit payment verification from primary order — actually verify PI status
         if (in_array($payment_method, ['stripe_card', 'stripe_wallet'])) {
@@ -627,11 +684,11 @@ try {
                 $stripe_pi_status = $secondaryCheckResult['status'] ?? '';
                 if (!$stripe_verified) {
                     error_log("[Checkout] Secondary route PI {$stripe_pi_id} not succeeded (status: {$stripe_pi_status})");
-                    response(false, null, "Pagamento da rota primaria nao confirmado.", 402);
+                    response(false, null, "Pagamento da rota primaria não confirmado.", 402);
                 }
             } else {
                 error_log("[Checkout] Secondary route order missing PI on primary order route_id={$incoming_route_id}");
-                response(false, null, "Pagamento da rota primaria nao encontrado.", 400);
+                response(false, null, "Pagamento da rota primaria não encontrado.", 400);
             }
         }
         // Force delivery_fee to 0 for secondary stops
@@ -663,7 +720,7 @@ try {
             if ($existingPiOrder) {
                 $db->rollBack();
                 error_log("[Checkout] SECURITY: PI reuse blocked. PI={$stripe_pi_id}, existing_order={$existingPiOrder['order_id']}");
-                response(false, null, "Este pagamento ja foi utilizado para outro pedido.", 409);
+                response(false, null, "Este pagamento já foi utilizado para outro pedido.", 409);
             }
         }
 
@@ -674,7 +731,7 @@ try {
             $estoque = $stmtLock->fetchColumn();
             if ((int)$item['quantity'] > (int)$estoque) {
                 $db->rollBack();
-                response(false, null, "'{$item['name']}' - estoque insuficiente (disponivel: {$estoque})", 400);
+                response(false, null, "'{$item['name']}' - estoque insuficiente (disponível: {$estoque})", 400);
             }
         }
 
@@ -718,7 +775,7 @@ try {
                     $stmtUsedCheck->execute([$coupon_id, $customer_id]);
                     if ($stmtUsedCheck->fetch()) {
                         $db->rollBack();
-                        response(false, null, "Cupom ja utilizado", 400);
+                        response(false, null, "Cupom já utilizado", 400);
                     }
                 }
                 // Check max_uses global limit
@@ -736,7 +793,7 @@ try {
                     $stmtUser->execute([$coupon_id, $customer_id]);
                     if ((int)$stmtUser->fetchColumn() >= (int)$lockedCoupon['max_uses_per_user']) {
                         $db->rollBack();
-                        response(false, null, "Voce ja usou este cupom o maximo de vezes", 400);
+                        response(false, null, "Você já usou este cupom o maximo de vezes", 400);
                     }
                 }
             } else {
@@ -810,7 +867,7 @@ try {
             if ($installments > 1 && ($total / $installments) < 10.00) {
                 $db->rollBack();
                 $min_total = number_format($installments * 10, 2, ',', '.');
-                response(false, null, "Valor minimo para {$installments}x e R$ {$min_total} (R$ 10,00 por parcela)", 400);
+                response(false, null, "Valor mínimo para {$installments}x e R$ {$min_total} (R$ 10,00 por parcela)", 400);
             }
         }
         $installment_value = $installments > 1 ? round($total / $installments, 2) : $total;
@@ -824,7 +881,7 @@ try {
             notes, codigo_entrega, forma_pagamento,
             coupon_id, coupon_discount,
             loyalty_points_used, loyalty_discount,
-            is_pickup, schedule_date, schedule_time,
+            is_pickup, schedule_date, schedule_time, is_scheduled,
             timer_started, timer_expires, partner_categoria,
             delivery_type, cpf_nota,
             service_fee, express_fee, installments, installment_value,
@@ -832,7 +889,7 @@ try {
             route_id, route_stop_sequence, shipping_lat, shipping_lng,
             unavailable_preference,
             date_added
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pendente', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pendente', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
         RETURNING order_id");
 
         // Route sequence: primary=1, secondary=next stop
@@ -857,7 +914,7 @@ try {
             $notes, $codigo_entrega, $payment_method,
             $coupon_id ?: null, $coupon_discount,
             $loyalty_points_used, $loyalty_discount,
-            $is_pickup, $schedule_date ?: null, $schedule_time ?: null,
+            $is_pickup, $schedule_date ?: null, $schedule_time ?: null, $schedule_date ? 1 : 0,
             $timer_started, $timer_expires, $partner_categoria,
             $delivery_type, $cpf_nota ?: null,
             $service_fee, $express_fee, $installments, $installment_value,
@@ -1022,7 +1079,7 @@ try {
                 // PIX falhou — rollback tudo (estoque, pontos, cashback, cupom voltam automaticamente)
                 $db->rollBack();
                 error_log("[Checkout] PIX generation failed for order #{$order_id}. Transaction rolled back.");
-                response(false, null, "Pagamento PIX indisponivel no momento. Tente novamente em alguns minutos ou use outro metodo de pagamento.", 503);
+                response(false, null, "Pagamento PIX indisponivel no momento. Tente novamente em alguns minutos ou use outro método de pagamento.", 503);
             }
         }
 
