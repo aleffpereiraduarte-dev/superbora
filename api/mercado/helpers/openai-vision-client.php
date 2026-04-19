@@ -99,14 +99,59 @@ class OpenAIVisionClient {
             return ['success' => false, 'error' => 'Empty response from OpenAI vision'];
         }
 
+        $inT = (int)($result['usage']['prompt_tokens'] ?? 0);
+        $outT = (int)($result['usage']['completion_tokens'] ?? 0);
+        $this->logUsage($this->model, 'vision', $inT, $outT);
+
         return [
             'success' => true,
             'text' => $text,
-            'input_tokens' => $result['usage']['prompt_tokens'] ?? 0,
-            'output_tokens' => $result['usage']['completion_tokens'] ?? 0,
-            'total_tokens' => $result['usage']['total_tokens'] ?? 0,
+            'input_tokens' => $inT,
+            'output_tokens' => $outT,
+            'total_tokens' => $inT + $outT,
             'model' => $result['model'] ?? $this->model,
             'provider' => 'openai',
         ];
+    }
+
+    /**
+     * Log OpenAI usage to /var/log/superbora/openai-usage.log (JSONL).
+     * Captures caller file + URI + tokens + cost so we can see who is spending.
+     */
+    private function logUsage(string $model, string $type, int $inTokens, int $outTokens): void {
+        // Price per 1M tokens (USD) — GPT-4o-mini is 20x cheaper than gpt-4o
+        static $PRICES = [
+            'gpt-4o-mini'        => ['in' => 0.15,  'out' => 0.60],
+            'gpt-4o'             => ['in' => 2.50,  'out' => 10.00],
+            'text-embedding-3-small' => ['in' => 0.02, 'out' => 0.0],
+            'text-embedding-3-large' => ['in' => 0.13, 'out' => 0.0],
+        ];
+        $family = 'gpt-4o-mini';
+        foreach ($PRICES as $k => $_) {
+            if (str_contains($model, $k)) { $family = $k; break; }
+        }
+        $cost = ($inTokens * $PRICES[$family]['in'] + $outTokens * $PRICES[$family]['out']) / 1_000_000;
+
+        $trace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 6);
+        $caller_file = '';
+        foreach ($trace as $t) {
+            $f = $t['file'] ?? '';
+            if ($f && !str_contains($f, 'openai-vision-client.php')) {
+                $caller_file = str_replace('/var/www/html/', '', $f);
+                break;
+            }
+        }
+        $uri = $_SERVER['REQUEST_URI'] ?? ('cli:' . ($_SERVER['PHP_SELF'] ?? 'unknown'));
+        $entry = [
+            'ts' => date('c'),
+            'caller' => $caller_file,
+            'uri' => substr($uri, 0, 200),
+            'model' => $model,
+            'type' => $type,
+            'in_tokens' => $inTokens,
+            'out_tokens' => $outTokens,
+            'cost_usd' => round($cost, 6),
+        ];
+        @file_put_contents('/var/log/superbora/openai-usage.log', json_encode($entry) . "\n", FILE_APPEND | LOCK_EX);
     }
 }

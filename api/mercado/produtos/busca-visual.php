@@ -94,8 +94,22 @@ curl_close($ch);
 if ($code !== 200) {
     response(false, null, 'Servico de embedding indisponivel', 503);
 }
-$vec = json_decode($res, true)['data'][0]['embedding'] ?? null;
+$embedResult = json_decode($res, true);
+$vec = $embedResult['data'][0]['embedding'] ?? null;
 if (!$vec) response(false, null, 'Erro de embedding', 500);
+
+// Log OpenAI embedding usage
+$embTokens = (int)($embedResult['usage']['prompt_tokens'] ?? 0);
+@file_put_contents('/var/log/superbora/openai-usage.log',
+    json_encode([
+        'ts' => date('c'),
+        'caller' => 'api/mercado/produtos/busca-visual.php',
+        'uri' => $_SERVER['REQUEST_URI'] ?? '',
+        'model' => 'text-embedding-3-small',
+        'type' => 'embedding',
+        'in_tokens' => $embTokens, 'out_tokens' => 0,
+        'cost_usd' => round($embTokens * 0.02 / 1_000_000, 6),
+    ]) . "\n", FILE_APPEND | LOCK_EX);
 
 $vectorLiteral = '[' . implode(',', array_map(fn($v) => sprintf('%.6f', $v), $vec)) . ']';
 
