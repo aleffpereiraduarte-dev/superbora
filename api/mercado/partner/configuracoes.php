@@ -28,7 +28,9 @@ try {
             'horario_fechamento' => 'closes_at',
             'delivery_time_max' => null, // column doesn't exist
         ];
-        $allowed = ['name','phone','address','city','state','cep','delivery_fee','min_order','delivery_time_min','horario_abertura','horario_fechamento','is_open','opens_at','closes_at'];
+        $allowed = ['name','trade_name','phone','whatsapp','address','city','state','cep','delivery_fee','min_order','delivery_time_min','horario_abertura','horario_fechamento','is_open','opens_at','closes_at','description','descricao','logo','banner','delivery_radius_km','free_delivery_above'];
+        // Additional PT→EN mapping
+        $fieldMap['descricao'] = 'description';
         $sets = []; $vals = [];
         foreach ($allowed as $f) {
             if (isset($body[$f])) {
