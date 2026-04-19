@@ -78,6 +78,7 @@ try {
         $whereClause = implode(" AND ", $conditions);
         $sql = "SELECT p.id, p.product_id, p.name, p.description, p.price, p.special_price,
                        p.image, p.unit, p.quantity, p.category_id, p.available, p.partner_id,
+                       p.date_added,
                        c.name as categoria_nome
                 FROM om_market_products p
                 LEFT JOIN om_market_categories c ON p.category_id = c.category_id
@@ -201,6 +202,7 @@ try {
                     "smart_tags" => $smartTagsByProduct[$pid] ?? [],
                     "is_top_seller" => $topRank !== false,
                     "top_seller_rank" => $topRank !== false ? ($topRank + 1) : null,
+                    "is_new" => !empty($p['date_added']) && strtotime($p['date_added']) > (time() - 14 * 86400),
                 ];
             }, $produtos)
         ];
