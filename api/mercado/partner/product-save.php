@@ -106,6 +106,27 @@ try {
     ");
     $stmt->execute([$product_id, $partner_id, $price, $promotional_price, $stock, $status, $availability_schedule_json]);
 
+    // Dual-write: sync price/stock/status to om_market_products (legacy table the app reads)
+    try {
+        $stmtSync = $db->prepare("
+            UPDATE om_market_products
+            SET price = ?, special_price = ?, quantity = ?, status = ?, date_modified = NOW()
+            WHERE product_id = ? AND partner_id = ?
+        ");
+        $stmtSync->execute([$price, $promotional_price, $stock, (string)$status, $product_id, $partner_id]);
+    } catch (Exception $e) {
+        error_log("[product-save] legacy sync failed: " . $e->getMessage());
+    }
+
+    // Cache invalidation — both Redis CacheHelper + R2 global cache
+    try {
+        if (class_exists('OmCache')) OmCache::getInstance()->flush('mercado_produtos_');
+        require_once __DIR__ . '/../helpers/r2-cache.php';
+        if (function_exists('r2CacheInvalidatePartner')) r2CacheInvalidatePartner($partner_id);
+    } catch (Exception $e) {
+        error_log("[product-save] cache invalidation: " . $e->getMessage());
+    }
+
     // Update description on the product tables if provided
     if (array_key_exists('description', $input)) {
         $descVal = strip_tags(trim($input['description'] ?? ''));
@@ -160,25 +181,29 @@ try {
         $stmtProdName->execute([$product_id]);
         $prodName = $stmtProdName->fetchColumn();
 
-        PusherService::productUpdate($partner_id, [
-            'product_id' => $product_id,
-            'action' => 'update',
-            'product' => [
-                'id' => $product_id,
-                'name' => $prodName,
-                'price' => $price,
-                'promotional_price' => $promotional_price,
-                'stock' => $stock,
-                'status' => $status
-            ]
-        ]);
+        if (method_exists('PusherService', 'productUpdate')) {
+            PusherService::productUpdate($partner_id, [
+                'product_id' => $product_id,
+                'action' => 'update',
+                'product' => [
+                    'id' => $product_id,
+                    'name' => $prodName,
+                    'price' => $price,
+                    'promotional_price' => $promotional_price,
+                    'stock' => $stock,
+                    'status' => $status
+                ]
+            ]);
+        }
 
-        // Se estoque mudou significativamente, enviar stock update
-        PusherService::stockUpdate($partner_id, [
-            'product_id' => $product_id,
-            'product_name' => $prodName,
-            'new_stock' => $stock
-        ]);
+        // stockUpdate is optional — skip silently if method not defined
+        if (method_exists('PusherService', 'stockUpdate')) {
+            PusherService::stockUpdate($partner_id, [
+                'product_id' => $product_id,
+                'product_name' => $prodName,
+                'new_stock' => $stock
+            ]);
+        }
     } catch (Exception $pusherErr) {
         error_log("[product-save] Pusher erro: " . $pusherErr->getMessage());
     }
