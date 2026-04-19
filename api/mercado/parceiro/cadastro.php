@@ -114,20 +114,20 @@ try {
     // IP do cadastro
     $ip = $_SERVER['HTTP_CF_CONNECTING_IP'] ?? $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
 
-    // Inserir parceiro
+    // Inserir parceiro — apenas colunas que realmente existem em om_market_partners
     $stmt = $db->prepare("
         INSERT INTO om_market_partners (
             name, trade_name, contact_name, document, cnpj, document_type,
             razao_social, nome_fantasia, owner_name, owner_cpf, owner_phone,
             phone, telefone, whatsapp, email, login_email, login_password,
-            categoria, category, store_type,
+            categoria, store_type,
             cep, street, address, number, address_number, complement, address_complement,
             neighborhood, bairro, city, cidade, state, estado,
             endereco, endereco_completo,
             status, verified, registration_step,
             terms_accepted_at, contract_signed_at, contract_ip, contract_signed_ip,
             is_open, opens_at, closes_at,
-            delivery_fee, taxa_entrega, min_order, min_order_value, pedido_minimo,
+            delivery_fee, taxa_entrega, min_order, min_order_value,
             delivery_time_min, tempo_preparo, delivery_radius_km, delivery_radius, raio_entrega_km,
             commission_rate, commission_type,
             accepts_pix, accepts_card,
@@ -138,14 +138,14 @@ try {
             ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?,
-            ?, ?, ?,
+            ?, ?,
             ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?,
             ?, ?,
             '0', 0, 0,
             NOW(), NOW(), ?, ?,
             1, '08:00:00', '22:00:00',
-            5.99, 5.99, 30.00, 30.00, 30.00,
+            5.99, 5.99, 30.00, 30.00,
             25, 30, 10, 10, 10,
             10.00, 'percentage',
             1, 1,
@@ -159,7 +159,7 @@ try {
         $nomeLoja, $nomeFantasia, $nome, $documento ?: $cpf, $documento ?: null, $tipoDoc,
         $razaoSocial, $nomeFantasia, $nome, $cpf, $telefone,
         $telefone, $telefone, $telefone, $email, $email, $senhaHash,
-        $categoria, $categoria, $categoria,
+        $categoria, $categoria,
         $cep, $endereco, $endereco, $numero, $numero, $complemento, $complemento,
         $bairro, $bairro, $cidade, $cidade, $estado, $estado,
         $endereco, $enderecoCompleto,
