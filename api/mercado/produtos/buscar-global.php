@@ -132,20 +132,35 @@ try {
             $searchTerms = getSemanticSearchTerms($q);
             $semanticUsed = count($searchTerms) > 1;
 
-            // Build OR conditions for each search term
+            // Accent-insensitive matching: translate accented chars to plain ASCII on BOTH sides.
+            // unaccent() extension isn't available on prod, so we use TRANSLATE() which is native.
+            $accentMap = "'ÀÁÂÃÄÅàáâãäåÈÉÊËèéêëÌÍÎÏìíîïÒÓÔÕÖØòóôõöøÙÚÛÜùúûüÇçÑñ'";
+            $plainMap  = "'AAAAAAaaaaaaEEEEeeeeIIIIiiiiOOOOOOooooooUUUUuuuuCcNn'";
+            $nameAccent = "TRANSLATE(LOWER(p.name), {$accentMap}, {$plainMap})";
+            $descAccent = "TRANSLATE(LOWER(p.description), {$accentMap}, {$plainMap})";
+
+            // Build OR conditions for each search term (accent-insensitive)
             $searchConditions = [];
             $searchParams = [];
             foreach ($searchTerms as $term) {
-                $termLike = "%" . str_replace(['%', '_'], ['\\%', '\\_'], $term) . "%";
-                $searchConditions[] = "(LOWER(p.name) LIKE LOWER(?) OR LOWER(p.description) LIKE LOWER(?))";
+                $termNorm = mb_strtolower(strtr($term,
+                    'ÀÁÂÃÄÅàáâãäåÈÉÊËèéêëÌÍÎÏìíîïÒÓÔÕÖØòóôõöøÙÚÛÜùúûüÇçÑñ',
+                    'AAAAAAaaaaaaEEEEeeeeIIIIiiiiOOOOOOooooooUUUUuuuuCcNn'
+                ));
+                $termLike = "%" . str_replace(['%', '_'], ['\\%', '\\_'], $termNorm) . "%";
+                $searchConditions[] = "({$nameAccent} LIKE ? OR {$descAccent} LIKE ?)";
                 $searchParams[] = $termLike;
                 $searchParams[] = $termLike;
             }
             $searchWhere = "(" . implode(" OR ", $searchConditions) . ")";
 
             $params = array_merge($searchParams, $partnerParams);
-            // Add original query for relevance sorting
-            $originalLike = "%" . str_replace(['%', '_'], ['\\%', '\\_'], $q) . "%";
+            // Add original query (accent-stripped) for relevance sorting
+            $qNorm = mb_strtolower(strtr($q,
+                'ÀÁÂÃÄÅàáâãäåÈÉÊËèéêëÌÍÎÏìíîïÒÓÔÕÖØòóôõöøÙÚÛÜùúûüÇçÑñ',
+                'AAAAAAaaaaaaEEEEeeeeIIIIiiiiOOOOOOooooooUUUUuuuuCcNn'
+            ));
+            $originalLike = "%" . str_replace(['%', '_'], ['\\%', '\\_'], $qNorm) . "%";
             $params[] = $originalLike;
             $params[] = $limit;
 
@@ -161,13 +176,49 @@ try {
                       AND (p.image IS NOT NULL AND TRIM(p.image) != '' AND p.image NOT LIKE '%.svg' AND LOWER(p.image) NOT LIKE '%placeholder%' AND LOWER(p.image) NOT LIKE '%no-image%' AND LOWER(p.image) NOT LIKE '%noimage%')
                       {$partnerFilter}
                     ORDER BY
-                      CASE WHEN LOWER(p.name) LIKE LOWER(?) THEN 0 ELSE 1 END ASC,
+                      CASE WHEN {$nameAccent} LIKE ? THEN 0 ELSE 1 END ASC,
                       m.is_open DESC, m.rating DESC, p.name ASC
                     LIMIT ?";
 
             $stmt = $db->prepare($sql);
             $stmt->execute($params);
             $rows = $stmt->fetchAll();
+
+            // ── TYPO TOLERANCE: if 0 results for simple query, try Claude correction ──
+            $typoCorrection = null;
+            if (empty($rows) && count(preg_split('/\s+/', trim($q))) <= 2 && mb_strlen($q) >= 3) {
+                $typoCorrection = getTypoCorrection($q);
+                if ($typoCorrection && $typoCorrection !== $q) {
+                    $corrNorm = mb_strtolower(strtr($typoCorrection,
+                        'ÀÁÂÃÄÅàáâãäåÈÉÊËèéêëÌÍÎÏìíîïÒÓÔÕÖØòóôõöøÙÚÛÜùúûüÇçÑñ',
+                        'AAAAAAaaaaaaEEEEeeeeIIIIiiiiOOOOOOooooooUUUUuuuuCcNn'
+                    ));
+                    $corrLike = "%" . str_replace(['%', '_'], ['\\%', '\\_'], $corrNorm) . "%";
+                    $retryParams = [$corrLike, $corrLike];
+                    if (!empty($coveredIds)) $retryParams = array_merge($retryParams, $coveredIds);
+                    $retryParams[] = $corrLike;
+                    $retryParams[] = $limit;
+
+                    $retrySQL = "SELECT p.product_id, p.name, p.description, p.price, p.special_price,
+                                       p.image, p.unit, p.quantity, p.partner_id,
+                                       m.name as parceiro_nome, m.logo as parceiro_logo,
+                                       m.delivery_fee as parceiro_taxa, m.rating as parceiro_avaliacao,
+                                       m.delivery_time_min as parceiro_tempo, m.is_open as parceiro_aberto
+                                FROM om_market_products p
+                                INNER JOIN om_market_partners m ON p.partner_id = m.partner_id AND m.status::text = '1'
+                                WHERE p.status::text = '1' AND (p.available::text = '1' OR p.available IS NULL)
+                                  AND ({$nameAccent} LIKE ? OR {$descAccent} LIKE ?)
+                                  AND (p.image IS NOT NULL AND TRIM(p.image) != '' AND p.image NOT LIKE '%.svg' AND LOWER(p.image) NOT LIKE '%placeholder%' AND LOWER(p.image) NOT LIKE '%no-image%' AND LOWER(p.image) NOT LIKE '%noimage%')
+                                  {$partnerFilter}
+                                ORDER BY
+                                  CASE WHEN {$nameAccent} LIKE ? THEN 0 ELSE 1 END ASC,
+                                  m.is_open DESC, m.rating DESC, p.name ASC
+                                LIMIT ?";
+                    $stmt = $db->prepare($retrySQL);
+                    $stmt->execute($retryParams);
+                    $rows = $stmt->fetchAll();
+                }
+            }
         }
 
         // Build flat list and grouped by store
@@ -228,6 +279,11 @@ try {
         if (!$meiliUsed && isset($semanticUsed) && $semanticUsed) {
             $result["semantic_search"] = true;
             $result["expanded_terms"] = $searchTerms;
+        }
+
+        // "Voce quis dizer" — typo correction applied
+        if (!empty($typoCorrection) && $typoCorrection !== $q && !empty($rows)) {
+            $result["did_you_mean"] = $typoCorrection;
         }
 
         return $result;
@@ -336,6 +392,43 @@ PROMPT;
     }
 
     return $terms;
+}
+
+/**
+ * Corrige typos em queries curtas (1-2 palavras) via Claude.
+ * Ex: "humberguer" -> "hamburguer", "asai" -> "acai"
+ * Retorna null se nao houver correcao ou falhar.
+ */
+function getTypoCorrection(string $q): ?string {
+    $cacheKey = "ai_typo_v1_" . md5(mb_strtolower(trim($q)));
+    $cached = CacheHelper::get($cacheKey);
+    if ($cached !== null) return $cached ?: null;
+
+    try {
+        $claude = new ClaudeClient('claude-sonnet-4-20250514', 10, 0);
+        $systemPrompt = <<<'P'
+Voce corrige typos em buscas de um app de delivery brasileiro.
+Responda SOMENTE com JSON: {"correction":"texto corrigido"} ou {"correction":null}
+Regras:
+- Se a palavra ja esta correta OU nao e um typo reconhecivel, retorne {"correction":null}
+- So corrija typos obvios de produtos comuns: comida, bebida, farmacia, mercado
+- NAO adicione palavras novas, NAO traduza, NAO sugira sinonimos
+- Exemplos: humberguer -> hamburguer, asai -> acai, coca cola -> null, suchi -> sushi, pizaa -> pizza, dipirona -> null
+P;
+        $result = $claude->send($systemPrompt, [['role' => 'user', 'content' => $q]], 64);
+        if ($result['success']) {
+            $parsed = ClaudeClient::parseJson($result['text']);
+            $corr = $parsed['correction'] ?? null;
+            if (is_string($corr) && trim($corr) !== '' && mb_strtolower($corr) !== mb_strtolower($q)) {
+                CacheHelper::set($cacheKey, $corr, 86400);
+                return $corr;
+            }
+        }
+    } catch (Exception $e) {
+        error_log("[getTypoCorrection] " . $e->getMessage());
+    }
+    CacheHelper::set($cacheKey, false, 3600);
+    return null;
 }
 
 /**
