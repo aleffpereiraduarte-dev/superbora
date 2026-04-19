@@ -75,6 +75,18 @@ try {
     ");
     $stmt->execute([$storeId, $storeId, $storeId]);
 
+    // Dual-write: om_market_order_reviews (legacy table partner panel reads from)
+    try {
+        $stmt = $db->prepare("
+            INSERT INTO om_market_order_reviews (order_id, customer_id, partner_id, rating, comment, created_at)
+            VALUES (NULLIF(?, 0), ?, ?, ?, ?, NOW())
+            ON CONFLICT DO NOTHING
+        ");
+        $stmt->execute([$orderId, $customerId, $storeId, $rating, $comment ?: null]);
+    } catch (Exception $e) {
+        error_log("[customer/avaliar] legacy dual-write failed: " . $e->getMessage());
+    }
+
     response(true, ['rating_id' => $ratingId], "Avaliacao enviada com sucesso!");
 
 } catch (Exception $e) {

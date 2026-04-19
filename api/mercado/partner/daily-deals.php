@@ -76,7 +76,8 @@ try {
                 $stmt->execute([$productId, $discountPercent, $dealDate, $dealId, $partnerId]);
             } else {
                 // Check max 3 per day (lock rows to prevent race condition)
-                $stmt = $db->prepare("SELECT COUNT(*) FROM om_partner_daily_deals WHERE partner_id = ? AND deal_date = ? AND status = 'active' FOR UPDATE");
+                // Postgres doesn't allow FOR UPDATE with aggregate — wrap in subquery
+                $stmt = $db->prepare("SELECT COUNT(*) FROM (SELECT id FROM om_partner_daily_deals WHERE partner_id = ? AND deal_date = ? AND status = 'active' FOR UPDATE) t");
                 $stmt->execute([$partnerId, $dealDate]);
                 if ($stmt->fetchColumn() >= 3) {
                     $db->rollBack();
