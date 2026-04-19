@@ -55,8 +55,11 @@ foreach ($messages as $m) {
     $openaiMessages[] = ['role' => $m['role'] ?? 'user', 'content' => (string)$content];
 }
 
+// Use Kimi K2 0905 by default (matches GroqClient::DEFAULT_MODEL).
+// Override via env GROQ_STREAM_MODEL if needed.
+$streamModel = $_ENV['GROQ_STREAM_MODEL'] ?? getenv('GROQ_STREAM_MODEL') ?: 'llama-3.3-70b-versatile';
 $payload = json_encode([
-    'model' => 'llama-3.3-70b-versatile',
+    'model' => $streamModel,
     'messages' => $openaiMessages,
     'max_tokens' => $maxTokens,
     'temperature' => 0.7,

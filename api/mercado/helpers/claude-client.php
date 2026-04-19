@@ -118,17 +118,70 @@ class ClaudeClient {
                 return ['success' => false, 'error' => 'Invalid API response structure'];
             }
 
+            $inT = (int)($result['usage']['input_tokens'] ?? 0);
+            $outT = (int)($result['usage']['output_tokens'] ?? 0);
+            self::logUsage($this->model, 'text', $inT, $outT);
+
             return [
                 'success' => true,
                 'text' => $result['content'][0]['text'],
-                'input_tokens' => $result['usage']['input_tokens'] ?? 0,
-                'output_tokens' => $result['usage']['output_tokens'] ?? 0,
-                'total_tokens' => ($result['usage']['input_tokens'] ?? 0) + ($result['usage']['output_tokens'] ?? 0),
+                'input_tokens' => $inT,
+                'output_tokens' => $outT,
+                'total_tokens' => $inT + $outT,
                 'model' => $result['model'] ?? $this->model,
             ];
         }
 
         return ['success' => false, 'error' => $lastError ?: 'Max retries exceeded'];
+    }
+
+    /**
+     * Log every successful Claude API call with caller endpoint + token counts + estimated cost.
+     * Appended to /var/log/superbora/claude-usage.log (newline-delimited JSON).
+     * Tail/analyze to know EXACTLY who is burning tokens.
+     */
+    public static function logUsage(string $model, string $type, int $inTokens, int $outTokens): void {
+        // Price per 1M tokens (USD) — Claude Sonnet 4
+        static $PRICES = [
+            'claude-sonnet-4' => ['in' => 3.0, 'out' => 15.0],
+            'claude-opus-4'   => ['in' => 15.0, 'out' => 75.0],
+            'claude-haiku-4'  => ['in' => 0.80, 'out' => 4.0],
+        ];
+        $family = 'claude-sonnet-4';
+        if (str_contains($model, 'opus')) $family = 'claude-opus-4';
+        elseif (str_contains($model, 'haiku')) $family = 'claude-haiku-4';
+        $cost_in = $inTokens * $PRICES[$family]['in'] / 1_000_000;
+        $cost_out = $outTokens * $PRICES[$family]['out'] / 1_000_000;
+        $cost_total = $cost_in + $cost_out;
+
+        // Capture caller: script that invoked this, plus URI if web request
+        $trace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 6);
+        $caller_file = '';
+        foreach ($trace as $t) {
+            $f = $t['file'] ?? '';
+            if ($f && !str_contains($f, 'claude-client.php')) {
+                $caller_file = str_replace('/var/www/html/', '', $f);
+                break;
+            }
+        }
+        $uri = $_SERVER['REQUEST_URI'] ?? ('cli:' . ($_SERVER['PHP_SELF'] ?? 'unknown'));
+
+        $entry = [
+            'ts' => date('c'),
+            'caller' => $caller_file,
+            'uri' => substr($uri, 0, 200),
+            'model' => $model,
+            'type' => $type,
+            'in_tokens' => $inTokens,
+            'out_tokens' => $outTokens,
+            'cost_usd' => round($cost_total, 6),
+        ];
+
+        @file_put_contents(
+            '/var/log/superbora/claude-usage.log',
+            json_encode($entry) . "\n",
+            FILE_APPEND | LOCK_EX
+        );
     }
 
     /**
@@ -238,12 +291,15 @@ class ClaudeClient {
             if (!isset($result['content'][0]['text'])) {
                 return ['success' => false, 'error' => 'Invalid Claude response'];
             }
+            $inT = (int)($result['usage']['input_tokens'] ?? 0);
+            $outT = (int)($result['usage']['output_tokens'] ?? 0);
+            self::logUsage($this->model, 'vision', $inT, $outT);
             return [
                 'success' => true,
                 'text' => $result['content'][0]['text'],
-                'input_tokens' => $result['usage']['input_tokens'] ?? 0,
-                'output_tokens' => $result['usage']['output_tokens'] ?? 0,
-                'total_tokens' => ($result['usage']['input_tokens'] ?? 0) + ($result['usage']['output_tokens'] ?? 0),
+                'input_tokens' => $inT,
+                'output_tokens' => $outT,
+                'total_tokens' => $inT + $outT,
                 'model' => $result['model'] ?? $this->model,
                 'provider' => 'claude',
             ];
