@@ -22,11 +22,11 @@ try {
                    valid_from, valid_until, status, first_order_only,
                    created_at
             FROM om_market_coupons
-            WHERE specific_partners::jsonb @> to_jsonb(ARRAY[?])
+            WHERE specific_partners::jsonb @> ?::jsonb
             ORDER BY created_at DESC
             LIMIT 50
         ");
-        $stmt->execute([$pid]);
+        $stmt->execute([json_encode([$pid])]);
         response(true, ['coupons' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
     }
 

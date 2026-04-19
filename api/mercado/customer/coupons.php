@@ -26,9 +26,9 @@ try {
         $partnerFilter = "AND (
             c.specific_partners IS NULL OR c.specific_partners = ''
             OR c.specific_partners = '[]'
-            OR c.specific_partners::jsonb @> to_jsonb(ARRAY[?])
+            OR c.specific_partners::jsonb @> ?::jsonb
         )";
-        $extraParams[] = $partnerId;
+        $extraParams[] = json_encode([$partnerId]);
     }
 
     $stmt = $db->prepare("
