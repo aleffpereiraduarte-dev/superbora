@@ -26,12 +26,12 @@ try {
     if (!$partnerId) response(false, null, 'partner_id obrigatorio', 400);
 
     $db = getDB();
-    $stmt = $db->prepare("SELECT name, categoria, address_city FROM om_market_partners WHERE partner_id = :pid");
+    $stmt = $db->prepare("SELECT name, categoria, city FROM om_market_partners WHERE partner_id = :pid");
     $stmt->execute([':pid' => $partnerId]);
     $p = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$p) response(false, null, 'parceiro nao encontrado', 404);
 
-    $cityFinal = $city ?: $p['address_city'];
+    $cityFinal = $city ?: $p['city'];
 
     $prompt = "Loja: {$p['name']} ({$p['categoria']}) em {$cityFinal}. Budget: R\${$budget}.\n\n" .
               "Sugira 5 ARQUETIPOS de microinfluencers locais (1k-30k seguidores) que combinariam. " .

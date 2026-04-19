@@ -10,6 +10,8 @@
 require_once __DIR__ . "/../config/database.php";
 setCorsHeaders();
 
+try {
+
 $db = getDB();
 $customerId = requireCustomerAuth();
 
@@ -19,7 +21,7 @@ $method = $_SERVER['REQUEST_METHOD'];
 // Helper: get the customer's phone number and current delivery_pin
 // ---------------------------------------------------------------------------
 function getCustomerData(PDO $db, int $customerId): ?array {
-    $stmt = dbQuery($db, "SELECT phone, whatsapp, delivery_pin FROM om_market_customers WHERE customer_id = ?", [$customerId]);
+    $stmt = dbQuery($db, "SELECT phone, phone AS whatsapp, delivery_pin FROM om_customers WHERE customer_id = ?", [$customerId]);
     return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
 }
 
@@ -98,7 +100,7 @@ function validatePin(string $pin, ?string $phone): ?string {
 if ($method === 'GET') {
     $customer = getCustomerData($db, $customerId);
     if (!$customer) {
-        response(false, null, 'Cliente nao encontrado.', 404);
+        response(false, null, 'Cliente não encontrado.', 404);
     }
 
     $phone = $customer['phone'] ?: $customer['whatsapp'];
@@ -125,7 +127,7 @@ if ($method === 'POST') {
 
     $customer = getCustomerData($db, $customerId);
     if (!$customer) {
-        response(false, null, 'Cliente nao encontrado.', 404);
+        response(false, null, 'Cliente não encontrado.', 404);
     }
 
     $phone = $customer['phone'] ?: $customer['whatsapp'];
@@ -137,7 +139,7 @@ if ($method === 'POST') {
     }
 
     // Save
-    $stmt = dbQuery($db, "UPDATE om_market_customers SET delivery_pin = ?, updated_at = NOW() WHERE customer_id = ?", [$pin, $customerId]);
+    $stmt = dbQuery($db, "UPDATE om_customers SET delivery_pin = ?, updated_at = NOW() WHERE customer_id = ?", [$pin, $customerId]);
 
     response(true, [
         'pin_masked'  => maskPin($pin),
@@ -152,11 +154,11 @@ if ($method === 'POST') {
 if ($method === 'DELETE') {
     $customer = getCustomerData($db, $customerId);
     if (!$customer) {
-        response(false, null, 'Cliente nao encontrado.', 404);
+        response(false, null, 'Cliente não encontrado.', 404);
     }
 
     // Clear custom PIN (NULL means auto-generated)
-    $stmt = dbQuery($db, "UPDATE om_market_customers SET delivery_pin = NULL, updated_at = NOW() WHERE customer_id = ?", [$customerId]);
+    $stmt = dbQuery($db, "UPDATE om_customers SET delivery_pin = NULL, updated_at = NOW() WHERE customer_id = ?", [$customerId]);
 
     $phone = $customer['phone'] ?: $customer['whatsapp'];
     $auto = autoPin($phone);
@@ -170,4 +172,9 @@ if ($method === 'DELETE') {
 }
 
 // If we got here with an unsupported method
-response(false, null, 'Metodo nao suportado.', 405);
+response(false, null, 'Método não suportado.', 405);
+
+} catch (Exception $e) {
+    error_log("[customer/delivery-pin] Erro: " . $e->getMessage());
+    response(false, null, 'Erro ao processar PIN de entrega', 500);
+}

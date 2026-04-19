@@ -24,7 +24,7 @@ try {
     if (!$partnerId) response(false, null, 'partner_id obrigatorio', 400);
 
     $db = getDB();
-    $stmt = $db->prepare("SELECT name, categoria, address_city FROM om_market_partners WHERE partner_id = :pid");
+    $stmt = $db->prepare("SELECT name, categoria, city FROM om_market_partners WHERE partner_id = :pid");
     $stmt->execute([':pid' => $partnerId]);
     $p = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$p) response(false, null, 'parceiro nao encontrado', 404);
@@ -42,7 +42,7 @@ try {
     $stepInstr = $stepDescriptions[$step] ?? $stepDescriptions['welcome'];
 
     $prompt = "Voce eh o assistente de onboarding do SuperBora. " .
-              "Parceiro: {$p['name']} ({$p['categoria']}) em {$p['address_city']}.\n" .
+              "Parceiro: {$p['name']} ({$p['categoria']}) em {$p['city']}.\n" .
               "Passo atual: {$step}\n" .
               "Instrucao: {$stepInstr}\n" .
               "Mensagem do parceiro: " . ($message ?: '(inicio)') . "\n\n" .
