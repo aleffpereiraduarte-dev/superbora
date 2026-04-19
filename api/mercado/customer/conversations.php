@@ -20,7 +20,7 @@ try {
     // ── Ensure table exists ─────────────────────────────────────────
     try {
         $db->exec("
-            CREATE TABLE IF NOT EXISTS om_ai_conversations (
+            CREATE TABLE IF NOT EXISTS om_customer_ai_conversations (
                 id SERIAL PRIMARY KEY,
                 conversation_id VARCHAR(100) UNIQUE NOT NULL,
                 customer_id INTEGER NOT NULL,
@@ -32,8 +32,8 @@ try {
                 updated_at TIMESTAMP DEFAULT NOW()
             )
         ");
-        $db->exec("CREATE INDEX IF NOT EXISTS idx_ai_conv_customer ON om_ai_conversations(customer_id)");
-        $db->exec("CREATE INDEX IF NOT EXISTS idx_ai_conv_id ON om_ai_conversations(conversation_id)");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_ai_conv_customer ON om_customer_ai_conversations(customer_id)");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_ai_conv_id ON om_customer_ai_conversations(conversation_id)");
     } catch (Exception $e) {
         // Table likely already exists — ignore
         error_log("[conversations] Table creation note: " . $e->getMessage());
@@ -49,14 +49,14 @@ try {
         if ($convId) {
             $stmt = $db->prepare("
                 SELECT conversation_id, title, preview, messages, message_count, created_at, updated_at
-                FROM om_ai_conversations
+                FROM om_customer_ai_conversations
                 WHERE conversation_id = ? AND customer_id = ?
                 LIMIT 1
             ");
             $stmt->execute([$convId, $customerId]);
             $conv = $stmt->fetch();
             if (!$conv) {
-                response(false, null, "Conversa nao encontrada", 404);
+                response(false, null, "Conversa não encontrada", 404);
             }
             $conv['messages'] = json_decode($conv['messages'], true) ?: [];
             $conv['message_count'] = (int)$conv['message_count'];
@@ -66,7 +66,7 @@ try {
         // List all (without full messages for performance)
         $stmt = $db->prepare("
             SELECT conversation_id, title, preview, message_count, created_at, updated_at
-            FROM om_ai_conversations
+            FROM om_customer_ai_conversations
             WHERE customer_id = ?
             ORDER BY updated_at DESC
             LIMIT ? OFFSET ?
@@ -90,7 +90,7 @@ try {
         $title = $input['title'] ?? null;
 
         if (empty($convId)) {
-            response(false, null, "conversation_id obrigatorio", 400);
+            response(false, null, "conversation_id obrigatório", 400);
         }
         if (!is_array($messages)) {
             response(false, null, "messages deve ser um array", 400);
@@ -98,7 +98,7 @@ try {
 
         // Validate conversation_id format (alphanumeric, underscores, hyphens, max 100)
         if (!preg_match('/^[a-zA-Z0-9_\-]{1,100}$/', $convId)) {
-            response(false, null, "conversation_id invalido", 400);
+            response(false, null, "conversation_id inválido", 400);
         }
 
         $messageCount = count($messages);
@@ -139,16 +139,16 @@ try {
 
         // Upsert: insert or update
         $stmt = $db->prepare("
-            INSERT INTO om_ai_conversations (conversation_id, customer_id, title, messages, message_count, preview, created_at, updated_at)
+            INSERT INTO om_customer_ai_conversations (conversation_id, customer_id, title, messages, message_count, preview, created_at, updated_at)
             VALUES (?, ?, ?, ?::jsonb, ?, ?, NOW(), NOW())
             ON CONFLICT (conversation_id)
             DO UPDATE SET
                 messages = EXCLUDED.messages,
                 message_count = EXCLUDED.message_count,
                 preview = EXCLUDED.preview,
-                title = COALESCE(EXCLUDED.title, om_ai_conversations.title),
+                title = COALESCE(EXCLUDED.title, om_customer_ai_conversations.title),
                 updated_at = NOW()
-            WHERE om_ai_conversations.customer_id = ?
+            WHERE om_customer_ai_conversations.customer_id = ?
         ");
         $stmt->execute([
             $convId,
@@ -167,23 +167,23 @@ try {
     if ($method === "DELETE") {
         $convId = $_GET['id'] ?? '';
         if (empty($convId)) {
-            response(false, null, "id obrigatorio", 400);
+            response(false, null, "id obrigatório", 400);
         }
 
         $stmt = $db->prepare("
-            DELETE FROM om_ai_conversations
+            DELETE FROM om_customer_ai_conversations
             WHERE conversation_id = ? AND customer_id = ?
         ");
         $stmt->execute([$convId, $customerId]);
 
         if ($stmt->rowCount() === 0) {
-            response(false, null, "Conversa nao encontrada", 404);
+            response(false, null, "Conversa não encontrada", 404);
         }
 
         response(true, null, "Conversa removida");
     }
 
-    response(false, null, "Metodo nao permitido", 405);
+    response(false, null, "Método não permitido", 405);
 
 } catch (Exception $e) {
     error_log("[customer/conversations] Erro: " . $e->getMessage());

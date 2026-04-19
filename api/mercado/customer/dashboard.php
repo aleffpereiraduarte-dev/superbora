@@ -54,25 +54,24 @@ try {
         // Table may not exist
     }
 
-    // 4. Available coupons (platform + favorite stores)
-    $stmt = $db->prepare("
-        SELECT c.id as coupon_id, c.code, c.tipo as type, c.valor as value,
-               c.min_order, c.partner_id,
-               CASE WHEN c.partner_id IS NOT NULL THEN m.nome ELSE NULL END as store_name
-        FROM om_market_coupons c
-        LEFT JOIN om_market_partners m ON m.partner_id = c.partner_id
-        WHERE c.status = 1
-          AND (c.expires_at IS NULL OR c.expires_at > NOW())
-          AND (c.max_uses IS NULL OR c.times_used < c.max_uses)
-          AND (c.partner_id IS NULL OR c.partner_id IN (
-              SELECT DISTINCT partner_id FROM om_market_orders
-              WHERE customer_id = ? AND status = 'entregue'
-          ))
-        ORDER BY c.valor DESC
-        LIMIT 5
-    ");
-    $stmt->execute([$customerId]);
-    $availableCoupons = $stmt->fetchAll();
+    // 4. Available coupons (platform + specific partners)
+    $availableCoupons = [];
+    try {
+        $stmt = $db->prepare("
+            SELECT c.id AS coupon_id, c.code, c.discount_type AS type, c.discount_value AS value,
+                   c.min_order_value AS min_order,
+                   CASE WHEN c.specific_partners IS NOT NULL AND c.specific_partners != '[]' THEN 'Loja especifica' ELSE NULL END AS store_name
+            FROM om_market_coupons c
+            WHERE c.status = 'active'
+              AND (c.valid_until IS NULL OR c.valid_until > NOW())
+            ORDER BY c.discount_value DESC
+            LIMIT 5
+        ");
+        $stmt->execute();
+        $availableCoupons = $stmt->fetchAll();
+    } catch (Exception $e) {
+        error_log("[customer/dashboard] coupons query: " . $e->getMessage());
+    }
 
     // 5. Customer stats
     $stmt = $db->prepare("

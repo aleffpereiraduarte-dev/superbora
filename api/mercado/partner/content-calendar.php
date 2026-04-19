@@ -25,7 +25,7 @@ try {
 
     $days = max(1, min(30, (int)($_GET['days'] ?? 7)));
 
-    $stmt = $db->prepare("SELECT name, categoria, address_city FROM om_market_partners WHERE partner_id = :pid");
+    $stmt = $db->prepare("SELECT name, categoria, city FROM om_market_partners WHERE partner_id = :pid");
     $stmt->execute([':pid' => $partnerId]);
     $p = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$p) response(false, null, 'parceiro nao encontrado', 404);
@@ -36,7 +36,7 @@ try {
         response(true, json_decode(file_get_contents($cacheFile), true));
     }
 
-    $prompt = "Loja: {$p['name']} ({$p['categoria']}) em {$p['address_city']}. " .
+    $prompt = "Loja: {$p['name']} ({$p['categoria']}) em {$p['city']}. " .
               "Crie um calendario de conteudo de {$days} dias com 1 post por dia. " .
               "Variar formatos (foto produto, video, story, antes/depois, depoimento, promo, curiosidade). " .
               "Considerar dia da semana (segunda mais comercial, sexta mais festivo). " .
