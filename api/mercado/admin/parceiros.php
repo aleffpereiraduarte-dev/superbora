@@ -323,10 +323,22 @@ try {
 
             $stmt = $db->prepare("
                 UPDATE om_market_partners
-                SET status = '1', updated_at = NOW()
+                SET status = '1', verified = 1, updated_at = NOW()
                 WHERE partner_id = ?
             ");
             $stmt->execute([$partner_id]);
+
+            // Invalidate vitrine cache so new partner appears immediately in the app
+            try {
+                $r = new Redis();
+                $r->connect('127.0.0.1', 6379, 0.5);
+                $pwd = $_ENV['REDIS_PASSWORD'] ?? getenv('REDIS_PASSWORD') ?: '';
+                if ($pwd) $r->auth($pwd);
+                $iter = null;
+                while ($keys = $r->scan($iter, 'sbcache:vitrine:*', 200)) {
+                    foreach ($keys as $k) $r->del($k);
+                }
+            } catch (Exception $e) { /* non-critical */ }
 
             om_audit()->log(
                 OmAudit::ACTION_APPROVE,

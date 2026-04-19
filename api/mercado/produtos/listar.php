@@ -12,7 +12,10 @@ require_once __DIR__ . "/../helpers/r2-cache.php";
 setPublicCacheCorsHeaders();
 
 // Aggressive edge cache: 30min edge, 2min browser, 1h stale-while-revalidate.
-header('Cache-Control: public, max-age=120, s-maxage=1800, stale-while-revalidate=3600');
+// Catalog caching: previously s-maxage=1800 caused 30-minute staleness at
+// Cloudflare edge after partner price/stock updates. Reduced to 60s so partner
+// edits propagate within a minute. Still keeps enough to absorb burst traffic.
+header('Cache-Control: public, max-age=30, s-maxage=60, stale-while-revalidate=120');
 
 try {
     $partner_id = (int)($_GET["partner_id"] ?? 0);

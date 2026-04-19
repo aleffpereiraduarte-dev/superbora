@@ -70,6 +70,19 @@ try {
     $db->prepare("INSERT INTO om_account_deletions (customer_id, reason, email_backup, phone_backup) VALUES (?, ?, ?, ?)")
         ->execute([$customerId, $reason, $user['email'], $user['phone']]);
 
+    // LGPD: anonymize customer snapshot in historical orders too — the partner
+    // and admin panels read customer_name/phone from om_market_orders (denormalized
+    // at checkout). Without this the deleted customer's real name remains visible.
+    try {
+        $db->prepare("UPDATE om_market_orders SET
+            customer_name = 'Conta Removida',
+            customer_phone = NULL,
+            customer_email = NULL
+        WHERE customer_id = ?")->execute([$customerId]);
+    } catch (Exception $e) {
+        error_log("[delete-account] orders anonymize failed: " . $e->getMessage());
+    }
+
     // Anonimizar dados do cliente (om_customers = tabela principal)
     $anonEmail = "deleted_{$customerId}@removed.superbora.com";
     $db->prepare("UPDATE om_customers SET

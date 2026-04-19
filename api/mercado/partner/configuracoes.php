@@ -30,6 +30,31 @@ try {
         if ($sets) {
             $vals[] = $pid;
             $db->prepare("UPDATE om_market_partners SET " . implode(', ', $sets) . " WHERE partner_id = ?")->execute($vals);
+
+            // Keep taxa_entrega/min_order_value in sync with the Portuguese duplicates
+            $syncMap = ['delivery_fee' => 'taxa_entrega', 'min_order' => 'min_order_value'];
+            foreach ($syncMap as $eng => $pt) {
+                if (isset($body[$eng])) {
+                    try { $db->prepare("UPDATE om_market_partners SET {$pt} = ? WHERE partner_id = ?")->execute([$body[$eng], $pid]); }
+                    catch (Exception $e) { /* column may not exist */ }
+                }
+            }
+
+            // Invalidate vitrine cache so app sees updated fee/hours within seconds
+            try {
+                require_once __DIR__ . '/../helpers/cache.php';
+                // cachedQuery uses 'sbcache:' prefix via Redis OPT_PREFIX
+                $r = new Redis();
+                $r->connect('127.0.0.1', 6379, 0.5);
+                $pwd = $_ENV['REDIS_PASSWORD'] ?? getenv('REDIS_PASSWORD') ?: '';
+                if ($pwd) $r->auth($pwd);
+                $iter = null;
+                while ($keys = $r->scan($iter, 'sbcache:vitrine:*', 200)) {
+                    foreach ($keys as $k) $r->del($k);
+                }
+                require_once __DIR__ . '/../helpers/r2-cache.php';
+                if (function_exists('r2CacheInvalidatePartner')) r2CacheInvalidatePartner($pid);
+            } catch (Exception $e) { /* non-critical */ }
         }
         response(true, ['updated' => true]);
     }
