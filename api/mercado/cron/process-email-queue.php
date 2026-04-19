@@ -23,6 +23,7 @@ if (php_sapi_name() !== 'cli') {
 
 require_once dirname(__DIR__) . '/config/database.php';
 require_once dirname(__DIR__) . '/helpers/EmailService.php';
+require_once dirname(__DIR__) . '/helpers/email-sender.php';
 
 // ─── Concurrent execution guard ─────────────────────────────
 $lockFile = '/tmp/superbora_cron_email_queue.lock';
@@ -36,6 +37,24 @@ $db = getDB();
 $log = function(string $msg) { echo "[" . date('H:i:s') . "] $msg\n"; };
 
 $log("=== Email queue processing started ===");
+
+// ─── Part B: Process the new om_transactional_email_queue (EmailSender) ───
+// This is a separate queue from the legacy om_market_email_queue above.
+// "om_email_queue" itself is reserved for RH/Google-Workspace provisioning.
+// Runs unconditionally — EmailSender falls back to mock mode when no
+// credentials are configured.
+try {
+    $sender = new EmailSender($db);
+    $provider = $sender->getProvider();
+    $senderStats = $sender->processQueue(50, 3);
+    $log("[EmailSender:{$provider}] processed={$senderStats['processed']} sent={$senderStats['sent']} failed={$senderStats['failed']} retry={$senderStats['retry']}");
+    if ($senderStats['processed'] > 0) {
+        error_log("[EmailSender] Cron: processed={$senderStats['processed']} sent={$senderStats['sent']} failed={$senderStats['failed']} retry={$senderStats['retry']} provider={$provider}");
+    }
+} catch (Throwable $e) {
+    $log("[EmailSender] ERROR: " . $e->getMessage());
+    error_log("[EmailSender] Cron error: " . $e->getMessage());
+}
 
 try {
     $emailService = new EmailService($db);

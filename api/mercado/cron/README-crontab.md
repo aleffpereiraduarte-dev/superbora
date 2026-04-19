@@ -23,6 +23,9 @@ sudo crontab -u www-data -e
 # SuperBora — Limpar carrinhos abandonados (diario 03:00)
 0 3 * * * php /var/www/html/api/mercado/cron/limpar-carrinhos.php >> /var/log/superbora/cron-carrinhos.log 2>&1
 
+# SuperBora — Card fraud review (cada 30 min)
+*/30 * * * * php /var/www/html/api/mercado/cron/card-fraud-review.php >> /var/log/superbora/cron-card-fraud.log 2>&1
+
 # Log rotation (semanal)
 0 0 * * 0 find /var/log/superbora/ -name "*.log" -size +10M -exec truncate -s 0 {} \;
 ```

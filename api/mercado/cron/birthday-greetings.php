@@ -50,7 +50,8 @@ foreach ($birthdays as $c) {
               "Responda APENAS JSON: " .
               '{"title":"max 60 chars com emoji de bolo","body":"max 140 chars amigavel mencionando cupom especial"}';
 
-    $reply = ClaudeClient::text($prompt, 'Voce eh o gerente de relacionamento. Caloroso, festivo, breve.', 250);
+    // Fast tier (Llama 3.1 8B Instant) — birthday greetings are short, can hit hundreds of customers
+    $reply = ClaudeClient::sendFast($prompt, 'Voce eh o gerente de relacionamento. Caloroso, festivo, breve.', 250);
     $parsed = ClaudeClient::parseJson($reply ?: '');
     if (!$parsed || empty($parsed['title'])) continue;
 

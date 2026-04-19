@@ -54,7 +54,7 @@
  *     call_type VARCHAR(30) NOT NULL,
  *     call_data JSONB DEFAULT '{}',
  *     campaign_id INT,
- *     scheduled_at TIMESTAMPTZ NOT NULL,
+ *     scheduled_for TIMESTAMPTZ NOT NULL,
  *     priority INT DEFAULT 5 CHECK (priority BETWEEN 1 AND 10),
  *     status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed', 'cancelled')),
  *     outbound_call_id INT REFERENCES om_outbound_calls(id),
@@ -91,7 +91,7 @@
  * CREATE INDEX IF NOT EXISTS idx_outbound_calls_status ON om_outbound_calls(status);
  * CREATE INDEX IF NOT EXISTS idx_outbound_calls_campaign ON om_outbound_calls(campaign_id);
  * CREATE INDEX IF NOT EXISTS idx_outbound_calls_created ON om_outbound_calls(created_at DESC);
- * CREATE INDEX IF NOT EXISTS idx_outbound_queue_pending ON om_outbound_call_queue(scheduled_at)
+ * CREATE INDEX IF NOT EXISTS idx_outbound_queue_pending ON om_outbound_call_queue(scheduled_for)
  *     WHERE status = 'pending';
  * CREATE INDEX IF NOT EXISTS idx_outbound_queue_status ON om_outbound_call_queue(status);
  * CREATE INDEX IF NOT EXISTS idx_outbound_opt_outs_phone ON om_outbound_opt_outs(phone);
@@ -322,7 +322,7 @@ function scheduleOutboundCall(
 
     $stmt = $db->prepare("
         INSERT INTO om_outbound_call_queue
-            (phone, customer_id, customer_name, call_type, call_data, scheduled_at, priority, status, created_at)
+            (phone, customer_id, customer_name, call_type, call_data, scheduled_for, priority, status, created_at)
         VALUES
             (?, ?, ?, ?, ?, ?, ?, 'pending', NOW())
         RETURNING id
@@ -360,8 +360,8 @@ function processScheduledCalls(PDO $db, int $batchSize = 10): array
         SELECT id, phone, customer_id, customer_name, call_type, call_data, campaign_id
         FROM om_outbound_call_queue
         WHERE status = 'pending'
-          AND scheduled_at <= NOW()
-        ORDER BY priority ASC, scheduled_at ASC
+          AND scheduled_for <= NOW()
+        ORDER BY priority ASC, scheduled_for ASC
         LIMIT ?
     ");
     $stmt->execute([$batchSize]);
@@ -498,7 +498,7 @@ function bulkOutboundCampaign(
 
         $db->prepare("
             INSERT INTO om_outbound_call_queue
-                (phone, customer_id, customer_name, call_type, call_data, campaign_id, scheduled_at, priority, status, created_at)
+                (phone, customer_id, customer_name, call_type, call_data, campaign_id, scheduled_for, priority, status, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, 5, 'pending', NOW())
         ")->execute([
             $formatted,

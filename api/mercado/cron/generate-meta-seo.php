@@ -28,7 +28,7 @@ try {
 
 // Process stores without SEO meta yet
 $stmt = $db->query(
-    "SELECT p.partner_id, p.name, p.categoria, p.address_city, p.description
+    "SELECT p.partner_id, p.name, p.categoria, p.city, p.description
      FROM om_market_partners p
      LEFT JOIN om_seo_meta m ON m.entity_type = 'partner' AND m.entity_id = p.partner_id
      WHERE p.status::text = '1' AND m.id IS NULL

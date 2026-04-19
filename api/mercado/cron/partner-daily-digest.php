@@ -6,6 +6,7 @@
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../helpers/zapi-whatsapp.php';
 require_once __DIR__ . '/../helpers/NotificationSender.php';
+require_once __DIR__ . '/../helpers/claude-client.php';
 
 // Cron auth guard — allow CLI, require secret for HTTP
 if (php_sapi_name() !== 'cli') {
@@ -82,6 +83,45 @@ while ($partner = $stmt->fetch(PDO::FETCH_ASSOC)) {
     if ($revDelta < -20) $alerts[] = "Queda de {$revDelta}% na receita";
     if ($m['orders'] > 0 && $m['cancelled'] > 0 && ($m['cancelled'] / $m['orders']) > 0.15) {
         $alerts[] = "Taxa de cancelamento alta: " . round($m['cancelled'] / $m['orders'] * 100) . "%";
+    }
+
+    // ── AI NARRATIVE: turn the dry numbers into a 1-paragraph insight ──
+    // (only call AI if there's enough activity to be worth narrating)
+    $narrative = '';
+    if ((int)$m['orders'] >= 1) {
+        try {
+            $aiCtx = sprintf(
+                "Loja: %s\nOntem: %d pedidos, R\$ %.2f de receita, ticket medio R\$ %.2f, %d cancelamentos.\n" .
+                "Variacao vs semana passada (mesmo dia): %d%%.\n" .
+                "Avaliacao do dia: %.1f estrelas (%d reviews).\n" .
+                "Alertas: %s",
+                $partner['business_name'],
+                (int)$m['orders'],
+                (float)$m['revenue'],
+                (float)$m['avg_ticket'],
+                (int)$m['cancelled'],
+                (int)$revDelta,
+                (float)$r['avg_rating'],
+                (int)$r['review_count'],
+                empty($alerts) ? 'nenhum' : implode('; ', $alerts)
+            );
+            $narrative = ClaudeClient::sendFast(
+                $aiCtx . "\n\nEscreva 1 paragrafo curto (max 220 chars) em portugues brasileiro coloquial " .
+                "comentando o dia para o dono da loja: o que destacar, o que melhorar amanha, sem inventar dados. " .
+                "Sem emojis. Sem lista. Direto ao ponto.",
+                "Voce eh consultor de negocios para pequenos restaurantes/mercados brasileiros. Tom: pratico, encorajador, sem firula.",
+                300
+            );
+            $narrative = trim($narrative ?? '');
+            if (mb_strlen($narrative) > 250) $narrative = mb_substr($narrative, 0, 247) . '...';
+        } catch (Exception $e) {
+            error_log("Digest narrative AI failed for partner {$pid}: " . $e->getMessage());
+            $narrative = '';
+        }
+    }
+
+    if ($narrative !== '') {
+        $msg .= "\n" . $narrative;
     }
 
     // Send WhatsApp

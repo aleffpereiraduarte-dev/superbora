@@ -18,7 +18,7 @@ try {
 
 try {
     $stmt = $db->query(
-        "SELECT id, street, number, neighborhood, city, state, cep
+        "SELECT address_id AS id, street, number, neighborhood, city, state, zipcode AS cep
          FROM om_customer_addresses
          WHERE quality_flag IS NULL
          LIMIT 500"
@@ -29,7 +29,7 @@ try {
     exit(0);
 }
 
-$upd = $db->prepare("UPDATE om_customer_addresses SET quality_flag = :f, quality_reason = :r WHERE id = :id");
+$upd = $db->prepare("UPDATE om_customer_addresses SET quality_flag = :f, quality_reason = :r WHERE address_id = :id");
 $flagged = ['ok' => 0, 'incomplete' => 0, 'suspicious' => 0, 'invalid' => 0];
 
 foreach ($rows as $a) {

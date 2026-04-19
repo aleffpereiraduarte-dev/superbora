@@ -581,8 +581,8 @@ if ($currentHour === 10 || $currentHour === 16) {
             (SELECT array_agg(sub.name) FROM (
                 SELECT pr.name FROM om_market_products pr
                 WHERE pr.partner_id = o.partner_id
-                AND pr.created_at > NOW() - INTERVAL '3 days'
-                ORDER BY pr.created_at DESC
+                AND pr.date_added > NOW() - INTERVAL '3 days'
+                ORDER BY pr.date_added DESC
                 LIMIT 5
             ) sub) as new_product_names
         FROM om_market_orders o
@@ -592,7 +592,7 @@ if ($currentHour === 10 || $currentHour === 16) {
         AND EXISTS (
             SELECT 1 FROM om_market_products pr
             WHERE pr.partner_id = o.partner_id
-            AND pr.created_at > NOW() - INTERVAL '3 days'
+            AND pr.date_added > NOW() - INTERVAL '3 days'
         )
         AND NOT EXISTS (
             SELECT 1 FROM om_smart_push_log sp

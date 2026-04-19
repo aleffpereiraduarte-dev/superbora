@@ -26,6 +26,7 @@ if (php_sapi_name() !== 'cli') {
 require_once dirname(__DIR__) . '/config/database.php';
 require_once dirname(__DIR__) . '/helpers/email.php';
 require_once dirname(__DIR__) . '/helpers/email-templates.php';
+require_once dirname(__DIR__) . '/helpers/claude-client.php';
 
 // ─── Concurrent execution guard ─────────────────────────────
 $lockFile = '/tmp/superbora_cron_email_abandoned_cart.lock';
@@ -215,9 +216,40 @@ try {
             $storeNames = ['SuperBora'];
         }
 
-        // Render email
+        // ── AI-personalized subject + intro (replaces static template) ──
+        $aiSubject = '';
+        $aiBody = '';
+        try {
+            $itemList = implode(', ', array_map(fn($i) => $i['quantity'] . 'x ' . $i['name'], array_slice($items, 0, 5)));
+            $hour = (int)date('G');
+            $period = $hour < 12 ? 'manha' : ($hour < 18 ? 'tarde' : 'noite');
+
+            $sysPrompt = "Voce eh growth hacker brasileiro escrevendo email de carrinho abandonado. " .
+                         "Tom: caloroso, levemente persuasivo, NUNCA invente precos especificos.";
+            $userPrompt = "Cliente: {$name} (primeiro nome)\n" .
+                          "Periodo: {$period}\n" .
+                          "Carrinho: {$itemList}\n" .
+                          "Lojas: " . implode(', ', $storeNames) . "\n\n" .
+                          "Responda APENAS JSON: {\"subject\":\"max 60 chars\",\"intro\":\"max 200 chars, frase introdutoria caloroso\"}";
+
+            $aiResp = ClaudeClient::sendFastJson($userPrompt, $sysPrompt, 400);
+            if (is_array($aiResp)) {
+                $aiSubject = trim($aiResp['subject'] ?? '');
+                $aiBody = trim($aiResp['intro'] ?? '');
+            }
+        } catch (Exception $e) {
+            error_log("[email-abandoned-cart] AI personalization failed: " . $e->getMessage());
+        }
+
+        // Render email — fall back to static template if AI failed
         $html = emailTemplate_abandoned_cart($name, $items, $storeNames);
-        $subject = "{$name}, seus produtos estao esperando no carrinho!";
+        if ($aiBody !== '') {
+            // Inject AI intro into the rendered template (before the items list)
+            $html = str_replace('<!-- AI_INTRO_PLACEHOLDER -->', '<p style="color:#444;font-size:15px;line-height:1.5;margin:16px 0;">' . htmlspecialchars($aiBody, ENT_QUOTES, 'UTF-8') . '</p>', $html);
+        }
+        $subject = $aiSubject !== ''
+            ? $aiSubject
+            : "{$name}, seus produtos estao esperando no carrinho!";
 
         // Send email
         $success = sendEmail($email, $subject, $html, $db, $customerId, 'abandoned_cart');

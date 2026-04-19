@@ -38,20 +38,24 @@ $texts = array_map(function($t) {
     return mb_substr($line, 0, 200);
 }, $tickets);
 
-$prompt = "Aqui esta uma lista dos tickets de suporte do SuperBora dos ultimos 30 dias:\n\n" .
+$prompt = "Aqui estao tickets de suporte do SuperBora dos ultimos 30 dias:\n\n" .
           implode("\n", $texts) . "\n\n" .
-          "Identifique as 10 perguntas mais comuns. Para cada uma, escreva a pergunta " .
-          "(como o cliente provavelmente faria) e uma resposta clara em pt-BR. " .
-          "Responda APENAS JSON: " .
-          '{"faqs":[{"question":"...","answer":"...","frequency":<int>,"category":"pedido|pagamento|entrega|conta|outros"}]}';
+          "TAREFA: Identifique as 10 duvidas mais comuns. Para CADA uma:\n" .
+          "1. REESCREVA a pergunta em primeira pessoa, no jeito natural que um cliente perguntaria " .
+          "(NAO copie o texto cru do ticket). Maximo 100 caracteres.\n" .
+          "2. Escreva uma resposta clara, util e curta em pt-BR (max 250 chars).\n" .
+          "3. Atribua categoria: pedido, pagamento, entrega, conta ou outros.\n" .
+          "4. Estime frequencia (1-10) baseada em quantos tickets parecidos viu.\n\n" .
+          "Responda APENAS JSON valido: " .
+          '{"faqs":[{"question":"...","answer":"...","frequency":<int>,"category":"..."}]}';
 
-$reply = ClaudeClient::text(
+// Fast tier with JSON-safe fallback to 70B
+$parsed = ClaudeClient::sendFastJson(
     $prompt,
-    'Voce eh especialista em customer success. Crie FAQ uteis e claros.',
+    'Voce eh especialista em customer success. Reescreva perguntas no jeito natural do cliente, NAO copie tickets.',
     2500
 );
 
-$parsed = ClaudeClient::parseJson($reply ?: '');
 if (!$parsed || empty($parsed['faqs'])) {
     fwrite(STDERR, "[auto-faq] AI did not return valid JSON\n");
     exit(1);

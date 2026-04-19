@@ -28,10 +28,10 @@ try {
 
 // Stores: find pairs with similar normalized names in same city
 $dupCandidates = $db->query(
-    "SELECT a.partner_id AS id_a, b.partner_id AS id_b, a.name AS name_a, b.name AS name_b, a.address_city AS city
+    "SELECT a.partner_id AS id_a, b.partner_id AS id_b, a.name AS name_a, b.name AS name_b, a.city AS city
      FROM om_market_partners a
      JOIN om_market_partners b ON
-         a.address_city = b.address_city
+         a.city = b.city
          AND a.partner_id < b.partner_id
          AND LOWER(REGEXP_REPLACE(a.name, '[^a-zA-Z0-9]', '', 'g'))
              = LOWER(REGEXP_REPLACE(b.name, '[^a-zA-Z0-9]', '', 'g'))
