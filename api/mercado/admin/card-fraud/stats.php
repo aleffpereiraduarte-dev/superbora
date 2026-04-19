@@ -13,7 +13,7 @@
  */
 require_once __DIR__ . "/../../config/database.php";
 require_once __DIR__ . "/../../helpers/card-fraud-detector.php";
-require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
+require_once dirname(__DIR__, 4) . "/includes/classes/OmAuth.php";
 
 setCorsHeaders();
 
