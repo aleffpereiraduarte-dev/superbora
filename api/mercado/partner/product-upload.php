@@ -122,9 +122,16 @@ try {
     // Relative URL path
     $urlPath = "/mercado/uploads/products/$filename";
 
-    // Update product image in the base products table
+    // Update product image in BOTH tables (base = catalog, om_market_products = customer-facing)
     $stmt = $db->prepare("UPDATE om_market_products_base SET image = ? WHERE product_id = ?");
     $stmt->execute([$urlPath, $productId]);
+
+    try {
+        $stmtApp = $db->prepare("UPDATE om_market_products SET image = ?, date_modified = NOW() WHERE product_id = ?");
+        $stmtApp->execute([$urlPath, $productId]);
+    } catch (Exception $e) {
+        error_log("[partner/product-upload] legacy image update failed: " . $e->getMessage());
+    }
 
     response(true, [
         "product_id" => $productId,

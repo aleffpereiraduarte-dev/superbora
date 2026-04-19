@@ -160,6 +160,58 @@ try {
             }
         }
 
+        // ── Dual-write: legacy table om_market_products is what the app queries ──
+        // Partner endpoint splits data into _base + _price, but the vitrine/listar
+        // endpoints read from om_market_products directly. Without this write,
+        // products created via the panel never appear in the customer app.
+        try {
+            $db->exec('SAVEPOINT sp_legacy_insert');
+            $stmtLegacy = $db->prepare("
+                INSERT INTO om_market_products
+                    (product_id, partner_id, name, description, price, special_price,
+                     quantity, unit, category_id, status, available, date_added, date_modified)
+                VALUES
+                    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '1', NOW(), NOW())
+                ON CONFLICT (product_id, partner_id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    description = EXCLUDED.description,
+                    price = EXCLUDED.price,
+                    special_price = EXCLUDED.special_price,
+                    quantity = EXCLUDED.quantity,
+                    unit = EXCLUDED.unit,
+                    status = EXCLUDED.status,
+                    date_modified = NOW()
+            ");
+            $stmtLegacy->execute([
+                $product_id, $partner_id, $name, $description,
+                $price, $promotional_price, $stock, $unit,
+                $category_id > 0 ? $category_id : null,
+                (string)$status,
+            ]);
+            $db->exec('RELEASE SAVEPOINT sp_legacy_insert');
+        } catch (PDOException $e) {
+            // If om_market_products doesn't have unique(product_id,partner_id), try plain INSERT
+            $db->exec('ROLLBACK TO SAVEPOINT sp_legacy_insert');
+            try {
+                $stmtLegacy = $db->prepare("
+                    INSERT INTO om_market_products
+                        (product_id, partner_id, name, description, price, special_price,
+                         quantity, unit, category_id, status, available, date_added, date_modified)
+                    VALUES
+                        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '1', NOW(), NOW())
+                ");
+                $stmtLegacy->execute([
+                    $product_id, $partner_id, $name, $description,
+                    $price, $promotional_price, $stock, $unit,
+                    $category_id > 0 ? $category_id : null,
+                    (string)$status,
+                ]);
+            } catch (PDOException $e2) {
+                error_log("[partner/product-create] legacy insert failed: " . $e2->getMessage());
+                // Non-critical: product is usable via base/price tables, just won't show in app
+            }
+        }
+
         $db->commit();
 
         // Log audit
