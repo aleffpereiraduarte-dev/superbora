@@ -9,6 +9,14 @@ require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
 require_once __DIR__ . "/../helpers/EmailService.php";
 setCorsHeaders();
 
+// SECURITY: hard-require POST (or DELETE) so a crawler/test sweep never
+// deletes an account via a GET request. CSRF is also enforced via
+// application/json content-type preflight.
+$method = $_SERVER['REQUEST_METHOD'] ?? '';
+if ($method !== 'POST' && $method !== 'DELETE') {
+    response(false, null, 'Metodo nao permitido - use POST', 405);
+}
+
 try {
     $db = getDB();
     // SECURITY: Use proper JWT validation with type check
@@ -21,7 +29,8 @@ try {
             $customerId = (int)$tokenPayload['uid'];
         }
     }
-    if (!$customerId) response(false, null, 'Nao autorizado', 401);
+    if (!$customerId) response(false, null, 'Não autorizado', 401);
+    checkRateLimit("delete_account:{$customerId}", 2, 3600);  // max 2 por hora
     $input = json_decode(file_get_contents('php://input'), true);
     $reason = trim($input['reason'] ?? 'Nao informado');
     $password = $input['password'] ?? '';
@@ -31,7 +40,7 @@ try {
     $stmt->execute([$customerId]);
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    if (!$user) response(false, null, 'Conta nao encontrada', 404);
+    if (!$user) response(false, null, 'Conta não encontrada', 404);
 
     // Protect demo account from deletion (Apple App Store review)
     if ($customerId === 2875) {
@@ -54,7 +63,7 @@ try {
     $activeStmt->execute([$customerId]);
     if ((int)$activeStmt->fetchColumn() > 0) {
         $db->rollBack();
-        response(false, null, 'Voce tem pedidos em andamento. Aguarde a conclusao antes de excluir a conta.', 400);
+        response(false, null, 'Você tem pedidos em andamento. Aguarde a conclusao antes de excluir a conta.', 400);
     }
 
     // Registrar solicitacao de exclusao
