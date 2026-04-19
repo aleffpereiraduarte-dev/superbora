@@ -62,15 +62,14 @@ try {
 
     $old_status = $order['status'];
 
-    // Update order status
+    // Update order status — schema real: cancelled_by, cancellation_reason, cancel_category
     $stmt = $db->prepare("
         UPDATE om_market_orders
         SET status = 'cancelado',
-            cancelado_por = 'admin',
-            cancelamento_motivo = ?,
-            cancelamento_categoria = ?,
-            cancelled_at = NOW(),
-            updated_at = NOW()
+            cancelled_by = 'admin',
+            cancellation_reason = ?,
+            cancel_category = ?,
+            cancelled_at = NOW()
         WHERE order_id = ?
     ");
     $stmt->execute([$reason, $reason_category, $order_id]);

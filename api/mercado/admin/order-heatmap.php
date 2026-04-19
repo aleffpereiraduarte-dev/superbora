@@ -163,7 +163,7 @@ try {
             COUNT(DISTINCT p.partner_id) as store_count,
             STRING_AGG(DISTINCT p.name, ', ' ORDER BY p.name) as store_names,
             COALESCE(p.city, '') as city,
-            COALESCE(order_counts.total_orders, 0) as order_count
+            COALESCE(SUM(order_counts.total_orders), 0) as order_count
         FROM om_market_partners p
         LEFT JOIN LATERAL (
             SELECT COUNT(*) as total_orders

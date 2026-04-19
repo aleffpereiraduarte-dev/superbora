@@ -30,7 +30,7 @@ try {
     }
 
     // Fetch partner + top products
-    $stmt = $db->prepare("SELECT name, categoria, address_city FROM om_market_partners WHERE partner_id = :pid");
+    $stmt = $db->prepare("SELECT name, categoria, city FROM om_market_partners WHERE partner_id = :pid");
     $stmt->execute([':pid' => $partnerId]);
     $partner = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$partner) response(false, null, 'parceiro nao encontrado', 404);
@@ -58,7 +58,7 @@ try {
         'twitter' => 'Tweet: punchy + 2 hashtags. Max 280 chars.',
     ];
 
-    $prompt = "Loja: {$partner['name']} ({$partner['categoria']}) em {$partner['address_city']}.{$topList}\n\n" .
+    $prompt = "Loja: {$partner['name']} ({$partner['categoria']}) em {$partner['city']}.{$topList}\n\n" .
               "Gere 3 variacoes de post para {$platform}. {$platformGuide[$platform]}\n" .
               "Responda APENAS JSON: " .
               '{"posts":[{"text":"...","best_time":"manha|tarde|noite","cta":"...","hashtags":["#tag1"]}]}';

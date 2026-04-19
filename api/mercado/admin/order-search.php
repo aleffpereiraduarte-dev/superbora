@@ -20,19 +20,22 @@ try {
     $search = "%{$q_escaped}%";
 
     $stmt = $db->prepare("
-        SELECT o.order_id, o.status, o.total, o.created_at,
-               c.name as customer_name,
-               p.name as partner_name
+        SELECT o.order_id, o.order_number, o.status, o.total, o.date_added AS created_at,
+               c.name AS customer_name, c.email AS customer_email, c.phone AS customer_phone,
+               p.name AS partner_name
         FROM om_market_orders o
         LEFT JOIN om_customers c ON o.customer_id = c.customer_id
         LEFT JOIN om_market_partners p ON o.partner_id = p.partner_id
-        WHERE CAST(o.order_id AS CHAR) LIKE ?
-           OR c.name LIKE ?
-           OR p.name LIKE ?
-        ORDER BY o.created_at DESC
+        WHERE o.order_id::text LIKE ?
+           OR COALESCE(o.order_number, '') ILIKE ?
+           OR COALESCE(c.name, '') ILIKE ?
+           OR COALESCE(c.email, '') ILIKE ?
+           OR COALESCE(c.phone, '') LIKE ?
+           OR COALESCE(p.name, '') ILIKE ?
+        ORDER BY o.date_added DESC
         LIMIT 20
     ");
-    $stmt->execute([$search, $search, $search]);
+    $stmt->execute([$search, $search, $search, $search, $search, $search]);
     $results = $stmt->fetchAll();
 
     response(true, ['results' => $results, 'query' => $q, 'count' => count($results)], "Busca realizada");
