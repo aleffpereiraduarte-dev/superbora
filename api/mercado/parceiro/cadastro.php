@@ -11,6 +11,7 @@
  * }
  */
 require_once __DIR__ . "/../config/database.php";
+require_once __DIR__ . "/../helpers/geocoder.php";
 setCorsHeaders();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -87,16 +88,25 @@ try {
     // Hash da senha
     $senhaHash = password_hash($senha, PASSWORD_ARGON2ID);
 
-    // Geocoding via CEP (latitude/longitude aproximados)
+    // Geocoding: CEP + endereço → lat/lng via Nominatim (OSM)
     $lat = null;
     $lng = null;
     try {
-        $viaCep = @file_get_contents("https://viacep.com.br/ws/{$cep}/json/");
-        if ($viaCep) {
-            $cepData = json_decode($viaCep, true);
-            // ViaCEP não retorna lat/lng, mas podemos usar valores padrão da cidade
+        $coords = geocodeAddress([
+            'street' => $endereco,
+            'number' => $numero,
+            'neighborhood' => $bairro,
+            'city' => $cidade,
+            'state' => $estado,
+            'cep' => $cep,
+        ]);
+        if ($coords) {
+            $lat = $coords['lat'];
+            $lng = $coords['lng'];
         }
-    } catch (\Throwable $e) {}
+    } catch (\Throwable $e) {
+        error_log("[parceiro-cadastro] geocoding failed: " . $e->getMessage());
+    }
 
     // Endereço completo
     $enderecoCompleto = "$endereco, $numero" . ($complemento ? " - $complemento" : "") . " - $bairro, $cidade - $estado, $cep";
@@ -122,6 +132,7 @@ try {
             commission_rate, commission_type,
             accepts_pix, accepts_card,
             rating, health_score,
+            lat, lng,
             created_at, date_added
         ) VALUES (
             ?, ?, ?, ?, ?, ?,
@@ -139,6 +150,7 @@ try {
             10.00, 'percentage',
             1, 1,
             5.0, 100.0,
+            ?, ?,
             NOW(), NOW()
         ) RETURNING partner_id
     ");
@@ -151,7 +163,8 @@ try {
         $cep, $endereco, $endereco, $numero, $numero, $complemento, $complemento,
         $bairro, $bairro, $cidade, $cidade, $estado, $estado,
         $endereco, $enderecoCompleto,
-        $ip, $ip
+        $ip, $ip,
+        $lat, $lng
     ]);
 
     $partnerId = (int)$stmt->fetchColumn();
