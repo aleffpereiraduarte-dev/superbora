@@ -98,6 +98,11 @@ try {
         foreach ($coupons as &$cp) {
             $cp['times_used'] = (int)$cp['times_used'];
             $cp['total_discount_given'] = round((float)$cp['total_discount_given'], 2);
+            // Frontend filters by c.active (boolean); derive from status.
+            // Valid 'active' values: 'active' or '1' (legacy int stored as string).
+            $cp['active'] = in_array((string)$cp['status'], ['active', '1'], true);
+            // Frontend also reads c.expired; compute server-side.
+            $cp['expired'] = !empty($cp['valid_until']) && strtotime($cp['valid_until']) < time();
         }
         unset($cp);
 

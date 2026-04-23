@@ -22,7 +22,7 @@ require_once dirname(__DIR__, 3) . '/includes/classes/OmAuth.php';
 setCorsHeaders();
 
 if ($_SERVER["REQUEST_METHOD"] !== "POST") {
-    response(false, null, "Metodo nao permitido", 405);
+    response(false, null, "Método não permitido", 405);
 }
 
 $input = getInput();
@@ -36,7 +36,7 @@ $confirmado_por = $input['confirmado_por'] ?? 'cliente';
 $confirmadoresPermitidos = ['cliente', 'motorista', 'shopper'];
 if (!in_array($confirmado_por, $confirmadoresPermitidos, true)) {
     http_response_code(400);
-    echo json_encode(["success" => false, "message" => "confirmado_por invalido"]);
+    echo json_encode(["success" => false, "message" => "confirmado_por inválido"]);
     exit;
 }
 
@@ -44,18 +44,18 @@ try {
     $db = getDB();
 
     if (!$order_id) {
-        response(false, null, "order_id obrigatorio", 400);
+        response(false, null, "order_id obrigatório", 400);
     }
 
     // Autenticacao obrigatoria para todos os tipos
     OmAuth::getInstance()->setDb($db);
     $token = om_auth()->getTokenFromRequest();
     if (!$token) {
-        response(false, null, "Autenticacao obrigatoria", 401);
+        response(false, null, "Autenticação obrigatória", 401);
     }
     $authPayload = om_auth()->validateToken($token);
     if (!$authPayload) {
-        response(false, null, "Token invalido ou expirado", 401);
+        response(false, null, "Token inválido ou expirado", 401);
     }
     $authType = $authPayload['type'] ?? '';
     $authUid = (int)($authPayload['uid'] ?? 0);
@@ -63,20 +63,20 @@ try {
     if ($confirmado_por === 'cliente') {
         // Cliente: must be a customer token — reject non-customer types
         if ($authType !== 'customer') {
-            response(false, null, "Token invalido para confirmacao de cliente", 403);
+            response(false, null, "Token inválido para confirmação de cliente", 403);
         }
         // Use $authUid from OmAuth (already validated with revocation check)
         $auth_customer_id = $authUid;
         if (!$auth_customer_id) {
-            response(false, null, "Autenticacao obrigatoria", 401);
+            response(false, null, "Autenticação obrigatória", 401);
         }
     } else {
         // Motorista/shopper: require token auth + codigo de confirmacao
         if (!in_array($authType, [OmAuth::USER_TYPE_SHOPPER, OmAuth::USER_TYPE_MOTORISTA, OmAuth::USER_TYPE_PARTNER], true)) {
-            response(false, null, "Autenticacao de shopper ou parceiro obrigatoria", 401);
+            response(false, null, "Autenticação de shopper ou parceiro obrigatória", 401);
         }
         if (empty($codigo_confirmacao)) {
-            response(false, null, "Codigo de confirmacao obrigatorio para $confirmado_por", 400);
+            response(false, null, "Código de confirmação obrigatório para $confirmado_por", 400);
         }
     }
 
@@ -96,14 +96,14 @@ try {
 
     if (!$pedido) {
         $db->rollBack();
-        response(false, null, "Pedido nao encontrado", 404);
+        response(false, null, "Pedido não encontrado", 404);
     }
 
     // Verificar ownership se cliente
     if ($confirmado_por === 'cliente' && isset($auth_customer_id)) {
         if ((int)$pedido['customer_id'] !== $auth_customer_id) {
             $db->rollBack();
-            response(false, null, "Pedido nao encontrado", 404);
+            response(false, null, "Pedido não encontrado", 404);
         }
     }
 
@@ -122,20 +122,20 @@ try {
         if (!$ownershipOk) {
             $db->rollBack();
             error_log("[confirmar-entrega] SECURITY: Auth uid={$authUid} type={$authType} nao relacionado ao pedido #{$order_id}");
-            response(false, null, "Nao autorizado para este pedido", 403);
+            response(false, null, "Não autorizado para este pedido", 403);
         }
     }
 
     if (in_array($pedido['status'], ['entregue', 'retirado'])) {
         $db->rollBack();
-        response(false, null, "Pedido ja foi " . ($pedido['status'] === 'retirado' ? 'retirado' : 'entregue'), 400);
+        response(false, null, "Pedido já foi " . ($pedido['status'] === 'retirado' ? 'retirado' : 'entregue'), 400);
     }
 
     $isPickupOrder = !empty($pedido['is_pickup']) || ($pedido['delivery_type'] ?? '') === 'retirada';
 
     if (!in_array($pedido['status'], ['em_entrega', 'coletando', 'pronto'])) {
         $db->rollBack();
-        response(false, null, "Pedido nao esta em entrega", 400);
+        response(false, null, "Pedido não esta em entrega", 400);
     }
 
     // SECURITY: Verify payment before allowing delivery confirmation
@@ -147,7 +147,7 @@ try {
         if (!in_array($pagStatus, ['paid', 'pago', 'confirmado'])) {
             $db->rollBack();
             error_log("[confirmar-entrega] SECURITY: Pedido #{$order_id} pagamento nao confirmado (status={$pagStatus}, method={$paymentMethod})");
-            response(false, null, "Pagamento nao confirmado para este pedido", 400);
+            response(false, null, "Pagamento não confirmado para este pedido", 400);
         }
     }
 
@@ -155,7 +155,7 @@ try {
     // EXCEPTION: Pickup orders — customer confirms PICKUP when status is 'pronto'
     if ($confirmado_por === 'cliente' && $pedido['status'] === 'pronto' && !$isPickupOrder) {
         $db->rollBack();
-        response(false, null, "Pedido ainda nao saiu para entrega", 400);
+        response(false, null, "Pedido ainda não saiu para entrega", 400);
     }
 
     // SECURITY: For non-pickup orders in 'pronto' status, motorista must first transition
@@ -170,7 +170,7 @@ try {
         $stmtTransit->execute([$order_id]);
         if ($stmtTransit->rowCount() === 0) {
             $db->rollBack();
-            response(false, null, "Status do pedido foi alterado por outra operacao", 409);
+            response(false, null, "Status do pedido foi alterado por outra operação", 409);
         }
         $db->commit();
         response(true, [
@@ -186,16 +186,16 @@ try {
         if (empty($storedCode)) {
             error_log("[confirmar-entrega] SECURITY: Pedido #$order_id sem codigo de confirmacao - rejeitando $confirmado_por");
             $db->rollBack();
-            response(false, null, "Pedido sem codigo de confirmacao configurado", 400);
+            response(false, null, "Pedido sem código de confirmação configurado", 400);
         }
         $trimmedInput = trim($codigo_confirmacao);
         if (strlen($trimmedInput) < 4) {
             $db->rollBack();
-            response(false, null, "Codigo de confirmacao invalido", 400);
+            response(false, null, "Código de confirmação inválido", 400);
         }
         if (strtoupper($trimmedInput) !== strtoupper(trim($storedCode))) {
             $db->rollBack();
-            response(false, null, "Codigo de confirmacao invalido", 400);
+            response(false, null, "Código de confirmação inválido", 400);
         }
     }
 
@@ -214,7 +214,7 @@ try {
         $stmt->execute([$finalStatus, $foto_entrega, $confirmado_por, $order_id]);
         if ($stmt->rowCount() === 0) {
             $db->rollBack();
-            response(false, null, "Pedido ja foi confirmado ou status foi alterado", 409);
+            response(false, null, "Pedido já foi confirmado ou status foi alterado", 409);
         }
 
         // 2. Verificar se repasse ja existe (idempotencia — webhook pode ter criado)
@@ -359,6 +359,19 @@ try {
                 'order_id' => $order_id,
                 'status' => $finalStatus,
             ]);
+            $pid_ws = (int)($pedido['partner_id'] ?? 0);
+            if ($pid_ws && function_exists('wsBroadcastToPartner')) {
+                wsBroadcastToPartner($pid_ws, 'order_update', [
+                    'order_id' => $order_id, 'status' => $finalStatus,
+                    'previous_status' => $pedido['status'], 'customer_id' => $customer_id_ws,
+                ]);
+            }
+            if (function_exists('wsBroadcastToAdmin')) {
+                wsBroadcastToAdmin('order_update', [
+                    'order_id' => $order_id, 'partner_id' => $pid_ws, 'status' => $finalStatus,
+                    'previous_status' => $pedido['status'], 'customer_id' => $customer_id_ws,
+                ]);
+            }
         } catch (\Throwable $e) {}
 
         // ═══════════════════════════════════════════════════════
@@ -580,6 +593,44 @@ try {
                 'hold_hours' => 2
             ]);
         } catch (Exception $pe) {}
+
+        // ── Referral completion: if this is the first delivered order for the customer,
+        // credit R$10 cashback to whoever referred them (idempotent in completeReferral) ──
+        if ($finalStatus === 'entregue') {
+            try {
+                require_once __DIR__ . '/../customer/referral.php';
+                if (function_exists('completeReferral')) {
+                    // Only fires if this customer has a status='pending' referral
+                    $refResult = completeReferral($db, (int)$customer_id, (int)$order_id);
+                    if ($refResult['success'] ?? false) {
+                        error_log("[confirmar-entrega] referral completed: customer={$customer_id} order={$order_id}");
+                    }
+                }
+            } catch (Exception $refErr) {
+                error_log("[confirmar-entrega] referral hook failed: " . $refErr->getMessage());
+            }
+        }
+
+        // ── Loyalty stamp: increment customer's stamp card for this partner (idempotent) ──
+        try {
+            $internalKey = $_ENV['INTERNAL_API_KEY'] ?? getenv('INTERNAL_API_KEY') ?: '';
+            if (!empty($internalKey) && $finalStatus === 'entregue') {
+                $stCh = curl_init('http://127.0.0.1/api/mercado/customer/loyalty-stamps.php');
+                curl_setopt_array($stCh, [
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_POST => true,
+                    CURLOPT_POSTFIELDS => json_encode(['action' => 'stamp', 'order_id' => $order_id]),
+                    CURLOPT_HTTPHEADER => [
+                        'Content-Type: application/json',
+                        'X-API-Key: ' . $internalKey,
+                    ],
+                    CURLOPT_TIMEOUT => 2,
+                    CURLOPT_CONNECTTIMEOUT => 1,
+                ]);
+                curl_exec($stCh);
+                curl_close($stCh);
+            }
+        } catch (Exception $stEx) { /* loyalty stamp is best-effort */ }
 
         response(true, [
             "order_id" => $order_id,

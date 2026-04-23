@@ -239,8 +239,16 @@ function applyRateLimit(): void {
         $token = $m[1];
     }
 
-    // Login: 5/min per IP
-    if (preg_match('/(login|auth|register)/', $uri)) {
+    // Session verification is a READ — admin dashboards hit /auth/session.php
+    // on every navigation. Apply a generous per-token limit instead of the
+    // tight 5/min login bucket.
+    if (preg_match('#/auth/session\.php#', $uri)) {
+        $key = $token ? "session:$token" : "session:$ip";
+        checkRateLimit($key, 240, 60);
+        return;
+    }
+    // Login proper: 5/min per IP (brute-force protection)
+    if (preg_match('/(login|register|send-code|verify-code|social-login)/', $uri)) {
         checkRateLimit("login:$ip", 5, 60);
         return;
     }

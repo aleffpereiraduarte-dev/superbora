@@ -73,14 +73,14 @@ function processPaidPixIntent(PDO $db, array $intent, float $verifiedAmount, str
             customer_name, customer_phone, customer_email,
             status, subtotal, delivery_fee, total, tip_amount,
             delivery_address, shipping_address, shipping_cep, shipping_city, shipping_state,
-            notes, codigo_entrega, forma_pagamento,
+            notes, codigo_entrega, forma_pagamento, payment_method,
             coupon_id, coupon_discount, loyalty_points_used, loyalty_discount, cashback_discount,
             is_pickup, schedule_date, schedule_time,
             timer_started, timer_expires,
             delivery_type, cpf_nota, service_fee,
             pix_paid, pagamento_status, payment_status,
             payment_id, date_added
-        ) VALUES (?, ?, ?, ?, ?, ?, 'aceito', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pix',
+        ) VALUES (?, ?, ?, ?, ?, ?, 'aceito', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pix', 'pix',
                   ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                   true, 'pago', 'paid', ?, NOW())
         RETURNING order_id");
@@ -192,6 +192,25 @@ function processPaidPixIntent(PDO $db, array $intent, float $verifiedAmount, str
                     'order_number' => $order_number,
                     'status' => 'aceito',
                 ]);
+            }
+            // NEW — broadcast to partner painel + admin dashboard so new orders
+            // show up in real time (no more 15s polling).
+            $newOrderPayload = [
+                'order_id' => $orderId,
+                'order_number' => $order_number,
+                'partner_id' => $partner_id,
+                'customer_id' => $customer_id,
+                'customer_name' => $cart['customer_name'] ?? 'Cliente',
+                'total' => round((float)($cart['total'] ?? 0), 2),
+                'status' => 'aceito',
+                'payment_method' => 'pix',
+                'items_count' => count($cart['items'] ?? []),
+            ];
+            if (function_exists('wsBroadcastToPartner')) {
+                wsBroadcastToPartner($partner_id, 'new_order', $newOrderPayload);
+            }
+            if (function_exists('wsBroadcastToAdmin')) {
+                wsBroadcastToAdmin('new_order', $newOrderPayload);
             }
         } catch (\Throwable $e) {
             error_log('[intent-to-order] WS broadcast failed: ' . $e->getMessage());

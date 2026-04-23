@@ -13,7 +13,7 @@ require_once __DIR__ . '/../helpers/eta-calculator.php';
 setCorsHeaders();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    response(false, null, "Metodo nao permitido", 405);
+    response(false, null, "Método não permitido", 405);
 }
 
 // CSRF protection: require JSON content type for session-auth endpoints
@@ -29,14 +29,14 @@ try {
 
     $mercado_id = $_SESSION['mercado_id'] ?? 0;
     if (!$mercado_id) {
-        response(false, null, "Nao autorizado", 401);
+        response(false, null, "Não autorizado", 401);
     }
 
     $input = getInput();
     $order_id = (int)($input['order_id'] ?? 0);
 
     if (!$order_id) {
-        response(false, null, "order_id obrigatorio", 400);
+        response(false, null, "order_id obrigatório", 400);
     }
 
     $db->beginTransaction();
@@ -46,7 +46,7 @@ try {
 
     if (!$pedido) {
         $db->rollBack();
-        response(false, null, "Pedido nao encontrado", 404);
+        response(false, null, "Pedido não encontrado", 404);
     }
 
     $statusPermitidos = ['preparando'];
@@ -55,7 +55,7 @@ try {
         if ($pedido['status'] === 'aceito' || $pedido['status'] === 'pendente') {
             response(false, null, "Marque o pedido como 'preparando' antes de finalizar", 409);
         }
-        response(false, null, "Pedido nao pode ser marcado como pronto (status atual: {$pedido['status']})", 409);
+        response(false, null, "Pedido não pode ser marcado como pronto (status atual: {$pedido['status']})", 409);
     }
 
     // Feature 5: Determine delivery_type based on partner options (inside transaction)
@@ -102,7 +102,7 @@ try {
     }
     if ($stmt->rowCount() === 0) {
         $db->rollBack();
-        response(false, null, "Pedido ja foi alterado por outra sessao (status atual: {$pedido['status']})", 409);
+        response(false, null, "Pedido já foi alterado por outra sessão (status atual: {$pedido['status']})", 409);
     }
     $db->commit();
 
@@ -122,6 +122,21 @@ try {
             'status' => 'pronto',
             'is_pickup' => $isPickup,
         ]);
+        $pid_ws = (int)($pedido['partner_id'] ?? 0);
+        if ($pid_ws && function_exists('wsBroadcastToPartner')) {
+            wsBroadcastToPartner($pid_ws, 'order_update', [
+                'order_id' => $order_id, 'status' => 'pronto',
+                'previous_status' => $pedido['status'], 'customer_id' => $customer_id_ws,
+                'is_pickup' => $isPickup,
+            ]);
+        }
+        if (function_exists('wsBroadcastToAdmin')) {
+            wsBroadcastToAdmin('order_update', [
+                'order_id' => $order_id, 'partner_id' => $pid_ws, 'status' => 'pronto',
+                'previous_status' => $pedido['status'], 'customer_id' => $customer_id_ws,
+                'is_pickup' => $isPickup,
+            ]);
+        }
     } catch (\Throwable $e) {}
 
     // Post-commit: Notificar cliente (mensagem diferente para pickup vs entrega)

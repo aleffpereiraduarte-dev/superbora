@@ -54,10 +54,17 @@ class OmAuth {
             'data' => $extraData
         ];
 
-        $payloadBase64 = base64_encode(json_encode($payload));
-        $signature = hash_hmac('sha256', $payloadBase64, $this->secretKey);
-
-        $token = $payloadBase64 . '.' . $signature;
+        // Emit a standard 3-part JWT (header.payload.signature, HS256) so
+        // external verifiers (Rust ws-server, external services) can validate
+        // with any JWT library. Use URL-safe base64 without padding.
+        $b64url = static function (string $raw): string {
+            return rtrim(strtr(base64_encode($raw), '+/', '-_'), '=');
+        };
+        $header = $b64url(json_encode(['alg' => 'HS256', 'typ' => 'JWT']));
+        $payloadB64 = $b64url(json_encode($payload));
+        $signingInput = $header . '.' . $payloadB64;
+        $signature = $b64url(hash_hmac('sha256', $signingInput, $this->secretKey, true));
+        $token = $signingInput . '.' . $signature;
 
         // Armazenar token no banco para validação e revogação
         $this->storeToken($userType, $userId, $payload['jti'], $payload['exp']);
@@ -75,20 +82,42 @@ class OmAuth {
         }
 
         $parts = explode('.', $token);
-        if (count($parts) !== 2) {
+
+        // Accept BOTH formats:
+        //  - Legacy 2-part: payloadB64 '.' signature (pre-2026-04-23 tokens in flight)
+        //  - Standard JWT 3-part: header '.' payload '.' signature (new)
+        // URL-safe base64 helper
+        $b64url_decode = static function (string $s): string {
+            $pad = 4 - (strlen($s) % 4);
+            if ($pad < 4) $s .= str_repeat('=', $pad);
+            return base64_decode(strtr($s, '-_', '+/'));
+        };
+        $b64url_encode = static function (string $s): string {
+            return rtrim(strtr(base64_encode($s), '+/', '-_'), '=');
+        };
+
+        if (count($parts) === 3) {
+            // Standard JWT — header.payload.signature
+            [$headerB64, $payloadBase64, $signature] = $parts;
+            $signingInput = $headerB64 . '.' . $payloadBase64;
+            $expectedSignature = $b64url_encode(hash_hmac('sha256', $signingInput, $this->secretKey, true));
+            if (!hash_equals($expectedSignature, $signature)) {
+                return null;
+            }
+            $payload = json_decode($b64url_decode($payloadBase64), true);
+        } elseif (count($parts) === 2) {
+            // Legacy 2-part — payloadBase64 . hmac_sha256(payloadBase64)
+            [$payloadBase64, $signature] = $parts;
+            // Legacy used non-URL-safe base64 and hex hmac
+            $expectedSignature = hash_hmac('sha256', $payloadBase64, $this->secretKey);
+            if (!hash_equals($expectedSignature, $signature)) {
+                return null;
+            }
+            $payload = json_decode(base64_decode($payloadBase64), true);
+        } else {
             return null;
         }
 
-        [$payloadBase64, $signature] = $parts;
-
-        // Verificar assinatura
-        $expectedSignature = hash_hmac('sha256', $payloadBase64, $this->secretKey);
-        if (!hash_equals($expectedSignature, $signature)) {
-            return null;
-        }
-
-        // Decodificar payload
-        $payload = json_decode(base64_decode($payloadBase64), true);
         if (!$payload) {
             return null;
         }

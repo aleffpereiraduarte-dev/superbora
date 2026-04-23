@@ -12,7 +12,7 @@ require_once __DIR__ . '/../helpers/eta-calculator.php';
 setCorsHeaders();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    response(false, null, "Metodo nao permitido", 405);
+    response(false, null, "Método não permitido", 405);
 }
 
 // CSRF protection: require JSON content type for session-auth endpoints
@@ -28,14 +28,14 @@ try {
 
     $mercado_id = $_SESSION['mercado_id'] ?? 0;
     if (!$mercado_id) {
-        response(false, null, "Nao autorizado", 401);
+        response(false, null, "Não autorizado", 401);
     }
 
     $input = getInput();
     $order_id = (int)($input['order_id'] ?? 0);
 
     if (!$order_id) {
-        response(false, null, "order_id obrigatorio", 400);
+        response(false, null, "order_id obrigatório", 400);
     }
 
     $db->beginTransaction();
@@ -45,7 +45,7 @@ try {
 
     if (!$pedido) {
         $db->rollBack();
-        response(false, null, "Pedido nao encontrado", 404);
+        response(false, null, "Pedido não encontrado", 404);
     }
 
     $statusPermitidos = ['aceito'];
@@ -54,7 +54,7 @@ try {
         if ($pedido['status'] === 'pendente') {
             response(false, null, "Aceite o pedido primeiro antes de iniciar o preparo", 409);
         }
-        response(false, null, "Pedido nao pode ir para preparando (status atual: {$pedido['status']})", 409);
+        response(false, null, "Pedido não pode ir para preparando (status atual: {$pedido['status']})", 409);
     }
 
     $updates = "status = 'preparando', preparing_started_at = NOW(), date_modified = NOW()";
@@ -64,7 +64,7 @@ try {
     $stmt->execute($params);
     if ($stmt->rowCount() === 0) {
         $db->rollBack();
-        response(false, null, "Pedido ja esta em preparo ou status foi alterado", 409);
+        response(false, null, "Pedido já esta em preparo ou status foi alterado", 409);
     }
     $db->commit();
 
@@ -82,6 +82,19 @@ try {
             'order_id' => $order_id,
             'status' => 'preparando',
         ]);
+        $pid_ws = (int)($pedido['partner_id'] ?? 0);
+        if ($pid_ws && function_exists('wsBroadcastToPartner')) {
+            wsBroadcastToPartner($pid_ws, 'order_update', [
+                'order_id' => $order_id, 'status' => 'preparando',
+                'previous_status' => $pedido['status'], 'customer_id' => $customer_id_ws,
+            ]);
+        }
+        if (function_exists('wsBroadcastToAdmin')) {
+            wsBroadcastToAdmin('order_update', [
+                'order_id' => $order_id, 'partner_id' => $pid_ws, 'status' => 'preparando',
+                'previous_status' => $pedido['status'], 'customer_id' => $customer_id_ws,
+            ]);
+        }
     } catch (\Throwable $e) {}
 
     // Notificar cliente

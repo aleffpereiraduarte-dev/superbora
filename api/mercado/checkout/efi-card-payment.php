@@ -44,7 +44,7 @@ try {
     $hasPaymentToken = !empty($paymentTokenFromClient) && preg_match('/^[a-fA-F0-9]{30,50}$/', $paymentTokenFromClient);
 
     if (!$hasSavedToken && !$hasPaymentToken) {
-        response(false, null, "Token de pagamento obrigatorio", 400);
+        response(false, null, "Token de pagamento obrigatório", 400);
     }
 
     // ═══ ORDER DATA (same as criar-pix.php) ═══
@@ -90,7 +90,7 @@ try {
         if ($rpid > 0 && !in_array($rpid, $allPartnerIds)) $allPartnerIds[] = $rpid;
     }
     if (empty($allPartnerIds)) {
-        response(false, null, "partner_id obrigatorio", 400);
+        response(false, null, "partner_id obrigatório", 400);
     }
 
     $partners = [];
@@ -99,7 +99,7 @@ try {
     foreach ($allPartnerIds as $pid) {
         $partnerStmt->execute([$pid]);
         $p = $partnerStmt->fetch(PDO::FETCH_ASSOC);
-        if (!$p) response(false, null, "Parceiro #{$pid} nao encontrado", 404);
+        if (!$p) response(false, null, "Parceiro #{$pid} não encontrado", 404);
         if (!$p['is_open']) {
             $pName = $p['trade_name'] ?: $p['name'];
             response(false, null, "{$pName} esta fechada no momento", 400);
@@ -113,7 +113,7 @@ try {
     $custStmt = $db->prepare("SELECT name, phone, email, cpf FROM om_customers WHERE customer_id = ?");
     $custStmt->execute([$customer_id]);
     $custData = $custStmt->fetch(PDO::FETCH_ASSOC);
-    if (!$custData) response(false, null, "Cliente nao encontrado", 404);
+    if (!$custData) response(false, null, "Cliente não encontrado", 404);
 
     $customer_name = trim($custData['name'] ?: 'Cliente');
     $customer_phone = preg_replace('/[^0-9]/', '', $custData['phone'] ?? '');
@@ -150,13 +150,13 @@ try {
         $stock = (int)$item['stock'];
         if ($qty > $stock) {
             $db->rollBack();
-            response(false, null, "Estoque insuficiente para {$item['product_name']} (disponivel: {$stock})", 400);
+            response(false, null, "Estoque insuficiente para {$item['product_name']} (disponível: {$stock})", 400);
         }
         $price = ($item['special_price'] && (float)$item['special_price'] > 0 && (float)$item['special_price'] < (float)$item['price'])
             ? (float)$item['special_price'] : (float)$item['price'];
         if ($price <= 0) {
             $db->rollBack();
-            response(false, null, "Preco invalido para {$item['product_name']}", 400);
+            response(false, null, "Preco inválido para {$item['product_name']}", 400);
         }
         $itemTotal = $price * $qty;
         $subtotal += $itemTotal;
@@ -197,13 +197,13 @@ try {
     if ($usaBoraUm && $lat_parceiro && $lat_cliente) {
         $raio_km = (float)($partner['delivery_radius_km'] ?? 0);
         if ($raio_km > 0 && $distancia_km > $raio_km) {
-            response(false, null, "Voce esta fora da area de entrega (" . number_format($distancia_km, 1, ',', '') . " km, maximo " . number_format($raio_km, 1, ',', '') . " km)", 400);
+            response(false, null, "Você esta fora da area de entrega (" . number_format($distancia_km, 1, ',', '') . " km, maximo " . number_format($raio_km, 1, ',', '') . " km)", 400);
         }
     }
     if ($usaBoraUm) {
         $minimoBoraUm = OmPricing::getMinimoBoraUm($distancia_km);
         if ($subtotal < $minimoBoraUm) {
-            response(false, null, "Pedido minimo R$ " . number_format($minimoBoraUm, 2, ',', '.') . " para esta distancia", 400);
+            response(false, null, "Pedido mínimo R$ " . number_format($minimoBoraUm, 2, ',', '.') . " para esta distancia", 400);
         }
     }
 
@@ -262,7 +262,7 @@ try {
     $total = max(0, $subtotal + $delivery_fee + $service_fee + $tip - $coupon_discount - $pointsDiscount - $cashbackDiscount);
 
     if ($total < 1.00) {
-        response(false, null, "Valor minimo para cartao: R$ 1,00", 400);
+        response(false, null, "Valor mínimo para cartão: R$ 1,00", 400);
     }
 
     // ═══ TOKENIZE + CHARGE CARD VIA EFI ═══
@@ -306,7 +306,14 @@ try {
     $chargeResult = $efi->chargeCard($total, $description, $efiCustomer, $paymentToken, $installments);
 
     if (!$chargeResult['success']) {
-        $errorMsg = $chargeResult['error'] ?? 'Erro ao processar pagamento';
+        $rawErr = $chargeResult['error'] ?? 'Erro ao processar pagamento';
+        // EFI sometimes returns `error_description` as an object
+        // ({property, message}) — flatten to a string before stripos.
+        if (is_array($rawErr)) {
+            $errorMsg = $rawErr['message'] ?? json_encode($rawErr);
+        } else {
+            $errorMsg = (string)$rawErr;
+        }
         // Map common EFI errors to user-friendly messages
         if (stripos($errorMsg, 'recusad') !== false || stripos($errorMsg, 'denied') !== false) {
             $errorMsg = 'Cartao recusado. Verifique os dados ou tente outro cartao.';
@@ -364,14 +371,14 @@ try {
         customer_name, customer_phone, customer_email,
         status, subtotal, delivery_fee, total, tip_amount,
         delivery_address, shipping_address, shipping_cep, shipping_city, shipping_state,
-        notes, codigo_entrega, forma_pagamento,
+        notes, codigo_entrega, forma_pagamento, payment_method,
         coupon_id, coupon_discount, loyalty_points_used, loyalty_discount, cashback_discount,
         is_pickup, schedule_date, schedule_time,
         timer_started, timer_expires,
         delivery_type, cpf_nota, service_fee,
         pix_paid, pagamento_status, payment_status,
         payment_id, efi_charge_id, unavailable_preference, date_added
-    ) VALUES (?, ?, ?, ?, ?, ?, 'aceito', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'cartao_efi',
+    ) VALUES (?, ?, ?, ?, ?, ?, 'aceito', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'cartao_efi', 'card',
               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
               false, 'pago', 'paid', ?, ?, ?, NOW())
     RETURNING order_id");
@@ -467,6 +474,20 @@ try {
             'order_number' => $order_number,
             'status' => 'aceito',
         ]);
+        // Partner + admin fanout — real-time dashboard updates
+        $newOrderPayload = [
+            'order_id' => $orderId,
+            'order_number' => $order_number,
+            'partner_id' => $partner_id,
+            'customer_id' => $customer_id,
+            'customer_name' => $customer_name,
+            'total' => round((float)$total, 2),
+            'status' => 'aceito',
+            'payment_method' => 'card',
+            'items_count' => count($items ?? []),
+        ];
+        if (function_exists('wsBroadcastToPartner')) wsBroadcastToPartner($partner_id, 'new_order', $newOrderPayload);
+        if (function_exists('wsBroadcastToAdmin'))   wsBroadcastToAdmin('new_order', $newOrderPayload);
     } catch (\Throwable $e) {
         error_log("[efi-card] WS broadcast error: " . $e->getMessage());
     }

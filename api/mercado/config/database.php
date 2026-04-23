@@ -267,18 +267,38 @@ function getCustomerIdFromToken(): int {
     if (!$token) return 0;
 
     $parts = explode('.', $token);
-    if (count($parts) !== 2) return 0;
+    // Accept both formats:
+    //  - Legacy 2-part: base64(payload).hex_hmac(payload)
+    //  - Standard JWT 3-part: base64url(header).base64url(payload).base64url(sig)
+    if (count($parts) !== 2 && count($parts) !== 3) return 0;
 
     $jwtSecret = $_ENV['JWT_SECRET'] ?? '';
     if (empty($jwtSecret)) {
-        // SECURITY: No fallback — refuse to authenticate without proper JWT_SECRET
         error_log("[Auth] JWT_SECRET not configured — rejecting token");
         return 0;
     }
-    $expectedSig = hash_hmac('sha256', $parts[0], $jwtSecret);
-    if (!hash_equals($expectedSig, $parts[1])) return 0;
 
-    $payload = json_decode(base64_decode($parts[0]), true);
+    $b64url_decode = static function (string $s): string {
+        $pad = 4 - (strlen($s) % 4);
+        if ($pad < 4) $s .= str_repeat('=', $pad);
+        return base64_decode(strtr($s, '-_', '+/'));
+    };
+    $b64url_encode = static function (string $s): string {
+        return rtrim(strtr(base64_encode($s), '+/', '-_'), '=');
+    };
+
+    if (count($parts) === 3) {
+        [$headerB64, $payloadB64, $signature] = $parts;
+        $signingInput = $headerB64 . '.' . $payloadB64;
+        $expectedSig = $b64url_encode(hash_hmac('sha256', $signingInput, $jwtSecret, true));
+        if (!hash_equals($expectedSig, $signature)) return 0;
+        $payload = json_decode($b64url_decode($payloadB64), true);
+    } else {
+        // legacy 2-part
+        $expectedSig = hash_hmac('sha256', $parts[0], $jwtSecret);
+        if (!hash_equals($expectedSig, $parts[1])) return 0;
+        $payload = json_decode(base64_decode($parts[0]), true);
+    }
     if (!$payload) return 0;
     if (empty($payload['uid']) && empty($payload['user_id'])) return 0;
     if (($payload['exp'] ?? 0) < time()) return 0;

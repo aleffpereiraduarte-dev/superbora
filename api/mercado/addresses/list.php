@@ -6,6 +6,7 @@
  */
 require_once __DIR__ . "/../config/database.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
+require_once __DIR__ . "/../helpers/geocoder.php";
 
 setCorsHeaders();
 
@@ -83,6 +84,14 @@ try {
 
         if (empty($street) || empty($number) || empty($neighborhood) || empty($city) || empty($state)) {
             response(false, null, "Endereco incompleto", 400);
+        }
+
+        if (($lat === null || $lng === null) && function_exists('geocodeAddress')) {
+            $geo = geocodeAddress([
+                'street' => $street, 'number' => $number, 'neighborhood' => $neighborhood,
+                'city' => $city, 'state' => $state, 'cep' => $zipcode,
+            ]);
+            if ($geo) { $lat = (float)$geo['lat']; $lng = (float)$geo['lng']; }
         }
 
         // Transação para garantir atomicidade do is_default
@@ -217,13 +226,34 @@ try {
             response(false, null, "ID do endereco obrigatorio", 400);
         }
 
-        // Soft delete
-        $stmt = $db->prepare("UPDATE om_customer_addresses SET is_active = 0 WHERE address_id = ? AND customer_id = ?");
+        // Soft delete + clear is_default so we never end up with a flag-
+        // default address that is also inactive (contradictory state that
+        // broke saved-address resolution on the client).
+        $stmt = $db->prepare("
+            UPDATE om_customer_addresses
+            SET is_active = 0, is_default = 0
+            WHERE address_id = ? AND customer_id = ?
+        ");
         $stmt->execute([$addressId, $customerId]);
 
         if ($stmt->rowCount() === 0) {
             response(false, null, "Endereco nao encontrado", 404);
         }
+
+        // If the deleted one was the default, promote the most-recent
+        // active address so the user still has a selected address.
+        $db->prepare("
+            UPDATE om_customer_addresses
+            SET is_default = 1
+            WHERE address_id = (
+                SELECT address_id FROM om_customer_addresses
+                WHERE customer_id = ? AND is_active = 1
+                ORDER BY created_at DESC LIMIT 1
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM om_customer_addresses WHERE customer_id = ? AND is_default = 1 AND is_active = 1
+            )
+        ")->execute([$customerId, $customerId]);
 
         response(true, null, "Endereco removido");
     }

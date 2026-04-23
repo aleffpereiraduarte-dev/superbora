@@ -11,6 +11,7 @@
  */
 require_once __DIR__ . "/../config/database.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
+require_once __DIR__ . "/../helpers/geocoder.php";
 
 setCorsHeaders();
 
@@ -21,11 +22,11 @@ try {
     // Requer autenticacao do cliente
     $token = om_auth()->getTokenFromRequest();
     if (!$token) {
-        response(false, null, "Autenticacao necessaria", 401);
+        response(false, null, "Autenticação necessaria", 401);
     }
     $payload = om_auth()->validateToken($token);
     if (!$payload || $payload['type'] !== 'customer') {
-        response(false, null, "Token invalido", 401);
+        response(false, null, "Token inválido", 401);
     }
     $customerId = (int)$payload['uid'];
 
@@ -77,7 +78,7 @@ try {
         $stmtCount = $db->prepare("SELECT COUNT(*) FROM om_customer_addresses WHERE customer_id = ? AND is_active = '1'");
         $stmtCount->execute([$customerId]);
         if ((int)$stmtCount->fetchColumn() >= 10) {
-            response(false, null, "Limite de 10 enderecos atingido. Remova um endereco antes de adicionar outro.", 400);
+            response(false, null, "Limite de 10 endereços atingido. Remova um endereço antes de adicionar outro.", 400);
         }
 
         $input = getInput();
@@ -95,25 +96,35 @@ try {
         $reference = strip_tags(trim(substr($input['referencia'] ?? $input['reference'] ?? '', 0, 255)));
         $isDefault = (bool)($input['is_default'] ?? false);
 
+        // If the client didn't provide coordinates, geocode server-side so
+        // delivery-radius checks don't silently fail later.
+        if (($lat === null || $lng === null) && function_exists('geocodeAddress')) {
+            $geo = geocodeAddress([
+                'street' => $street, 'number' => $number, 'neighborhood' => $neighborhood,
+                'city' => $city, 'state' => $state, 'cep' => $zipcode,
+            ]);
+            if ($geo) { $lat = (float)$geo['lat']; $lng = (float)$geo['lng']; }
+        }
+
         // Validar campos obrigatorios
         if (empty($street)) {
-            response(false, null, "Logradouro e obrigatorio", 400);
+            response(false, null, "Logradouro e obrigatório", 400);
         }
         if (empty($number)) {
-            response(false, null, "Numero e obrigatorio", 400);
+            response(false, null, "Número e obrigatório", 400);
         }
         if (empty($neighborhood)) {
-            response(false, null, "Bairro e obrigatorio", 400);
+            response(false, null, "Bairro e obrigatório", 400);
         }
         if (empty($city)) {
-            response(false, null, "Cidade e obrigatoria", 400);
+            response(false, null, "Cidade e obrigatória", 400);
         }
         if (empty($state)) {
-            response(false, null, "Estado e obrigatorio", 400);
+            response(false, null, "Estado e obrigatório", 400);
         }
         $validStates = ['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'];
         if (!in_array($state, $validStates, true)) {
-            response(false, null, "Estado invalido", 400);
+            response(false, null, "Estado inválido", 400);
         }
 
         // Usar transação para garantir atomicidade do is_default
@@ -143,7 +154,7 @@ try {
             throw $txEx;
         }
 
-        response(true, ["address_id" => $addressId], "Endereco adicionado!", 201);
+        response(true, ["address_id" => $addressId], "Endereço adicionado!", 201);
     }
 
     // ── PUT: atualizar endereco ─────────────────────────────────────
@@ -152,14 +163,14 @@ try {
 
         $addressId = (int)($input['address_id'] ?? $input['id'] ?? 0);
         if (!$addressId) {
-            response(false, null, "ID do endereco obrigatorio", 400);
+            response(false, null, "ID do endereço obrigatório", 400);
         }
 
         // Verificar ownership
         $stmt = $db->prepare("SELECT address_id FROM om_customer_addresses WHERE address_id = ? AND customer_id = ? AND is_active = '1'");
         $stmt->execute([$addressId, $customerId]);
         if (!$stmt->fetch()) {
-            response(false, null, "Endereco nao encontrado", 404);
+            response(false, null, "Endereço não encontrado", 404);
         }
 
         $label = strip_tags(trim(substr($input['label'] ?? 'Casa', 0, 30)));
@@ -173,15 +184,23 @@ try {
         $reference = strip_tags(trim(substr($input['referencia'] ?? $input['reference'] ?? '', 0, 255)));
 
         if (empty($street) || empty($number) || empty($neighborhood) || empty($city) || empty($state)) {
-            response(false, null, "Endereco incompleto", 400);
+            response(false, null, "Endereço incompleto", 400);
         }
         $validStates = ['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'];
         if (!in_array($state, $validStates, true)) {
-            response(false, null, "Estado invalido", 400);
+            response(false, null, "Estado inválido", 400);
         }
 
         $lat = !empty($input['latitude']) ? (float)$input['latitude'] : null;
         $lng = !empty($input['longitude']) ? (float)$input['longitude'] : null;
+
+        if (($lat === null || $lng === null) && function_exists('geocodeAddress')) {
+            $geo = geocodeAddress([
+                'street' => $street, 'number' => $number, 'neighborhood' => $neighborhood,
+                'city' => $city, 'state' => $state, 'cep' => $zipcode,
+            ]);
+            if ($geo) { $lat = (float)$geo['lat']; $lng = (float)$geo['lng']; }
+        }
 
         $stmt = $db->prepare("
             UPDATE om_customer_addresses
@@ -195,7 +214,7 @@ try {
             $addressId, $customerId
         ]);
 
-        response(true, ["address_id" => $addressId], "Endereco atualizado!");
+        response(true, ["address_id" => $addressId], "Endereço atualizado!");
     }
 
     // ── PATCH: definir endereco padrao ──────────────────────────────
@@ -203,14 +222,14 @@ try {
         $input = getInput();
         $addressId = (int)($input['address_id'] ?? $input['id'] ?? 0);
         if (!$addressId) {
-            response(false, null, "ID do endereco obrigatorio", 400);
+            response(false, null, "ID do endereço obrigatório", 400);
         }
 
         // Verificar ownership
         $stmt = $db->prepare("SELECT address_id FROM om_customer_addresses WHERE address_id = ? AND customer_id = ? AND is_active = '1'");
         $stmt->execute([$addressId, $customerId]);
         if (!$stmt->fetch()) {
-            response(false, null, "Endereco nao encontrado", 404);
+            response(false, null, "Endereço não encontrado", 404);
         }
 
         // Definir como padrao: transação atômica para desmarcar outros e marcar este
@@ -226,32 +245,51 @@ try {
             }
         }
 
-        response(true, ["address_id" => $addressId], "Endereco atualizado!");
+        response(true, ["address_id" => $addressId], "Endereço atualizado!");
     }
 
     // ── DELETE: remover endereco (soft delete) ──────────────────────
     elseif ($method === 'DELETE') {
         $addressId = (int)($_GET['id'] ?? 0);
         if (!$addressId) {
-            response(false, null, "ID do endereco obrigatorio", 400);
+            response(false, null, "ID do endereço obrigatório", 400);
         }
 
-        // Soft delete - somente se pertence ao cliente
-        $stmt = $db->prepare("UPDATE om_customer_addresses SET is_active = 0 WHERE address_id = ? AND customer_id = ?");
+        // Soft delete + clear is_default — avoids the contradictory state
+        // where is_default=1 coexists with is_active=0.
+        $stmt = $db->prepare("
+            UPDATE om_customer_addresses
+            SET is_active = 0, is_default = 0
+            WHERE address_id = ? AND customer_id = ?
+        ");
         $stmt->execute([$addressId, $customerId]);
 
         if ($stmt->rowCount() === 0) {
-            response(false, null, "Endereco nao encontrado", 404);
+            response(false, null, "Endereço não encontrado", 404);
         }
 
-        response(true, null, "Endereco removido");
+        // Promote the most-recent active address as default if none remain
+        $db->prepare("
+            UPDATE om_customer_addresses
+            SET is_default = 1
+            WHERE address_id = (
+                SELECT address_id FROM om_customer_addresses
+                WHERE customer_id = ? AND is_active = 1
+                ORDER BY created_at DESC LIMIT 1
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM om_customer_addresses WHERE customer_id = ? AND is_default = 1 AND is_active = 1
+            )
+        ")->execute([$customerId, $customerId]);
+
+        response(true, null, "Endereço removido");
     }
 
     else {
-        response(false, null, "Metodo nao permitido", 405);
+        response(false, null, "Método não permitido", 405);
     }
 
 } catch (Exception $e) {
     error_log("[customer/addresses] Erro: " . $e->getMessage());
-    response(false, null, "Erro ao processar enderecos", 500);
+    response(false, null, "Erro ao processar endereços", 500);
 }

@@ -15,7 +15,7 @@ require_once __DIR__ . '/../helpers/eta-calculator.php';
 setCorsHeaders();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    response(false, null, "Metodo nao permitido", 405);
+    response(false, null, "Método não permitido", 405);
 }
 
 // CSRF protection: session-auth endpoints require JSON content type
@@ -32,14 +32,14 @@ try {
 
     $mercado_id = $_SESSION['mercado_id'] ?? 0;
     if (!$mercado_id) {
-        response(false, null, "Nao autorizado", 401);
+        response(false, null, "Não autorizado", 401);
     }
 
     $input = getInput();
     $order_id = (int)($input['order_id'] ?? 0);
 
     if (!$order_id) {
-        response(false, null, "order_id obrigatorio", 400);
+        response(false, null, "order_id obrigatório", 400);
     }
 
     // Buscar pedido com lock para evitar race condition
@@ -50,13 +50,13 @@ try {
 
     if (!$pedido) {
         $db->rollBack();
-        response(false, null, "Pedido nao encontrado", 404);
+        response(false, null, "Pedido não encontrado", 404);
     }
 
     // Aceitar pedidos pendentes OU ja confirmados (pagamento PIX/Stripe ja aprovado)
     if (!in_array($pedido['status'], ['pendente', 'confirmado'])) {
         $db->rollBack();
-        response(false, null, "Pedido nao esta pendente (status atual: {$pedido['status']})", 409);
+        response(false, null, "Pedido não esta pendente (status atual: {$pedido['status']})", 409);
     }
 
     // Buscar categoria e dados do parceiro
@@ -79,7 +79,7 @@ try {
     $stmt->execute([$novo_status, $categoria, $order_id]);
     if ($stmt->rowCount() === 0) {
         $db->rollBack();
-        response(false, null, "Pedido ja foi aceito por outra sessao (status atual: {$pedido['status']})", 409);
+        response(false, null, "Pedido já foi aceito por outra sessão (status atual: {$pedido['status']})", 409);
     }
     $db->commit();
 
@@ -97,6 +97,22 @@ try {
             'order_id' => $order_id,
             'status' => $novo_status,
         ]);
+        // Fan out to partner painel + admin suporte (real-time dashboards)
+        $pid_ws = (int)($pedido['partner_id'] ?? 0);
+        if ($pid_ws && function_exists('wsBroadcastToPartner')) {
+            wsBroadcastToPartner($pid_ws, 'order_update', [
+                'order_id' => $order_id, 'status' => $novo_status,
+                'previous_status' => $pedido['status'],
+                'customer_id' => $customer_id_ws,
+            ]);
+        }
+        if (function_exists('wsBroadcastToAdmin')) {
+            wsBroadcastToAdmin('order_update', [
+                'order_id' => $order_id, 'partner_id' => $pid_ws,
+                'status' => $novo_status, 'previous_status' => $pedido['status'],
+                'customer_id' => $customer_id_ws,
+            ]);
+        }
     } catch (\Throwable $e) {}
 
     // Notificar cliente
