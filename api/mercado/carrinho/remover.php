@@ -59,6 +59,20 @@ try {
     $stmt = $db->prepare("DELETE FROM om_market_cart WHERE cart_id = ? AND {$ownerClause}");
     $stmt->execute([$cart_id, ...$ownerParams]);
 
+    // Debounced broadcast — rapid remove clicks collapse into one push.
+    if ($customer_id > 0) {
+        try {
+            require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
+            wsBroadcastDebounced(
+                "cart_bc:{$customer_id}",
+                "user_{$customer_id}",
+                'cart_updated',
+                ['action' => 'remove'],
+                300
+            );
+        } catch (Throwable $e) { /* best effort */ }
+    }
+
     response(true, null, "Item removido do carrinho");
 
 } catch (Exception $e) {

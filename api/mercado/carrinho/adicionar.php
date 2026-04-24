@@ -81,11 +81,12 @@ try {
     }
 
     // Build WHERE clause — authenticated users use customer_id only, anonymous use session_id
+    // Prefix with table alias "c" because JOINed tables also have customer_id
     if ($customer_id > 0) {
-        $whereClause = "customer_id = ?";
+        $whereClause = "c.customer_id = ?";
         $whereParams = [$customer_id];
     } else {
-        $whereClause = "session_id = ?";
+        $whereClause = "c.session_id = ?";
         $whereParams = [$session_id];
     }
 
@@ -95,7 +96,7 @@ try {
     $db->beginTransaction();
     try {
         // Lock existing row if present (SELECT FOR UPDATE)
-        $stmtExiste = $db->prepare("SELECT cart_id, quantity FROM om_market_cart WHERE {$whereClause} AND product_id = ? FOR UPDATE");
+        $stmtExiste = $db->prepare("SELECT cart_id, quantity FROM om_market_cart c WHERE {$whereClause} AND product_id = ? FOR UPDATE");
         $stmtExiste->execute([...$whereParams, $product_id]);
         $existe = $stmtExiste->fetch();
 
@@ -120,17 +121,31 @@ try {
             $msg = "Quantidade atualizada";
         } else {
             // Verificar se carrinho tem produtos de outro parceiro
-            $stmtOutro = $db->prepare("SELECT partner_id FROM om_market_cart WHERE {$whereClause} AND partner_id != ? LIMIT 1");
+            $stmtOutro = $db->prepare("SELECT DISTINCT c.partner_id, p.name AS partner_name
+                                       FROM om_market_cart c
+                                       LEFT JOIN om_market_partners p ON p.partner_id = c.partner_id
+                                       WHERE {$whereClause} AND c.partner_id != ?");
             $stmtOutro->execute([...$whereParams, $partner_id]);
-            $outro = $stmtOutro->fetch();
+            $outras = $stmtOutro->fetchAll();
 
-            if ($outro) {
+            if (!empty($outras)) {
                 $multistop = (int)($input["multistop_route"] ?? 0);
-                if (!$multistop) {
+                $allowMulti = (int)($input["allow_multi_partner"] ?? 0);
+                if (!$multistop && !$allowMulti) {
                     $db->rollBack();
-                    response(false, null, "Você já tem produtos de outro mercado no carrinho. Finalize ou limpe o carrinho primeiro.", 400);
+                    // Return structured 409 so mobile can show "deseja adicionar mesmo assim?" modal
+                    response(false, [
+                        'has_other_partners' => true,
+                        'other_partners' => array_map(function($o) {
+                            return [
+                                'partner_id' => (int)$o['partner_id'],
+                                'partner_name' => $o['partner_name'],
+                            ];
+                        }, $outras),
+                        'hint' => 'Reenvie com allow_multi_partner=1 para confirmar carrinho com varias lojas',
+                    ], "Voce ja tem produtos de outras lojas no carrinho", 409);
                 }
-                // Multi-stop route: permite adicionar de loja diferente
+                // Multi-stop route OR explicit multi-partner consent: allow
             }
 
             // Inserir novo item (race condition handled by FOR UPDATE lock above)
@@ -154,6 +169,25 @@ try {
     $carrinho = $stmtCart->fetchAll();
 
     $total = array_sum(array_map(fn($i) => $i["price"] * $i["quantity"], $carrinho));
+
+    // Realtime: broadcast cart update so other open sessions refresh without pull-to-refresh.
+    // Debounced (300ms window) to collapse rapid +/- taps into a single push.
+    if ($customer_id > 0) {
+        try {
+            require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
+            wsBroadcastDebounced(
+                "cart_bc:{$customer_id}",
+                "user_{$customer_id}",
+                'cart_updated',
+                [
+                    'count' => count($carrinho),
+                    'total' => round($total, 2),
+                    'action' => 'add',
+                ],
+                300
+            );
+        } catch (Throwable $e) { /* best effort */ }
+    }
 
     response(true, [
         "itens" => count($carrinho),

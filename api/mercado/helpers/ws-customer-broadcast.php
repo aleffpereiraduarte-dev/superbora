@@ -32,6 +32,51 @@ function wsBroadcastToCustomer(int $customerId, string $type, array $data): void
     wsBroadcastToChannel("user_{$customerId}", $type, $data);
 }
 
+/**
+ * Server-side debounce for noisy broadcasts (cart +/-, typing, etc).
+ *
+ * Uses Redis SET NX PX {ttlMs} as an atomic "first-writer-wins" gate:
+ *   - First call within the window broadcasts normally.
+ *   - Subsequent calls within {ttlMs} are dropped (return false).
+ *
+ * The client's next cart mutation (after the window) will always propagate,
+ * and the client still has the fresh cart in the HTTP response — so the WS
+ * push is purely for cross-session sync, safe to collapse.
+ *
+ * Falls back to "always broadcast" if Redis is unavailable.
+ *
+ * @param string $dedupKey  Stable key per entity (e.g. "cart_bc:17")
+ * @param int    $ttlMs     Debounce window in milliseconds (default 300ms)
+ * @return bool             true  = fired (first in window)
+ *                          false = suppressed (already broadcast recently)
+ */
+function wsBroadcastDebounced(string $dedupKey, string $channel, string $type, array $data, int $ttlMs = 300): bool {
+    $shouldSend = true;
+    try {
+        // Lazy-require — cache.php is in the same helpers/ dir
+        $cachePath = __DIR__ . '/cache.php';
+        if (is_file($cachePath)) {
+            require_once $cachePath;
+            $redis = function_exists('getRedisCache') ? getRedisCache() : null;
+            if ($redis instanceof \Redis) {
+                // SET NX PX — atomic first-writer-wins; returns true only if key didn't exist
+                $acquired = $redis->set('wsdbnc:' . $dedupKey, '1', ['NX', 'PX' => $ttlMs]);
+                if (!$acquired) {
+                    // Another request already broadcast within the window; skip.
+                    $shouldSend = false;
+                }
+            }
+        }
+    } catch (\Throwable $e) {
+        // Any Redis failure -> degrade open (broadcast anyway, no worse than before)
+        error_log("[ws-broadcast] debounce redis error: " . $e->getMessage());
+    }
+    if ($shouldSend) {
+        wsBroadcastToChannel($channel, $type, $data);
+    }
+    return $shouldSend;
+}
+
 function wsBroadcastToOrder(int $orderId, string $type, array $data): void {
     wsBroadcastToChannel("order_{$orderId}", $type, $data);
 }
