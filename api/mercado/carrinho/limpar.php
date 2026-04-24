@@ -38,6 +38,10 @@ try {
     if ($customer_id > 0) {
         $stmt = $db->prepare("DELETE FROM om_market_cart WHERE customer_id = ?");
         $stmt->execute([$customer_id]);
+        try {
+            require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
+            wsBroadcastToCustomer($customer_id, 'cart_updated', ['action' => 'cleared']);
+        } catch (\Throwable $e) { /* silent — WS é secundário */ }
     } elseif ($session_id) {
         $stmt = $db->prepare("DELETE FROM om_market_cart WHERE session_id = ?");
         $stmt->execute([$session_id]);

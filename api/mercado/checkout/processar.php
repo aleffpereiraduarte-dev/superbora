@@ -76,6 +76,7 @@ try {
     $tip = min(max(0, (float)($input["tip"] ?? 0)), OmPricing::GORJETA_MAX);
     $notes = trim(substr($input["notes"] ?? "", 0, 1000));
     $is_pickup = (int)($input["is_pickup"] ?? 0);
+    $delivery_method = in_array($input["delivery_method"] ?? '', ['standard','express','pickup','drone']) ? $input["delivery_method"] : ($is_pickup ? 'pickup' : 'standard');
     $schedule_date = preg_replace('/[^0-9-]/', '', $input["schedule_date"] ?? "");
     $schedule_time = preg_replace('/[^0-9:]/', '', $input["schedule_time"] ?? "");
     $change_for = (float)($input["change_for"] ?? 0);
@@ -128,12 +129,34 @@ try {
     $customer_email = $custData['email'] ?? '';
 
     // Validacoes
-    $formasPermitidas = ['pix', 'credito', 'efi_card', 'stripe_card', 'debito', 'dinheiro', 'cartao_entrega', 'stripe_wallet', 'vale_refeicao'];
+    $formasPermitidas = ['pix', 'credito', 'efi_card', 'stripe_card', 'debito', 'dinheiro', 'cartao_entrega', 'stripe_wallet', 'vale_refeicao', 'superbora_card'];
     if (!in_array($payment_method, $formasPermitidas)) {
-        response(false, null, "Forma de pagamento invalida", 400);
+        response(false, null, "Forma de pagamento inválida", 400);
     }
     if ($payment_method === 'vale_refeicao') {
         response(false, null, "Pagamento com VR/VA estará disponível em breve. Use PIX ou cartão.", 501);
+    }
+
+    // Cartão SuperBora (interno) — valida propriedade + status + limite disponível
+    $superboraCardData = null;
+    if ($payment_method === 'superbora_card') {
+        $sbCardId = (int)($input['superbora_card_id'] ?? 0);
+        if (!$sbCardId) {
+            response(false, null, "card_id obrigatório para pagamento com Cartão SuperBora", 400);
+        }
+        $stmtSbCard = $db->prepare("
+            SELECT id, credit_limit, used_limit, available_limit, status, customer_id
+            FROM om_credit_cards
+            WHERE id = ? AND customer_id = ? LIMIT 1
+        ");
+        $stmtSbCard->execute([$sbCardId, $customer_id]);
+        $superboraCardData = $stmtSbCard->fetch(PDO::FETCH_ASSOC);
+        if (!$superboraCardData) {
+            response(false, null, "Cartão SuperBora não encontrado", 404);
+        }
+        if ($superboraCardData['status'] !== 'active') {
+            response(false, null, "Cartão SuperBora está " . $superboraCardData['status'] . ". Ative no app antes de usar.", 400);
+        }
     }
 
     // ═══════════════════════════════════════════════════════
@@ -337,6 +360,16 @@ try {
             if (!empty($cupomData['valid_from'] ?? $cupomData['start_date'] ?? null) && $now < ($cupomData['valid_from'] ?? $cupomData['start_date'])) $valid = false;
             if (!empty($cupomData['valid_until'] ?? $cupomData['end_date'] ?? null) && $now > ($cupomData['valid_until'] ?? $cupomData['end_date'])) $valid = false;
             if (isset($cupomData['min_order_value']) && $subtotal < (float)$cupomData['min_order_value']) $valid = false;
+
+            // specific_customers — cupom exclusivo pra lista de customer_ids (IA de campanhas)
+            if ($valid && !empty($cupomData['specific_customers'])) {
+                $allowedCustomers = json_decode($cupomData['specific_customers'], true);
+                if (is_array($allowedCustomers) && !empty($allowedCustomers)) {
+                    if (!$customer_id || !in_array((int)$customer_id, array_map('intval', $allowedCustomers), true)) {
+                        $valid = false;
+                    }
+                }
+            }
 
             // Verificar uso unico por cliente
             if ($valid && $customer_id > 0 && !empty($cupomData['single_use'])) {
@@ -763,11 +796,23 @@ try {
             }
         }
 
-        // Re-validate cashback inside transaction with FOR UPDATE
+        // Re-validate cashback inside transaction.
+        // Postgres NAO permite FOR UPDATE com aggregate (SUM) — antes dava
+        // SQLSTATE[0A000]: "FOR UPDATE is not allowed with aggregate functions"
+        // toda vez que cliente tentava usar cashback. Fix: lock individual rows
+        // via subquery, depois soma.
         if ($use_cashback > 0 && $customer_id > 0) {
-            $stmtCbLock = $db->prepare("SELECT COALESCE(SUM(amount), 0) FROM om_cashback WHERE customer_id = ? AND type IN ('earned','bonus') AND status = 'available' AND (expires_at IS NULL OR expires_at > NOW()) FOR UPDATE");
+            $stmtCbLock = $db->prepare("
+                SELECT amount FROM om_cashback
+                WHERE customer_id = ?
+                  AND type IN ('earned','bonus')
+                  AND status = 'available'
+                  AND (expires_at IS NULL OR expires_at > NOW())
+                FOR UPDATE
+            ");
             $stmtCbLock->execute([$customer_id]);
-            $lockedCbBalance = (float)$stmtCbLock->fetchColumn();
+            $rows = $stmtCbLock->fetchAll(PDO::FETCH_COLUMN);
+            $lockedCbBalance = array_sum(array_map('floatval', $rows));
             $cashback_discount = min($use_cashback, $lockedCbBalance);
         }
 
@@ -886,7 +931,7 @@ try {
             customer_name, customer_phone, customer_email,
             status, subtotal, delivery_fee, total, tip_amount,
             delivery_address, shipping_address, shipping_city, shipping_state, shipping_cep,
-            notes, codigo_entrega, forma_pagamento,
+            notes, codigo_entrega, forma_pagamento, payment_method,
             coupon_id, coupon_discount,
             loyalty_points_used, loyalty_discount,
             is_pickup, schedule_date, schedule_time, is_scheduled,
@@ -897,7 +942,7 @@ try {
             route_id, route_stop_sequence, shipping_lat, shipping_lng,
             unavailable_preference,
             date_added
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pendente', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pendente', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
         RETURNING order_id");
 
         // Route sequence: primary=1, secondary=next stop
@@ -919,7 +964,7 @@ try {
             $customer_name, $customer_phone, $customer_email,
             $subtotal, $delivery_fee, $total, $tip,
             $address, $address, $shipping_city, $shipping_state, $shipping_cep,
-            $notes, $codigo_entrega, $payment_method,
+            $notes, $codigo_entrega, $payment_method, $payment_method,
             $coupon_id ?: null, $coupon_discount,
             $loyalty_points_used, $loyalty_discount,
             $is_pickup, $schedule_date ?: null, $schedule_time ?: null, $schedule_date ? 1 : 0,
@@ -1112,6 +1157,58 @@ try {
                ->execute([$change_for, $order_id]);
         }
 
+        // ═══════════════════════════════════════════════════════
+        // CARTÃO SUPERBORA — autorizar cobrança no cartão interno
+        // Executa dentro da transação para garantir atomicidade:
+        //   - UPDATE atômico com cláusula credit_limit >= used_limit + total
+        //   - INSERT om_credit_card_transactions com referência ao order_id
+        //   - Marca pedido como 'confirmado' + pago quando aprovado
+        //   - Rollback tudo se limite insuficiente
+        // ═══════════════════════════════════════════════════════
+        $superboraConfirmed = false;
+        if ($payment_method === 'superbora_card' && $superboraCardData) {
+            $sbCardId = (int)$superboraCardData['id'];
+
+            // Atomic debit — fails if available_limit < total
+            $stmtDebit = $db->prepare("
+                UPDATE om_credit_cards
+                   SET used_limit = used_limit + ?
+                 WHERE id = ?
+                   AND customer_id = ?
+                   AND status = 'active'
+                   AND credit_limit - used_limit >= ?
+            ");
+            $stmtDebit->execute([$total, $sbCardId, $customer_id, $total]);
+
+            if ($stmtDebit->rowCount() === 0) {
+                $db->rollBack();
+                response(false, null, "Limite insuficiente no Cartão SuperBora. Disponível: R$ " .
+                    number_format((float)$superboraCardData['available_limit'], 2, ',', '.'), 400);
+            }
+
+            // Registra transação (idempotente via external_id do pedido)
+            // ON CONFLICT usa WHERE matching o índice parcial.
+            $db->prepare("
+                INSERT INTO om_credit_card_transactions
+                    (card_id, customer_id, order_id, amount, merchant, category, installments,
+                     installment_amount, status, action, risk_score, external_id, created_at)
+                VALUES (?, ?, ?, ?, ?, 'superbora_checkout', 1, ?, 'approved', 'approved', 0, ?, NOW())
+                ON CONFLICT (external_id) WHERE external_id IS NOT NULL DO NOTHING
+            ")->execute([
+                $sbCardId, $customer_id, $order_id, $total,
+                'SuperBora - ' . ($parceiro['trade_name'] ?? $parceiro['name'] ?? 'Loja'),
+                $total,
+                "checkout_order_{$order_id}",
+            ]);
+
+            // Confirma pedido
+            $db->prepare("UPDATE om_market_orders SET status = 'confirmado', pagamento_status = 'pago', payment_status = 'paid' WHERE order_id = ?")
+               ->execute([$order_id]);
+
+            $superboraConfirmed = true;
+            $stripe_confirmed = true; // reuse flag for response logic below
+        }
+
         $db->commit();
 
         // Store idempotency key + release lock after successful order creation
@@ -1202,6 +1299,32 @@ try {
             } catch (Exception $pusherErr) {
                 error_log("[Checkout] Pusher error: " . $pusherErr->getMessage());
             }
+            // Rust WS (primary real-time channel — painel and suporte both listen here)
+            try {
+                require_once dirname(__DIR__) . '/helpers/ws-customer-broadcast.php';
+                $newOrderPayload = [
+                    'order_id' => $order_id,
+                    'order_number' => $order_number,
+                    'customer_name' => $customer_name,
+                    'total' => round($total, 2),
+                    'payment_method' => $payment_method,
+                    'is_pickup' => (bool)$is_pickup,
+                    'items_count' => count($itens),
+                    'created_at' => date('c'),
+                ];
+                if (function_exists('wsBroadcastToPartner')) wsBroadcastToPartner($partner_id, 'new_order', $newOrderPayload);
+                if (function_exists('wsBroadcastToAdmin'))   wsBroadcastToAdmin('new_order', $newOrderPayload);
+                // Avisa o próprio cliente (outros dispositivos logados) que o carrinho foi limpo
+                if (function_exists('wsBroadcastToCustomer')) {
+                    wsBroadcastToCustomer($customer_id, 'cart_updated', [
+                        'action' => 'cleared',
+                        'partner_id' => $partner_id,
+                        'order_id' => $order_id,
+                    ]);
+                }
+            } catch (\Throwable $wsErr) {
+                error_log("[Checkout] WS error: " . $wsErr->getMessage());
+            }
             try {
                 om_realtime()->setDb($db);
                 om_realtime()->pedidoCriado($order_id, $partner_id, $customer_id, [
@@ -1211,6 +1334,86 @@ try {
                 ]);
             } catch (Exception $rtErr) {
                 error_log("[Checkout] Realtime error: " . $rtErr->getMessage());
+            }
+
+            // ═════ DISPATCH DRONE AUTOMATICAMENTE ═════
+            // Se o cliente escolheu drone e a loja tem contrato ativo, cria o flight
+            if ($delivery_method === 'drone') {
+                try {
+                    $contractCheck = $db->prepare("SELECT status, max_payload_g FROM om_drone_partner_contracts WHERE partner_id = ?");
+                    $contractCheck->execute([$partner_id]);
+                    $contract = $contractCheck->fetch(PDO::FETCH_ASSOC);
+                    if ($contract && $contract['status'] === 'active') {
+                        // Estima peso = count items * 250g (approximate)
+                        $estWeight = min((int)$contract['max_payload_g'], count($itens) * 250);
+                        // Take off from partner location
+                        $partnerStmt = $db->prepare("SELECT latitude, longitude FROM om_market_partners WHERE partner_id = ?");
+                        $partnerStmt->execute([$partner_id]);
+                        $partnerLoc = $partnerStmt->fetch(PDO::FETCH_ASSOC);
+                        $activeRoute = $db->prepare("SELECT route_id FROM om_drone_routes WHERE partner_id = ? AND status = 'active' LIMIT 1");
+                        $activeRoute->execute([$partner_id]);
+                        $routeId = $activeRoute->fetchColumn() ?: null;
+
+                        // Auto-assign: first available drone + active pilot on shift
+                        $availDrone = $db->prepare("
+                            SELECT serial FROM om_drone_units
+                            WHERE status = 'available'
+                            AND max_payload_g >= ?
+                            ORDER BY (battery_pct IS NULL), battery_pct DESC
+                            LIMIT 1
+                        ");
+                        $availDrone->execute([$estWeight]);
+                        $droneSerial = $availDrone->fetchColumn() ?: null;
+
+                        // Pilot on shift now (or any active if no shift defined)
+                        $nowTime = date('H:i:s');
+                        $availPilot = $db->prepare("
+                            SELECT pilot_id FROM om_drone_pilots
+                            WHERE status = 'active'
+                            AND (shift_start IS NULL OR shift_end IS NULL OR ? BETWEEN shift_start AND shift_end)
+                            ORDER BY total_flights ASC
+                            LIMIT 1
+                        ");
+                        $availPilot->execute([$nowTime]);
+                        $pilotId = $availPilot->fetchColumn() ?: null;
+
+                        $insertFlight = $db->prepare("
+                            INSERT INTO om_drone_flights
+                                (order_id, partner_id, route_id, status, payload_weight_g,
+                                 takeoff_lat, takeoff_lng, landing_lat, landing_lng,
+                                 drone_serial, pilot_id, created_at)
+                            VALUES (?, ?, ?, 'scheduled', ?, ?, ?, ?, ?, ?, ?, NOW())
+                            RETURNING flight_id
+                        ");
+                        $insertFlight->execute([
+                            $order_id, $partner_id, $routeId, $estWeight,
+                            $partnerLoc['latitude'] ?? null, $partnerLoc['longitude'] ?? null,
+                            $lat ?? null, $lng ?? null,
+                            $droneSerial, $pilotId,
+                        ]);
+                        $flightId = $insertFlight->fetchColumn();
+
+                        // Mark drone unit as in_flight (reserved)
+                        if ($droneSerial) {
+                            $db->prepare("UPDATE om_drone_units SET status = 'in_flight', total_flights = total_flights + 1 WHERE serial = ?")
+                               ->execute([$droneSerial]);
+                        }
+                        if ($pilotId) {
+                            $db->prepare("UPDATE om_drone_pilots SET total_flights = total_flights + 1 WHERE pilot_id = ?")
+                               ->execute([$pilotId]);
+                        }
+
+                        // Mark order as drone
+                        $db->prepare("UPDATE om_market_orders SET delivery_method = 'drone' WHERE id = ?")
+                           ->execute([$order_id]);
+
+                        error_log("[Drone] Flight #$flightId dispatched for order #$order_id (drone=$droneSerial pilot=$pilotId)");
+                    } else {
+                        error_log("[Drone] Partner $partner_id has no active drone contract — skipping dispatch");
+                    }
+                } catch (Exception $droneErr) {
+                    error_log("[Drone dispatch] " . $droneErr->getMessage());
+                }
             }
             try {
                 require_once __DIR__ . '/../helpers/zapi-whatsapp.php';
@@ -1231,10 +1434,25 @@ try {
                 : ($is_pickup
                     ? "Seu pedido #{$order_number} no {$nomeParceiroNotif} foi recebido! Avisaremos quando estiver pronto para retirada."
                     : "Seu pedido #{$order_number} no {$nomeParceiroNotif} foi recebido! Acompanhe o preparo pelo app.");
+            // Deep link: PIX -> tela de pagamento (/pix/{id}), resto -> tracking (/tracking/{id}).
+            // Era /mercado/pedido.php?id=X (legacy web) — clicar no push nao abria nada util no app.
+            $actionUrl = $payment_method === 'pix'
+                ? "/pix/{$order_id}"
+                : "/tracking/{$order_id}";
+            // Extras go to the Expo push data payload. Mobile handleNotificationNavigation()
+            // reads `type`, `id`, `pedido_id`, `screen` to decide where to navigate.
+            $pushExtras = [
+                'type'       => $payment_method === 'pix' ? 'pix' : 'pedido',
+                'id'         => $order_id,
+                'pedido_id'  => $order_id,
+                'order_id'   => $order_id,
+                'action_url' => $actionUrl,
+            ];
             notifyCustomer($db, $customer_id,
                 $payment_method === 'pix' ? 'Pague o PIX!' : 'Pedido confirmado!',
                 $clientMsg,
-                '/mercado/pedido.php?id=' . $order_id
+                $actionUrl,
+                $pushExtras
             );
         } catch (Exception $custNotifErr) {
             error_log("[Checkout] Customer notification error: " . $custNotifErr->getMessage());
