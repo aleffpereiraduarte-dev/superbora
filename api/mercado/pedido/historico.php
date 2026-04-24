@@ -84,9 +84,29 @@ try {
             }
         }
 
-        // Anexar itens + refund info a cada pedido
+        // Partner status (ativa?) em 1 query pra todos os partners do batch
+        $partnerIds = array_values(array_unique(array_column($pedidos, 'partner_id')));
+        $partnerActive = [];
+        if (!empty($partnerIds)) {
+            $ph = implode(',', array_fill(0, count($partnerIds), '?'));
+            $stmtP = $db->prepare("SELECT partner_id, status::text as st FROM om_market_partners WHERE partner_id IN ($ph)");
+            $stmtP->execute($partnerIds);
+            foreach ($stmtP->fetchAll() as $p) {
+                $partnerActive[(int)$p['partner_id']] = ($p['st'] === '1');
+            }
+        }
+
+        // Anexar itens + refund info + can_reorder a cada pedido
         foreach ($pedidos as &$pedido) {
-            $pedido['items'] = $itemsByOrder[$pedido['order_id']] ?? [];
+            $items = $itemsByOrder[$pedido['order_id']] ?? [];
+            $pedido['items'] = $items;
+
+            // can_reorder respeitado pelo ReorderCarousel da home: só mostra
+            // "Pedir de novo" se TEM items salvos + loja ativa + status terminal.
+            $isTerminal = in_array($pedido['status'], ['entregue', 'cancelado', 'recusado', 'reembolsado'], true);
+            $hasItems = count($items) > 0;
+            $isPartnerActive = $partnerActive[(int)$pedido['partner_id']] ?? false;
+            $pedido['can_reorder'] = $isTerminal && $hasItems && $isPartnerActive;
 
             // Add refund status for cancelled orders
             $payStatus = $pedido['payment_status'] ?? $pedido['pagamento_status'] ?? '';
