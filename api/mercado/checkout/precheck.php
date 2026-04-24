@@ -23,7 +23,14 @@
 
 require_once __DIR__ . "/../config/database.php";
 setCorsHeaders();
+require_once dirname(__DIR__, 2) . "/rate-limit/RateLimiter.php";
 require_once __DIR__ . "/../helpers/availability.php";
+
+// Rate limit: precheck é chamado repetidamente durante checkout. 30 req/min/IP
+// é confortável pro user real e bloqueia scan de catálogo / enumeration.
+if (!RateLimiter::check(30, 60)) {
+    response(false, ['reason' => 'rate_limited'], 'Muitas requisições, aguarde', 429);
+}
 
 try {
     $input = getInput();

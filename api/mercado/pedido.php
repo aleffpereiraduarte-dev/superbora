@@ -19,7 +19,7 @@ if (!$id) {
 $customer_id = getCustomerIdFromToken();
 if (!$customer_id) {
     http_response_code(401);
-    echo json_encode(['success' => false, 'error' => 'Autenticacao necessaria']);
+    echo json_encode(['success' => false, 'error' => 'Autenticação necessária']);
     exit;
 }
 
@@ -60,5 +60,7 @@ try {
     echo json_encode(['success' => true, 'pedido' => $pedido]);
 
 } catch (Exception $e) {
+    // Antes o erro era silenciado sem log — impossível debugar user issues.
+    error_log('[pedido.php] ' . $e->getMessage() . ' — ' . $e->getFile() . ':' . $e->getLine());
     echo json_encode(['success' => false, 'error' => 'Erro interno']);
 }
