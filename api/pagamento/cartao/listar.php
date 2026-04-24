@@ -39,7 +39,10 @@ try {
     echo json_encode(["success" => true, "message" => "", "data" => ["cartoes" => $cartoes]]);
     
 } catch (Exception $e) {
-    http_response_code(500);
-    error_log("[pagamento/cartao/listar] Erro: " . $e->getMessage());
-    echo json_encode(["success" => false, "message" => "Erro interno do servidor", "data" => null]);
+    // Fail-open: esse endpoint é MySQL legacy (om_payment_methods). Conexão
+    // falha se MySQL não está ativo no servidor (o SuperBora migrou pra
+    // PostgreSQL). Em vez de 500, retorna lista vazia — frontend trata sem
+    // crashar (antes causava erro no app ao abrir carteira).
+    error_log("[pagamento/cartao/listar] Erro (fail-open): " . $e->getMessage());
+    echo json_encode(["success" => true, "message" => "", "data" => ["cartoes" => []]]);
 }
