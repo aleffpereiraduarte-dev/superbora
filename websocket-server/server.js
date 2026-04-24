@@ -13,6 +13,7 @@ const jwt = require('jsonwebtoken');
 const PORT = process.env.WS_PORT || 8080;
 const JWT_SECRET = process.env.JWT_SECRET || null;
 const WS_API_KEY = process.env.WS_API_KEY || 'superbora-ws-key-2024';
+const WS_API_KEY_IS_DEFAULT = !process.env.WS_API_KEY;
 const MAX_MESSAGE_SIZE = 8 * 1024; // 8KB
 const RATE_LIMIT_WINDOW = 1000; // 1 second
 const RATE_LIMIT_MAX = 30; // max messages per window
@@ -28,9 +29,11 @@ async function initDB() {
       password: process.env.DB_PASSWORD || '',
       database: process.env.DB_NAME || 'love1',
       waitForConnections: true,
-      connectionLimit: 5,
+      connectionLimit: 50,
+      queueLimit: 0,
+      connectTimeout: 5000,
     });
-    console.log('[DB] Pool created');
+    console.log('[DB] Pool created (connectionLimit=50)');
   } catch (err) {
     console.error('[DB] Error:', err.message);
   }
@@ -167,12 +170,9 @@ function handleMessage(clientId, data) {
             console.warn(`[Auth] JWT failed: ${jwtErr.message}`);
           }
         } else {
-          // Fallback: trust user_id (dev/staging only when no JWT_SECRET)
-          client.userId = msg.user_id;
-          client.authenticated = true;
-          subscribe(clientId, `user_${msg.user_id}`);
-          sendTo(clientId, { type: 'auth_success', channels: Array.from(client.channels) });
-          console.warn(`[Auth] ${msg.user_id} (no JWT — dev mode only)`);
+          // SECURITY: JWT_SECRET not configured — reject ALL connections
+          sendTo(clientId, { type: 'auth_error', message: 'JWT_SECRET not configured — rejecting all connections' });
+          console.error(`[Auth] REJECTED: JWT_SECRET not configured — cannot authenticate user_id=${msg.user_id}`);
         }
         break;
       }
@@ -200,6 +200,14 @@ function handleMessage(clientId, data) {
               break;
             }
           }
+          // Order channels: track authorized orders (granted via server broadcast or auth)
+          // Customers can only subscribe to order channels they've been granted access to
+          if (ch.startsWith('order_')) {
+            if (!client.authorizedOrders || !client.authorizedOrders.has(ch)) {
+              sendTo(clientId, { type: 'error', message: 'Order channel requires server authorization' });
+              break;
+            }
+          }
           subscribe(clientId, ch);
           sendTo(clientId, { type: 'subscribed', channel: ch });
         }
@@ -217,10 +225,11 @@ function handleMessage(clientId, data) {
 
       case 'chat_message':
         if (client.authenticated && msg.order_id) {
+          // Use server-side userType instead of trusting client-sent sender_type
           const chatData = {
             order_id: msg.order_id,
             sender_id: client.userId,
-            sender_type: msg.sender_type || 'customer',
+            sender_type: client.userType || 'customer',
             message: msg.message,
             message_type: msg.message_type || 'text',
             timestamp: new Date().toISOString(),
@@ -240,7 +249,7 @@ function handleMessage(clientId, data) {
             data: {
               order_id: msg.order_id,
               sender_id: client.userId,
-              sender_type: msg.sender_type || 'customer',
+              sender_type: client.userType || 'customer',
               is_typing: msg.is_typing !== false,
             }
           }, clientId);
@@ -268,9 +277,55 @@ const server = http.createServer((req, res) => {
     return res.end(JSON.stringify({ status: 'ok', clients: clients.size, channels: channels.size }));
   }
 
+  // Grant order channel access to a user (called by PHP backend)
+  if (req.method === 'POST' && req.url === '/grant-order') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const data = JSON.parse(body);
+        if (req.headers['x-api-key'] !== WS_API_KEY) {
+          res.writeHead(401);
+          return res.end('Unauthorized');
+        }
+        const userId = String(data.user_id);
+        const channel = data.channel; // e.g. "order_123"
+        if (!userId || !channel || !channel.startsWith('order_')) {
+          res.writeHead(400);
+          return res.end('Bad Request: user_id and order_ channel required');
+        }
+        // Find client by userId and grant access
+        let granted = 0;
+        clients.forEach((client) => {
+          if (String(client.userId) === userId) {
+            if (!client.authorizedOrders) client.authorizedOrders = new Set();
+            client.authorizedOrders.add(channel);
+            granted++;
+          }
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, granted }));
+      } catch (err) {
+        res.writeHead(400);
+        res.end('Bad Request');
+      }
+    });
+    return;
+  }
+
   if (req.method === 'POST' && req.url === '/broadcast') {
     let body = '';
-    req.on('data', chunk => body += chunk);
+    let bodySize = 0;
+    req.on('data', chunk => {
+      bodySize += chunk.length;
+      if (bodySize > 64 * 1024) { // 64KB max for broadcast
+        res.writeHead(413);
+        res.end('Payload Too Large');
+        req.destroy();
+        return;
+      }
+      body += chunk;
+    });
     req.on('end', () => {
       try {
         const data = JSON.parse(body);
@@ -279,6 +334,21 @@ const server = http.createServer((req, res) => {
           return res.end('Unauthorized');
         }
         const count = broadcast(data.channel, data.message);
+
+        // Auto-grant order channel access when broadcasting to a user about an order
+        const msgData = data.message?.data || {};
+        const orderId = msgData.order_id;
+        if (orderId && data.channel && data.channel.startsWith('user_')) {
+          const userId = data.channel.replace('user_', '');
+          const orderChannel = `order_${orderId}`;
+          clients.forEach((client) => {
+            if (String(client.userId) === String(userId)) {
+              if (!client.authorizedOrders) client.authorizedOrders = new Set();
+              client.authorizedOrders.add(orderChannel);
+            }
+          });
+        }
+
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, delivered: count }));
       } catch (err) {
@@ -292,7 +362,17 @@ const server = http.createServer((req, res) => {
   // Store status endpoint: broadcast store open/close/busy to stores:{city} channel
   if (req.method === 'POST' && req.url === '/store-status') {
     let body = '';
-    req.on('data', chunk => body += chunk);
+    let bodySize = 0;
+    req.on('data', chunk => {
+      bodySize += chunk.length;
+      if (bodySize > 64 * 1024) {
+        res.writeHead(413);
+        res.end('Payload Too Large');
+        req.destroy();
+        return;
+      }
+      body += chunk;
+    });
     req.on('end', () => {
       try {
         const data = JSON.parse(body);
@@ -365,14 +445,43 @@ wss.on('connection', (ws, req) => {
   ws.on('pong', () => { ws.isAlive = true; });
 });
 
-// Heartbeat
+// Heartbeat: ping every 30s, terminate dead connections and clean up clients map
 setInterval(() => {
   wss.clients.forEach(ws => {
-    if (!ws.isAlive) return ws.terminate();
+    if (!ws.isAlive) {
+      // Find corresponding clientId in our map and remove it
+      let deadClientId = null;
+      clients.forEach((client, cid) => {
+        if (client.ws === ws) deadClientId = cid;
+      });
+      if (deadClientId) {
+        console.warn(`[WS] Heartbeat: terminating dead client ${deadClientId}`);
+        handleDisconnect(deadClientId);
+      }
+      try { ws.terminate(); } catch (_) {}
+      return;
+    }
     ws.isAlive = false;
-    ws.ping();
+    try { ws.ping(); } catch (_) {}
   });
 }, 30000);
+
+// GC sweep: every 60s, prune zombie entries from clients map where ws is not OPEN.
+// Safety net in case `close`/`error` events never fired (network drops, etc.).
+setInterval(() => {
+  let pruned = 0;
+  clients.forEach((client, cid) => {
+    const state = client.ws && client.ws.readyState;
+    if (state !== WebSocket.OPEN) {
+      try { client.ws && client.ws.terminate(); } catch (_) {}
+      handleDisconnect(cid);
+      pruned++;
+    }
+  });
+  if (pruned > 0) {
+    console.log(`[WS] GC: pruned ${pruned} zombie clients (${clients.size} active)`);
+  }
+}, 60000);
 
 // Start
 initDB();
@@ -381,7 +490,10 @@ server.listen(PORT, '0.0.0.0', () => {
   if (JWT_SECRET) {
     console.log('[WS] JWT validation enabled');
   } else {
-    console.log('[WS] JWT validation disabled (no JWT_SECRET env var)');
+    console.error('[WS] CRITICAL: JWT_SECRET not configured — ALL connections will be REJECTED. Set JWT_SECRET env var.');
+  }
+  if (WS_API_KEY_IS_DEFAULT) {
+    console.log('[WS] WARNING: Using default WS_API_KEY — set WS_API_KEY env var for production!');
   }
 });
 

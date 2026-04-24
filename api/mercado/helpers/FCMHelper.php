@@ -25,6 +25,14 @@ class FCMHelper
     private const LOG_PREFIX = '[ExpoPush]';
     private const MAX_BATCH_SIZE = 100; // Expo recommends max 100 per request
 
+    // Circuit breaker state (APCu keys)
+    private const CB_FAILURES_KEY   = 'expo_push_failures';
+    private const CB_LAST_FAIL_KEY  = 'expo_push_last_failure';
+    private const CB_OPEN_LOG_KEY   = 'expo_push_circuit_open_logged';
+    private const CB_THRESHOLD      = 3;   // failures before opening
+    private const CB_COOLDOWN_SEC   = 60;  // skip sends for 60s after threshold
+    private const CB_TTL_SEC        = 300; // APCu TTL for failure counters
+
     private PDO $db;
     private string $accessToken;
     private static ?self $instance = null;
@@ -202,7 +210,78 @@ class FCMHelper
             $msg['badge'] = (int)$data['badge'];
         }
 
+        // Rich media: image URL (works on both iOS via attachment + Android via bigPictureUrl)
+        // Pass via $data['image_url'] or $data['richContent']['image']
+        $imageUrl = $data['image_url'] ?? $data['richContent']['image'] ?? null;
+        if ($imageUrl && is_string($imageUrl) && (str_starts_with($imageUrl, 'http://') || str_starts_with($imageUrl, 'https://'))) {
+            // Expo push API supports `richContent.image` for both platforms (handled by expo-notifications)
+            $msg['richContent'] = ['image' => $imageUrl];
+        }
+
+        // Category (iOS) — used by Live Activities, action buttons, etc.
+        if (!empty($data['category'])) {
+            $msg['categoryId'] = (string)$data['category'];
+        }
+
+        // Channel id override for grouped notifications (e.g. order updates vs marketing)
+        if (!empty($data['channel'])) {
+            $msg['channelId'] = (string)$data['channel'];
+        }
+
+        // TTL — promo pushes can be ephemeral
+        if (isset($data['ttl'])) {
+            $msg['ttl'] = (int)$data['ttl'];
+        }
+
+        // Mutable content for iOS notification service extension (image attachment)
+        if ($imageUrl) {
+            $msg['mutableContent'] = true;
+        }
+
         return $msg;
+    }
+
+    /**
+     * Circuit breaker: return false if circuit is OPEN (skip send).
+     * Opens after CB_THRESHOLD consecutive failures within CB_COOLDOWN_SEC.
+     */
+    private function checkCircuit(): bool
+    {
+        if (!function_exists('apcu_fetch')) return true; // no APCu, always allow
+        $failures    = (int)(apcu_fetch(self::CB_FAILURES_KEY) ?: 0);
+        $lastFailure = (int)(apcu_fetch(self::CB_LAST_FAIL_KEY) ?: 0);
+        if ($failures >= self::CB_THRESHOLD && (time() - $lastFailure) < self::CB_COOLDOWN_SEC) {
+            return false; // circuit OPEN
+        }
+        return true;
+    }
+
+    private function recordSuccess(): void
+    {
+        if (!function_exists('apcu_delete')) return;
+        $wasOpen = (int)(apcu_fetch(self::CB_FAILURES_KEY) ?: 0) >= self::CB_THRESHOLD;
+        apcu_delete(self::CB_FAILURES_KEY);
+        apcu_delete(self::CB_LAST_FAIL_KEY);
+        if ($wasOpen) {
+            apcu_delete(self::CB_OPEN_LOG_KEY);
+            $this->log('INFO', 'Circuit CLOSED — Expo Push recovered');
+        }
+    }
+
+    private function recordFailure(string $reason = ''): void
+    {
+        if (!function_exists('apcu_inc')) return;
+        $success = false;
+        apcu_inc(self::CB_FAILURES_KEY, 1, $success, self::CB_TTL_SEC);
+        apcu_store(self::CB_LAST_FAIL_KEY, time(), self::CB_TTL_SEC);
+        $failures = (int)(apcu_fetch(self::CB_FAILURES_KEY) ?: 0);
+        if ($failures >= self::CB_THRESHOLD) {
+            // Log "circuit opened" only once per opening event
+            if (!apcu_fetch(self::CB_OPEN_LOG_KEY)) {
+                apcu_store(self::CB_OPEN_LOG_KEY, 1, self::CB_COOLDOWN_SEC);
+                $this->log('ERROR', "Circuit OPEN — skipping Expo Push for " . self::CB_COOLDOWN_SEC . "s (last reason: $reason)");
+            }
+        }
     }
 
     /**
@@ -210,6 +289,15 @@ class FCMHelper
      */
     private function sendRequest(array $messages): array
     {
+        // Circuit breaker: short-circuit fast when Expo is known-down
+        if (!$this->checkCircuit()) {
+            return [
+                'success' => false,
+                'reason'  => 'circuit_open',
+                'skipped' => count($messages),
+            ];
+        }
+
         $jsonPayload = json_encode($messages, JSON_UNESCAPED_UNICODE);
         if ($jsonPayload === false) {
             $this->log('ERROR', "json_encode failed: " . json_last_error_msg());
@@ -233,8 +321,8 @@ class FCMHelper
             CURLOPT_POSTFIELDS => $jsonPayload,
             CURLOPT_HTTPHEADER => $headers,
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => 30,
-            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_TIMEOUT => 5,   // reduced from 30s — do not block checkout
+            CURLOPT_CONNECTTIMEOUT => 3,
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_ENCODING => '',
         ]);
@@ -246,6 +334,7 @@ class FCMHelper
 
         if ($curlError) {
             $this->log('ERROR', "cURL error: $curlError");
+            $this->recordFailure('curl: ' . $curlError);
             return ['success' => false, 'error' => "cURL: $curlError"];
         }
 
@@ -254,6 +343,11 @@ class FCMHelper
         if ($httpCode !== 200) {
             $errorMsg = $decoded['errors'][0]['message'] ?? ($decoded['error'] ?? $response);
             $this->log('ERROR', "HTTP $httpCode: $errorMsg");
+            // Only count 5xx as infrastructure failures for the breaker; 4xx is
+            // usually a client-side payload/token issue that won't recover via retry.
+            if ($httpCode >= 500) {
+                $this->recordFailure("http $httpCode");
+            }
             return ['success' => false, 'error' => $errorMsg, 'http_code' => $httpCode];
         }
 
@@ -264,6 +358,8 @@ class FCMHelper
         }
 
         $this->log('INFO', "Push sent: " . count($tickets) . " tickets, $okCount ok");
+
+        $this->recordSuccess();
 
         return [
             'success' => true,
