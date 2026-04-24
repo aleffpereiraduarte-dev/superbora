@@ -1159,6 +1159,14 @@ try {
         $stmtClear = $db->prepare("DELETE FROM om_market_cart WHERE customer_id = ? AND partner_id = ?");
         $stmtClear->execute([$customer_id, $partner_id]);
 
+        // Limpa cupom persistido (Redis) — pedido finalizou, se o user
+        // quiser usar de novo aplica manualmente; assim evita que o cupom
+        // continue "aplicado" no próximo cart com outros itens.
+        try {
+            require_once __DIR__ . '/../helpers/cache.php';
+            cacheDelete("cart_coupon:c{$customer_id}");
+        } catch (Throwable $e) { /* best effort */ }
+
         // Para PIX, gerar cobranca via EFI ANTES do commit (dentro da transacao)
         $pixData = null;
         if ($payment_method === 'pix') {

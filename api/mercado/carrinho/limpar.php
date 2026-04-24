@@ -40,6 +40,9 @@ try {
         $stmt = $db->prepare("DELETE FROM om_market_cart WHERE customer_id = ?");
         $stmt->execute([$customer_id]);
         cacheInvalidateCart($customer_id, '');
+        // Remove cupom aplicado junto com o cart — senão ele ficaria fantasma
+        // no Redis e reaplicaria no próximo add.
+        cacheDelete("cart_coupon:c{$customer_id}");
         try {
             require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
             wsBroadcastToCustomer($customer_id, 'cart_updated', ['action' => 'cleared']);

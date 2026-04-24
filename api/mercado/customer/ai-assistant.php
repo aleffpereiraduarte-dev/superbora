@@ -161,6 +161,7 @@ function buildCustomerContext(PDO $db, int $customerId): array {
     $ctx['freqHour'] = (int)($stats['freq_hour'] ?? 12);
 
     // D) Top 20 most ordered items (price from order_items, not products_base)
+    // Filter: require image (no suggestions sem foto — UX bad)
     $stmt = $db->prepare("
         SELECT pb.product_id, pb.name, ROUND(AVG(oi.price)::numeric, 2) as price, pb.image,
                c.name as category_name, p.trade_name as partner_name, o.partner_id,
@@ -171,6 +172,7 @@ function buildCustomerContext(PDO $db, int $customerId): array {
         JOIN om_market_orders o ON o.order_id = oi.order_id
         LEFT JOIN om_market_partners p ON p.partner_id = o.partner_id
         WHERE o.customer_id = ? AND o.status IN ('entregue', 'retirado')
+          AND pb.image IS NOT NULL AND pb.image <> ''
         GROUP BY pb.product_id, pb.name, pb.image, c.name, p.trade_name, o.partner_id
         ORDER BY times_ordered DESC LIMIT 20
     ");
@@ -178,6 +180,7 @@ function buildCustomerContext(PDO $db, int $customerId): array {
     $ctx['topItems'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     // E) Favorites (price from om_market_products, partner from same)
+    // Filter: only products with photos to avoid placeholder cards in AI suggestions
     $stmt = $db->prepare("
         SELECT pb.product_id, pb.name,
                COALESCE(MIN(mp.price), pb.suggested_price, 0) as price, pb.image,
@@ -189,6 +192,7 @@ function buildCustomerContext(PDO $db, int $customerId): array {
         LEFT JOIN om_market_products mp ON mp.product_id = f.product_id
         LEFT JOIN om_market_categories c ON c.category_id = pb.category_id
         WHERE f.customer_id = ?
+          AND pb.image IS NOT NULL AND pb.image <> ''
         GROUP BY pb.product_id, pb.name, pb.suggested_price, pb.image, c.name, f.created_at
         ORDER BY f.created_at DESC
         LIMIT 10
@@ -538,6 +542,8 @@ try {
                     WHERE p.status = 1 AND p.in_stock = 1
                       AND p.partner_id IN ({$partnerPlaceholders})
                       AND (" . implode(' AND ', $likeClauses) . ")
+                      AND (COALESCE(NULLIF(p.image,''), NULLIF(p.image_url,'')) IS NOT NULL
+                           AND COALESCE(NULLIF(p.image,''), NULLIF(p.image_url,'')) <> '')
                     ORDER BY p.is_featured DESC, p.sort_order ASC
                     LIMIT 25
                 ");
@@ -861,6 +867,68 @@ REGRAS DO JSON:
     $responseText = $parsed['response_text'] ?? $result['text'];
     $suggestions = $parsed['suggestions'] ?? [];
     $quickActions = $parsed['quick_actions'] ?? [];
+
+    // ── Sanitize suggestions: Claude ocasionalmente omite/corrompe o campo
+    // `image` mesmo com a instrução no prompt. Como remédio server-side:
+    // 1) Monta lookup por product_id a partir do catálogo que FOI passado
+    //    pro Claude ($searchResults) — contém a URL de imagem real do banco.
+    // 2) Enriquece cada suggestion com image/partner_id/partner_name do
+    //    catálogo quando o Claude deixou vazio ou inventou algo inválido.
+    // 3) Descarta suggestions sem image final — o frontend já filtra mas
+    //    filtrar aqui evita carrossel "fantasma" e cards quebrados quando
+    //    a URL é válida no regex mas 404 ao carregar.
+    if (!empty($suggestions) && is_array($suggestions)) {
+        $catalogByPid = [];
+        foreach ($searchResults as $sr) {
+            $pid = (int)($sr['id'] ?? 0);
+            if ($pid >= 1000000) $pid -= 1000000;
+            if ($pid > 0 && !isset($catalogByPid[$pid])) {
+                $catalogByPid[$pid] = $sr;
+            }
+        }
+        $clean = [];
+        foreach ($suggestions as $s) {
+            if (!is_array($s)) continue;
+            $pid = (int)($s['id'] ?? $s['product_id'] ?? 0);
+            $img = trim((string)($s['image'] ?? ''));
+            // Image inválida/placeholder/SVG → força busca no catálogo
+            $imgLower = mb_strtolower($img);
+            $isBad = ($img === ''
+                || str_ends_with($imgLower, '.svg')
+                || strpos($imgLower, 'placeholder') !== false
+                || strpos($imgLower, 'no-image') !== false
+                || strpos($imgLower, 'noimage') !== false
+                || strpos($imgLower, 'sem-foto') !== false);
+            if ($isBad && $pid > 0 && isset($catalogByPid[$pid])) {
+                $cat = $catalogByPid[$pid];
+                $img = trim((string)($cat['image'] ?? ''));
+                // Também enriquece outros campos caso Claude tenha deixado vazios
+                if (empty($s['partner_id']) && !empty($cat['partner_id'])) {
+                    $s['partner_id'] = (int)$cat['partner_id'];
+                }
+                if (empty($s['partner_name']) && !empty($cat['partner_name'])) {
+                    $s['partner_name'] = $cat['partner_name'];
+                }
+                if (empty($s['price']) && !empty($cat['price'])) {
+                    $s['price'] = (float)$cat['price'];
+                }
+                if (empty($s['name']) && !empty($cat['name'])) {
+                    $s['name'] = $cat['name'];
+                }
+            }
+            // Se ainda não tem imagem utilizável, descarta.
+            if ($img === '') continue;
+            $imgLower2 = mb_strtolower($img);
+            if (str_ends_with($imgLower2, '.svg')) continue;
+            if (strpos($imgLower2, 'placeholder') !== false
+                || strpos($imgLower2, 'no-image') !== false
+                || strpos($imgLower2, 'noimage') !== false
+                || strpos($imgLower2, 'sem-foto') !== false) continue;
+            $s['image'] = $img;
+            $clean[] = $s;
+        }
+        $suggestions = $clean;
+    }
 
     // ── Save assistant message ──
     $stmt = $db->prepare("INSERT INTO om_ai_customer_messages (conversation_id, role, content, tokens_used, model) VALUES (?, 'assistant', ?, ?, ?)");

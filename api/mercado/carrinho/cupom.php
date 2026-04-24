@@ -38,8 +38,18 @@ try {
         response(false, null, "Faca login para usar cupom", 401);
     }
 
+    // Remoção de cupom: applyCoupon('') do frontend chega aqui com code vazio.
+    // Antes isso dava erro "Informe o codigo" e o front mostrava alerta de erro;
+    // agora removemos o cupom do Redis e retornamos sucesso (idempotente).
     if (empty($code)) {
-        response(false, null, "Informe o codigo do cupom", 400);
+        $cartCouponKey = "cart_coupon:c{$customer_id}";
+        cacheDelete($cartCouponKey);
+        cacheInvalidateCart((int)$customer_id, '');
+        try {
+            require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
+            wsBroadcastToCustomer((int)$customer_id, 'cart_updated', ['action' => 'coupon_removed']);
+        } catch (Throwable $e) { /* best effort */ }
+        response(true, ["valido" => true, "removed" => true], "Cupom removido");
     }
 
     // Calcular subtotal real do carrinho — authenticated uses customer_id only
@@ -199,6 +209,24 @@ try {
     }
 
     if ($customer_id > 0) {
+        // Persiste cupom aplicado no Redis. Antes o endpoint só retornava o
+        // desconto calculado e broadcastava WS — mas /listar.php não tinha
+        // noção do cupom ativo, então ao fazer fetchCart depois, o discount
+        // voltava pra 0 e o user via "cupom aplicou mas desconto sumiu".
+        // Agora o listar.php lê essa key e recalcula o desconto autoritariamente.
+        $cartCouponKey = "cart_coupon:c{$customer_id}";
+        cacheSet($cartCouponKey, [
+            'coupon_id' => (int)$cupom['id'],
+            'code' => $code,
+            'discount_type' => $discount_type,
+            'discount_value' => $discount_value,
+            'max_discount' => $max_discount,
+            'min_order_value' => isset($cupom['min_order_value']) ? (float)$cupom['min_order_value'] : 0,
+            'specific_partners' => $cupom['specific_partners'] ?? null,
+            'descricao' => $descricao,
+            'free_delivery' => $discount_type === 'free_delivery',
+        ], 86400); // TTL 24h — cobre sessão de compra normal sem lixo eterno
+
         // Invalidate listar cache so clients reacting to the WS push fetch fresh.
         cacheInvalidateCart((int)$customer_id, '');
         try {

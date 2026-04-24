@@ -196,6 +196,75 @@ try {
         ];
     }
 
+    // ─── Cupom aplicado (persistido em Redis por cupom.php) ───────────────
+    // Antes o listar.php ignorava cupom: o frontend aplicava, o backend
+    // calculava o desconto, mas na próxima leitura o total vinha sem ele.
+    // Agora o cupom ativo fica em `cart_coupon:c{customer_id}` e é
+    // re-validado/aplicado aqui — fonte única de verdade do cart.
+    $applied = null;
+    $desconto = 0;
+    $freeDelivery = false;
+    if ($customer_id > 0) {
+        $appliedRaw = cacheGet("cart_coupon:c{$customer_id}");
+        if (is_array($appliedRaw) && !empty($appliedRaw['code'])) {
+            $applied = $appliedRaw;
+            // Revalida min_order_value contra subtotal atual — user pode ter
+            // removido itens depois de aplicar; nesse caso o cupom deixa de
+            // valer mas continua "sticky" até ser revalidado positivamente.
+            $minOrder = (float)($applied['min_order_value'] ?? 0);
+            $meetsMin = ($minOrder <= 0 || $subtotal >= $minOrder);
+
+            // Revalida partner match pra cupons store-specific
+            $partnerOk = true;
+            if (!empty($applied['specific_partners'])) {
+                $allowed = is_array($applied['specific_partners'])
+                    ? $applied['specific_partners']
+                    : json_decode($applied['specific_partners'], true);
+                if (is_array($allowed) && !empty($allowed)) {
+                    $cartPids = array_unique(array_map('intval', array_column($itens, 'partner_id')));
+                    $partnerOk = false;
+                    foreach ($cartPids as $cpid) {
+                        if (in_array($cpid, $allowed)) { $partnerOk = true; break; }
+                    }
+                }
+            }
+
+            if ($meetsMin && $partnerOk) {
+                $type = $applied['discount_type'] ?? 'percentage';
+                $value = (float)($applied['discount_value'] ?? 0);
+                $maxDisc = !empty($applied['max_discount']) ? (float)$applied['max_discount'] : null;
+                if ($type === 'percentage' || $type === 'cashback') {
+                    $desconto = round($subtotal * ($value / 100), 2);
+                    if ($maxDisc && $desconto > $maxDisc) $desconto = $maxDisc;
+                } elseif ($type === 'fixed') {
+                    $desconto = min($value, $subtotal);
+                } elseif ($type === 'free_delivery') {
+                    $freeDelivery = true;
+                }
+            } else {
+                // Cupom não se aplica mais — limpa silenciosamente pra não
+                // confundir user. Se ele adicionar itens novos, precisa re-aplicar.
+                cacheDelete("cart_coupon:c{$customer_id}");
+                $applied = null;
+            }
+        }
+    }
+
+    // Free delivery: zera a taxa de entrega antes de somar ao total
+    $taxaEntregaFinal = $freeDelivery ? 0 : $taxa_entrega;
+    $serviceFee = $subtotal > 0 ? 2.49 : 0;
+    $totalFinal = round($subtotal + $taxaEntregaFinal + $serviceFee - $desconto, 2);
+    if ($totalFinal < 0) $totalFinal = 0; // safety
+
+    $couponPayload = $applied ? [
+        'code' => $applied['code'],
+        'coupon_id' => (int)($applied['coupon_id'] ?? 0),
+        'tipo' => $applied['discount_type'] ?? 'percentage',
+        'descricao' => $applied['descricao'] ?? '',
+        'desconto' => round($desconto, 2),
+        'free_delivery' => $freeDelivery,
+    ] : null;
+
     $payload = [
         "parceiro" => [
             "id" => $itens[0]["partner_id"],
@@ -223,16 +292,19 @@ try {
             ];
         }, $itens),
         "subtotal" => round($subtotal, 2),
-        "taxa_entrega" => round($taxa_entrega, 2),
-        "taxa_servico" => $subtotal > 0 ? 2.49 : 0,
-        "total" => round($subtotal + $taxa_entrega + ($subtotal > 0 ? 2.49 : 0), 2),
+        "taxa_entrega" => round($taxaEntregaFinal, 2),
+        "taxa_servico" => $serviceFee,
+        "desconto" => round($desconto, 2),
+        "discount" => round($desconto, 2),
+        "coupon" => $couponPayload,
+        "total" => $totalFinal,
         "breakdown" => [
             "subtotal" => round($subtotal, 2),
-            "delivery_fee" => round($taxa_entrega, 2),
-            "service_fee" => $subtotal > 0 ? 2.49 : 0,
-            "discount" => 0,
+            "delivery_fee" => round($taxaEntregaFinal, 2),
+            "service_fee" => $serviceFee,
+            "discount" => round($desconto, 2),
             "cashback_applied" => 0,
-            "total" => round($subtotal + $taxa_entrega + ($subtotal > 0 ? 2.49 : 0), 2),
+            "total" => $totalFinal,
         ],
     ];
     cacheSet($cacheKey, $payload, 5);
