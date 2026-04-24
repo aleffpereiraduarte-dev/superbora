@@ -6,16 +6,17 @@
  */
 require_once __DIR__ . "/../config/database.php";
 require_once dirname(__DIR__, 2) . "/cache/CacheHelper.php";
+require_once __DIR__ . "/../helpers/cache.php";
 require_once __DIR__ . "/../helpers/r2-cache.php";
 
 // Public cacheable endpoint — no credentials so Cloudflare can cache.
 setPublicCacheCorsHeaders();
 
-// Aggressive edge cache: 30min edge, 2min browser, 1h stale-while-revalidate.
-// Catalog caching: previously s-maxage=1800 caused 30-minute staleness at
-// Cloudflare edge after partner price/stock updates. Reduced to 60s so partner
-// edits propagate within a minute. Still keeps enough to absorb burst traffic.
-header('Cache-Control: public, max-age=30, s-maxage=60, stale-while-revalidate=120');
+// Catalog caching: s-maxage reduzido de 60s para 15s para que produtos recem-criados
+// apareçam rapidamente (Bug #27 — produto novo some do cardapio por 30-60s).
+// R2 cache + CacheHelper sao invalidados pelo product-create/product-save;
+// Cloudflare edge segue TTL proprio. 15s ainda absorve bursts (30 reads/s = 1 origin/s).
+header('Cache-Control: public, max-age=10, s-maxage=15, stale-while-revalidate=30');
 
 try {
     $partner_id = (int)($_GET["partner_id"] ?? 0);
@@ -49,12 +50,13 @@ try {
     ];
     $orderBy = $allowedSorts[$ordenar] ?? 'p.name';
 
-    // Cache key baseado nos parâmetros
-    $cacheKey = "mercado_produtos_" . md5(json_encode([
-        $partner_id, $category_id, $busca, $pagina, $limite, $ordenar
-    ]));
+    // Cache key padronizado: products:{partner_id}:{category_id}:{hash-do-resto}
+    // Permite invalidação seletiva via cacheInvalidateProducts({partner_id}).
+    // TTL: 120s (admin/partner writes invalidam imediatamente).
+    $variant = md5(json_encode([$busca, $pagina, $limite, $ordenar]));
+    $cacheKey = "products:{$partner_id}:" . ($category_id ?: '0') . ":{$variant}";
 
-    $data = CacheHelper::remember($cacheKey, 300, function() use ($partner_id, $category_id, $busca, $pagina, $limite, $offset, $orderBy) {
+    $data = cachedQuery($cacheKey, 120, function() use ($partner_id, $category_id, $busca, $pagina, $limite, $offset, $orderBy) {
         $db = getDB();
 
         // Build conditions array — only literal SQL with ? placeholders
@@ -105,6 +107,9 @@ try {
 
         $optionGroups = [];
         $smartTagsByProduct = [];
+        // Initialize outside the if — when productIds is empty (partner with 0
+        // products), the return block below uses $topSellerIds in array_map.
+        $topSellerIds = [];
         if (!empty($productIds)) {
             $inPlaceholders = implode(',', array_fill(0, count($productIds), '?'));
             $stmtGroups = $db->prepare(
@@ -141,7 +146,6 @@ try {
 
             // Top sellers: IDs of the top 3 most-ordered products for this partner in last 30 days.
             // Cheap: uses order_items + orders joined. Cached with the outer response (5 min).
-            $topSellerIds = [];
             if ($partner_id > 0) {
                 try {
                     $stmtTop = $db->prepare("

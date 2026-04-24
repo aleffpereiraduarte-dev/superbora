@@ -51,7 +51,9 @@ try {
     // Cache key baseado nos parametros — inclui customer_id se autenticado (personalizacao varia por usuario)
     $cacheKey = "vitrine:" . md5(($categoria ?? '') . ($busca ?? '') . ($lat ?? '') . ($lng ?? '') . ($city ?? '') . ($state ?? '') . ':cid=' . ($customerId ?? ''));
 
-    $data = cachedQuery($cacheKey, 60, function() use ($categoria, $busca, $lat, $lng, $city, $state, $customerId) {
+    // TTL bumped 60→120s (24/Abr/2026): com invalidação de cache nos writes admin/partner,
+    // não precisamos mais do refresh agressivo. Reduz origin RPS em ~50%.
+    $data = cachedQuery($cacheKey, 120, function() use ($categoria, $busca, $lat, $lng, $city, $state, $customerId) {
         $db = getDB();
 
         $params = [];

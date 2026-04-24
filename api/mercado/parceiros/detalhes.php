@@ -5,18 +5,20 @@
  * Otimizado com cache (TTL: 10 min)
  */
 require_once __DIR__ . "/../config/database.php";
-require_once dirname(__DIR__, 2) . "/cache/CacheHelper.php";
+require_once __DIR__ . "/../helpers/cache.php";
 
-header('Cache-Control: public, max-age=600');
+header('Cache-Control: public, max-age=180');
 
 try {
     $id = (int)($_GET["id"] ?? 0);
 
     if (!$id) response(false, null, "ID obrigatório", 400);
 
-    $cacheKey = "parceiro_detalhes_{$id}";
+    // Cache key padronizado com helpers/cache.php (Redis DB 1) para que
+    // cacheInvalidatePartner() consiga apagar via SCAN de "partner:{id}".
+    $cacheKey = "partner:{$id}";
 
-    $data = CacheHelper::remember($cacheKey, 600, function() use ($id) {
+    $data = cachedQuery($cacheKey, 180, function() use ($id) {
         $db = getDB();
 
         $stmt = $db->prepare("SELECT partner_id, name, trade_name, logo, banner, address, city, state, phone, email, cep, categoria, description, delivery_fee, min_order, min_order_value, delivery_time_min, delivery_time_max, rating, is_open, open_time, close_time, latitude, longitude, free_delivery_above, status, busy_mode, pause_until FROM om_market_partners WHERE partner_id = ?");

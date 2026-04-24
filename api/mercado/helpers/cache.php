@@ -168,6 +168,119 @@ function cachedQuery(string $key, int $ttl, callable $fn)
 }
 
 /**
+ * Invalidate cache keys matching one or more raw (un-prefixed) glob patterns.
+ *
+ * Used by listing-invalidation helpers below. Bypasses OPT_PREFIX so we don't
+ * hit the double-prefix bug described in cacheInvalidateCart().
+ *
+ * @param string[] $patterns  List of glob patterns WITHOUT the 'sbcache:' prefix.
+ * @return int  Total keys deleted.
+ */
+function cacheInvalidatePatterns(array $patterns): int
+{
+    $redis = getRedisCache();
+    if (!$redis) return 0;
+
+    $total = 0;
+    try {
+        $prefix = $redis->getOption(Redis::OPT_PREFIX) ?: '';
+        $redis->setOption(Redis::OPT_PREFIX, '');
+        $redis->setOption(Redis::OPT_SCAN, Redis::SCAN_RETRY);
+
+        foreach ($patterns as $pattern) {
+            $full = $prefix . $pattern;
+            $iterator = null;
+            $safety = 0;
+            while (($keys = $redis->scan($iterator, $full, 200)) !== false) {
+                if (!empty($keys)) $total += $redis->del($keys);
+                if (++$safety > 100) break;
+            }
+        }
+
+        $redis->setOption(Redis::OPT_PREFIX, $prefix);
+    } catch (Exception $e) {
+        error_log("[cache] invalidate patterns error: " . $e->getMessage());
+    }
+    return $total;
+}
+
+/**
+ * Invalidate cached partner detail + vitrine entries for a single partner.
+ * Called when admin/partner mutates store-level data (status, hours, info).
+ */
+function cacheInvalidatePartner(int $partnerId): void
+{
+    if ($partnerId <= 0) return;
+    cacheInvalidatePatterns([
+        "partner:{$partnerId}",
+        "partner:{$partnerId}:*",
+        // vitrine listings depend on partner status/info — drop them all
+        "vitrine:*",
+        // home.php cached responses
+        "home:*",
+    ]);
+
+    // Bridge to the legacy CacheHelper (DB 0) where parceiro_detalhes_X + home_*
+    // live. Kept best-effort so a CacheHelper outage doesn't block writes.
+    try {
+        $cacheHelperPath = dirname(__DIR__, 2) . '/cache/CacheHelper.php';
+        if (file_exists($cacheHelperPath)) {
+            require_once $cacheHelperPath;
+            if (class_exists('CacheHelper')) {
+                CacheHelper::forget("parceiro_detalhes_{$partnerId}");
+                CacheHelper::forgetPattern("home_");
+            }
+        }
+    } catch (\Throwable $e) { /* non-critical */ }
+}
+
+/**
+ * Invalidate cached product listings for a partner. Called when products
+ * change (price/status/stock/create/delete). Also clears partner detail
+ * because detalhes.php returns the categories list which depends on products.
+ */
+function cacheInvalidateProducts(int $partnerId): void
+{
+    if ($partnerId <= 0) return;
+    cacheInvalidatePatterns([
+        "products:{$partnerId}:*",
+        "partner:{$partnerId}",
+        "partner:{$partnerId}:*",
+        "home:*", // home includes destaques + populares for the matched partner
+    ]);
+
+    try {
+        $cacheHelperPath = dirname(__DIR__, 2) . '/cache/CacheHelper.php';
+        if (file_exists($cacheHelperPath)) {
+            require_once $cacheHelperPath;
+            if (class_exists('CacheHelper')) {
+                CacheHelper::forget("parceiro_detalhes_{$partnerId}");
+                CacheHelper::forgetPattern("mercado_produtos_");
+                CacheHelper::forgetPattern("home_");
+            }
+        }
+    } catch (\Throwable $e) { /* non-critical */ }
+}
+
+/**
+ * Drop ALL vitrine listings — used when admin suspends/activates a store
+ * since the store list changes for everyone in that city.
+ */
+function cacheInvalidateVitrine(): void
+{
+    cacheInvalidatePatterns(["vitrine:*", "home:*"]);
+    try {
+        $cacheHelperPath = dirname(__DIR__, 2) . '/cache/CacheHelper.php';
+        if (file_exists($cacheHelperPath)) {
+            require_once $cacheHelperPath;
+            if (class_exists('CacheHelper')) {
+                CacheHelper::forgetPattern("home_");
+            }
+        }
+    } catch (\Throwable $e) { /* non-critical */ }
+}
+
+/**
  * Invalidate all cart listar.php cache entries for a given owner.
  *
  * listar.php keys include route_mode + primary_partner_id so the same cart

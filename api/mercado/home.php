@@ -18,6 +18,7 @@
 
 require_once dirname(dirname(__DIR__)) . '/database.php';
 require_once dirname(dirname(__DIR__)) . '/cache/CacheHelper.php';
+require_once __DIR__ . '/helpers/cache.php';
 
 // CORS: origin whitelist (replaces Access-Control-Allow-Origin: *)
 $_corsAllowed = ['https://superbora.com.br', 'https://www.superbora.com.br', 'https://onemundo.com.br', 'https://www.onemundo.com.br'];
@@ -110,7 +111,37 @@ try {
         ]);
     }
 
-    // 4. Buscar mercado mais proximo
+    // 4. Validar CEP via ViaCEP ANTES de buscar mercado.
+    // Bug previo: CEP invalido (ex: 99999999) batia no fallback "OR delivery_radius_km >= 50"
+    // e retornava um mercado aleatorio com raio grande — UX horrivel.
+    $cidadeCheck = buscarCidadePorCep($cep);
+    if (!$cidadeCheck || empty($cidadeCheck['cidade'])) {
+        response(true, [
+            "status"      => "cep_invalido",
+            "mensagem"    => "CEP nao encontrado. Verifique e tente novamente.",
+            "tem_mercado" => false,
+            "cep"         => $cep,
+        ]);
+    }
+
+    // ── FULL-RESPONSE CACHE ──
+    // home.php é dominado por queries pesadas (mercado mais proximo, populares,
+    // produtos, banners). A resposta nao varia por customer_id (CEP ja foi
+    // resolvido pra string acima), so por cep+city+categoria+busca. TTL 90s,
+    // invalidado por cacheInvalidatePartner / cacheInvalidateProducts em writes.
+    $explicitCityKey = isset($_GET['city']) ? trim($_GET['city']) : '';
+    $catKey = $_GET['categoria'] ?? '';
+    $bcKey = $_GET['busca'] ?? '';
+    $homeCacheKey = "home:" . md5($cep . '|' . $explicitCityKey . '|' . $catKey . '|' . $bcKey);
+    $homeCached = cacheGet($homeCacheKey);
+    if ($homeCached !== null) {
+        // Replay status quente sem tocar no DB.
+        header("Content-Type: application/json; charset=utf-8");
+        echo json_encode(['success' => true, 'data' => $homeCached], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
+    // 5. Buscar mercado mais proximo
     $mercado = buscarMercadoMaisProximo($db, $cep);
 
     if (!$mercado) {
@@ -133,16 +164,144 @@ try {
     $categorias = CacheHelper::remember("home_cat_{$pid}", 3600, fn() => buscarCategorias($db, $pid));
     $produtos = buscarProdutos($db, $pid, $_GET['categoria'] ?? null, $_GET['busca'] ?? null);
     $destaques = CacheHelper::remember("home_dest_{$pid}", 600, fn() => buscarDestaques($db, $pid));
-    $banners = CacheHelper::remember("home_banners", 1800, fn() => buscarBanners($db));
+    // City scoping for banners: use the USER's actual city.
+    // Priority: 1) explicit ?city= param from mobile (most reliable), 2) ViaCEP geocoding, 3) matched partner city
+    $explicitCity = isset($_GET['city']) ? trim($_GET['city']) : '';
+    $userCidadeInfo = (!$explicitCity && $cep) ? buscarCidadePorCep($cep) : null;
+    $userCity = $explicitCity ?: ($userCidadeInfo['cidade'] ?? ($mercado['city'] ?? null));
+    $cityCacheKey = $userCity ? "home_banners_" . md5(strtolower($userCity)) : "home_banners_global";
+    $banners = CacheHelper::remember($cityCacheKey, 300, fn() => buscarBanners($db, $userCity));
+
+    // Normalize city for targeting (lowercase, no accents)
+    $normalizedCity = null;
+    if ($userCity) {
+        $tmp = mb_strtolower($userCity, 'UTF-8');
+        $tmp = iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $tmp);
+        $tmp = preg_replace('/[^a-z0-9 -]/', '', $tmp);
+        $normalizedCity = trim(preg_replace('/\s+/', ' ', $tmp));
+    }
+
+    // Hero banners (admin-editable carousel, filtered by city)
+    $heroCacheKey = "home_hero_banners_v2_" . ($normalizedCity ?: 'global');
+    $heroBanners = CacheHelper::remember($heroCacheKey, 120, function () use ($db, $normalizedCity) {
+        $stmt = $db->query("
+            SELECT id, title, subtitle, badge_text, icon_name,
+                   gradient_from, gradient_to, text_color,
+                   link_type, link_target, cities
+              FROM om_home_hero_banners
+             WHERE active = TRUE
+               AND (active_from IS NULL OR active_from <= CURRENT_TIMESTAMP)
+               AND (active_until IS NULL OR active_until >= CURRENT_TIMESTAMP)
+             ORDER BY sort_order ASC, id ASC
+        ");
+        $all = $stmt->fetchAll();
+        $filtered = [];
+        foreach ($all as $b) {
+            $cities = $b['cities'] ?? null;
+            if (is_string($cities) && $cities !== '') $cities = json_decode($cities, true);
+            if (empty($cities) || !is_array($cities)) {
+                // No city restriction — show for everyone
+                unset($b['cities']);
+                $filtered[] = $b;
+                continue;
+            }
+            if ($normalizedCity && in_array($normalizedCity, $cities, true)) {
+                unset($b['cities']);
+                $filtered[] = $b;
+            }
+        }
+        return $filtered;
+    });
+
+    // Featured coupons per city
+    $featuredCoupons = [];
+    if ($userCity) {
+        $fcKey = "home_featured_coupons_" . md5(strtolower($userCity));
+        $featuredCoupons = CacheHelper::remember($fcKey, 180, function () use ($db, $userCity) {
+            $stmt = $db->prepare("
+                SELECT f.id AS featured_id, f.coupon_id, f.sort_order,
+                       c.code, c.description, c.type, c.value,
+                       c.min_order_value, c.max_discount, c.valid_until
+                  FROM om_home_featured_coupons f
+                  INNER JOIN om_coupons c ON c.coupon_id = f.coupon_id
+                 WHERE LOWER(f.city) = LOWER(?)
+                   AND f.active = TRUE
+                   AND c.is_active = 1
+                   AND (c.valid_until IS NULL OR c.valid_until >= CURRENT_TIMESTAMP)
+                   AND (f.active_from IS NULL OR f.active_from <= CURRENT_TIMESTAMP)
+                   AND (f.active_until IS NULL OR f.active_until >= CURRENT_TIMESTAMP)
+                 ORDER BY f.sort_order ASC, f.id ASC
+                 LIMIT 8
+            ");
+            $stmt->execute([$userCity]);
+            return $stmt->fetchAll();
+        });
+    }
+
+    // Home layout (admin-ordered sections)
+    $homeLayout = CacheHelper::remember("home_layout_v1", 300, function () use ($db) {
+        $stmt = $db->query("SELECT section_key, sort_order, visible FROM om_home_layout ORDER BY sort_order ASC");
+        return $stmt->fetchAll();
+    });
+
+    // City-level config (kill switch, drone, welcome modal, taxes)
+    $cityConfig = null;
+    if ($userCity) {
+        $cityConfig = CacheHelper::remember("city_config_" . md5(strtolower($userCity)), 60, function () use ($db, $userCity) {
+            $stmt = $db->prepare("
+                SELECT accept_orders, kill_switch_reason,
+                       operating_start, operating_end,
+                       drone_enabled,
+                       free_shipping_min, cashback_percent, service_fee_percent,
+                       welcome_enabled, welcome_title, welcome_message,
+                       welcome_cta_label, welcome_cta_target
+                  FROM om_city_config
+                 WHERE LOWER(city) = LOWER(?)
+                 LIMIT 1
+            ");
+            $stmt->execute([$userCity]);
+            return $stmt->fetch() ?: null;
+        });
+    }
+
+    // Featured stores (admin-picked "lojas em destaque" for this city)
+    $featuredStores = [];
+    if ($userCity) {
+        $featuredKey = "home_featured_" . md5(strtolower($userCity));
+        $featuredStores = CacheHelper::remember($featuredKey, 180, function () use ($db, $userCity) {
+            $stmt = $db->prepare("
+                SELECT f.id, f.partner_id, f.badge_text, f.sort_order,
+                       p.trade_name, p.name, p.logo, p.banner AS banner,
+                       p.rating, p.delivery_fee, p.delivery_time_min,
+                       p.city, p.categoria AS category, p.min_order
+                  FROM om_home_featured_stores f
+                  INNER JOIN om_market_partners p ON p.partner_id = f.partner_id
+                 WHERE LOWER(f.city) = LOWER(?)
+                   AND f.active = TRUE
+                   AND (f.active_from IS NULL OR f.active_from <= CURRENT_TIMESTAMP)
+                   AND (f.active_until IS NULL OR f.active_until >= CURRENT_TIMESTAMP)
+                 ORDER BY f.sort_order ASC, f.id ASC
+                 LIMIT 12
+            ");
+            $stmt->execute([$userCity]);
+            return $stmt->fetchAll();
+        });
+    }
 
     // Verificar status de abertura (short cache - changes frequently)
     $statusHorario = CacheHelper::remember("home_hours_{$pid}", 120, fn() => verificarSeAberto($db, $pid));
 
-    response(true, [
+    $payload = [
         "status" => "ok",
         "tem_mercado" => true,
         "cep" => $cep,
         "banners" => $banners,
+        "hero_banners" => $heroBanners,
+        "featured_stores" => $featuredStores,
+        "featured_coupons" => $featuredCoupons,
+        "home_layout" => $homeLayout,
+        "city_config" => $cityConfig,
+        "user_city" => $userCity,
         "mercado" => [
             "id" => (int)$mercado['partner_id'],
             "nome" => $mercado['name'],
@@ -171,7 +330,12 @@ try {
         "promocoes" => $destaques,
         "produtos" => $produtos,
         "populares" => buscarPopulares($db, $mercado['partner_id'])
-    ]);
+    ];
+
+    // Cachear payload completo (TTL 90s) — invalidado por writes admin/partner.
+    cacheSet($homeCacheKey, $payload, 90);
+
+    response(true, $payload);
 
 } catch (Exception $e) {
     error_log("Erro home mercado: " . $e->getMessage());
@@ -551,21 +715,43 @@ function buscarPopulares($db, $partnerId) {
 /**
  * Busca banners ativos
  */
-function buscarBanners($db) {
-    $cacheKey = "home_banners";
-    return CacheHelper::remember($cacheKey, 300, function() use ($db) {
+function buscarBanners($db, $userCity = null) {
+    // City-aware banner query:
+    //   - banners WITHOUT partner_id are global (everyone sees)
+    //   - banners WITH partner_id only show when user's city matches the partner's city
+    // This lets us run city-exclusive campaigns (e.g. "Dia do Cachorro Quente" only in Valadares)
+    if ($userCity) {
+        $stmt = $db->prepare("
+            SELECT b.banner_id AS id, b.title, b.subtitle,
+                   COALESCE(NULLIF(b.image, ''), 'https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?w=800&h=400&fit=crop') AS image_url,
+                   b.link, b.icon, b.bg_color, b.partner_id
+            FROM om_market_banners b
+            LEFT JOIN om_market_partners p ON p.partner_id = b.partner_id
+            WHERE b.status::text = '1'
+              AND (b.end_date IS NULL OR b.end_date > NOW())
+              AND (b.start_date IS NULL OR b.start_date <= NOW())
+              AND (b.partner_id IS NULL OR LOWER(p.city) = LOWER(?))
+            ORDER BY b.sort_order ASC, b.created_at DESC
+            LIMIT 5
+        ");
+        $stmt->execute([$userCity]);
+    } else {
+        // No city — only show global banners (no partner_id)
         $stmt = $db->prepare("
             SELECT banner_id AS id, title, subtitle,
                    COALESCE(NULLIF(image, ''), 'https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?w=800&h=400&fit=crop') AS image_url,
-                   link, icon, bg_color
+                   link, icon, bg_color, partner_id
             FROM om_market_banners
-            WHERE status::text = '1' AND (end_date IS NULL OR end_date > NOW())
+            WHERE status::text = '1'
+              AND (end_date IS NULL OR end_date > NOW())
+              AND (start_date IS NULL OR start_date <= NOW())
+              AND partner_id IS NULL
             ORDER BY sort_order ASC, created_at DESC
             LIMIT 5
         ");
         $stmt->execute();
-        return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
-    });
+    }
+    return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 }
 
 /**
