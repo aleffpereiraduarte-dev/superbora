@@ -6,6 +6,7 @@
 require_once __DIR__ . "/../config/database.php";
 setCorsHeaders();
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
+require_once __DIR__ . "/../helpers/cache.php";
 
 try {
     $input = getInput();
@@ -58,6 +59,9 @@ try {
 
     $stmt = $db->prepare("DELETE FROM om_market_cart WHERE cart_id = ? AND {$ownerClause}");
     $stmt->execute([$cart_id, ...$ownerParams]);
+
+    // Invalidate listar.php cache before returning.
+    cacheInvalidateCart($customer_id, $session_id);
 
     // Debounced broadcast — rapid remove clicks collapse into one push.
     if ($customer_id > 0) {

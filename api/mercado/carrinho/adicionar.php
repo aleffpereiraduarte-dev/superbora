@@ -6,6 +6,7 @@
 require_once __DIR__ . "/../config/database.php";
 setCorsHeaders();
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
+require_once __DIR__ . "/../helpers/cache.php";
 
 try {
     $input = getInput();
@@ -162,6 +163,9 @@ try {
         $db->rollBack();
         throw $txEx;
     }
+
+    // Invalidate listar.php cache before returning — next listar rebuilds fresh.
+    cacheInvalidateCart($customer_id, $session_id);
 
     // Retornar carrinho atualizado
     $stmtCart = $db->prepare("SELECT c.cart_id, c.product_id, c.partner_id, c.quantity, c.price, p.name, p.image FROM om_market_cart c INNER JOIN om_market_products p ON c.product_id = p.product_id WHERE {$whereClause}");

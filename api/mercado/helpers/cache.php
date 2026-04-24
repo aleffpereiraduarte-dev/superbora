@@ -166,3 +166,55 @@ function cachedQuery(string $key, int $ttl, callable $fn)
 
     return $data;
 }
+
+/**
+ * Invalidate all cart listar.php cache entries for a given owner.
+ *
+ * listar.php keys include route_mode + primary_partner_id so the same cart
+ * may have up to ~4 cached variants (rm=0/1 × pp=0/specific). We use SCAN
+ * against the raw-prefixed keyspace so we don't depend on phpredis version-
+ * specific prefix-stripping behavior (which was the bug in v1).
+ *
+ * Called by every cart mutation endpoint (adicionar/remover/limpar/cupom)
+ * AFTER commit and BEFORE response, so the next listar.php call always hits
+ * the DB once and repopulates the cache.
+ *
+ * @param int    $customerId  0 for anonymous
+ * @param string $sessionId   empty for authenticated
+ */
+function cacheInvalidateCart(int $customerId, string $sessionId = ''): void
+{
+    $redis = getRedisCache();
+    if (!$redis) return;
+
+    try {
+        if ($customerId > 0) {
+            $basePattern = "cart_listar:customer_{$customerId}:*";
+        } elseif ($sessionId) {
+            $safe = preg_replace('/[^a-zA-Z0-9_-]/', '', $sessionId);
+            if ($safe === '') return;
+            $basePattern = "cart_listar:sess_{$safe}:*";
+        } else {
+            return;
+        }
+
+        // Temporarily clear the prefix option for scan+del so we work with the
+        // fully-qualified keys. This avoids the "scan returns prefixed keys but
+        // del re-applies prefix" double-prefix bug in some phpredis versions.
+        $prefix = $redis->getOption(Redis::OPT_PREFIX) ?: '';
+        $fullPattern = $prefix . $basePattern;
+        $redis->setOption(Redis::OPT_PREFIX, '');
+
+        $iterator = null;
+        $redis->setOption(Redis::OPT_SCAN, Redis::SCAN_RETRY);
+        $safety = 0;
+        while (($keys = $redis->scan($iterator, $fullPattern, 100)) !== false) {
+            if (!empty($keys)) $redis->del($keys);
+            if (++$safety > 50) break;
+        }
+
+        $redis->setOption(Redis::OPT_PREFIX, $prefix);
+    } catch (Exception $e) {
+        error_log("[cache] cart invalidate error: " . $e->getMessage());
+    }
+}

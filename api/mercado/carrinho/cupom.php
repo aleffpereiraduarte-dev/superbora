@@ -8,6 +8,7 @@ require_once __DIR__ . "/../config/database.php";
 setCorsHeaders();
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
 require_once dirname(__DIR__, 2) . "/cache/CacheHelper.php";
+require_once __DIR__ . "/../helpers/cache.php";
 
 try {
     $input = getInput();
@@ -69,26 +70,39 @@ try {
     $stmt->execute([$code]);
     $cupom = $stmt->fetch();
 
+    // Structured reason codes allow the mobile app to render specific copy.
+    // Keep the user-friendly message for legacy clients that only read `message`.
+    $failReason = function($reason, $message, $extra = []) {
+        response(false, array_merge(["valido" => false, "reason" => $reason], $extra), $message, 400);
+    };
+
     if (!$cupom) {
-        response(false, ["valido" => false], "Cupom invalido ou expirado", 400);
+        $failReason('not_found', "Cupom invalido");
     }
 
     // Validar datas
     $now = date('Y-m-d H:i:s');
     if (!empty($cupom['valid_from']) && $now < $cupom['valid_from']) {
-        response(false, ["valido" => false], "Cupom ainda nao esta ativo", 400);
+        $failReason('not_yet_active', "Cupom ainda nao esta ativo", ["valid_from" => $cupom['valid_from']]);
     }
     if (!empty($cupom['valid_until']) && $now > $cupom['valid_until']) {
-        response(false, ["valido" => false], "Cupom expirado", 400);
+        $failReason('expired', "Cupom expirado", ["valid_until" => $cupom['valid_until']]);
     }
 
-    // Validar max_uses global
+    // Validar max_uses global — checar BOTH current_uses na tabela coupons E
+    // historico em coupon_usage. Antes so checava usage, entao um UPDATE manual
+    // em current_uses sem adicionar usage linha deixava cupom reutilizavel.
     if (!empty($cupom['max_uses']) && (int)$cupom['max_uses'] > 0) {
+        $maxUses = (int)$cupom['max_uses'];
+        $currentUses = (int)($cupom['current_uses'] ?? 0);
+        if ($currentUses >= $maxUses) {
+            $failReason('max_usage', "Cupom esgotado");
+        }
         $stmt = $db->prepare("SELECT COUNT(*) FROM om_market_coupon_usage WHERE coupon_id = ?");
         $stmt->execute([$cupom['id']]);
         $totalUses = (int)$stmt->fetchColumn();
-        if ($totalUses >= (int)$cupom['max_uses']) {
-            response(false, ["valido" => false], "Cupom esgotado", 400);
+        if ($totalUses >= $maxUses) {
+            $failReason('max_usage', "Cupom esgotado");
         }
     }
 
@@ -98,14 +112,14 @@ try {
         $stmt->execute([$cupom['id'], $customer_id]);
         $userUses = (int)$stmt->fetchColumn();
         if ($userUses >= (int)$cupom['max_uses_per_user']) {
-            response(false, ["valido" => false], "Voce ja usou este cupom o maximo de vezes permitido", 400);
+            $failReason('already_used', "Voce ja usou este cupom o maximo de vezes permitido");
         }
     }
 
     // Validar min_order_value
     if (!empty($cupom['min_order_value']) && $subtotal < (float)$cupom['min_order_value']) {
         $minVal = number_format((float)$cupom['min_order_value'], 2, ',', '.');
-        response(false, ["valido" => false], "Pedido minimo para este cupom: R$ $minVal", 400);
+        $failReason('min_order', "Pedido minimo para este cupom: R$ $minVal", ["min_order_value" => (float)$cupom['min_order_value']]);
     }
 
     // Validar first_order_only
@@ -114,7 +128,7 @@ try {
         $stmt->execute([$customer_id]);
         $orderCount = (int)$stmt->fetchColumn();
         if ($orderCount > 0) {
-            response(false, ["valido" => false], "Cupom valido apenas para primeiro pedido", 400);
+            $failReason('not_for_user', "Cupom valido apenas para primeiro pedido");
         }
     }
 
@@ -130,7 +144,17 @@ try {
                 $checkPartnerId = (int)$stmtCartPartner->fetchColumn();
             }
             if ($checkPartnerId && !in_array($checkPartnerId, $partners)) {
-                response(false, ["valido" => false], "Cupom nao valido para esta loja", 400);
+                $failReason('partner_mismatch', "Cupom nao valido para esta loja");
+            }
+        }
+    }
+
+    // Validar specific_customers — cupom exclusivo pra lista de customer_ids (IA de campanhas)
+    if (!empty($cupom['specific_customers'])) {
+        $allowed = json_decode($cupom['specific_customers'], true);
+        if (is_array($allowed) && !empty($allowed)) {
+            if (!$customer_id || !in_array((int)$customer_id, array_map('intval', $allowed), true)) {
+                $failReason('not_for_user', "Cupom exclusivo — nao disponivel para voce");
             }
         }
     }
@@ -172,6 +196,19 @@ try {
         default:
             $desconto = 0;
             $descricao = 'Desconto aplicado';
+    }
+
+    if ($customer_id > 0) {
+        // Invalidate listar cache so clients reacting to the WS push fetch fresh.
+        cacheInvalidateCart((int)$customer_id, '');
+        try {
+            require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
+            wsBroadcastToCustomer((int)$customer_id, 'cart_updated', [
+                'action' => 'coupon',
+                'coupon_code' => $code,
+                'discount' => round($desconto, 2),
+            ]);
+        } catch (Throwable $e) { /* best effort */ }
     }
 
     response(true, [

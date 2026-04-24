@@ -6,6 +6,7 @@
 require_once __DIR__ . "/../config/database.php";
 setCorsHeaders();
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
+require_once __DIR__ . "/../helpers/cache.php";
 
 try {
     $input = getInput();
@@ -38,6 +39,7 @@ try {
     if ($customer_id > 0) {
         $stmt = $db->prepare("DELETE FROM om_market_cart WHERE customer_id = ?");
         $stmt->execute([$customer_id]);
+        cacheInvalidateCart($customer_id, '');
         try {
             require_once __DIR__ . '/../helpers/ws-customer-broadcast.php';
             wsBroadcastToCustomer($customer_id, 'cart_updated', ['action' => 'cleared']);
@@ -45,6 +47,7 @@ try {
     } elseif ($session_id) {
         $stmt = $db->prepare("DELETE FROM om_market_cart WHERE session_id = ?");
         $stmt->execute([$session_id]);
+        cacheInvalidateCart(0, $session_id);
     } else {
         response(false, null, "session_id obrigatório", 400);
     }

@@ -6,6 +6,7 @@ require_once __DIR__ . "/../config/database.php";
 setCorsHeaders();
 require_once dirname(__DIR__, 3) . "/includes/classes/OmPricing.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
+require_once __DIR__ . "/../helpers/cache.php";
 
 try {
     $db = getDB();
@@ -40,6 +41,22 @@ try {
             && !preg_match('/^sess_[a-zA-Z0-9_-]{20,60}$/', $session_id)) {
             response(true, ["itens" => [], "subtotal" => 0, "taxa_entrega" => 0, "total" => 0]);
         }
+    }
+
+    // --- Redis short-TTL cache (5s) -------------------------------------------------
+    // listar.php is polled aggressively from the mobile app (checkout screen, tabs
+    // badge, cart drawer). Cache the fully-computed response so repeated hits within
+    // 5s skip the Postgres round-trip + PHP recomputation. Cache is invalidated by
+    // adicionar/remover/limpar/cupom.php on every mutation, so staleness is bounded
+    // to the 5s window only when no mutation happens (i.e. user just looking).
+    // The route_mode/primary_partner_id params change the computed totals, so they
+    // are part of the cache key.
+    $cacheKey = $customer_id > 0
+        ? "cart_listar:customer_{$customer_id}:rm{$routeMode}:pp{$primaryPartnerId}"
+        : "cart_listar:sess_{$session_id}:rm{$routeMode}:pp{$primaryPartnerId}";
+    $cached = cacheGet($cacheKey);
+    if ($cached !== null) {
+        response(true, $cached);
     }
 
     // Build WHERE clause — authenticated users use customer_id only, anonymous use session_id
@@ -85,7 +102,9 @@ try {
     }
 
     if (empty($itens)) {
-        response(true, ["itens" => [], "subtotal" => 0, "taxa_entrega" => 0, "total" => 0]);
+        $emptyPayload = ["itens" => [], "subtotal" => 0, "taxa_entrega" => 0, "total" => 0];
+        cacheSet($cacheKey, $emptyPayload, 5);
+        response(true, $emptyPayload);
     }
 
     // Calculate subtotal and per-partner fees
@@ -141,19 +160,43 @@ try {
         $isFree = $freeAbove > 0 && $storeSub >= $freeAbove;
 
         $isRouteStore = $routeMode && $primaryPartnerId && (int)$pid !== $primaryPartnerId;
+
+        // Progress toward free delivery — iFood/DoorDash-style "faltam R$X pro frete grátis"
+        $freeDeliveryProgress = null;
+        if ($freeAbove > 0 && !$isFree && !$isRouteStore) {
+            $remaining = max(0, $freeAbove - $storeSub);
+            $pct = $freeAbove > 0 ? min(100, (int)round(($storeSub / $freeAbove) * 100)) : 0;
+            $freeDeliveryProgress = [
+                'threshold' => round($freeAbove, 2),
+                'remaining' => round($remaining, 2),
+                'percent' => $pct,
+                'message' => $remaining > 0
+                    ? "Faltam R$ " . number_format($remaining, 2, ',', '.') . " para frete grátis"
+                    : "Frete grátis desbloqueado!",
+            ];
+        } elseif ($isFree) {
+            $freeDeliveryProgress = [
+                'threshold' => round($freeAbove, 2),
+                'remaining' => 0,
+                'percent' => 100,
+                'message' => "Frete grátis!",
+            ];
+        }
+
         $parceiros[] = [
             'id' => (int)$pid,
             'nome' => $pf['nome'],
             'taxa_entrega' => round($isRouteStore ? 0 : ($isFree ? 0 : $fee), 2),
             'taxa_entrega_base' => round($fee, 2),
             'entrega_gratis_acima' => $freeAbove > 0 ? round($freeAbove, 2) : null,
+            'free_delivery_progress' => $freeDeliveryProgress,
             'subtotal' => round($storeSub, 2),
             'route_store' => $isRouteStore,
             'loja_aberta' => $pf['loja_aberta'],
         ];
     }
 
-    response(true, [
+    $payload = [
         "parceiro" => [
             "id" => $itens[0]["partner_id"],
             "nome" => $itens[0]["parceiro_nome"],
@@ -181,8 +224,19 @@ try {
         }, $itens),
         "subtotal" => round($subtotal, 2),
         "taxa_entrega" => round($taxa_entrega, 2),
-        "total" => round($subtotal + $taxa_entrega, 2)
-    ]);
+        "taxa_servico" => $subtotal > 0 ? 2.49 : 0,
+        "total" => round($subtotal + $taxa_entrega + ($subtotal > 0 ? 2.49 : 0), 2),
+        "breakdown" => [
+            "subtotal" => round($subtotal, 2),
+            "delivery_fee" => round($taxa_entrega, 2),
+            "service_fee" => $subtotal > 0 ? 2.49 : 0,
+            "discount" => 0,
+            "cashback_applied" => 0,
+            "total" => round($subtotal + $taxa_entrega + ($subtotal > 0 ? 2.49 : 0), 2),
+        ],
+    ];
+    cacheSet($cacheKey, $payload, 5);
+    response(true, $payload);
 
 } catch (Exception $e) {
     error_log("[carrinho/listar] Erro: " . $e->getMessage());
