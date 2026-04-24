@@ -331,3 +331,85 @@ function cacheInvalidateCart(int $customerId, string $sessionId = ''): void
         error_log("[cache] cart invalidate error: " . $e->getMessage());
     }
 }
+
+/**
+ * Batch-get multiple cache keys at once using MGET.
+ *
+ * Saves N round-trips to Redis when fetching many items (e.g. cart → product:X
+ * lookups). Returns array keyed by the ORIGINAL keys with null for misses and
+ * deserialized values for hits.
+ *
+ * @param string[] $keys
+ * @return array<string,mixed|null>
+ */
+function cacheMget(array $keys): array
+{
+    if (empty($keys)) return [];
+    $redis = getRedisCache();
+    if (!$redis) return array_fill_keys($keys, null);
+
+    try {
+        $values = $redis->mget($keys);
+        $result = [];
+        foreach ($keys as $i => $k) {
+            $v = $values[$i] ?? false;
+            if ($v === false || $v === null) {
+                $result[$k] = null;
+            } else {
+                $result[$k] = json_decode($v, true);
+            }
+        }
+        return $result;
+    } catch (Exception $e) {
+        error_log("[cache] MGET error: " . $e->getMessage());
+        return array_fill_keys($keys, null);
+    }
+}
+
+/**
+ * Batch-set multiple keys with the same TTL using a MULTI pipeline.
+ * Best-effort: silently no-ops if Redis is down.
+ *
+ * @param array<string,mixed> $map   key => data (JSON-encoded before storing)
+ * @param int $ttl  Seconds
+ */
+function cacheMset(array $map, int $ttl = 300): void
+{
+    if (empty($map)) return;
+    $redis = getRedisCache();
+    if (!$redis) return;
+
+    try {
+        // Use a pipeline to avoid N round-trips. SETEX per key keeps TTL atomic.
+        $pipe = $redis->multi(Redis::PIPELINE);
+        foreach ($map as $key => $data) {
+            $pipe->setex($key, $ttl, json_encode($data, JSON_UNESCAPED_UNICODE));
+        }
+        $pipe->exec();
+    } catch (Exception $e) {
+        error_log("[cache] MSET error: " . $e->getMessage());
+    }
+}
+
+/**
+ * Invalidate product-level cache entries. Called when product price/stock/
+ * status changes. No-op if the cache is cold.
+ *
+ * @param int|int[] $productIds
+ */
+function cacheInvalidateProduct($productIds): void
+{
+    $ids = is_array($productIds) ? $productIds : [$productIds];
+    $ids = array_filter(array_map('intval', $ids), fn($x) => $x > 0);
+    if (empty($ids)) return;
+
+    $redis = getRedisCache();
+    if (!$redis) return;
+
+    try {
+        $keys = array_map(fn($id) => "product:cart:{$id}", $ids);
+        $redis->del($keys);
+    } catch (Exception $e) {
+        error_log("[cache] product invalidate error: " . $e->getMessage());
+    }
+}
