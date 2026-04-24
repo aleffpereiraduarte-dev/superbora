@@ -23,6 +23,7 @@ try {
                p.unit, p.weight, p.brand, p.is_organic, p.is_fresh,
                p.is_frozen, p.is_featured, p.dietary_tags, p.allergens,
                p.min_quantity, p.max_quantity, p.step_quantity, p.is_combo,
+               COALESCE(p.requires_prescription, 0) AS requires_prescription,
                pa.nome as partner_name, pa.status as partner_status,
                c.name as category_name
         FROM om_market_products p
@@ -117,6 +118,7 @@ try {
         'is_frozen' => (bool)$product['is_frozen'],
         'is_featured' => (bool)$product['is_featured'],
         'is_combo' => (bool)$product['is_combo'],
+        'requires_prescription' => (int)($product['requires_prescription'] ?? 0),
         'dietary_tags' => $product['dietary_tags'] ? json_decode($product['dietary_tags'], true) : [],
         'allergens' => $product['allergens'] ? json_decode($product['allergens'], true) : [],
         'min_quantity' => (int)($product['min_quantity'] ?: 1),

@@ -209,7 +209,8 @@ try {
     }
 
     $stmt = $db->prepare("
-        SELECT c.*, p.name, p.price, p.special_price, p.quantity as estoque
+        SELECT c.*, p.name, p.price, p.special_price, p.quantity as estoque,
+               COALESCE(p.requires_prescription, 0) AS requires_prescription
         FROM om_market_cart c
         INNER JOIN om_market_products p ON c.product_id = p.product_id
         WHERE c.customer_id = ? $partnerFilter
@@ -273,6 +274,33 @@ try {
         response(false, null, "Carrinho vazio", 400);
     }
     $itens = $validItens;
+
+    // ═══════════════════════════════════════════════════════
+    // FARMÁCIA COM RECEITA — bloqueia checkout sem receita
+    // ═══════════════════════════════════════════════════════
+    // Se ALGUM item requer receita e o payload não incluir prescription_image_url,
+    // aborta o checkout com 400 + reason='prescription_required'.
+    // O mobile usa esse reason pra abrir o fluxo de upload-prescription.php.
+    $needs_prescription = false;
+    foreach ($itens as $it) {
+        if ((int)($it['requires_prescription'] ?? 0) === 1) {
+            $needs_prescription = true;
+            break;
+        }
+    }
+    $prescription_image_url = trim((string)($input['prescription_image_url'] ?? ''));
+    // Validação leve do formato (tem que ser URL/path do nosso domínio, não link arbitrário)
+    if ($prescription_image_url !== '') {
+        if (!preg_match('#^/uploads/prescriptions/[A-Za-z0-9._-]+$#', $prescription_image_url)
+            && !preg_match('#^https?://[^\s]+/uploads/prescriptions/[A-Za-z0-9._-]+$#', $prescription_image_url)) {
+            response(false, null, "URL da receita inválida", 400);
+        }
+    }
+    if ($needs_prescription && $prescription_image_url === '') {
+        response(false, [
+            'reason' => 'prescription_required',
+        ], "Envie a receita médica pra finalizar", 400);
+    }
 
     // ═══════════════════════════════════════════════════════
     // FRETE — calculado via OmPricing (fonte unica de verdade)
@@ -989,6 +1017,17 @@ try {
         $order_number = "SB-{$datePart}-{$alphanum}";
         $db->prepare("UPDATE om_market_orders SET order_number = ? WHERE order_id = ?")->execute([$order_number, $order_id]);
 
+        // FARMÁCIA: grava a foto da receita + troca status pra aguardando_receita
+        // quando há pelo menos 1 item com requires_prescription=1.
+        if ($needs_prescription && $prescription_image_url !== '') {
+            $db->prepare("UPDATE om_market_orders
+                          SET prescription_image_url = ?,
+                              prescription_status    = 'pending',
+                              status                 = 'aguardando_receita'
+                          WHERE order_id = ?")
+               ->execute([$prescription_image_url, $order_id]);
+        }
+
         // Multi-stop route: create route record for primary order, add stop for secondary
         $created_route_id = null;
         if ($is_route_primary) {
@@ -1314,6 +1353,17 @@ try {
                 ];
                 if (function_exists('wsBroadcastToPartner')) wsBroadcastToPartner($partner_id, 'new_order', $newOrderPayload);
                 if (function_exists('wsBroadcastToAdmin'))   wsBroadcastToAdmin('new_order', $newOrderPayload);
+                // FARMÁCIA: alerta fila de receitas no painel quando o pedido
+                // chegou aguardando revisão de receita médica.
+                if ($needs_prescription && function_exists('wsBroadcastToPartner')) {
+                    wsBroadcastToPartner($partner_id, 'prescription_pending', [
+                        'order_id'      => $order_id,
+                        'order_number'  => $order_number,
+                        'customer_name' => $customer_name,
+                        'items_count'   => count($itens),
+                        'total'         => round($total, 2),
+                    ]);
+                }
                 // Avisa o próprio cliente (outros dispositivos logados) que o carrinho foi limpo
                 if (function_exists('wsBroadcastToCustomer')) {
                     wsBroadcastToCustomer($customer_id, 'cart_updated', [
