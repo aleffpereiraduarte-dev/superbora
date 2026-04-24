@@ -208,6 +208,7 @@ class NotificationSender
                 INSERT INTO om_market_notifications
                     (recipient_id, recipient_type, title, message, data, is_read, sent_at)
                 VALUES (?, ?, ?, ?, ?, 0, NOW())
+                RETURNING notification_id
             ");
             $stmt->execute([
                 $userId,
@@ -216,6 +217,23 @@ class NotificationSender
                 $body,
                 json_encode($data, JSON_UNESCAPED_UNICODE),
             ]);
+            $notificationId = (int)($stmt->fetchColumn() ?: 0);
+
+            // Broadcast via WS pra atualizar feed de notificações em tempo real.
+            // Só pra customers — painel partner/suporte têm canais próprios.
+            if ($userType === 'customer') {
+                try {
+                    require_once __DIR__ . '/ws-customer-broadcast.php';
+                    if (function_exists('wsBroadcastToCustomer')) {
+                        wsBroadcastToCustomer($userId, 'new_notification', [
+                            'notification_id' => $notificationId,
+                            'title' => $title,
+                            'body' => $body,
+                            'data' => $data,
+                        ]);
+                    }
+                } catch (\Throwable $e) { /* silent — WS é secundário */ }
+            }
         } catch (\Exception $e) {
             // Don't fail the notification if DB insert fails
             $this->log('ERROR', "Failed to store notification: " . $e->getMessage());

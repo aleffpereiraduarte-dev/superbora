@@ -1321,6 +1321,21 @@ try {
                         'partner_id' => $partner_id,
                         'order_id' => $order_id,
                     ]);
+                    // Se pagou com cartão SuperBora, notifica débito em tempo real.
+                    if (!empty($superboraConfirmed)) {
+                        wsBroadcastToCustomer($customer_id, 'card_transaction', [
+                            'order_id' => $order_id,
+                            'amount' => round($total, 2),
+                            'card_id' => $superboraCardData['id'] ?? null,
+                        ]);
+                    }
+                    // Pontos de fidelidade creditados no pedido
+                    if (!empty($points_earned) && $points_earned > 0) {
+                        wsBroadcastToCustomer($customer_id, 'loyalty_points_earned', [
+                            'order_id' => $order_id,
+                            'points' => (int)$points_earned,
+                        ]);
+                    }
                 }
             } catch (\Throwable $wsErr) {
                 error_log("[Checkout] WS error: " . $wsErr->getMessage());

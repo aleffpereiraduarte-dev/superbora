@@ -167,6 +167,23 @@ function creditCashback(PDO $db, int $customerId, int $orderId, int $partnerId, 
 
         $db->commit();
 
+        // Broadcast saldo novo + valor ganho — app atualiza carteira/cashback em RT.
+        try {
+            require_once __DIR__ . '/ws-customer-broadcast.php';
+            if (function_exists('wsBroadcastToCustomer')) {
+                wsBroadcastToCustomer($customerId, 'cashback_earned', [
+                    'amount' => $amount,
+                    'new_balance' => $newBalance,
+                    'order_id' => $orderId,
+                    'expires_at' => $expiresAt,
+                ]);
+                wsBroadcastToCustomer($customerId, 'wallet_balance', [
+                    'balance' => $newBalance,
+                    'source' => 'cashback_credit',
+                ]);
+            }
+        } catch (\Throwable $e) { /* silent */ }
+
         return [
             'success' => true,
             'amount' => $amount,
@@ -271,6 +288,18 @@ function debitCashback(PDO $db, int $customerId, int $orderId, int $partnerId, f
         $stmt->execute([$newBalance, $orderId]);
 
         $db->commit();
+
+        try {
+            require_once __DIR__ . '/ws-customer-broadcast.php';
+            if (function_exists('wsBroadcastToCustomer')) {
+                wsBroadcastToCustomer($customerId, 'wallet_balance', [
+                    'balance' => $newBalance,
+                    'source' => 'cashback_debit',
+                    'amount' => -$amount,
+                    'order_id' => $orderId,
+                ]);
+            }
+        } catch (\Throwable $e) { /* silent */ }
 
         return [
             'success' => true,
