@@ -213,6 +213,18 @@ try {
         r2CacheInvalidatePartner($partner_id);
         r2CacheInvalidateGlobal();
     }
+    // Invalidate Redis listing caches (DB 0 legacy + DB 1 helper)
+    try {
+        require_once dirname(__DIR__, 3) . '/cache/CacheHelper.php';
+        if (class_exists('CacheHelper')) {
+            CacheHelper::forgetPattern("mercado_produtos_");
+            CacheHelper::forgetPattern("home_");
+        }
+    } catch (\Throwable $e) { /* non-critical */ }
+    try {
+        require_once __DIR__ . '/../helpers/cache.php';
+        if (function_exists('cacheInvalidateProducts')) cacheInvalidateProducts((int)$partner_id);
+    } catch (\Throwable $e) { /* non-critical */ }
 
     response(true, [
         "product_id" => $product_id,

@@ -8,6 +8,8 @@ require_once __DIR__ . "/../config/database.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAudit.php";
 require_once __DIR__ . "/../helpers/r2-cache.php";
+require_once __DIR__ . "/../helpers/cache.php";
+require_once __DIR__ . "/../helpers/ws-customer-broadcast.php";
 
 setCorsHeaders();
 
@@ -84,6 +86,15 @@ try {
         r2CacheInvalidatePartner($partner_id);
         r2CacheInvalidateGlobal();
     }
+    if (function_exists('cacheInvalidateProducts')) cacheInvalidateProducts($partner_id);
+
+    // Broadcast price change so mobile app refreshes store data
+    wsBroadcastToChannel("store_{$partner_id}", 'product_update', [
+        'partner_id' => $partner_id,
+        'product_price_id' => $product_price_id,
+        'price' => $price,
+        'price_promo' => $price_promo,
+    ]);
 
     response(true, [
         "product_price_id" => $product_price_id,

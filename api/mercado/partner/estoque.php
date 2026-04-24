@@ -29,6 +29,7 @@
  * POST   action=ai_ingredient_analysis - AI ingredient analysis
  */
 require_once __DIR__ . "/../config/database.php";
+require_once __DIR__ . "/../helpers/cache.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
 
 setCorsHeaders();
@@ -1955,6 +1956,10 @@ function updateMainProductStock(PDO $db, int $productId, int $newQty, bool $uses
     } else {
         $stmt = $db->prepare("UPDATE om_market_products SET stock = ?, quantity = ?, date_modified = NOW() WHERE product_id = ? AND partner_id = ?");
         $stmt->execute([$newQty, $newQty, $productId, $partnerId]);
+    }
+    // Invalida cache de listagens (estoque vira "disponivel" no payload)
+    if (function_exists('cacheInvalidateProducts') && $partnerId > 0) {
+        cacheInvalidateProducts($partnerId);
     }
 }
 

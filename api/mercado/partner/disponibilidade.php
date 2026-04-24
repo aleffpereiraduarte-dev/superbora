@@ -16,7 +16,9 @@
  */
 require_once __DIR__ . "/../config/database.php";
 require_once __DIR__ . "/../config/cache.php";
+require_once __DIR__ . "/../helpers/cache.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
+require_once __DIR__ . "/../helpers/ws-customer-broadcast.php";
 
 setCorsHeaders();
 
@@ -295,10 +297,10 @@ try {
             ");
             $stmt->execute([$pauseUntil, $motivo, $partnerId]);
 
-            // Record in pause history
+            // Record in pause history — ativo is BOOLEAN, not int.
             $stmtPause = $db->prepare("
                 INSERT INTO om_market_partner_pauses (partner_id, tipo, motivo, inicio, fim, ativo)
-                VALUES (?, 'manual', ?, NOW(), ?, 1)
+                VALUES (?, 'manual', ?, NOW(), ?, TRUE)
             ");
             $stmtPause->execute([$partnerId, $motivo, $pauseUntil]);
 
@@ -310,6 +312,16 @@ try {
 
         om_cache()->flush('store_');
         om_cache()->flush('admin_');
+        if (function_exists('cacheInvalidatePartner')) cacheInvalidatePartner($partnerId);
+        if (function_exists('cacheInvalidateVitrine')) cacheInvalidateVitrine();
+
+        // Broadcast store status change so mobile app refreshes
+        wsBroadcastToChannel("store_{$partnerId}", 'store_update', [
+            'partner_id' => $partnerId,
+            'is_open' => false,
+            'is_paused' => true,
+            'pause_until' => $pauseUntil,
+        ]);
 
         response(true, [
             "is_open" => false,
@@ -346,6 +358,15 @@ try {
 
         om_cache()->flush('store_');
         om_cache()->flush('admin_');
+        if (function_exists('cacheInvalidatePartner')) cacheInvalidatePartner($partnerId);
+        if (function_exists('cacheInvalidateVitrine')) cacheInvalidateVitrine();
+
+        // Broadcast store reopened
+        wsBroadcastToChannel("store_{$partnerId}", 'store_update', [
+            'partner_id' => $partnerId,
+            'is_open' => true,
+            'is_paused' => false,
+        ]);
 
         response(true, [
             "is_open" => true,
@@ -390,6 +411,14 @@ try {
         }
 
         om_cache()->flush('store_');
+        if (function_exists('cacheInvalidateProducts')) cacheInvalidateProducts($partnerId);
+
+        // Broadcast product availability change
+        wsBroadcastToChannel("store_{$partnerId}", 'product_update', [
+            'partner_id' => $partnerId,
+            'product_id' => $productId,
+            'available' => false,
+        ]);
 
         response(true, [
             "product_id" => $productId,
@@ -432,6 +461,14 @@ try {
         }
 
         om_cache()->flush('store_');
+        if (function_exists('cacheInvalidateProducts')) cacheInvalidateProducts($partnerId);
+
+        // Broadcast product availability change
+        wsBroadcastToChannel("store_{$partnerId}", 'product_update', [
+            'partner_id' => $partnerId,
+            'product_id' => $productId,
+            'available' => true,
+        ]);
 
         response(true, [
             "product_id" => $productId,

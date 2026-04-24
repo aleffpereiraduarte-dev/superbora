@@ -19,6 +19,7 @@
  * POST action=edit_details { partner_id, name?, address?, phone?, description?, logo_url?, min_order?, delivery_radius? } - Editar detalhes
  */
 require_once __DIR__ . "/../config/database.php";
+require_once __DIR__ . "/../helpers/cache.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAuth.php";
 require_once dirname(__DIR__, 3) . "/includes/classes/OmAudit.php";
 
@@ -35,7 +36,17 @@ try {
     // Garantir que as colunas auxiliares existem
     ensurePartnerSchema($db);
 
-    $action = trim($_GET['action'] ?? $_POST['action'] ?? '');
+    // Parse JSON body for POST — UI sends application/json
+    $jsonBody = [];
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+        $raw = file_get_contents('php://input');
+        if ($raw) {
+            $parsed = json_decode($raw, true);
+            if (is_array($parsed)) $jsonBody = $parsed;
+        }
+        $_POST = array_merge($_POST, $jsonBody);
+    }
+    $action = trim($_GET['action'] ?? $_POST['action'] ?? $jsonBody['action'] ?? '');
     if (!$action) response(false, null, "Parametro 'action' obrigatorio", 400);
 
     // =================== GET ===================
@@ -370,6 +381,10 @@ try {
                 "Parceiro '{$partner['name']}' aprovado pelo admin #{$admin_id}"
             );
 
+            // Invalida vitrine (status 0→1 muda lista global) + caches do parceiro
+            cacheInvalidateVitrine();
+            cacheInvalidatePartner($partner_id);
+
             response(true, [
                 'partner_id' => $partner_id,
                 'action' => 'approve',
@@ -471,6 +486,10 @@ try {
                 "Parceiro '{$partner['name']}' suspenso por {$duration_days} dias. {$cancelled_orders} pedidos cancelados. Motivo: {$reason}"
             );
 
+            // Invalida vitrine (parceiro some da listagem) + cache do parceiro
+            cacheInvalidateVitrine();
+            cacheInvalidatePartner($partner_id);
+
             response(true, [
                 'partner_id' => $partner_id,
                 'action' => 'suspend',
@@ -551,6 +570,9 @@ try {
                 "Parceiro '{$partner['name']}' banido permanentemente. {$cancelled_orders} pedidos cancelados. Motivo: {$reason}"
             );
 
+            cacheInvalidateVitrine();
+            cacheInvalidatePartner($partner_id);
+
             response(true, [
                 'partner_id' => $partner_id,
                 'action' => 'ban',
@@ -618,6 +640,9 @@ try {
                 ['status' => '1', 'note' => $note],
                 "Parceiro '{$partner['name']}' reativado. " . ($note ? "Nota: {$note}" : "")
             );
+
+            cacheInvalidateVitrine();
+            cacheInvalidatePartner($partner_id);
 
             response(true, [
                 'partner_id' => $partner_id,
@@ -732,6 +757,9 @@ try {
                 "Loja '{$partner['name']}' pausada pelo admin #{$admin_id}. Motivo: {$reason}"
             );
 
+            cacheInvalidatePartner($partner_id);
+            cacheInvalidateVitrine();
+
             response(true, [
                 'partner_id' => $partner_id,
                 'action' => 'pause',
@@ -794,6 +822,9 @@ try {
                 "Loja '{$partner['name']}' despausada pelo admin #{$admin_id}"
             );
 
+            cacheInvalidatePartner($partner_id);
+            cacheInvalidateVitrine();
+
             response(true, [
                 'partner_id' => $partner_id,
                 'action' => 'unpause',
@@ -854,6 +885,8 @@ try {
                 ['opening_hours' => $hours_json],
                 "Horarios de funcionamento atualizados para '{$partner['name']}' pelo admin #{$admin_id}"
             );
+
+            cacheInvalidatePartner($partner_id);
 
             response(true, [
                 'partner_id' => $partner_id,
@@ -936,6 +969,10 @@ try {
                 $new_data,
                 "Detalhes do parceiro '{$partner['name']}' atualizados pelo admin #{$admin_id}. Campos: " . implode(', ', array_keys($new_data))
             );
+
+            cacheInvalidatePartner($partner_id);
+            // edit_details muda info como nome/endereco que aparece na vitrine
+            cacheInvalidateVitrine();
 
             response(true, [
                 'partner_id' => $partner_id,

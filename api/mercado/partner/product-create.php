@@ -214,6 +214,28 @@ try {
 
         $db->commit();
 
+        // Invalidate caches so the new product appears imediatamente no cardapio.
+        // Antes: produto criado ficava 30min invisivel em /produtos/listar.php por causa
+        // do cache R2 + Cloudflare edge (60s s-maxage). Bug #27 da TaskList.
+        try {
+            require_once __DIR__ . '/../helpers/r2-cache.php';
+            if (function_exists('r2CacheInvalidatePartner')) r2CacheInvalidatePartner($partner_id);
+            if (function_exists('r2CacheInvalidateGlobal')) r2CacheInvalidateGlobal();
+        } catch (\Throwable $e) { /* non-critical */ }
+        try {
+            require_once dirname(__DIR__, 3) . '/cache/CacheHelper.php';
+            if (class_exists('CacheHelper')) {
+                CacheHelper::forgetPattern("listar*");
+                CacheHelper::forgetPattern("home_");
+                CacheHelper::forgetPattern("mercado_produtos_");
+            }
+        } catch (\Throwable $e) { /* non-critical */ }
+        // Invalida cache padrao (Redis DB 1: products:{pid}:*, partner:{pid}, home:*)
+        try {
+            require_once __DIR__ . '/../helpers/cache.php';
+            if (function_exists('cacheInvalidateProducts')) cacheInvalidateProducts((int)$partner_id);
+        } catch (\Throwable $e) { /* non-critical */ }
+
         // Log audit
         om_audit()->log(
             OmAudit::ACTION_CREATE,

@@ -53,18 +53,11 @@ try {
                 }
             }
 
-            // Invalidate vitrine cache so app sees updated fee/hours within seconds
+            // Invalidate vitrine + partner detail caches (use shared helpers)
             try {
                 require_once __DIR__ . '/../helpers/cache.php';
-                // cachedQuery uses 'sbcache:' prefix via Redis OPT_PREFIX
-                $r = new Redis();
-                $r->connect('127.0.0.1', 6379, 0.5);
-                $pwd = $_ENV['REDIS_PASSWORD'] ?? getenv('REDIS_PASSWORD') ?: '';
-                if ($pwd) $r->auth($pwd);
-                $iter = null;
-                while ($keys = $r->scan($iter, 'sbcache:vitrine:*', 200)) {
-                    foreach ($keys as $k) $r->del($k);
-                }
+                if (function_exists('cacheInvalidatePartner')) cacheInvalidatePartner((int)$pid);
+                if (function_exists('cacheInvalidateVitrine')) cacheInvalidateVitrine();
                 require_once __DIR__ . '/../helpers/r2-cache.php';
                 if (function_exists('r2CacheInvalidatePartner')) r2CacheInvalidatePartner($pid);
             } catch (Exception $e) { /* non-critical */ }
